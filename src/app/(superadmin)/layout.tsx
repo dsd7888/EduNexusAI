@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 
 import {
   CheckCircle,
+  BookOpen,
   GraduationCap,
   LayoutDashboard,
   Upload,
@@ -46,6 +47,10 @@ export default function SuperadminLayout({ children }: LayoutProps) {
           <NavLink href="/superadmin/faculty">
             <Users className="size-4" />
             <span>Faculty Management</span>
+          </NavLink>
+          <NavLink href="/superadmin/subjects">
+            <BookOpen className="size-4" />
+            <span>Subjects & Modules</span>
           </NavLink>
         </nav>
 
