@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 
 import {
+  BookOpen,
   Brain,
   GraduationCap,
   History,
@@ -38,6 +39,10 @@ export default function StudentLayout({ children }: LayoutProps) {
           <NavLink href="/student/chat">
             <MessageCircle className="size-4" />
             <span>AI Chat</span>
+          </NavLink>
+          <NavLink href="/student/subjects">
+            <BookOpen className="size-4" />
+            <span>Subjects</span>
           </NavLink>
           <NavLink href="/student/quiz">
             <Brain className="size-4" />
