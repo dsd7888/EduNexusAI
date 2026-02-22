@@ -36,7 +36,8 @@
    TableRow,
  } from "@/components/ui/table";
  import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
- import { Textarea } from "@/components/ui/textarea";
+ import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
  import { Loader2, Trash2 } from "lucide-react";
  import { useCallback, useEffect, useMemo, useState } from "react";
  import { toast } from "sonner";
@@ -60,8 +61,8 @@
    description: string | null;
  }
  
- export default function SubjectsPage() {
-   const [tab, setTab] = useState<"subjects" | "modules">("subjects");
+export default function SubjectsPage() {
+  const [tab, setTab] = useState<"subjects" | "modules" | "syllabus">("subjects");
  
    const [subjects, setSubjects] = useState<SubjectRow[]>([]);
    const [modules, setModules] = useState<ModuleRow[]>([]);
@@ -88,8 +89,15 @@
    const [moduleName, setModuleName] = useState("");
    const [moduleDescription, setModuleDescription] = useState("");
  
-   // Confirm dialog
-   const [confirmOpen, setConfirmOpen] = useState(false);
+  // Syllabus Content tab state
+  const [syllabusSubjectId, setSyllabusSubjectId] = useState("");
+  const [syllabusContent, setSyllabusContent] = useState("");
+  const [referenceBooks, setReferenceBooks] = useState("");
+  const [loadingContent, setLoadingContent] = useState(false);
+  const [savingContent, setSavingContent] = useState(false);
+
+  // Confirm dialog
+  const [confirmOpen, setConfirmOpen] = useState(false);
    const [confirmPayload, setConfirmPayload] = useState<
      | { kind: "subject"; id: string; label: string }
      | { kind: "module"; id: string; label: string }
@@ -143,11 +151,38 @@
      fetchSubjects();
    }, [fetchSubjects]);
  
-   useEffect(() => {
-     if (tab === "modules") {
-       fetchModules(selectedSubjectId);
-     }
-   }, [tab, selectedSubjectId, fetchModules]);
+  useEffect(() => {
+    if (tab === "modules") {
+      fetchModules(selectedSubjectId);
+    }
+  }, [tab, selectedSubjectId, fetchModules]);
+
+  useEffect(() => {
+    if (tab === "syllabus" && syllabusSubjectId) {
+      setLoadingContent(true);
+      fetch(`/api/subjects/content?subjectId=${encodeURIComponent(syllabusSubjectId)}`)
+        .then((res) => res.json())
+        .then((json) => {
+          if (json && json.error) {
+            toast.error(json.error);
+            setSyllabusContent("");
+            setReferenceBooks("");
+          } else {
+            setSyllabusContent(json?.content ?? "");
+            setReferenceBooks(json?.referenceBooks ?? "");
+          }
+        })
+        .catch(() => {
+          toast.error("Failed to load content");
+          setSyllabusContent("");
+          setReferenceBooks("");
+        })
+        .finally(() => setLoadingContent(false));
+    } else if (tab === "syllabus" && !syllabusSubjectId) {
+      setSyllabusContent("");
+      setReferenceBooks("");
+    }
+  }, [tab, syllabusSubjectId]);
  
    const handleAddSubject = async () => {
      if (!name.trim() || !code.trim() || !department.trim() || !branch || !semester) {
@@ -244,7 +279,36 @@
      }
    };
  
-   const askDeleteSubject = (s: SubjectRow) => {
+   const handleSaveSyllabus = async () => {
+    if (!syllabusSubjectId) {
+      toast.error("Please select a subject");
+      return;
+    }
+    setSavingContent(true);
+    try {
+      const res = await fetch("/api/subjects/content", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          subjectId: syllabusSubjectId,
+          content: syllabusContent,
+          referenceBooks,
+        }),
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        toast.error(json.error ?? "Failed to save");
+        return;
+      }
+      toast.success("Syllabus content saved");
+    } catch {
+      toast.error("Failed to save");
+    } finally {
+      setSavingContent(false);
+    }
+  };
+
+  const askDeleteSubject = (s: SubjectRow) => {
      setConfirmPayload({
        kind: "subject",
        id: s.id,
@@ -308,10 +372,11 @@
        </div>
  
        <Tabs value={tab} onValueChange={(v) => setTab(v as typeof tab)}>
-         <TabsList>
-           <TabsTrigger value="subjects">Subjects</TabsTrigger>
-           <TabsTrigger value="modules">Modules</TabsTrigger>
-         </TabsList>
+        <TabsList>
+          <TabsTrigger value="subjects">Subjects</TabsTrigger>
+          <TabsTrigger value="modules">Modules</TabsTrigger>
+          <TabsTrigger value="syllabus">Syllabus Content</TabsTrigger>
+        </TabsList>
  
          <TabsContent value="subjects" className="mt-6 space-y-6">
            <Card>
@@ -561,6 +626,74 @@
                    </Table>
                  </CardContent>
                </Card>
+             </CardContent>
+           </Card>
+         </TabsContent>
+
+         <TabsContent value="syllabus" className="mt-6 space-y-6">
+           <Card>
+             <CardHeader>
+               <CardTitle>Syllabus Content</CardTitle>
+               <CardDescription>
+                 Add or edit syllabus text and reference books for each subject.
+               </CardDescription>
+             </CardHeader>
+             <CardContent className="space-y-6">
+               <div className="space-y-2">
+                 <Label htmlFor="syllabus-subject">Subject</Label>
+                 <Select value={syllabusSubjectId} onValueChange={setSyllabusSubjectId}>
+                   <SelectTrigger id="syllabus-subject" className="w-full">
+                     <SelectValue placeholder="Select subject" />
+                   </SelectTrigger>
+                   <SelectContent>
+                     {subjects.map((s) => (
+                       <SelectItem key={s.id} value={s.id}>
+                         {s.name} ({s.code})
+                       </SelectItem>
+                     ))}
+                   </SelectContent>
+                 </Select>
+               </div>
+
+               {syllabusSubjectId && (
+                 <>
+                   <div className="space-y-2">
+                     <Label htmlFor="syllabus-content">Syllabus Content</Label>
+                     <Textarea
+                       id="syllabus-content"
+                       placeholder="Enter syllabus content..."
+                       value={syllabusContent}
+                       onChange={(e) => setSyllabusContent(e.target.value)}
+                       rows={22}
+                       className="font-mono text-sm"
+                       disabled={loadingContent}
+                     />
+                   </div>
+                   <div className="space-y-2">
+                     <Label htmlFor="reference-books">Reference Books (comma-separated)</Label>
+                     <Input
+                       id="reference-books"
+                       placeholder="e.g. Book 1, Book 2, Book 3"
+                       value={referenceBooks}
+                       onChange={(e) => setReferenceBooks(e.target.value)}
+                       disabled={loadingContent}
+                     />
+                   </div>
+                   <Button
+                     onClick={handleSaveSyllabus}
+                     disabled={savingContent || loadingContent}
+                   >
+                     {savingContent ? (
+                       <Loader2 className="size-4 animate-spin" />
+                     ) : null}
+                     Save
+                   </Button>
+                 </>
+               )}
+
+               {syllabusSubjectId && loadingContent && (
+                 <p className="text-sm text-muted-foreground">Loading content...</p>
+               )}
              </CardContent>
            </Card>
          </TabsContent>
