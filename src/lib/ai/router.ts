@@ -5,7 +5,7 @@ const TASK_TO_MODEL: Record<string, "flash" | "pro"> = {
   chat: "flash",
   quiz_gen: "flash",
   ppt_gen: "flash",
-  qpaper_gen: "pro",
+  qpaper_gen: "flash",
   refine: "pro",
 };
 
