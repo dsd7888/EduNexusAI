@@ -6,7 +6,7 @@ import {
   GitPullRequest,
   GraduationCap,
   LayoutDashboard,
-  Wand2,
+  Presentation,
 } from "lucide-react";
 
 import { NavLink } from "@/components/layout/NavLink";
@@ -37,8 +37,8 @@ export default function FacultyLayout({ children }: LayoutProps) {
             <span>Dashboard</span>
           </NavLink>
           <NavLink href="/faculty/generate">
-            <Wand2 className="size-4" />
-            <span>Generate Content</span>
+            <Presentation className="size-4" />
+            <span>Generate PPT</span>
           </NavLink>
           <NavLink href="/faculty/qpaper">
             <FileText className="size-4" />

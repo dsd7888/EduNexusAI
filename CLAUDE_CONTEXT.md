@@ -298,6 +298,35 @@ PRIMARY_AI_PROVIDER=gemini
   * Typos/keywords/rephrasing → cache hit (0.78 threshold)
   * Different topics → cache miss, new AI call
 
+  Day 5 ✅
+
+/lib/quiz/generator.ts — buildQuizPrompt, buildSocraticHintPrompt, parseQuizResponse
+/api/quiz/generate — generates from subject_content, saves to quizzes table
+/api/quiz/submit — scores answers, saves to quiz_attempts
+/api/quiz/hint — single Socratic hint per question (no answer revealed)
+/student/quiz/page.tsx — full 3-view flow (setup → taking → results)
+
+Module/topic selection filters quiz to specific content
+Socratic Mode toggle — shows 💡 hint button per question during quiz
+Results show full breakdown with explanations
+
+
+
+Day 6 ✅
+
+/lib/ppt/generator.ts — two-phase generation (outline + batch content)
+
+buildOutlinePrompt, buildBatchContentPrompt
+generatePPTXBuffer using pptxgenjs
+SVG diagrams embedded as base64 images
+stripMd() helper to clean Gemini markdown artifacts
+
+
+/api/generate/ppt — full pipeline: outline → 3 content batches → PPTX → Supabase Storage → download URL
+/faculty/generate/page.tsx — module dropdown OR custom topic, depth selector, rotating status messages
+Supabase Storage bucket: generated-content (public)
+Known: gemini-2.5-pro has 0 free tier quota — using Flash for pilot
+
 ## 10. Known Issues / Watch Out For
 
 - **Next.js 16:** use proxy.ts not middleware.ts
@@ -312,6 +341,10 @@ PRIMARY_AI_PROVIDER=gemini
 - **Email confirmation:** disabled for pilot dev, RE-ENABLE before go-live
 - **Gemini free tier:** 20 RPD limit on gemini-2.5-flash (hit during testing). Use sparingly or upgrade.
 - **Always clear .next cache after moving files:** rm -rf .next
+
+- PPT generation takes 60-120s (3 sequential API calls) — expected, UI handles it
+- 4 faculty simultaneously = fine. 10+ faculty = Gemini rate limit risk — needs pay-as-you-go billing post-pilot
+- Markdown stripping applied to all slide text (Gemini adds **bold** despite instructions)
 
 ## 11. Pending Features / Backlog
 

@@ -4,7 +4,7 @@ import type { ChatParams, ChatResponse } from "./providers/types";
 const TASK_TO_MODEL: Record<string, "flash" | "pro"> = {
   chat: "flash",
   quiz_gen: "flash",
-  ppt_gen: "pro",
+  ppt_gen: "flash",
   qpaper_gen: "pro",
   refine: "pro",
 };
@@ -22,6 +22,8 @@ export async function routeAI(
   const resolvedParams: ChatParams = {
     ...params,
     model: params.model ?? TASK_TO_MODEL[task] ?? DEFAULT_MODEL,
+    maxTokens:
+      task === "ppt_gen" ? params.maxTokens ?? 8192 : params.maxTokens,
   };
 
   const providerName =
