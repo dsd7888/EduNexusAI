@@ -7,6 +7,7 @@ import {
   GraduationCap,
   LayoutDashboard,
   Presentation,
+  Sparkles,
 } from "lucide-react";
 
 import { NavLink } from "@/components/layout/NavLink";
@@ -43,6 +44,10 @@ export default function FacultyLayout({ children }: LayoutProps) {
           <NavLink href="/faculty/qpaper">
             <FileText className="size-4" />
             <span>Question Paper</span>
+          </NavLink>
+          <NavLink href="/faculty/refine">
+            <Sparkles className="size-4" />
+            <span>Refine Content</span>
           </NavLink>
           <NavLink href="/faculty/request-change">
             <GitPullRequest className="size-4" />

@@ -6,7 +6,7 @@ const TASK_TO_MODEL: Record<string, "flash" | "pro"> = {
   quiz_gen: "flash",
   ppt_gen: "flash",
   qpaper_gen: "flash",
-  refine: "pro",
+  refine: "flash",
 };
 
 const DEFAULT_MODEL: "flash" | "pro" = "flash";
