@@ -1,0 +1,20 @@
+{
+  "functions": {
+    "src/app/api/generate/ppt/route.ts": {
+      "maxDuration": 300
+    },
+    "src/app/api/generate/qpaper/route.ts": {
+      "maxDuration": 60
+    },
+    "src/app/api/chat/route.ts": {
+      "maxDuration": 30
+    },
+    "src/app/api/refine/route.ts": {
+      "maxDuration": 30
+    },
+    "src/app/api/quiz/generate/route.ts": {
+      "maxDuration": 30
+    }
+  }
+}
+
