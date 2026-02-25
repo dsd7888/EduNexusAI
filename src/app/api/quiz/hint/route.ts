@@ -4,6 +4,7 @@ import {
   createAdminClient,
   createServerClient,
 } from "@/lib/db/supabase-server";
+import { checkRateLimit, RATE_LIMITS } from "@/lib/utils/rate-limit";
 import type { NextRequest } from "next/server";
 
 export async function POST(request: NextRequest) {
@@ -29,6 +30,23 @@ export async function POST(request: NextRequest) {
       return Response.json(
         { error: "Forbidden: Students only" },
         { status: 403 }
+      );
+    }
+
+    const rateCheck = await checkRateLimit({
+      userId: user.id,
+      eventType: "hint",
+      limit: RATE_LIMITS.hint,
+    });
+
+    if (!rateCheck.allowed) {
+      return Response.json(
+        {
+          error: "Daily limit reached",
+          message: `You've used all ${RATE_LIMITS.hint} hints for today. ${rateCheck.resetAt}.`,
+          limitReached: true,
+        },
+        { status: 429 }
       );
     }
 

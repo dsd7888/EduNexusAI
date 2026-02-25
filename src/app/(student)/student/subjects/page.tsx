@@ -11,6 +11,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
+import { CardSkeleton } from "@/components/layout/PageSkeleton";
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 
@@ -109,17 +110,8 @@ export default function StudentSubjectsPage() {
 
       {loadingProfile || loadingSubjects ? (
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-          {[1, 2, 3].map((i) => (
-            <Card key={i} className="overflow-hidden">
-              <CardHeader>
-                <Skeleton className="h-7 w-20" />
-                <Skeleton className="h-5 w-full" />
-                <Skeleton className="h-4 w-16" />
-              </CardHeader>
-              <CardFooter>
-                <Skeleton className="h-9 w-full" />
-              </CardFooter>
-            </Card>
+          {Array.from({ length: 6 }).map((_, i) => (
+            <CardSkeleton key={i} />
           ))}
         </div>
       ) : showEmptyState ? (

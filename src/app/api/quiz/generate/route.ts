@@ -1,12 +1,10 @@
-import {
-  buildQuizPrompt,
-  parseQuizResponse,
-} from "@/lib/quiz/generator";
+import { buildQuizPrompt, parseQuizResponse } from "@/lib/quiz/generator";
 import { routeAI } from "@/lib/ai/router";
 import {
   createAdminClient,
   createServerClient,
 } from "@/lib/db/supabase-server";
+import { checkRateLimit, RATE_LIMITS } from "@/lib/utils/rate-limit";
 import type { NextRequest } from "next/server";
 
 const VALID_DIFFICULTIES = ["easy", "medium", "hard", "mixed"] as const;
@@ -42,6 +40,23 @@ export async function POST(request: NextRequest) {
       return Response.json(
         { error: "Forbidden: Students only" },
         { status: 403 }
+      );
+    }
+
+    const rateCheck = await checkRateLimit({
+      userId: user.id,
+      eventType: "quiz",
+      limit: RATE_LIMITS.quiz,
+    });
+
+    if (!rateCheck.allowed) {
+      return Response.json(
+        {
+          error: "Daily limit reached",
+          message: `You've used all ${RATE_LIMITS.quiz} quiz generations for today. ${rateCheck.resetAt}.`,
+          limitReached: true,
+        },
+        { status: 429 }
       );
     }
 

@@ -5,6 +5,7 @@ import {
   createAdminClient,
   createServerClient,
 } from "@/lib/db/supabase-server";
+import { checkRateLimit, RATE_LIMITS } from "@/lib/utils/rate-limit";
 import type { NextRequest } from "next/server";
 
 type HistoryMessage = {
@@ -22,6 +23,23 @@ export async function POST(request: NextRequest) {
 
     if (authError || !user) {
       return Response.json({ error: "Unauthorized" }, { status: 401 });
+    }
+
+    const rateCheck = await checkRateLimit({
+      userId: user.id,
+      eventType: "chat",
+      limit: RATE_LIMITS.chat,
+    });
+
+    if (!rateCheck.allowed) {
+      return Response.json(
+        {
+          error: "Daily limit reached",
+          message: `You've used all ${RATE_LIMITS.chat} chat queries for today. ${rateCheck.resetAt}.`,
+          limitReached: true,
+        },
+        { status: 429 }
+      );
     }
 
     const adminClient = createAdminClient();

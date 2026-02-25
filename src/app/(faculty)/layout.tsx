@@ -12,6 +12,8 @@ import {
 
 import { NavLink } from "@/components/layout/NavLink";
 import { LogoutButton } from "@/components/layout/LogoutButton";
+import { UserProfile } from "@/components/layout/UserProfile";
+import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { Badge } from "@/components/ui/badge";
 
 interface LayoutProps {
@@ -49,31 +51,27 @@ export default function FacultyLayout({ children }: LayoutProps) {
             <Sparkles className="size-4" />
             <span>Refine Content</span>
           </NavLink>
-          <NavLink href="/faculty/request-change">
-            <GitPullRequest className="size-4" />
-            <span>Request Change</span>
-          </NavLink>
           <NavLink href="/faculty/analytics">
             <BarChart2 className="size-4" />
             <span>Analytics</span>
           </NavLink>
+          <NavLink href="/faculty/request-change">
+            <GitPullRequest className="size-4" />
+            <span>Request Change</span>
+          </NavLink>
         </nav>
 
-        <div className="flex-shrink-0 border-t px-4 py-4">
-          <div className="mb-3 flex items-center justify-between gap-2">
-            <div className="min-w-0">
-              <p className="truncate text-sm font-medium">User</p>
-              <p className="truncate text-xs text-muted-foreground">
-                —
-              </p>
-            </div>
-            <Badge className="shrink-0">Faculty</Badge>
+        <div className="flex-shrink-0 px-4 py-4">
+          <div className="mb-3">
+            <UserProfile />
           </div>
           <LogoutButton />
         </div>
       </aside>
 
-      <main className="ml-64 flex-1 overflow-auto p-6">{children}</main>
+      <main className="ml-64 flex-1 overflow-auto p-6">
+        <ErrorBoundary>{children}</ErrorBoundary>
+      </main>
     </div>
   );
 }

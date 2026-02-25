@@ -45,6 +45,7 @@ export default function StudentSubjectChatPage() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [inputValue, setInputValue] = useState("");
   const [isLoading, setIsLoading] = useState(false);
+  const [isRateLimited, setIsRateLimited] = useState(false);
 
   const [loadingSubject, setLoadingSubject] = useState(true);
   const [loadingSyllabus, setLoadingSyllabus] = useState(true);
@@ -150,7 +151,7 @@ export default function StudentSubjectChatPage() {
   const sendMessage = useCallback(
     async (text: string) => {
       const trimmed = text.trim();
-      if (!trimmed || !subjectId) return;
+      if (!trimmed || !subjectId || isRateLimited) return;
 
       setMessages((prev) => [...prev, { role: "user", content: trimmed }]);
       setInputValue("");
@@ -167,6 +168,23 @@ export default function StudentSubjectChatPage() {
           }),
         });
         const json = await res.json().catch(() => ({}));
+        if (res.status === 429) {
+          setIsRateLimited(true);
+          const friendly =
+            "You've reached your daily chat limit. Come back tomorrow! 📚";
+          setMessages((prev) => [
+            ...prev,
+            {
+              role: "assistant",
+              content:
+                typeof json?.message === "string" && json.message
+                  ? `${json.message}\n\n${friendly}`
+                  : friendly,
+            },
+          ]);
+          return;
+        }
+
         if (!res.ok) {
           setMessages((prev) => [
             ...prev,
@@ -194,7 +212,7 @@ export default function StudentSubjectChatPage() {
         requestAnimationFrame(() => inputRef.current?.focus());
       }
     },
-    [historyForRequest, subjectId]
+    [historyForRequest, subjectId, isRateLimited]
   );
 
   const handleSubmit = async () => {
@@ -410,12 +428,20 @@ export default function StudentSubjectChatPage() {
             onChange={(e) => setInputValue(e.target.value)}
             onKeyDown={handleKeyDown}
             placeholder={`Ask anything about ${subject.name}...`}
-            disabled={isLoading}
+            disabled={isLoading || isRateLimited}
           />
-          <Button onClick={handleSubmit} disabled={isLoading || !inputValue.trim()}>
+          <Button
+            onClick={handleSubmit}
+            disabled={isLoading || isRateLimited || !inputValue.trim()}
+          >
             Send
           </Button>
         </div>
+        {isRateLimited && (
+          <p className="mt-2 text-xs text-muted-foreground">
+            You've reached your daily chat limit. Come back tomorrow! 📚
+          </p>
+        )}
       </div>
     </div>
   );
