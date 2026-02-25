@@ -73,9 +73,13 @@ export async function POST(request: NextRequest) {
     const rawTypes = Array.isArray(body?.questionTypes) ? body.questionTypes : ["mcq"];
     const questionTypes = rawTypes
       .map((t: unknown) => String(t).toLowerCase())
-      .filter((t: string) => VALID_TYPES.includes(t as any)) as ("mcq" | "true_false" | "short")[];
-    const questionTypesFinal =
-      questionTypes.length > 0 ? questionTypes : (["mcq"] as const);
+      .filter((t: string) => VALID_TYPES.includes(t as any)) as (
+      | "mcq"
+      | "true_false"
+      | "short"
+    )[];
+    const questionTypesFinal: ("mcq" | "true_false" | "short")[] =
+      questionTypes.length > 0 ? questionTypes : ["mcq"];
     const selectedTopics = Array.isArray(body?.selectedTopics)
       ? body.selectedTopics.map(String).filter(Boolean)
       : undefined;

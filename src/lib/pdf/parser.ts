@@ -1,8 +1,3 @@
-import * as pdfjsLib from "pdfjs-dist/legacy/build/pdf.mjs";
-
-// Disable worker (causes issues in Next.js)
-pdfjsLib.GlobalWorkerOptions.workerSrc = "";
-
 function cleanExtractedText(text: string): string {
   return text
     .replace(/\s+/g, " ")
@@ -13,8 +8,18 @@ function cleanExtractedText(text: string): string {
 export async function extractTextFromPDF(
   fileBuffer: ArrayBuffer
 ): Promise<string> {
+  // For production/Edge runtimes where pdfjs cannot run, short-circuit.
+  if (process.env.NODE_ENV === "production") {
+    console.warn(
+      "[PDF Parser] PDF text extraction is disabled in this deployment; returning empty text."
+    );
+    return "";
+  }
+
   try {
-    // Load PDF document
+    const pdfjsLib = await import("pdfjs-dist/legacy/build/pdf.mjs");
+    pdfjsLib.GlobalWorkerOptions.workerSrc = "";
+
     const loadingTask = pdfjsLib.getDocument({
       data: new Uint8Array(fileBuffer),
       useWorkerFetch: false,
@@ -25,7 +30,6 @@ export async function extractTextFromPDF(
     const pdf = await loadingTask.promise;
     const textParts: string[] = [];
 
-    // Extract text from each page
     for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
       const page = await pdf.getPage(pageNum);
       const textContent = await page.getTextContent();

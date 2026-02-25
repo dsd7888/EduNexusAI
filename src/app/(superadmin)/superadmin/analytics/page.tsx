@@ -6,6 +6,7 @@ import {
   Bar,
   BarChart,
   CartesianGrid,
+  Cell,
   ResponsiveContainer,
   Tooltip,
   XAxis,
@@ -573,10 +574,9 @@ export default function SuperadminAnalyticsPage() {
                           if (entry.range === "60-79") color = "#D97706";
                           else if (entry.range === "40-59")
                             color = "#EA580C";
-                          else if (entry.range === "0-39")
-                            color = "#DC2626";
+                          else if (entry.range === "0-39") color = "#DC2626";
                           return (
-                            <cell
+                            <Cell
                               // eslint-disable-next-line react/no-array-index-key
                               key={`cell-${index}`}
                               fill={color}
