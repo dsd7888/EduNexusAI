@@ -43,7 +43,3 @@ export async function checkRateLimit(options: {
     resetAt: "Resets at midnight",
   };
 }
-
-export async function checkRateLimit(identifier: string) {
-  return { allowed: true, remaining: 100 };
-}
