@@ -59,7 +59,7 @@ export default function StudentSubjectsPage() {
   }, []);
 
   const fetchSubjects = useCallback(async () => {
-    if (branch == null || semester == null) {
+    if (branch == null) {
       setLoadingSubjects(false);
       setSubjects([]);
       return;
@@ -71,8 +71,8 @@ export default function StudentSubjectsPage() {
         .from("subjects")
         .select("id, code, name, department, branch, semester")
         .eq("branch", branch)
-        .eq("semester", semester)
-        .order("code");
+        .order("semester", { ascending: true })
+        .order("code", { ascending: true });
       if (error) {
         setSubjects([]);
         return;
@@ -81,7 +81,7 @@ export default function StudentSubjectsPage() {
     } finally {
       setLoadingSubjects(false);
     }
-  }, [branch, semester]);
+  }, [branch]);
 
   useEffect(() => {
     fetchProfile();
@@ -93,7 +93,7 @@ export default function StudentSubjectsPage() {
     }
   }, [loadingProfile, fetchSubjects]);
 
-  const canLoadSubjects = branch != null && semester != null;
+  const canLoadSubjects = branch != null;
   const showEmptyState =
     !loadingProfile &&
     !loadingSubjects &&
@@ -119,8 +119,7 @@ export default function StudentSubjectsPage() {
           <CardHeader>
             <CardTitle>No subjects found</CardTitle>
             <CardDescription>
-              No subjects found for your branch and semester. Please contact your
-              admin.
+              No subjects found for your branch. Please contact your admin.
             </CardDescription>
           </CardHeader>
         </Card>

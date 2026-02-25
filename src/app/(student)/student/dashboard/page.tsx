@@ -67,13 +67,12 @@ export default function StudentDashboard() {
         };
         setProfile(profileData);
 
-        // 2. Subjects for branch+semester
-        if (profileData.branch && profileData.semester != null) {
+        // 2. Subjects for full branch (all semesters)
+        if (profileData.branch) {
           const { data: subjectRows } = await supabase
             .from("subjects")
             .select("id, name, code")
             .eq("branch", profileData.branch)
-            .eq("semester", profileData.semester)
             .limit(6);
 
           setSubjects((subjectRows ?? []) as SubjectRow[]);
