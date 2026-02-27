@@ -1,7 +1,7 @@
 export interface QuizQuestion {
   id: string;
   question: string;
-  type: "mcq" | "true_false" | "short";
+  type: "mcq" | "true_false" | "short" | "multiple_correct" | "match";
   options?: string[];
   correctAnswer: string;
   explanation: string;
@@ -14,7 +14,7 @@ export function buildQuizPrompt(options: {
   syllabusContent: string;
   questionCount: number;
   difficulty: "easy" | "medium" | "hard" | "mixed";
-  questionTypes: ("mcq" | "true_false" | "short")[];
+  questionTypes: ("mcq" | "true_false" | "short" | "multiple_correct" | "match")[];
   selectedTopics?: string[];
   focusTopic?: string;
 }): string {
@@ -42,8 +42,8 @@ export function buildQuizPrompt(options: {
 
   const typeList = questionTypes.join(", ");
   const typeScope =
-    questionTypes.length === 3
-      ? "Include a mix of mcq, true_false, and short questions."
+    questionTypes.length === 5
+      ? "Include a mix of mcq, true_false, short, multiple_correct, and match questions."
       : `Only use these question types: ${typeList}.`;
 
   return `You are an expert university tutor creating a quiz for ${subjectName}.
@@ -58,9 +58,11 @@ YOUR TASK:
 - ${typeScope}
 
 QUESTION FORMAT RULES:
-- **mcq**: Provide options array ["A", "B", "C", "D"]. correctAnswer = letter of correct option (e.g. "A").
+- **mcq**: Provide options array of exactly 4 options, e.g. ["Option A", "Option B", "Option C", "Option D"]. correctAnswer = letter of the correct option (e.g. "A").
+- **multiple_correct**: Provide options array of 4-5 options. Exactly 2-3 of these options must be correct. correctAnswer must be a pipe-separated list of the exact correct options in their text form (e.g. "Option A|Option C"). Do NOT include incorrect options in correctAnswer. Never return fewer than 4 options or more than 5.
 - **true_false**: No options array. correctAnswer = "True" or "False".
 - **short**: No options array. correctAnswer = concise 1-2 sentence model answer.
+- **match**: Generate 4-5 left items and 4-5 right items that can be matched. Format question text EXACTLY as: "Match the following:\nColumn A: [term1, term2, term3, term4]\nColumn B: [def1, def2, def3, def4]". correctAnswer must be pipe-separated pairs of "term:def" (e.g. "term1:def2|term2:def4|term3:def1|term4:def3"). Do NOT include an options array for match type.
 - **explanation**: Must be educational, explaining WHY the answer is correct. Do NOT just restate the answer.
 - **unit**: Optional, e.g. "Unit 1: Laws of Thermodynamics".
 
@@ -130,7 +132,11 @@ export function parseQuizResponse(rawText: string): QuizQuestion[] | null {
       const question = String(item?.question ?? "");
       const type = item?.type;
       const validType =
-        type === "mcq" || type === "true_false" || type === "short";
+        type === "mcq" ||
+        type === "true_false" ||
+        type === "short" ||
+        type === "multiple_correct" ||
+        type === "match";
       if (!validType || !question) continue;
 
       const correctAnswer = String(item?.correctAnswer ?? "");
@@ -141,7 +147,8 @@ export function parseQuizResponse(rawText: string): QuizQuestion[] | null {
       if (!correctAnswer || !explanation || !validDifficulty) continue;
 
       const options =
-        Array.isArray(item?.options) && type === "mcq"
+        Array.isArray(item?.options) &&
+        (type === "mcq" || type === "multiple_correct")
           ? (item.options as string[]).map(String)
           : undefined;
       const unit =

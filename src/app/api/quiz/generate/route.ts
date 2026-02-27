@@ -8,7 +8,7 @@ import { checkRateLimit, RATE_LIMITS } from "@/lib/utils/rate-limit";
 import type { NextRequest } from "next/server";
 
 const VALID_DIFFICULTIES = ["easy", "medium", "hard", "mixed"] as const;
-const VALID_TYPES = ["mcq", "true_false", "short"] as const;
+const VALID_TYPES = ["mcq", "true_false", "short", "multiple_correct", "match"] as const;
 
 export async function POST(request: NextRequest) {
   try {
@@ -61,7 +61,14 @@ export async function POST(request: NextRequest) {
     }
 
     const body = await request.json().catch(() => ({} as any));
-    const subjectId = String(body?.subjectId ?? "").trim();
+    const subjectIdsRaw = Array.isArray(body?.subjectIds)
+      ? body.subjectIds
+      : body?.subjectId
+      ? [body.subjectId]
+      : [];
+    const subjectIds = subjectIdsRaw
+      .map((id: unknown) => String(id ?? "").trim())
+      .filter(Boolean);
     const questionCount = Math.min(
       Math.max(1, Number(body?.questionCount) || 10),
       20
@@ -70,34 +77,38 @@ export async function POST(request: NextRequest) {
     const difficulty = VALID_DIFFICULTIES.includes(difficultyRaw as any)
       ? (difficultyRaw as (typeof VALID_DIFFICULTIES)[number])
       : "mixed";
-    const rawTypes = Array.isArray(body?.questionTypes) ? body.questionTypes : ["mcq"];
+    const rawTypes = Array.isArray(body?.questionTypes)
+      ? body.questionTypes
+      : ["mcq"];
     const questionTypes = rawTypes
       .map((t: unknown) => String(t).toLowerCase())
       .filter((t: string) => VALID_TYPES.includes(t as any)) as (
       | "mcq"
       | "true_false"
       | "short"
+      | "multiple_correct"
+      | "match"
     )[];
-    const questionTypesFinal: ("mcq" | "true_false" | "short")[] =
-      questionTypes.length > 0 ? questionTypes : ["mcq"];
+    const questionTypesFinal: (
+      "mcq" | "true_false" | "short" | "multiple_correct" | "match"
+    )[] = questionTypes.length > 0 ? questionTypes : ["mcq"];
     const selectedTopics = Array.isArray(body?.selectedTopics)
       ? body.selectedTopics.map(String).filter(Boolean)
       : undefined;
     const focusTopic =
       body?.focusTopic != null ? String(body.focusTopic).trim() || undefined : undefined;
 
-    if (!subjectId) {
+    if (!subjectIds.length) {
       return Response.json(
-        { error: "subjectId is required" },
+        { error: "subjectIds is required" },
         { status: 400 }
       );
     }
 
-    const { data: contentRow, error: contentError } = await adminClient
+    const { data: contentRows, error: contentError } = await adminClient
       .from("subject_content")
-      .select("content")
-      .eq("subject_id", subjectId)
-      .maybeSingle();
+      .select("content, subject_id, subjects(name, code)")
+      .in("subject_id", subjectIds);
 
     if (contentError) {
       console.error("[quiz/generate] subject_content error:", contentError);
@@ -107,30 +118,41 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    if (!contentRow) {
+    if (!contentRows || contentRows.length === 0) {
       return Response.json(
-        { error: "No syllabus content found for this subject" },
+        { error: "No syllabus content found for selected subjects" },
         { status: 404 }
       );
     }
 
-    const { data: subject, error: subjectError } = await adminClient
-      .from("subjects")
-      .select("id, name")
-      .eq("id", subjectId)
-      .single();
+    const subjectBlocks = (contentRows as any[]).map((row) => {
+      const subj = row.subjects as { name: string; code: string } | null;
+      return {
+        subjectId: row.subject_id as string,
+        name: subj?.name ?? "Subject",
+        code: subj?.code ?? "",
+        content: String(row.content ?? ""),
+      };
+    });
 
-    if (subjectError || !subject) {
-      return Response.json(
-        { error: "Subject not found" },
-        { status: 404 }
-      );
-    }
+    const combinedSyllabus = subjectBlocks
+      .map(
+        (s) =>
+          `=== ${s.name} (${s.code}) ===\n${s.content}`
+      )
+      .join("\n\n");
+
+    const subjectNameForPrompt = subjectBlocks
+      .map((s) => s.name)
+      .join(", ");
+
+    // Use first subject block for FK/module lookup
+    const primary = subjectBlocks[0];
 
     const { data: moduleRows } = await adminClient
       .from("modules")
       .select("id")
-      .eq("subject_id", subjectId)
+      .eq("subject_id", primary.subjectId)
       .limit(1);
 
     const moduleId = Array.isArray(moduleRows) && moduleRows[0]
@@ -139,14 +161,14 @@ export async function POST(request: NextRequest) {
 
     if (!moduleId) {
       return Response.json(
-        { error: "Subject has no modules; cannot create quiz" },
+        { error: "Primary subject has no modules; cannot create quiz" },
         { status: 400 }
       );
     }
 
     const prompt = buildQuizPrompt({
-      subjectName: subject.name,
-      syllabusContent: contentRow.content ?? "",
+      subjectName: subjectNameForPrompt,
+      syllabusContent: combinedSyllabus,
       questionCount,
       difficulty,
       questionTypes: questionTypesFinal,
@@ -192,12 +214,15 @@ export async function POST(request: NextRequest) {
     const { data: quiz, error: insertError } = await adminClient
       .from("quizzes")
       .insert({
-        subject_id: subjectId,
+        subject_id: primary.subjectId,
         module_id: moduleId,
         title,
         difficulty: storedDifficulty,
         questions: questions,
         generated_by: user.id,
+        metadata: {
+          subjectIds,
+        },
       })
       .select("id")
       .single();

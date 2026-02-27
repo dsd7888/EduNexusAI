@@ -61,6 +61,8 @@ export default function FacultyPage() {
   const [facultyId, setFacultyId] = useState("");
   const [subjectId, setSubjectId] = useState("");
   const [assignLoading, setAssignLoading] = useState(false);
+  const [bulkFile, setBulkFile] = useState<File | null>(null);
+  const [bulkLoading, setBulkLoading] = useState(false);
   const [removeLoading, setRemoveLoading] = useState<string | null>(null);
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [assignmentToRemove, setAssignmentToRemove] = useState<AssignmentRow | null>(null);
@@ -245,6 +247,99 @@ export default function FacultyPage() {
           Assign faculty members to subjects. One faculty can be assigned to multiple subjects.
         </p>
       </div>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Bulk Assign via CSV</CardTitle>
+          <CardDescription>
+            Upload a CSV file to assign multiple faculty to subjects at once.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <p className="text-sm text-muted-foreground">
+            Upload a CSV file with columns: <code>faculty_email</code>,{" "}
+            <code>subject_code</code>
+            <br />
+            Example:
+          </p>
+          <pre className="rounded-md bg-muted p-3 text-xs">
+{`faculty_email,subject_code
+john@university.edu,ME302
+john@university.edu,ME303
+jane@university.edu,CH201`}
+          </pre>
+          <div className="flex flex-wrap items-center gap-3">
+            <input
+              type="file"
+              accept=".csv"
+              onChange={(e) => {
+                const f = e.target.files?.[0] ?? null;
+                setBulkFile(f);
+              }}
+              className="text-sm"
+            />
+            <Button
+              type="button"
+              disabled={!bulkFile || bulkLoading}
+              onClick={async () => {
+                if (!bulkFile) return;
+                setBulkLoading(true);
+                try {
+                  const text = await bulkFile.text();
+                  const rows = text
+                    .split("\n")
+                    .map((r) => r.trim())
+                    .filter(Boolean)
+                    .slice(1); // skip header
+                  const assignmentsPayload = rows
+                    .map((row) => row.split(","))
+                    .filter((cols) => cols.length >= 2)
+                    .map((cols) => ({
+                      email: cols[0].trim(),
+                      subjectCode: cols[1].trim(),
+                    }))
+                    .filter((a) => a.email && a.subjectCode);
+                  if (assignmentsPayload.length === 0) {
+                    toast.error("No valid rows found in CSV.");
+                    return;
+                  }
+                  const res = await fetch("/api/faculty/assign/bulk", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ assignments: assignmentsPayload }),
+                  });
+                  const json = await res.json().catch(() => ({}));
+                  if (!res.ok) {
+                    toast.error(json.error ?? "Bulk assignment failed");
+                    return;
+                  }
+                  toast.success(
+                    `Bulk assignment complete: ${json.successful} successful, ${json.failed?.length ?? 0} failed.`
+                  );
+                  if (Array.isArray(json.failed) && json.failed.length > 0) {
+                    console.warn("Bulk assignment failures:", json.failed);
+                  }
+                  fetchAssignments();
+                } catch (err) {
+                  console.error(err);
+                  toast.error("Failed to process CSV upload.");
+                } finally {
+                  setBulkLoading(false);
+                }
+              }}
+            >
+              {bulkLoading ? (
+                <>
+                  <Loader2 className="mr-2 size-4 animate-spin" />
+                  Uploading...
+                </>
+              ) : (
+                "Upload & Assign"
+              )}
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
 
       <Card>
         <CardHeader>

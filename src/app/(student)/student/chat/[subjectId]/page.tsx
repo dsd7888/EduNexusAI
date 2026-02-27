@@ -12,6 +12,13 @@ import { Card, CardContent, CardFooter, CardHeader, CardTitle } from "@/componen
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Skeleton } from "@/components/ui/skeleton";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+} from "@/components/ui/dialog";
 import { createBrowserClient } from "@/lib/db/supabase-browser";
 import { BookOpen, HelpCircle, Lightbulb, Zap } from "lucide-react";
 import Link from "next/link";
@@ -33,6 +40,12 @@ type SubjectRow = {
   branch: string;
 };
 
+type ModuleRow = {
+  id: string;
+  name: string;
+  module_number: number;
+};
+
 export default function StudentSubjectChatPage() {
   const params = useParams<{ subjectId: string }>();
   const subjectId = params?.subjectId;
@@ -46,6 +59,15 @@ export default function StudentSubjectChatPage() {
   const [inputValue, setInputValue] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [isRateLimited, setIsRateLimited] = useState(false);
+
+  // Quick Notes state
+  const [showNotes, setShowNotes] = useState(false);
+  const [notesMode, setNotesMode] = useState<"subject" | "module">("subject");
+  const [modules, setModules] = useState<ModuleRow[]>([]);
+  const [selectedModuleId, setSelectedModuleId] = useState("");
+  const [notesContent, setNotesContent] = useState("");
+  const [notesLoading, setNotesLoading] = useState(false);
+  const [notesFromCache, setNotesFromCache] = useState(false);
 
   const [loadingSubject, setLoadingSubject] = useState(true);
   const [loadingSyllabus, setLoadingSyllabus] = useState(true);
@@ -242,6 +264,90 @@ export default function StudentSubjectChatPage() {
     }));
   }, [suggestedPrompts]);
 
+  useEffect(() => {
+    if (!subjectId || !showNotes || modules.length > 0) return;
+    const run = async () => {
+      try {
+        const supabase = createBrowserClient();
+        const { data, error } = await supabase
+          .from("modules")
+          .select("id, name, module_number")
+          .eq("subject_id", subjectId)
+          .order("module_number");
+        if (!error && data) {
+          setModules(data as ModuleRow[]);
+        }
+      } catch (err) {
+        console.error("[chat/notes] module load error:", err);
+      }
+    };
+    run();
+  }, [subjectId, showNotes, modules.length]);
+
+  const handleGenerateNotes = async () => {
+    if (!subjectId) return;
+    setNotesLoading(true);
+    try {
+      const params = new URLSearchParams();
+      params.set("subjectId", subjectId);
+      if (notesMode === "module" && selectedModuleId) {
+        params.set("moduleId", selectedModuleId);
+      }
+      const res = await fetch(`/api/notes?${params.toString()}`);
+      const json = await res.json().catch(() => null);
+      if (!res.ok || !json) {
+        throw new Error(json?.error ?? "Failed to load notes");
+      }
+      setNotesContent(String(json.notes ?? ""));
+      setNotesFromCache(Boolean(json.fromCache));
+    } catch (err) {
+      console.error(err);
+      alert(
+        err instanceof Error ? err.message : "Failed to load quick notes"
+      );
+    } finally {
+      setNotesLoading(false);
+    }
+  };
+
+  const handleExportNotesPDF = async () => {
+    if (!subject) return;
+    const topicName =
+      notesMode === "module"
+        ? modules.find((m) => m.id === selectedModuleId)?.name ??
+          subject.name
+        : subject.name;
+    try {
+      const res = await fetch("/api/notes/export", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          notesContent,
+          subjectName: subject.name,
+          topicName,
+        }),
+      });
+      if (!res.ok) {
+        const json = await res.json().catch(() => null);
+        throw new Error(json?.error ?? "Failed to export PDF");
+      }
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "quick-notes.pdf";
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      console.error(err);
+      alert(
+        err instanceof Error ? err.message : "Failed to export quick notes"
+      );
+    }
+  };
+
   if (loadingSubject) {
     return (
       <div className="space-y-4">
@@ -302,15 +408,29 @@ export default function StudentSubjectChatPage() {
       <div className="sticky top-0 z-10 flex items-center justify-between gap-4 border-b bg-background/80 px-1 py-3 backdrop-blur">
         <div className="min-w-0">
           <div className="truncate text-sm font-semibold">
-            {subject.name} <span className="text-muted-foreground">({subject.code})</span>
+            {subject.name}{" "}
+            <span className="text-muted-foreground">
+              ({subject.code})
+            </span>
           </div>
           <div className="text-xs text-muted-foreground">
             Semester {subject.semester} • {subject.branch}
           </div>
         </div>
-        <Badge className="shrink-0 bg-emerald-600 text-white hover:bg-emerald-600">
-          Syllabus-locked ✓
-        </Badge>
+        <div className="flex items-center gap-2">
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={() => setShowNotes(true)}
+          >
+            <BookOpen className="mr-1 size-4" />
+            Quick Notes
+          </Button>
+          <Badge className="shrink-0 bg-emerald-600 text-white hover:bg-emerald-600">
+            Syllabus-locked ✓
+          </Badge>
+        </div>
       </div>
 
       <ScrollArea className="flex-1 px-1 py-4">
@@ -443,6 +563,127 @@ export default function StudentSubjectChatPage() {
           </p>
         )}
       </div>
+      <Dialog open={showNotes} onOpenChange={setShowNotes}>
+        <DialogContent className="max-w-3xl">
+          <DialogHeader>
+            <DialogTitle>
+              Quick Notes — {subject.name} ({subject.code})
+            </DialogTitle>
+            <DialogDescription>
+              Generate concise, exam-focused notes for this subject or a
+              specific module.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="mt-2 space-y-4">
+            <div className="flex items-center gap-2">
+              <Button
+                type="button"
+                size="sm"
+                variant={notesMode === "subject" ? "default" : "outline"}
+                onClick={() => setNotesMode("subject")}
+              >
+                Full Subject
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant={notesMode === "module" ? "default" : "outline"}
+                onClick={() => setNotesMode("module")}
+              >
+                By Module
+              </Button>
+            </div>
+
+            {notesMode === "module" && (
+              <div className="space-y-2">
+                <label className="text-xs font-medium text-muted-foreground">
+                  Module
+                </label>
+                <select
+                  className="w-full rounded-md border bg-background px-2 py-1 text-sm"
+                  value={selectedModuleId}
+                  onChange={(e) => setSelectedModuleId(e.target.value)}
+                >
+                  <option value="">Select a module</option>
+                  {modules.map((m) => (
+                    <option key={m.id} value={m.id}>
+                      Module {m.module_number}: {m.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+
+            <div className="flex items-center gap-2">
+              <Button
+                type="button"
+                size="sm"
+                onClick={handleGenerateNotes}
+                disabled={
+                  notesLoading ||
+                  (notesMode === "module" && !selectedModuleId)
+                }
+              >
+                {notesLoading ? (
+                  <>
+                    <Zap className="mr-1 size-4 animate-spin" />
+                    Generating...
+                  </>
+                ) : (
+                  <>
+                    <Zap className="mr-1 size-4" />
+                    Generate Notes
+                  </>
+                )}
+              </Button>
+              {notesContent && (
+                <span className="text-xs text-muted-foreground">
+                  {notesFromCache
+                    ? "⚡ Instant (cached)"
+                    : "Generated fresh"}
+                </span>
+              )}
+            </div>
+
+            {notesContent && (
+              <div className="space-y-2">
+                <div className="flex items-center gap-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="xs"
+                    onClick={async () => {
+                      try {
+                        await navigator.clipboard.writeText(notesContent);
+                      } catch {
+                        // ignore
+                      }
+                    }}
+                  >
+                    Copy
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="xs"
+                    onClick={handleExportNotesPDF}
+                  >
+                    Export PDF
+                  </Button>
+                </div>
+                <div className="max-h-[500px] overflow-y-auto rounded-md border p-3 text-sm">
+                  <ReactMarkdown
+                    remarkPlugins={[remarkMath]}
+                    rehypePlugins={[rehypeKatex]}
+                  >
+                    {notesContent}
+                  </ReactMarkdown>
+                </div>
+              </div>
+            )}
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

@@ -45,22 +45,28 @@ import Link from "next/link";
 import {
   useCallback,
   useEffect,
+  useRef,
   useState,
 } from "react";
 import { cn } from "@/lib/utils";
 
-type View = "setup" | "taking" | "results";
+type View = "setup" | "taking" | "results" | "history";
 
 type SubjectRow = {
   id: string;
   name: string;
   code: string;
+  semester: number;
+  department: string;
 };
 
 type ModuleRow = {
   id: string;
   name: string;
   module_number: number;
+  subject_id: string;
+  subject_name: string;
+  subject_code: string;
 };
 
 type BreakdownItem = {
@@ -81,12 +87,26 @@ type HintState = {
   used: boolean;
 };
 
+type HistoryAttempt = {
+  id: string;
+  score: number;
+  timeTaken: number | null;
+  createdAt: string;
+  subjectName: string;
+  title: string;
+  breakdown: BreakdownItem[];
+  correctCount: number;
+  totalCount: number;
+};
+
 const QUESTION_COUNTS = [5, 10, 15, 20] as const;
 const DIFFICULTIES = ["easy", "medium", "hard", "mixed"] as const;
 const QUESTION_TYPE_OPTS = [
   { id: "mcq", label: "Multiple Choice" },
   { id: "true_false", label: "True / False" },
   { id: "short", label: "Short Answer" },
+  { id: "multiple_correct", label: "Multiple Correct" },
+  { id: "match", label: "Match the Following" },
 ] as const;
 
 function formatElapsed(seconds: number): string {
@@ -104,11 +124,13 @@ export default function StudentQuizPage() {
   // ── SETUP STATE ────────────────────────────────────────────
   const [subjects, setSubjects] = useState<SubjectRow[]>([]);
   const [modules, setModules] = useState<ModuleRow[]>([]);
-  const [selectedSubjectId, setSelectedSubjectId] = useState("");
+  const [selectedSubjectIds, setSelectedSubjectIds] = useState<string[]>([]);
   const [loadingModules, setLoadingModules] = useState(false);
   const [questionCount, setQuestionCount] = useState(10);
   const [difficulty, setDifficulty] = useState<"easy" | "medium" | "hard" | "mixed">("mixed");
-  const [questionTypes, setQuestionTypes] = useState<("mcq" | "true_false" | "short")[]>(["mcq"]);
+  const [questionTypes, setQuestionTypes] = useState<
+    ("mcq" | "true_false" | "short" | "multiple_correct" | "match")[]
+  >(["mcq"]);
   const [selectedTopics, setSelectedTopics] = useState<string[]>([]);
   const [focusTopic, setFocusTopic] = useState("");
   const [socraticMode, setSocraticMode] = useState(false);
@@ -131,6 +153,13 @@ export default function StudentQuizPage() {
   const [totalCount, setTotalCount] = useState(0);
   const [breakdown, setBreakdown] = useState<BreakdownItem[]>([]);
   const [resultsElapsed, setResultsElapsed] = useState(0);
+  const [resultsPage, setResultsPage] = useState(1);
+  const RESULTS_PER_PAGE = 10;
+  const breakdownRef = useRef<HTMLDivElement | null>(null);
+  // ── HISTORY STATE ──────────────────────────────────────────
+  const [historyAttempts, setHistoryAttempts] = useState<HistoryAttempt[]>([]);
+  const [loadingHistory, setLoadingHistory] = useState(false);
+  const [historyLoaded, setHistoryLoaded] = useState(false);
 
   const fetchProfileAndSubjects = useCallback(async () => {
     const supabase = createBrowserClient();
@@ -142,28 +171,27 @@ export default function StudentQuizPage() {
 
     const { data: profile } = await supabase
       .from("profiles")
-      .select("branch, semester")
+      .select("branch")
       .eq("id", user.id)
       .single();
 
     const branch = (profile as { branch?: string } | null)?.branch ?? null;
-    const semester = (profile as { semester?: number } | null)?.semester ?? null;
-    if (branch == null || semester == null) return;
+    if (branch == null) return;
 
     const { data: subs, error } = await supabase
       .from("subjects")
-      .select("id, code, name")
+      .select("id, code, name, semester, department")
       .eq("branch", branch)
-      .eq("semester", semester)
-      .order("code");
+      .order("semester", { ascending: true })
+      .order("name", { ascending: true });
 
     if (!error && subs) {
       setSubjects((subs ?? []) as SubjectRow[]);
     }
   }, []);
 
-  const fetchModules = useCallback(async (sid: string) => {
-    if (!sid) {
+  const fetchModules = useCallback(async (ids: string[]) => {
+    if (!ids.length) {
       setModules([]);
       return;
     }
@@ -172,11 +200,27 @@ export default function StudentQuizPage() {
       const supabase = createBrowserClient();
       const { data, error } = await supabase
         .from("modules")
-        .select("id, name, module_number")
-        .eq("subject_id", sid)
-        .order("module_number");
+        .select("id, name, module_number, subject_id, subjects(name, code)")
+        .in("subject_id", ids);
       if (!error && data) {
-        setModules((data ?? []) as ModuleRow[]);
+        const rows: ModuleRow[] = (data as any[]).map((m) => {
+          const subj = m.subjects as { name: string; code: string } | null;
+          return {
+            id: m.id as string,
+            name: m.name as string,
+            module_number: m.module_number as number,
+            subject_id: m.subject_id as string,
+            subject_name: subj?.name ?? "Subject",
+            subject_code: subj?.code ?? "",
+          };
+        });
+        rows.sort((a, b) => {
+          const an = a.subject_name.toLowerCase();
+          const bn = b.subject_name.toLowerCase();
+          if (an !== bn) return an.localeCompare(bn);
+          return a.module_number - b.module_number;
+        });
+        setModules(rows);
       } else {
         setModules([]);
       }
@@ -189,18 +233,149 @@ export default function StudentQuizPage() {
     fetchProfileAndSubjects();
   }, [fetchProfileAndSubjects]);
 
+  const computeBreakdown = useCallback(
+    (qs: QuizQuestion[], ans: Record<string, string>) => {
+      let correct = 0;
+      const items: BreakdownItem[] = qs.map((q) => {
+        const rawStudent = String(ans[q.id] ?? "").trim();
+        const rawCorrect = String(q.correctAnswer ?? "").trim();
+
+        let isCorrect = false;
+
+        if (q.type === "multiple_correct") {
+          const splitAndSort = (val: string) =>
+            val
+              .split("|")
+              .map((s) => s.trim().toLowerCase())
+              .filter(Boolean)
+              .sort();
+          const sArr = splitAndSort(rawStudent);
+          const cArr = splitAndSort(rawCorrect);
+          isCorrect =
+            sArr.length > 0 &&
+            sArr.length === cArr.length &&
+            sArr.every((v, i) => v === cArr[i]);
+        } else if (q.type === "match") {
+          const toPairs = (val: string) =>
+            val
+              .split("|")
+              .map((p) => p.trim())
+              .filter(Boolean)
+              .map((p) => p.toLowerCase());
+          const sPairs = toPairs(rawStudent);
+          const cPairs = toPairs(rawCorrect);
+          const sSet = new Set(sPairs);
+          const cSet = new Set(cPairs);
+          isCorrect =
+            sPairs.length > 0 &&
+            sPairs.length === cPairs.length &&
+            sPairs.every((p) => cSet.has(p)) &&
+            cPairs.every((p) => sSet.has(p));
+        } else {
+          const studentAns = rawStudent.toLowerCase();
+          const correctAns = rawCorrect.toLowerCase();
+          isCorrect = studentAns === correctAns;
+        }
+
+        if (isCorrect) correct++;
+
+        return {
+          questionId: q.id,
+          question: q.question,
+          type: q.type,
+          studentAnswer: ans[q.id] ?? "",
+          correctAnswer: q.correctAnswer,
+          correct: isCorrect,
+          explanation: q.explanation,
+          difficulty: q.difficulty,
+          unit: q.unit,
+        };
+      });
+
+      return { correct, total: qs.length, breakdown: items };
+    },
+    []
+  );
+
+  const fetchHistory = useCallback(async () => {
+    setLoadingHistory(true);
+    try {
+      const supabase = createBrowserClient();
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
+      if (!user) {
+        setHistoryAttempts([]);
+        setHistoryLoaded(true);
+        return;
+      }
+
+      const { data, error } = await supabase
+        .from("quiz_attempts")
+        .select(
+          "id, score, time_taken, created_at, answers, quizzes(title, questions, subject_id, subjects(name))"
+        )
+        .eq("student_id", user.id)
+        .order("created_at", { ascending: false })
+        .limit(5);
+
+      if (error || !data) {
+        setHistoryAttempts([]);
+        setHistoryLoaded(true);
+        return;
+      }
+
+      const attempts: HistoryAttempt[] = (data as any[]).map((row) => {
+        const quizRel = row.quizzes as any;
+        const qs = ((quizRel?.questions ?? []) as QuizQuestion[]) || [];
+        const answers =
+          (row.answers as Record<string, string> | null) ?? {};
+        const { correct, total, breakdown } = computeBreakdown(qs, answers);
+        const subjectName: string =
+          (Array.isArray(quizRel?.subjects)
+            ? quizRel.subjects[0]?.name
+            : quizRel?.subjects?.name) ?? "Subject";
+
+        return {
+          id: row.id as string,
+          score: row.score ?? 0,
+          timeTaken: row.time_taken ?? null,
+          createdAt: row.created_at as string,
+          subjectName,
+          title: quizRel?.title ?? "Quiz",
+          breakdown,
+          correctCount: correct,
+          totalCount: total,
+        };
+      });
+
+      setHistoryAttempts(attempts);
+      setHistoryLoaded(true);
+    } catch (err) {
+      console.error("[student/quiz] history load error:", err);
+      setHistoryAttempts([]);
+      setHistoryLoaded(true);
+    } finally {
+      setLoadingHistory(false);
+    }
+  }, [computeBreakdown]);
+
   useEffect(() => {
-    if (selectedSubjectId) {
-      fetchModules(selectedSubjectId);
-      const sub = subjects.find((s) => s.id === selectedSubjectId);
-      setSubjectName(sub?.name ?? "");
+    if (selectedSubjectIds.length > 0) {
+      fetchModules(selectedSubjectIds);
+      const names = subjects
+        .filter((s) => selectedSubjectIds.includes(s.id))
+        .map((s) => s.name);
+      setSubjectName(names.join(", "));
     } else {
       setModules([]);
       setSubjectName("");
     }
-  }, [selectedSubjectId, fetchModules, subjects]);
+  }, [selectedSubjectIds, fetchModules, subjects]);
 
-  const toggleQuestionType = (id: "mcq" | "true_false" | "short") => {
+  const toggleQuestionType = (
+    id: "mcq" | "true_false" | "short" | "multiple_correct" | "match"
+  ) => {
     setQuestionTypes((prev) => {
       const next = prev.includes(id)
         ? prev.filter((t) => t !== id)
@@ -216,14 +391,14 @@ export default function StudentQuizPage() {
   };
 
   const handleGenerate = async () => {
-    if (!selectedSubjectId) return;
+    if (!selectedSubjectIds.length) return;
     setIsGenerating(true);
     try {
       const res = await fetch("/api/quiz/generate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          subjectId: selectedSubjectId,
+          subjectIds: selectedSubjectIds,
           questionCount,
           difficulty,
           questionTypes,
@@ -254,10 +429,14 @@ export default function StudentQuizPage() {
   };
 
   useEffect(() => {
-    if (view !== "taking") return;
-    const t = setInterval(() => setElapsed((e) => e + 1), 1000);
-    return () => clearInterval(t);
-  }, [view]);
+    if (view === "taking") {
+      const t = setInterval(() => setElapsed((e) => e + 1), 1000);
+      return () => clearInterval(t);
+    }
+    if (view === "history" && !historyLoaded && !loadingHistory) {
+      void fetchHistory();
+    }
+  }, [view, historyLoaded, loadingHistory, fetchHistory]);
 
   const handleGetHint = async (q: QuizQuestion) => {
     if (hints[q.id]?.used || hints[q.id]?.isLoading) return;
@@ -337,13 +516,51 @@ export default function StudentQuizPage() {
   const currentQuestion = questions[currentIndex];
   const progressPct = questions.length > 0 ? (currentIndex / questions.length) * 100 : 0;
   const hasAnswer = currentQuestion
-    ? (answers[currentQuestion.id] ?? "").trim() !== ""
+    ? (() => {
+        const val = answers[currentQuestion.id];
+        if (!val) return false;
+        if (currentQuestion.type === "multiple_correct") {
+          return val
+            .split("|")
+            .map((s) => s.trim())
+            .filter(Boolean).length > 0;
+        }
+        if (currentQuestion.type === "match") {
+          return val
+            .split("|")
+            .map((s) => s.trim())
+            .filter(Boolean).length > 0;
+        }
+        return val.trim() !== "";
+      })()
     : false;
+
+  const renderTabs = () => (
+    <div className="mb-4 flex gap-2 border-b pb-2">
+      <Button
+        type="button"
+        variant={view === "history" ? "ghost" : "default"}
+        size="sm"
+        onClick={() => setView("setup")}
+      >
+        Create Quiz
+      </Button>
+      <Button
+        type="button"
+        variant={view === "history" ? "default" : "ghost"}
+        size="sm"
+        onClick={() => setView("history")}
+      >
+        History
+      </Button>
+    </div>
+  );
 
   // ──── VIEW 1: SETUP ─────────────────────────────────────────
   if (view === "setup") {
     return (
       <div className="space-y-6">
+        {renderTabs()}
         <div className="flex items-center gap-2">
           <Brain className="size-8 text-primary" />
           <h1 className="text-2xl font-semibold tracking-tight">Quiz</h1>
@@ -352,30 +569,81 @@ export default function StudentQuizPage() {
           <CardHeader>
             <CardTitle>Create Your Quiz</CardTitle>
             <CardDescription>
-              Select a subject and configure your quiz settings.
+              Select subjects and configure your quiz settings.
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-6">
             <div className="space-y-2">
-              <Label>Subject</Label>
-              <Select
-                value={selectedSubjectId}
-                onValueChange={setSelectedSubjectId}
-              >
-                <SelectTrigger className="w-full">
-                  <SelectValue placeholder="Select a subject" />
-                </SelectTrigger>
-                <SelectContent>
-                  {subjects.map((s) => (
-                    <SelectItem key={s.id} value={s.id}>
-                      {s.code} — {s.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <Label>Subjects (select one or more)</Label>
+              <p className="text-xs text-muted-foreground">
+                Mix questions from multiple subjects in one quiz
+              </p>
+              {subjects.length > 0 && (
+                <div className="mb-1 flex items-center justify-between text-xs">
+                  <button
+                    type="button"
+                    className="text-primary hover:underline"
+                    onClick={() =>
+                      setSelectedSubjectIds(subjects.map((s) => s.id))
+                    }
+                  >
+                    Select All
+                  </button>
+                  <button
+                    type="button"
+                    className="text-muted-foreground hover:underline"
+                    onClick={() => {
+                      setSelectedSubjectIds([]);
+                      setModules([]);
+                    }}
+                  >
+                    Clear All
+                  </button>
+                </div>
+              )}
+              <div className="max-h-48 space-y-2 overflow-y-auto rounded-md border p-2">
+                {subjects.length === 0 ? (
+                  <p className="text-xs text-muted-foreground">
+                    No subjects found for your branch.
+                  </p>
+                ) : (
+                  subjects.map((s) => (
+                    <div
+                      key={s.id}
+                      className="flex items-center justify-between gap-2"
+                    >
+                      <div className="flex items-center gap-2">
+                        <Checkbox
+                          id={`sub-${s.id}`}
+                          checked={selectedSubjectIds.includes(s.id)}
+                          onCheckedChange={() =>
+                            setSelectedSubjectIds((prev) =>
+                              prev.includes(s.id)
+                                ? prev.filter((id) => id !== s.id)
+                                : [...prev, s.id]
+                            )
+                          }
+                        />
+                        <Label
+                          htmlFor={`sub-${s.id}`}
+                          className="cursor-pointer text-sm font-normal"
+                        >
+                          {s.code} — {s.name}
+                        </Label>
+                      </div>
+                      <Badge
+                        variant="outline"
+                        className="text-[10px] uppercase"
+                      >
+                        Sem {s.semester}
+                      </Badge>
+                    </div>
+                  ))
+                )}
+              </div>
             </div>
 
-            {selectedSubjectId && (
+            {selectedSubjectIds.length > 0 && (
               <div className="space-y-2">
                 <Label>Focus Topics</Label>
                 <p className="text-muted-foreground text-xs">
@@ -512,7 +780,7 @@ export default function StudentQuizPage() {
 
             <Button
               className="w-full"
-              disabled={!selectedSubjectId || isGenerating}
+              disabled={selectedSubjectIds.length === 0 || isGenerating}
               onClick={handleGenerate}
             >
               {isGenerating ? (
@@ -537,6 +805,7 @@ export default function StudentQuizPage() {
 
     return (
       <div className="space-y-6">
+        {renderTabs()}
         <div className="flex items-center justify-between">
           <span className="text-muted-foreground text-sm">
             Question {currentIndex + 1} of {questions.length}
@@ -595,6 +864,62 @@ export default function StudentQuizPage() {
               </div>
             )}
 
+            {q.type === "multiple_correct" && q.options && (
+              <div className="space-y-2">
+                <p className="text-xs text-muted-foreground">
+                  Select all that apply
+                </p>
+                <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                  {q.options.map((opt, idx) => {
+                    const letter = String.fromCharCode(65 + idx); // A, B, C...
+                    const current = answers[q.id] ?? "";
+                    const selectedLetters = current
+                      .split("|")
+                      .map((s) => s.trim().toLowerCase())
+                      .filter(Boolean);
+                    const isSelected = selectedLetters.includes(
+                      letter.toLowerCase()
+                    );
+                    return (
+                      <Button
+                        key={opt}
+                        type="button"
+                        variant="outline"
+                        className={cn(
+                          "h-auto justify-start text-left py-3 px-4",
+                          isSelected &&
+                            "border-primary bg-primary/10 text-primary"
+                        )}
+                        onClick={() =>
+                          setAnswers((prev) => {
+                            const cur = prev[q.id] ?? "";
+                            const arr = cur
+                              .split("|")
+                              .map((s) => s.trim())
+                              .filter(Boolean);
+                            const idxIn = arr
+                              .map((s) => s.toLowerCase())
+                              .indexOf(letter.toLowerCase());
+                            if (idxIn >= 0) {
+                              arr.splice(idxIn, 1);
+                            } else {
+                              arr.push(letter);
+                            }
+                            return {
+                              ...prev,
+                              [q.id]: arr.join("|"),
+                            };
+                          })
+                        }
+                      >
+                        {letter}. {opt}
+                      </Button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
             {q.type === "true_false" && (
               <div className="grid grid-cols-2 gap-4">
                 {["True", "False"].map((opt) => {
@@ -631,6 +956,97 @@ export default function StudentQuizPage() {
                   setAnswers((prev) => ({ ...prev, [q.id]: e.target.value }))
                 }
               />
+            )}
+
+            {q.type === "match" && q.options && (
+              <div className="space-y-3">
+                <p className="text-xs text-muted-foreground">
+                  Match each item on the left with the correct option on the
+                  right.
+                </p>
+                {(() => {
+                  // Parse "Match: Left: [A, B, C] Right: [1, 2, 3]"
+                  const text = q.question ?? "";
+                  const leftMatch = text.match(/Left:\s*\[([^\]]+)\]/i);
+                  const rightMatch = text.match(/Right:\s*\[([^\]]+)\]/i);
+                  const leftItems = leftMatch
+                    ? leftMatch[1]
+                        .split(",")
+                        .map((s) => s.trim())
+                        .filter(Boolean)
+                    : [];
+                  const rightItems = rightMatch
+                    ? rightMatch[1]
+                        .split(",")
+                        .map((s) => s.trim())
+                        .filter(Boolean)
+                    : [];
+
+                  const current = answers[q.id] ?? "";
+                  const mapping: Record<string, string> = {};
+                  current
+                    .split("|")
+                    .map((p) => p.trim())
+                    .filter(Boolean)
+                    .forEach((p) => {
+                      const [l, r] = p.split(":").map((s) => s.trim());
+                      if (l && r) mapping[l] = r;
+                    });
+
+                  const updatePair = (left: string, right: string) => {
+                    setAnswers((prev) => {
+                      const cur = prev[q.id] ?? "";
+                      const entries = cur
+                        .split("|")
+                        .map((p) => p.trim())
+                        .filter(Boolean)
+                        .map((p) => {
+                          const [l, r] = p.split(":").map((s) => s.trim());
+                          return { l, r };
+                        })
+                        .filter((e) => e.l && e.r);
+                      const other = entries.filter((e) => e.l !== left);
+                      if (right) {
+                        other.push({ l: left, r: right });
+                      }
+                      const joined = other
+                        .map((e) => `${e.l}:${e.r}`)
+                        .join("|");
+                      return { ...prev, [q.id]: joined };
+                    });
+                  };
+
+                  return (
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      <div className="space-y-2">
+                        {leftItems.map((l) => (
+                          <div
+                            key={l}
+                            className="flex items-center justify-between gap-2"
+                          >
+                            <span className="text-sm font-medium">{l}</span>
+                            <Select
+                              value={mapping[l] ?? ""}
+                              onValueChange={(v) => updatePair(l, v)}
+                            >
+                              <SelectTrigger className="w-24">
+                                <SelectValue placeholder="Select" />
+                              </SelectTrigger>
+                              <SelectContent>
+                                {rightItems.map((r) => (
+                                  <SelectItem key={r} value={r}>
+                                    {r}
+                                  </SelectItem>
+                                ))}
+                              </SelectContent>
+                            </Select>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  );
+                })()}
+              </div>
             )}
 
             {hintState.text && (
@@ -716,80 +1132,311 @@ export default function StudentQuizPage() {
       : score >= 60
         ? "Good effort! Review the missed topics 📚"
         : "Keep practicing — you'll get there 💪";
+  const totalPages =
+    breakdown.length > 0
+      ? Math.ceil(breakdown.length / RESULTS_PER_PAGE)
+      : 1;
+  const paginatedBreakdown = breakdown.slice(
+    (resultsPage - 1) * RESULTS_PER_PAGE,
+    resultsPage * RESULTS_PER_PAGE
+  );
 
+  if (view === "results") {
+    return (
+      <div className="space-y-8">
+        {renderTabs()}
+        <div className="text-center space-y-2">
+          <p className={cn("text-5xl font-bold", scoreColor)}>{score}%</p>
+          <p className="text-muted-foreground">
+            {correctCount} of {totalCount} correct
+          </p>
+          <p className="text-muted-foreground text-sm">
+            Time: {formatElapsed(resultsElapsed)}
+          </p>
+          <p className="text-lg font-medium">{message}</p>
+        </div>
+
+        <div ref={breakdownRef} className="space-y-3">
+          <div className="flex items-center justify-between">
+            <h2 className="text-sm font-semibold">Question Breakdown</h2>
+            {breakdown.length > 0 && (
+              <p className="text-xs text-muted-foreground">
+                Showing{" "}
+                {(resultsPage - 1) * RESULTS_PER_PAGE + 1}-
+                {Math.min(resultsPage * RESULTS_PER_PAGE, breakdown.length)} of{" "}
+                {breakdown.length} questions
+              </p>
+            )}
+          </div>
+
+          <Accordion
+            type="multiple"
+            defaultValue={paginatedBreakdown.map((b) => b.questionId)}
+          >
+            {paginatedBreakdown.map((b, index) => {
+              const globalIndex =
+                (resultsPage - 1) * RESULTS_PER_PAGE + index + 1;
+              return (
+                <AccordionItem key={b.questionId} value={b.questionId}>
+                  <AccordionTrigger className="flex items-center gap-2 text-left">
+                    <span>
+                      Q{globalIndex}: {truncate(b.question, 60)}
+                    </span>
+                    {b.correct ? (
+                      <CheckCircle2 className="size-5 shrink-0 text-green-600" />
+                    ) : (
+                      <XCircle className="size-5 shrink-0 text-red-600" />
+                    )}
+                  </AccordionTrigger>
+                  <AccordionContent className="space-y-2">
+                    {b.correct ? (
+                      <>
+                        <Badge className="bg-green-600">✓ Correct!</Badge>
+                        {b.explanation && (
+                          <p className="text-sm">
+                            <span className="font-medium">Explanation:</span>{" "}
+                            {b.explanation}
+                          </p>
+                        )}
+                        {b.unit && (
+                          <Badge variant="outline">{b.unit}</Badge>
+                        )}
+                      </>
+                    ) : (
+                      <>
+                        <Badge variant="destructive">✗ Incorrect</Badge>
+                        <p className="text-sm">
+                          <span className="font-medium">Your answer:</span>{" "}
+                          {b.studentAnswer || "(empty)"}
+                        </p>
+                        <p className="text-sm">
+                          <span className="font-medium">Correct answer:</span>{" "}
+                          {b.correctAnswer}
+                        </p>
+                        {b.explanation && (
+                          <p className="text-sm">
+                            <span className="font-medium">Explanation:</span>{" "}
+                            {b.explanation}
+                          </p>
+                        )}
+                        {b.unit && (
+                          <Badge variant="outline">{b.unit}</Badge>
+                        )}
+                      </>
+                    )}
+                  </AccordionContent>
+                </AccordionItem>
+              );
+            })}
+          </Accordion>
+
+          {breakdown.length > RESULTS_PER_PAGE && (
+            <div className="flex items-center justify-center gap-3 pt-2 text-xs">
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                disabled={resultsPage === 1}
+                onClick={() => {
+                  setResultsPage((p) => Math.max(1, p - 1));
+                  if (breakdownRef.current) {
+                    breakdownRef.current.scrollIntoView({
+                      behavior: "smooth",
+                    });
+                  }
+                }}
+              >
+                ← Previous
+              </Button>
+              <span className="text-muted-foreground">
+                Page {resultsPage} of {totalPages}
+              </span>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                disabled={resultsPage === totalPages}
+                onClick={() => {
+                  setResultsPage((p) => Math.min(totalPages, p + 1));
+                  if (breakdownRef.current) {
+                    breakdownRef.current.scrollIntoView({
+                      behavior: "smooth",
+                    });
+                  }
+                }}
+              >
+                Next →
+              </Button>
+            </div>
+          )}
+        </div>
+
+        <div className="flex gap-3">
+          <Button variant="outline" onClick={resetToSetup}>
+            Try Another Quiz
+          </Button>
+          <Button variant="outline" asChild>
+            <Link href="/student/subjects">Back to Subjects</Link>
+          </Button>
+        </div>
+      </div>
+    );
+  }
+
+  // ──── VIEW 4: HISTORY ────────────────────────────────────────
   return (
-    <div className="space-y-8">
-      <div className="text-center space-y-2">
-        <p className={cn("text-5xl font-bold", scoreColor)}>{score}%</p>
-        <p className="text-muted-foreground">
-          {correctCount} of {totalCount} correct
-        </p>
-        <p className="text-muted-foreground text-sm">
-          Time: {formatElapsed(resultsElapsed)}
-        </p>
-        <p className="text-lg font-medium">{message}</p>
+    <div className="space-y-6">
+      {renderTabs()}
+      <div className="flex items-center gap-2">
+        <Brain className="size-6 text-primary" />
+        <h1 className="text-xl font-semibold tracking-tight">
+          Quiz History
+        </h1>
       </div>
 
-      <Accordion type="multiple" defaultValue={breakdown.map((b) => b.questionId)}>
-        {breakdown.map((b, i) => (
-          <AccordionItem key={b.questionId} value={b.questionId}>
-            <AccordionTrigger className="flex items-center gap-2 text-left">
-              <span>Q{i + 1}: {truncate(b.question, 60)}</span>
-              {b.correct ? (
-                <CheckCircle2 className="size-5 shrink-0 text-green-600" />
-              ) : (
-                <XCircle className="size-5 shrink-0 text-red-600" />
-              )}
-            </AccordionTrigger>
-            <AccordionContent className="space-y-2">
-              {b.correct ? (
-                <>
-                  <Badge className="bg-green-600">✓ Correct!</Badge>
-                  {b.explanation && (
-                    <p className="text-sm">
-                      <span className="font-medium">Explanation:</span>{" "}
-                      {b.explanation}
-                    </p>
-                  )}
-                  {b.unit && (
-                    <Badge variant="outline">{b.unit}</Badge>
-                  )}
-                </>
-              ) : (
-                <>
-                  <Badge variant="destructive">✗ Incorrect</Badge>
-                  <p className="text-sm">
-                    <span className="font-medium">Your answer:</span>{" "}
-                    {b.studentAnswer || "(empty)"}
+      {loadingHistory ? (
+        <p className="text-sm text-muted-foreground">Loading history...</p>
+      ) : historyAttempts.length === 0 ? (
+        <p className="text-sm text-muted-foreground">
+          No quiz attempts yet. Create a quiz to get started.
+        </p>
+      ) : (
+        <div className="space-y-4">
+          {historyAttempts.map((attempt) => {
+            const scoreColor =
+              attempt.score >= 80
+                ? "text-green-600"
+                : attempt.score >= 60
+                ? "text-amber-600"
+                : "text-red-600";
+            return (
+              <Card key={attempt.id}>
+                <CardHeader className="space-y-1">
+                  <div className="flex items-center justify-between gap-2">
+                    <div>
+                      <p className="text-xs text-muted-foreground">
+                        {attempt.subjectName}
+                      </p>
+                      <CardTitle className="text-sm font-semibold">
+                        {attempt.title}
+                      </CardTitle>
+                    </div>
+                    <span
+                      className={cn(
+                        "text-lg font-semibold",
+                        scoreColor
+                      )}
+                    >
+                      {attempt.score}%
+                    </span>
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    {new Date(attempt.createdAt).toLocaleString("en-IN")}{" "}
+                    • {attempt.correctCount}/{attempt.totalCount} correct
+                    {attempt.timeTaken != null
+                      ? ` • ${attempt.timeTaken}s`
+                      : ""}
                   </p>
-                  <p className="text-sm">
-                    <span className="font-medium">Correct answer:</span>{" "}
-                    {b.correctAnswer}
-                  </p>
-                  {b.explanation && (
-                    <p className="text-sm">
-                      <span className="font-medium">Explanation:</span>{" "}
-                      {b.explanation}
-                    </p>
-                  )}
-                  {b.unit && (
-                    <Badge variant="outline">{b.unit}</Badge>
-                  )}
-                </>
-              )}
-            </AccordionContent>
-          </AccordionItem>
-        ))}
-      </Accordion>
-
-      <div className="flex gap-3">
-        <Button variant="outline" onClick={resetToSetup}>
-          Try Another Quiz
-        </Button>
-        <Button variant="outline" asChild>
-          <Link href="/student/subjects">Back to Subjects</Link>
-        </Button>
-      </div>
+                </CardHeader>
+                <CardContent className="space-y-2">
+                  <Accordion type="single" collapsible>
+                    <AccordionItem value="details">
+                      <AccordionTrigger className="text-sm">
+                        View detailed breakdown
+                      </AccordionTrigger>
+                      <AccordionContent className="space-y-3">
+                        {attempt.breakdown.map((b, idx) => (
+                          <div
+                            key={b.questionId}
+                            className="rounded-md border p-3 text-sm"
+                          >
+                            <p className="font-medium mb-1">
+                              Q{idx + 1}. {b.question}
+                            </p>
+                            <p
+                              className={cn(
+                                "text-xs",
+                                b.correct
+                                  ? "text-green-600"
+                                  : "text-red-600"
+                              )}
+                            >
+                              Your answer:{" "}
+                              {b.studentAnswer || "(empty)"}
+                            </p>
+                            {!b.correct && (
+                              <p className="text-xs">
+                                Correct answer: {b.correctAnswer}
+                              </p>
+                            )}
+                            {b.explanation && (
+                              <p className="mt-1 text-xs text-muted-foreground">
+                                Explanation: {b.explanation}
+                              </p>
+                            )}
+                            {b.difficulty && (
+                              <Badge
+                                variant="outline"
+                                className="mt-1 text-[10px] uppercase"
+                              >
+                                {b.difficulty}
+                              </Badge>
+                            )}
+                          </div>
+                        ))}
+                      </AccordionContent>
+                    </AccordionItem>
+                  </Accordion>
+                </CardContent>
+                <CardHeader className="pt-0">
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    onClick={async () => {
+                      try {
+                        const res = await fetch("/api/quiz/export", {
+                          method: "POST",
+                          headers: {
+                            "Content-Type": "application/json",
+                          },
+                          body: JSON.stringify({ attemptId: attempt.id }),
+                        });
+                        if (!res.ok) {
+                          const err = await res
+                            .json()
+                            .catch(() => ({}));
+                          throw new Error(
+                            err?.error ?? "Failed to export PDF"
+                          );
+                        }
+                        const blob = await res.blob();
+                        const url = URL.createObjectURL(blob);
+                        const a = document.createElement("a");
+                        a.href = url;
+                        a.download = "quiz-results.pdf";
+                        document.body.appendChild(a);
+                        a.click();
+                        a.remove();
+                        URL.revokeObjectURL(url);
+                      } catch (e) {
+                        console.error(e);
+                        alert(
+                          e instanceof Error
+                            ? e.message
+                            : "Failed to export PDF"
+                        );
+                      }
+                    }}
+                  >
+                    Export PDF
+                  </Button>
+                </CardHeader>
+              </Card>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }

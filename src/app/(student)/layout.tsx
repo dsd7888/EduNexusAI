@@ -3,6 +3,7 @@ import type { ReactNode } from "react";
 import {
   BookOpen,
   Brain,
+  Clock,
   GraduationCap,
   History,
   LayoutDashboard,
@@ -49,6 +50,10 @@ export default function StudentLayout({ children }: LayoutProps) {
           <NavLink href="/student/quiz">
             <Brain className="size-4" />
             <span>Quiz</span>
+          </NavLink>
+          <NavLink href="/student/history">
+            <Clock className="size-4" />
+            <span>Chat History</span>
           </NavLink>
           <NavLink href="/student/history">
             <History className="size-4" />

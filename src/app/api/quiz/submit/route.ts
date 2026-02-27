@@ -77,10 +77,48 @@ export async function POST(request: NextRequest) {
 
     let correct = 0;
     const breakdown = questions.map((q) => {
-      const studentAns = String(answers[q.id] ?? "").trim().toLowerCase();
-      const correctAns = String(q.correctAnswer ?? "").trim().toLowerCase();
-      const isCorrect = studentAns === correctAns;
+      const rawStudent = String(answers[q.id] ?? "").trim();
+      const rawCorrect = String(q.correctAnswer ?? "").trim();
+
+      let isCorrect = false;
+
+      if (q.type === "multiple_correct") {
+        const splitAndSort = (val: string) =>
+          val
+            .split("|")
+            .map((s) => s.trim().toLowerCase())
+            .filter(Boolean)
+            .sort();
+        const sArr = splitAndSort(rawStudent);
+        const cArr = splitAndSort(rawCorrect);
+        isCorrect =
+          sArr.length > 0 &&
+          sArr.length === cArr.length &&
+          sArr.every((v, i) => v === cArr[i]);
+      } else if (q.type === "match") {
+        const toPairs = (val: string) =>
+          val
+            .split("|")
+            .map((p) => p.trim())
+            .filter(Boolean)
+            .map((p) => p.toLowerCase());
+        const sPairs = toPairs(rawStudent);
+        const cPairs = toPairs(rawCorrect);
+        const sSet = new Set(sPairs);
+        const cSet = new Set(cPairs);
+        isCorrect =
+          sPairs.length > 0 &&
+          sPairs.length === cPairs.length &&
+          sPairs.every((p) => cSet.has(p)) &&
+          cPairs.every((p) => sSet.has(p));
+      } else {
+        const studentAns = rawStudent.toLowerCase();
+        const correctAns = rawCorrect.toLowerCase();
+        isCorrect = studentAns === correctAns;
+      }
+
       if (isCorrect) correct++;
+
       return {
         questionId: q.id,
         question: q.question,
