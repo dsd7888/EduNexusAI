@@ -141,12 +141,11 @@ export async function POST(request: NextRequest) {
       for (let attempt = 1; attempt <= maxRetries; attempt++) {
         console.log(`[ppt/batch] Attempt ${attempt}/${maxRetries}`);
         try {
-          const raw = await routeAI({
-            task: "ppt_gen",
+          const ai = await routeAI("ppt_gen", {
             messages: [{ role: "user", content: prompt }],
           });
 
-          const text = String(raw ?? "");
+          const text = String(ai.content ?? "");
 
           // Check for refusal BEFORE trying to parse
           const lower = text.toLowerCase();
