@@ -33,6 +33,7 @@ import {
 } from "lucide-react";
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
+import type { SlideContent } from "@/lib/ppt/generator";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 
@@ -207,16 +208,14 @@ export default function FacultyGeneratePage() {
     };
   }, [view]);
 
-  const handleGenerate = async () => {
-    if (!selectedSubjectId) return;
-    if (inputMode === "module" && !selectedModuleName) return;
-    if (inputMode === "topic" && !customTopic.trim()) return;
-
+  async function generatePresentation() {
     setView("generating");
     setResult(null);
 
     try {
-      const res = await fetch("/api/generate/ppt", {
+      // STEP 1: Get outline
+      setGeneratingMessage("📚 Planning slide structure...");
+      const outlineRes = await fetch("/api/generate/ppt/outline", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -227,7 +226,59 @@ export default function FacultyGeneratePage() {
           depth,
         }),
       });
-      const json = await res.json();
+      if (!outlineRes.ok) throw new Error("Failed to generate outline");
+      const { outline } = await outlineRes.json();
+
+      // STEP 2: Generate content in batches of 8
+      const BATCH_SIZE = 8;
+      const allSlides: SlideContent[] = [];
+      const totalBatches = Math.ceil(outline.outline.length / BATCH_SIZE);
+
+      for (let i = 0; i < outline.outline.length; i += BATCH_SIZE) {
+        const batchNum = Math.floor(i / BATCH_SIZE) + 1;
+        setGeneratingMessage(
+          `✍️ Writing slides (batch ${batchNum} of ${totalBatches})...`
+        );
+
+        const batch = outline.outline.slice(i, i + BATCH_SIZE);
+        const batchRes = await fetch("/api/generate/ppt/batch", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            subjectId: selectedSubjectId,
+            slides: batch,
+            depth,
+          }),
+        });
+
+        if (batchRes.ok) {
+          const { slides } = await batchRes.json();
+          allSlides.push(...(slides ?? []));
+        }
+
+        if (i + BATCH_SIZE < outline.outline.length) {
+          await new Promise((r) => setTimeout(r, 800));
+        }
+      }
+
+      if (allSlides.length === 0) throw new Error("No slides generated");
+
+      // STEP 3: Build PPTX and upload
+      setGeneratingMessage("🎨 Building your presentation...");
+      const buildRes = await fetch("/api/generate/ppt/build", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          subjectId: selectedSubjectId,
+          presentationTitle: outline.presentationTitle,
+          subject: outline.subject,
+          topic: outline.topic,
+          slides: allSlides,
+        }),
+      });
+
+      if (!buildRes.ok) throw new Error("Failed to build presentation");
+      const result = await buildRes.json();
 
       if (intervalRef.current) {
         clearInterval(intervalRef.current);
@@ -238,24 +289,28 @@ export default function FacultyGeneratePage() {
         progressRef.current = null;
       }
 
-      if (!res.ok) {
-        toast.error(json?.error ?? "Failed to generate presentation");
-        setView("form");
-        return;
-      }
-
       setResult({
-        downloadUrl: json.downloadUrl,
-        title: json.title,
-        slideCount: json.slideCount,
+        downloadUrl: result.downloadUrl,
+        title: result.title,
+        slideCount: result.slideCount,
       });
       setView("done");
-    } catch (e) {
+    } catch (err) {
       if (intervalRef.current) clearInterval(intervalRef.current);
       if (progressRef.current) clearInterval(progressRef.current);
-      toast.error(e instanceof Error ? e.message : "Failed to generate");
+      console.error("[generate]", err);
+      toast.error(
+        err instanceof Error ? err.message : "Generation failed. Please try again."
+      );
       setView("form");
     }
+  }
+
+  const handleGenerate = () => {
+    if (!selectedSubjectId) return;
+    if (inputMode === "module" && !selectedModuleName) return;
+    if (inputMode === "topic" && !customTopic.trim()) return;
+    generatePresentation();
   };
 
   const handleGenerateAnother = () => {

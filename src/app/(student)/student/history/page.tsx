@@ -26,10 +26,13 @@ type Role = "user" | "assistant";
 
 type SessionListItem = {
   id: string;
-  subjectName: string;
-  subjectCode: string;
-  createdAt: string;
-  messageCount: number;
+  created_at: string;
+  subject_id: string;
+  subjects: {
+    name: string | null;
+    code: string | null;
+  } | null;
+  message_count: number;
 };
 
 type ChatMessageRow = {
@@ -67,40 +70,43 @@ export default function StudentHistoryPage() {
           return;
         }
 
-        const { data, error } = await supabase
+        const { data: sessionsData } = await supabase
           .from("chat_sessions")
           .select(
             `
             id,
             created_at,
             subject_id,
-            subjects(name, code),
-            chat_messages(id)
+            subjects (
+              name,
+              code
+            )
           `
           )
           .eq("student_id", user.id)
           .order("created_at", { ascending: false })
-          .limit(3);
+          .limit(10);
 
-        if (error || !data) {
-          setSessions([]);
-          return;
-        }
+        // For each session, count messages
+        const sessionsWithCount = await Promise.all(
+          (sessionsData || []).map(async (session: any) => {
+            const { count } = await supabase
+              .from("chat_messages")
+              .select("id", { count: "exact", head: true })
+              .eq("session_id", session.id);
+            return {
+              ...session,
+              message_count: count || 0,
+            } as SessionListItem;
+          })
+        );
 
-        const mapped: SessionListItem[] = (data as any[]).map((row) => {
-          const subjectRel = row.subjects as { name: string; code: string };
-          const msgs = (row.chat_messages as any[]) ?? [];
-          return {
-            id: row.id as string,
-            createdAt: row.created_at as string,
-            subjectName: subjectRel?.name ?? "Subject",
-            subjectCode: subjectRel?.code ?? "",
-            messageCount: msgs.length,
-          };
-        });
+        // Keep only sessions with messages, take last 3
+        const sessions = sessionsWithCount
+          .filter((s) => s.message_count > 0)
+          .slice(0, 3);
 
-        // filter sessions with at least 1 message
-        setSessions(mapped.filter((s) => s.messageCount > 0));
+        setSessions(sessions);
       } catch (err) {
         console.error("[student/history] load sessions error:", err);
         setSessions([]);
@@ -115,9 +121,9 @@ export default function StudentHistoryPage() {
   const handleSelectSession = async (session: SessionListItem) => {
     setSelectedSession({
       id: session.id,
-      subjectName: session.subjectName,
-      subjectCode: session.subjectCode,
-      createdAt: session.createdAt,
+      subjectName: session.subjects?.name ?? "Unknown Subject",
+      subjectCode: session.subjects?.code ?? "",
+      createdAt: session.created_at,
       messages: [],
     });
     setIsLoadingMessages(true);
@@ -195,34 +201,38 @@ export default function StudentHistoryPage() {
             </Card>
           ) : (
             <div className="space-y-2">
-              {sessions.map((s) => {
-                const isSelected = selectedSession?.id === s.id;
+              {sessions.map((session) => {
+                const isSelected = selectedSession?.id === session.id;
                 return (
-                  <Card
-                    key={s.id}
+                  <div
+                    key={session.id}
                     className={cn(
-                      "cursor-pointer p-3 transition-colors",
+                      "p-3 rounded-lg border cursor-pointer hover:border-primary transition-colors",
                       isSelected &&
                         "border-primary bg-primary/5 dark:bg-primary/10"
                     )}
-                    onClick={() => handleSelectSession(s)}
+                    onClick={() => handleSelectSession(session)}
                   >
-                    <div className="flex items-center justify-between gap-2">
-                      <Badge variant="secondary" className="text-xs">
-                        {s.subjectCode || "Subject"}
-                      </Badge>
-                      <span className="text-[11px] text-muted-foreground">
-                        {formatDate(s.createdAt)}
+                    {/* Subject name — most prominent */}
+                    <div className="font-semibold text-base text-foreground">
+                      {session.subjects?.name || "Unknown Subject"}
+                    </div>
+
+                    {/* Subject code badge */}
+                    <Badge variant="outline" className="text-xs mt-1">
+                      {session.subjects?.code}
+                    </Badge>
+
+                    {/* Message count + date on same line */}
+                    <div className="flex items-center justify-between mt-2">
+                      <span className="text-xs text-muted-foreground">
+                        {session.message_count} messages
+                      </span>
+                      <span className="text-xs text-muted-foreground">
+                        {formatDate(session.created_at)}
                       </span>
                     </div>
-                    <p className="mt-1 truncate text-sm font-medium">
-                      {s.subjectName}
-                    </p>
-                    <p className="mt-1 text-xs text-muted-foreground">
-                      {s.messageCount} message
-                      {s.messageCount !== 1 ? "s" : ""}
-                    </p>
-                  </Card>
+                  </div>
                 );
               })}
             </div>
@@ -236,13 +246,24 @@ export default function StudentHistoryPage() {
               {selectedSession ? (
                 <>
                   <div className="min-w-0">
-                    <CardTitle className="truncate text-sm font-semibold">
-                      {selectedSession.subjectName} (
-                      {selectedSession.subjectCode})
-                    </CardTitle>
-                    <p className="text-xs text-muted-foreground">
-                      {formatDateTime(selectedSession.createdAt)}
-                    </p>
+                    <div className="font-semibold">
+                      {selectedSession.subjectName}
+                    </div>
+                    <div className="text-xs text-muted-foreground">
+                      {new Date(
+                        selectedSession.createdAt
+                      ).toLocaleDateString("en-IN", {
+                        day: "numeric",
+                        month: "short",
+                        year: "numeric",
+                        hour: "2-digit",
+                        minute: "2-digit",
+                      })}
+                      {" · "}
+                      {isLoadingMessages
+                        ? "..."
+                        : `${selectedSession.messages.length} messages`}
+                    </div>
                   </div>
                   <Button
                     type="button"

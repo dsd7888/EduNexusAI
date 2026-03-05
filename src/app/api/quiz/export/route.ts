@@ -1,344 +1,194 @@
-import type { NextRequest } from "next/server";
-import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
+import { rgb } from "pdf-lib";
 
-import type { QuizQuestion } from "@/lib/quiz/generator";
+import { createPDFBuilder } from "@/lib/pdf/builder";
 import {
   createAdminClient,
   createServerClient,
 } from "@/lib/db/supabase-server";
 
-function sanitizeForPDF(text: string): string {
-  if (!text) return "";
-  return text
-    .replace(/ρ/g, "rho")
-    .replace(/μ/g, "mu")
-    .replace(/σ/g, "sigma")
-    .replace(/τ/g, "tau")
-    .replace(/η/g, "eta")
-    .replace(/θ/g, "theta")
-    .replace(/α/g, "alpha")
-    .replace(/β/g, "beta")
-    .replace(/γ/g, "gamma")
-    .replace(/δ/g, "delta")
-    .replace(/λ/g, "lambda")
-    .replace(/π/g, "pi")
-    .replace(/ω/g, "omega")
-    .replace(/Δ/g, "Delta")
-    .replace(/Σ/g, "Sigma")
-    .replace(/Ω/g, "Omega")
-    .replace(/×/g, "x")
-    .replace(/÷/g, "/")
-    .replace(/≈/g, "~=")
-    .replace(/≠/g, "!=")
-    .replace(/≤/g, "<=")
-    .replace(/≥/g, ">=")
-    .replace(/²/g, "^2")
-    .replace(/³/g, "^3")
-    .replace(/√/g, "sqrt")
-    .replace(/∞/g, "infinity")
-    .replace(/∑/g, "sum")
-    .replace(/∫/g, "integral")
-    .replace(/∂/g, "d")
-    .replace(/°/g, " deg")
-    .replace(/→/g, "->")
-    .replace(/←/g, "<-")
-    .replace(/↑/g, "^")
-    .replace(/↓/g, "v")
-    .replace(/•/g, "-")
-    .replace(/…/g, "...")
-    .replace(/[*_`]/g, "")
-    .replace(/[^\x00-\xFF]/g, "?")
-    .trim();
-}
-
-export async function POST(request: NextRequest) {
+export async function POST(request: Request) {
   try {
     const supabase = await createServerClient();
     const {
       data: { user },
-      error: authError,
     } = await supabase.auth.getUser();
-
-    if (authError || !user) {
-      return new Response(JSON.stringify({ error: "Unauthorized" }), {
-        status: 401,
-      });
+    if (!user) {
+      return Response.json({ error: "Unauthorized" }, { status: 401 });
     }
 
+    const { attemptId } = await request.json();
     const adminClient = createAdminClient();
-    const { data: profile, error: profileError } = await adminClient
-      .from("profiles")
-      .select("id, role")
-      .eq("id", user.id)
-      .single();
 
-    if (profileError || !profile || profile.role !== "student") {
-      return new Response(
-        JSON.stringify({ error: "Forbidden: Students only" }),
-        { status: 403 }
-      );
-    }
-
-    const body = await request.json().catch(() => ({} as any));
-    const attemptId = String(body?.attemptId ?? "").trim();
-
-    if (!attemptId) {
-      return new Response(
-        JSON.stringify({ error: "attemptId is required" }),
-        { status: 400 }
-      );
-    }
-
-    const { data: attempt, error: attemptError } = await adminClient
+    const { data: attempt } = await adminClient
       .from("quiz_attempts")
       .select(
-        "id, score, time_taken, created_at, answers, quiz_id, quizzes(title, questions, subject_id, subjects(name))"
+        `
+        id, score, time_taken, created_at, answers,
+        quizzes ( title, questions, subjects ( name, code ) )
+      `
       )
       .eq("id", attemptId)
       .eq("student_id", user.id)
       .single();
 
-    if (attemptError || !attempt) {
-      return new Response(JSON.stringify({ error: "Attempt not found" }), {
-        status: 404,
-      });
+    if (!attempt) {
+      return Response.json({ error: "Not found" }, { status: 404 });
     }
 
-    const quizRel = attempt.quizzes as any;
-    const questions = ((quizRel?.questions ?? []) as QuizQuestion[]) || [];
-    const subjectName: string =
-      (Array.isArray(quizRel?.subjects)
-        ? quizRel.subjects[0]?.name
-        : quizRel?.subjects?.name) ?? "Subject";
+    const quiz = attempt.quizzes as any;
+    const subject = quiz?.subjects as any;
+    const questions = Array.isArray(quiz?.questions) ? quiz.questions : [];
+    const answers = (attempt.answers as any) ?? {};
 
-    const answers =
-      (attempt.answers as Record<string, string> | null) ?? {};
-
-    let correctCount = 0;
-    const breakdown = questions.map((q, idx) => {
-      const rawStudent = String(answers[q.id] ?? "").trim();
-      const rawCorrect = String(q.correctAnswer ?? "").trim();
-
-      let isCorrect = false;
-
-      if (q.type === "multiple_correct") {
-        const splitAndSort = (val: string) =>
-          val
-            .split("|")
-            .map((s) => s.trim().toLowerCase())
-            .filter(Boolean)
-            .sort();
-        const sArr = splitAndSort(rawStudent);
-        const cArr = splitAndSort(rawCorrect);
-        isCorrect =
-          sArr.length > 0 &&
-          sArr.length === cArr.length &&
-          sArr.every((v, i) => v === cArr[i]);
-      } else if (q.type === "match") {
-        const toPairs = (val: string) =>
-          val
-            .split("|")
-            .map((p) => p.trim())
-            .filter(Boolean)
-            .map((p) => p.toLowerCase());
-        const sPairs = toPairs(rawStudent);
-        const cPairs = toPairs(rawCorrect);
-        const sSet = new Set(sPairs);
-        const cSet = new Set(cPairs);
-        isCorrect =
-          sPairs.length > 0 &&
-          sPairs.length === cPairs.length &&
-          sPairs.every((p) => cSet.has(p)) &&
-          cPairs.every((p) => sSet.has(p));
-      } else {
-        const studentAns = rawStudent.toLowerCase();
-        const correctAns = rawCorrect.toLowerCase();
-        isCorrect = studentAns === correctAns;
-      }
-
-      if (isCorrect) correctCount++;
-
-      return {
-        index: idx + 1,
-        question: q,
-        studentAnswer: rawStudent,
-        correctAnswer: rawCorrect,
-        correct: isCorrect,
-      };
+    const dateStr = new Date(attempt.created_at).toLocaleDateString("en-IN", {
+      day: "numeric",
+      month: "long",
+      year: "numeric",
     });
 
-    const totalCount = questions.length;
+    const correct = questions.filter((q: any) => {
+      const student = String(answers[q.id] ?? "").trim().toLowerCase();
+      const correctAns = String(q.correctAnswer ?? "")
+        .trim()
+        .toLowerCase();
+      return student === correctAns;
+    }).length;
 
-    const pdfDoc = await PDFDocument.create();
-    const fontRegular = await pdfDoc.embedFont(StandardFonts.Helvetica);
-    const fontBold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
-
-    let page = pdfDoc.addPage();
-    let { width, height } = page.getSize();
-    const margin = 50;
-    let y = height - margin;
-
-    const newPage = () => {
-      page = pdfDoc.addPage();
-      ({ width, height } = page.getSize());
-      y = height - margin;
-    };
-
-    const drawWrappedText = (
-      textRaw: string,
-      opts: {
-        bold?: boolean;
-        size?: number;
-        color?: [number, number, number];
-        gap?: number;
-        indent?: number;
-      } = {}
-    ) => {
-      const text = sanitizeForPDF(textRaw);
-      const {
-        bold,
-        size = 12,
-        color = [0, 0, 0],
-        gap = 16,
-        indent = 0,
-      } = opts;
-      const font = bold ? fontBold : fontRegular;
-      const maxWidth = width - margin * 2 - indent;
-      const words = text.split(/\s+/);
-      let line = "";
-      const lines: string[] = [];
-      for (const word of words) {
-        const test = line ? `${line} ${word}` : word;
-        const w = font.widthOfTextAtSize(test, size);
-        if (w > maxWidth && line) {
-          lines.push(line);
-          line = word;
-        } else {
-          line = test;
-        }
-      }
-      if (line) lines.push(line);
-
-      for (const l of lines) {
-        if (y - gap < margin) {
-          newPage();
-        }
-        page.drawText(l, {
-          x: margin + indent,
-          y: y - gap,
-          size,
-          font,
-          color: rgb(color[0], color[1], color[2]),
-        });
-        y -= gap;
-      }
-    };
+    const { builder } = await createPDFBuilder();
 
     // Header
-    drawWrappedText("EduNexus AI — Quiz Results", {
-      bold: true,
-      size: 18,
-    });
-    drawWrappedText(`Subject: ${subjectName}`, { size: 12 });
-    drawWrappedText(`Quiz: ${quizRel?.title ?? "Quiz"}`, { size: 12 });
-    drawWrappedText(
-      `Date: ${new Date(attempt.created_at).toLocaleString("en-IN")}`,
-      { size: 12 }
+    builder.addPageHeader(
+      `Quiz Results — ${subject?.code ?? ""}`,
+      quiz?.title ?? "Quiz Results",
+      `${subject?.name ?? ""} · ${dateStr}`
     );
-    drawWrappedText(
-      `Score: ${attempt.score}% (${correctCount}/${totalCount} correct)`,
-      { size: 12 }
-    );
-    if (attempt.time_taken != null) {
-      drawWrappedText(`Time: ${attempt.time_taken}s`, { size: 12 });
-    }
 
-    // Divider
-    y -= 8;
-    page.drawLine({
-      start: { x: margin, y },
-      end: { x: width - margin, y },
-      color: rgb(0.7, 0.7, 0.7),
-      thickness: 1,
-    });
-    y -= 12;
+    // Score summary card
+    builder.space(8);
+    const scoreColor =
+      attempt.score >= 70
+        ? rgb(0.086, 0.639, 0.29)
+        : attempt.score >= 50
+          ? rgb(0.855, 0.475, 0.027)
+          : rgb(0.863, 0.196, 0.184);
+
+    builder.sectionHeading("Score Summary", scoreColor);
+    builder.text(
+      `${attempt.score}%  ·  ${correct} / ${questions.length} correct  ·  Time: ${Math.round(
+        (attempt.time_taken ?? 0) / 60
+      )} min`,
+      {
+        font: builder.getFont("bold"),
+        size: 13,
+        color: scoreColor,
+      }
+    );
+    builder.space(12);
+    builder.drawLine();
 
     // Questions
-    breakdown.forEach((item) => {
-      const q = item.question;
-      drawWrappedText(`Q${item.index}. ${q.question}`, {
-        bold: true,
-        size: 12,
-      });
+    builder.sectionHeading(`Questions & Answers (${questions.length} total)`);
+    builder.space(4);
 
-      if (q.type === "mcq" && q.options) {
-        q.options.forEach((opt, idx) => {
-          const letter = String.fromCharCode(65 + idx);
-          const isCorrectOpt = q.correctAnswer
-            .toLowerCase()
-            .includes(letter.toLowerCase());
-          const mark = isCorrectOpt ? "✓" : " ";
-          drawWrappedText(`${mark} ${letter}. ${opt}`, {
-            size: 10,
-            indent: 12,
-          });
-        });
-      }
+    for (let i = 0; i < questions.length; i++) {
+      const q = questions[i];
+      const studentAns = String(answers[q.id] ?? "").trim();
+      const correctAns = String(q.correctAnswer ?? "").trim();
+      const isCorrect =
+        studentAns.toLowerCase() === correctAns.toLowerCase();
 
-      const ansColor: [number, number, number] = item.correct
-        ? [0, 0.5, 0]
-        : [0.7, 0, 0];
-      drawWrappedText(`Your Answer: ${item.studentAnswer || "(empty)"}`, {
-        size: 11,
-        color: ansColor,
-      });
+      builder.ensureSpace(80);
+      builder.space(10);
 
-      if (!item.correct) {
-        drawWrappedText(`Correct Answer: ${item.correctAnswer}`, {
-          size: 11,
-          color: [0, 0, 0],
-        });
-      }
+      // Question number + correct/wrong indicator
+      const qColor = isCorrect
+        ? rgb(0.086, 0.639, 0.29)
+        : rgb(0.863, 0.196, 0.184);
 
-      if (q.explanation) {
-        drawWrappedText(`Explanation: ${q.explanation}`, {
-          size: 10,
-        });
-      }
-
-      drawWrappedText(`Difficulty: ${q.difficulty}`, {
+      builder.text(`Q${i + 1}  ${isCorrect ? "✓ Correct" : "✗ Incorrect"}`, {
+        font: builder.getFont("bold"),
         size: 10,
-        color: [0.3, 0.3, 0.3],
+        color: qColor,
       });
+      builder.space(2);
 
-      y -= 8;
-      page.drawLine({
-        start: { x: margin, y },
-        end: { x: width - margin, y },
-        color: rgb(0.9, 0.9, 0.9),
-        thickness: 0.5,
+      // Question text
+      builder.text(q.question ?? q.text ?? "", {
+        font: builder.getFont("bold"),
+        size: 11,
+        color: rgb(0.118, 0.161, 0.235),
       });
-      y -= 8;
-    });
+      builder.space(4);
 
-    const pdfBytes = await pdfDoc.save();
-    const buffer = Buffer.from(pdfBytes);
-    const filename = `quiz-results-${new Date()
-      .toISOString()
-      .slice(0, 10)}.pdf`;
+      // Options (if MCQ)
+      if (Array.isArray(q.options) && q.options.length) {
+        const labels = ["A", "B", "C", "D", "E"];
+        for (let j = 0; j < q.options.length; j++) {
+          const opt = q.options[j];
+          const label = labels[j] ?? String(j + 1);
+          const isStudentChoice = studentAns === label || studentAns === opt;
+          const isCorrectOpt = correctAns === label || correctAns === opt;
 
-    return new Response(buffer, {
-      status: 200,
+          const optColor = isCorrectOpt
+            ? rgb(0.086, 0.639, 0.29)
+            : isStudentChoice && !isCorrect
+              ? rgb(0.863, 0.196, 0.184)
+              : rgb(0.278, 0.337, 0.424);
+
+          builder.text(
+            `${isCorrectOpt ? "✓" : isStudentChoice && !isCorrect ? "✗" : "○"}  ${label}. ${opt}`,
+            { size: 10.5, color: optColor, x: 48 + 12 }
+          );
+        }
+        builder.space(4);
+      } else {
+        // Short answer / numerical
+        builder.text(
+          `Your answer: ${studentAns || "(no answer)"}`,
+          {
+            size: 10.5,
+            color: isCorrect
+              ? rgb(0.086, 0.639, 0.29)
+              : rgb(0.863, 0.196, 0.184),
+            x: 48 + 12,
+          }
+        );
+        if (!isCorrect) {
+          builder.text(`Correct answer: ${correctAns}`, {
+            size: 10.5,
+            color: rgb(0.086, 0.639, 0.29),
+            x: 48 + 12,
+          });
+        }
+        builder.space(4);
+      }
+
+      // Explanation
+      if (q.explanation) {
+        builder.text(`Explanation: ${q.explanation}`, {
+          size: 10,
+          color: rgb(0.278, 0.337, 0.424),
+          x: 48 + 12,
+        });
+      }
+
+      // Divider between questions
+      if (i < questions.length - 1) {
+        builder.space(6);
+        builder.drawLine(rgb(0.886, 0.914, 0.941), 0.5);
+      }
+    }
+
+    const pdfBytes = await builder.build();
+    return new Response(Buffer.from(pdfBytes), {
       headers: {
         "Content-Type": "application/pdf",
-        "Content-Disposition": `attachment; filename="${filename}"`,
+        "Content-Disposition": `attachment; filename="quiz-results.pdf"`,
       },
     });
   } catch (err) {
-    console.error("[quiz/export] POST error:", err);
-    const msg =
-      err instanceof Error ? err.message : "Failed to export quiz results";
-    return new Response(JSON.stringify({ error: msg }), { status: 500 });
+    console.error("[quiz/export]", err);
+    return Response.json({ error: "Export failed" }, { status: 500 });
   }
 }
 

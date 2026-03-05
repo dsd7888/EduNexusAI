@@ -220,9 +220,6 @@ export async function POST(request: NextRequest) {
         difficulty: storedDifficulty,
         questions: questions,
         generated_by: user.id,
-        metadata: {
-          subjectIds,
-        },
       })
       .select("id")
       .single();

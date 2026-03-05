@@ -12,15 +12,8 @@ import { Card, CardContent, CardFooter, CardHeader, CardTitle } from "@/componen
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Skeleton } from "@/components/ui/skeleton";
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-  DialogDescription,
-} from "@/components/ui/dialog";
 import { createBrowserClient } from "@/lib/db/supabase-browser";
-import { BookOpen, HelpCircle, Lightbulb, Zap } from "lucide-react";
+import { HelpCircle, Lightbulb, Zap } from "lucide-react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -40,12 +33,6 @@ type SubjectRow = {
   branch: string;
 };
 
-type ModuleRow = {
-  id: string;
-  name: string;
-  module_number: number;
-};
-
 export default function StudentSubjectChatPage() {
   const params = useParams<{ subjectId: string }>();
   const subjectId = params?.subjectId;
@@ -56,18 +43,10 @@ export default function StudentSubjectChatPage() {
   const [suggestedPrompts, setSuggestedPrompts] = useState<string[]>([]);
 
   const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [sessionId, setSessionId] = useState<string | null>(null);
   const [inputValue, setInputValue] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [isRateLimited, setIsRateLimited] = useState(false);
-
-  // Quick Notes state
-  const [showNotes, setShowNotes] = useState(false);
-  const [notesMode, setNotesMode] = useState<"subject" | "module">("subject");
-  const [modules, setModules] = useState<ModuleRow[]>([]);
-  const [selectedModuleId, setSelectedModuleId] = useState("");
-  const [notesContent, setNotesContent] = useState("");
-  const [notesLoading, setNotesLoading] = useState(false);
-  const [notesFromCache, setNotesFromCache] = useState(false);
 
   const [loadingSubject, setLoadingSubject] = useState(true);
   const [loadingSyllabus, setLoadingSyllabus] = useState(true);
@@ -170,6 +149,29 @@ export default function StudentSubjectChatPage() {
     run();
   }, [subjectId, hasSyllabus, syllabusContent]);
 
+  // Create a new session for this page visit
+  useEffect(() => {
+    if (!subjectId) return;
+
+    const createSession = async () => {
+      try {
+        const res = await fetch("/api/chat/session", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ subjectId }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (data.sessionId) {
+          setSessionId(String(data.sessionId));
+        }
+      } catch {
+        // If session creation fails, chat can still function without session tracking
+      }
+    };
+
+    createSession();
+  }, [subjectId]);
+
   const sendMessage = useCallback(
     async (text: string) => {
       const trimmed = text.trim();
@@ -187,6 +189,7 @@ export default function StudentSubjectChatPage() {
             subjectId,
             message: trimmed,
             history: historyForRequest,
+            sessionId,
           }),
         });
         const json = await res.json().catch(() => ({}));
@@ -234,7 +237,7 @@ export default function StudentSubjectChatPage() {
         requestAnimationFrame(() => inputRef.current?.focus());
       }
     },
-    [historyForRequest, subjectId, isRateLimited]
+    [historyForRequest, subjectId, sessionId, isRateLimited]
   );
 
   const handleSubmit = async () => {
@@ -256,97 +259,13 @@ export default function StudentSubjectChatPage() {
       "Teach me Unit 1 step-by-step.",
     ];
     const prompts = suggestedPrompts.length > 0 ? suggestedPrompts : fallback;
-    const icons = [BookOpen, Lightbulb, HelpCircle, Zap] as const;
+    const icons = [Lightbulb, HelpCircle, Zap, Lightbulb] as const;
 
     return prompts.slice(0, 4).map((p, idx) => ({
       text: p,
-      Icon: icons[idx] ?? BookOpen,
+      Icon: icons[idx] ?? Lightbulb,
     }));
   }, [suggestedPrompts]);
-
-  useEffect(() => {
-    if (!subjectId || !showNotes || modules.length > 0) return;
-    const run = async () => {
-      try {
-        const supabase = createBrowserClient();
-        const { data, error } = await supabase
-          .from("modules")
-          .select("id, name, module_number")
-          .eq("subject_id", subjectId)
-          .order("module_number");
-        if (!error && data) {
-          setModules(data as ModuleRow[]);
-        }
-      } catch (err) {
-        console.error("[chat/notes] module load error:", err);
-      }
-    };
-    run();
-  }, [subjectId, showNotes, modules.length]);
-
-  const handleGenerateNotes = async () => {
-    if (!subjectId) return;
-    setNotesLoading(true);
-    try {
-      const params = new URLSearchParams();
-      params.set("subjectId", subjectId);
-      if (notesMode === "module" && selectedModuleId) {
-        params.set("moduleId", selectedModuleId);
-      }
-      const res = await fetch(`/api/notes?${params.toString()}`);
-      const json = await res.json().catch(() => null);
-      if (!res.ok || !json) {
-        throw new Error(json?.error ?? "Failed to load notes");
-      }
-      setNotesContent(String(json.notes ?? ""));
-      setNotesFromCache(Boolean(json.fromCache));
-    } catch (err) {
-      console.error(err);
-      alert(
-        err instanceof Error ? err.message : "Failed to load quick notes"
-      );
-    } finally {
-      setNotesLoading(false);
-    }
-  };
-
-  const handleExportNotesPDF = async () => {
-    if (!subject) return;
-    const topicName =
-      notesMode === "module"
-        ? modules.find((m) => m.id === selectedModuleId)?.name ??
-          subject.name
-        : subject.name;
-    try {
-      const res = await fetch("/api/notes/export", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          notesContent,
-          subjectName: subject.name,
-          topicName,
-        }),
-      });
-      if (!res.ok) {
-        const json = await res.json().catch(() => null);
-        throw new Error(json?.error ?? "Failed to export PDF");
-      }
-      const blob = await res.blob();
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = "quick-notes.pdf";
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      URL.revokeObjectURL(url);
-    } catch (err) {
-      console.error(err);
-      alert(
-        err instanceof Error ? err.message : "Failed to export quick notes"
-      );
-    }
-  };
 
   if (loadingSubject) {
     return (
@@ -405,35 +324,33 @@ export default function StudentSubjectChatPage() {
 
   return (
     <div className="flex h-[calc(100vh-7rem)] flex-col">
-      <div className="sticky top-0 z-10 flex items-center justify-between gap-4 border-b bg-background/80 px-1 py-3 backdrop-blur">
+      <div className="sticky top-0 z-10 flex items-center justify-between gap-4 border-b bg-background/80 px-2 py-3 backdrop-blur">
         <div className="min-w-0">
-          <div className="truncate text-sm font-semibold">
-            {subject.name}{" "}
-            <span className="text-muted-foreground">
-              ({subject.code})
+          <div className="truncate text-sm font-semibold sm:text-base">
+            <span className="block sm:hidden">
+              {subject.name.length > 20
+                ? `${subject.name.slice(0, 20)}…`
+                : subject.name}
+            </span>
+            <span className="hidden sm:inline">
+              {subject.name}{" "}
+              <span className="text-muted-foreground">
+                ({subject.code})
+              </span>
             </span>
           </div>
-          <div className="text-xs text-muted-foreground">
+          <div className="text-[11px] text-muted-foreground sm:text-xs">
             Semester {subject.semester} • {subject.branch}
           </div>
         </div>
-        <div className="flex items-center gap-2">
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            onClick={() => setShowNotes(true)}
-          >
-            <BookOpen className="mr-1 size-4" />
-            Quick Notes
-          </Button>
+        <div className="hidden items-center gap-2 sm:flex">
           <Badge className="shrink-0 bg-emerald-600 text-white hover:bg-emerald-600">
             Syllabus-locked ✓
           </Badge>
         </div>
       </div>
 
-      <ScrollArea className="flex-1 px-1 py-4">
+      <ScrollArea className="flex-1 px-2 py-4 sm:px-3">
         {messages.length === 0 ? (
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             {suggestionCards.map(({ text, Icon }, idx) => (
@@ -464,13 +381,13 @@ export default function StudentSubjectChatPage() {
             {messages.map((m, idx) =>
               m.role === "user" ? (
                 <div key={idx} className="flex justify-end">
-                  <div className="max-w-[85%] rounded-2xl bg-blue-600 px-4 py-2 text-sm text-white">
+                  <div className="max-w-[90%] rounded-2xl bg-blue-600 px-4 py-2 text-sm sm:text-[0.95rem] text-white">
                     {m.content}
                   </div>
                 </div>
               ) : (
                 <div key={idx} className="flex justify-start">
-                  <Card className="max-w-[85%] border bg-card">
+                  <Card className="max-w-[90%] border bg-card">
                     <CardContent className="px-4 py-3">
                       <ReactMarkdown
                         remarkPlugins={[remarkMath]}
@@ -523,7 +440,7 @@ export default function StudentSubjectChatPage() {
 
             {isLoading && (
               <div className="flex justify-start">
-                <Card className="max-w-[85%] border bg-card">
+                <Card className="max-w-[90%] border bg-card">
                   <CardContent className="px-4 py-3">
                     <div className="flex items-center gap-1 text-sm text-muted-foreground">
                       <span className="inline-block h-2 w-2 animate-pulse rounded-full bg-muted-foreground/60" />
@@ -549,12 +466,14 @@ export default function StudentSubjectChatPage() {
             onKeyDown={handleKeyDown}
             placeholder={`Ask anything about ${subject.name}...`}
             disabled={isLoading || isRateLimited}
+            className="h-12 text-base"
           />
           <Button
             onClick={handleSubmit}
             disabled={isLoading || isRateLimited || !inputValue.trim()}
+            className="h-12 px-3 sm:px-4"
           >
-            Send
+            <span className="text-sm sm:text-base">Send</span>
           </Button>
         </div>
         {isRateLimited && (
@@ -563,127 +482,6 @@ export default function StudentSubjectChatPage() {
           </p>
         )}
       </div>
-      <Dialog open={showNotes} onOpenChange={setShowNotes}>
-        <DialogContent className="max-w-3xl">
-          <DialogHeader>
-            <DialogTitle>
-              Quick Notes — {subject.name} ({subject.code})
-            </DialogTitle>
-            <DialogDescription>
-              Generate concise, exam-focused notes for this subject or a
-              specific module.
-            </DialogDescription>
-          </DialogHeader>
-          <div className="mt-2 space-y-4">
-            <div className="flex items-center gap-2">
-              <Button
-                type="button"
-                size="sm"
-                variant={notesMode === "subject" ? "default" : "outline"}
-                onClick={() => setNotesMode("subject")}
-              >
-                Full Subject
-              </Button>
-              <Button
-                type="button"
-                size="sm"
-                variant={notesMode === "module" ? "default" : "outline"}
-                onClick={() => setNotesMode("module")}
-              >
-                By Module
-              </Button>
-            </div>
-
-            {notesMode === "module" && (
-              <div className="space-y-2">
-                <label className="text-xs font-medium text-muted-foreground">
-                  Module
-                </label>
-                <select
-                  className="w-full rounded-md border bg-background px-2 py-1 text-sm"
-                  value={selectedModuleId}
-                  onChange={(e) => setSelectedModuleId(e.target.value)}
-                >
-                  <option value="">Select a module</option>
-                  {modules.map((m) => (
-                    <option key={m.id} value={m.id}>
-                      Module {m.module_number}: {m.name}
-                    </option>
-                  ))}
-                </select>
-              </div>
-            )}
-
-            <div className="flex items-center gap-2">
-              <Button
-                type="button"
-                size="sm"
-                onClick={handleGenerateNotes}
-                disabled={
-                  notesLoading ||
-                  (notesMode === "module" && !selectedModuleId)
-                }
-              >
-                {notesLoading ? (
-                  <>
-                    <Zap className="mr-1 size-4 animate-spin" />
-                    Generating...
-                  </>
-                ) : (
-                  <>
-                    <Zap className="mr-1 size-4" />
-                    Generate Notes
-                  </>
-                )}
-              </Button>
-              {notesContent && (
-                <span className="text-xs text-muted-foreground">
-                  {notesFromCache
-                    ? "⚡ Instant (cached)"
-                    : "Generated fresh"}
-                </span>
-              )}
-            </div>
-
-            {notesContent && (
-              <div className="space-y-2">
-                <div className="flex items-center gap-2">
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="xs"
-                    onClick={async () => {
-                      try {
-                        await navigator.clipboard.writeText(notesContent);
-                      } catch {
-                        // ignore
-                      }
-                    }}
-                  >
-                    Copy
-                  </Button>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="xs"
-                    onClick={handleExportNotesPDF}
-                  >
-                    Export PDF
-                  </Button>
-                </div>
-                <div className="max-h-[500px] overflow-y-auto rounded-md border p-3 text-sm">
-                  <ReactMarkdown
-                    remarkPlugins={[remarkMath]}
-                    rehypePlugins={[rehypeKatex]}
-                  >
-                    {notesContent}
-                  </ReactMarkdown>
-                </div>
-              </div>
-            )}
-          </div>
-        </DialogContent>
-      </Dialog>
     </div>
   );
 }

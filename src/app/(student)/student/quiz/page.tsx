@@ -255,22 +255,6 @@ export default function StudentQuizPage() {
             sArr.length > 0 &&
             sArr.length === cArr.length &&
             sArr.every((v, i) => v === cArr[i]);
-        } else if (q.type === "match") {
-          const toPairs = (val: string) =>
-            val
-              .split("|")
-              .map((p) => p.trim())
-              .filter(Boolean)
-              .map((p) => p.toLowerCase());
-          const sPairs = toPairs(rawStudent);
-          const cPairs = toPairs(rawCorrect);
-          const sSet = new Set(sPairs);
-          const cSet = new Set(cPairs);
-          isCorrect =
-            sPairs.length > 0 &&
-            sPairs.length === cPairs.length &&
-            sPairs.every((p) => cSet.has(p)) &&
-            cPairs.every((p) => sSet.has(p));
         } else {
           const studentAns = rawStudent.toLowerCase();
           const correctAns = rawCorrect.toLowerCase();
@@ -827,10 +811,17 @@ export default function StudentQuizPage() {
                 <span className="text-muted-foreground text-xs">{q.unit}</span>
               )}
             </div>
-            <CardTitle className="text-lg font-medium">{q.question}</CardTitle>
+            <CardTitle
+              className={cn(
+                "text-lg font-medium",
+                q.type === "match" && "whitespace-pre-wrap"
+              )}
+            >
+              {q.question}
+            </CardTitle>
           </CardHeader>
           <CardContent className="space-y-4">
-            {q.type === "mcq" && q.options && (
+            {(q.type === "mcq" || q.type === "match") && q.options && (
               <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
                 {q.options.map((opt) => {
                   const letMap: Record<number, string> = {
@@ -840,21 +831,22 @@ export default function StudentQuizPage() {
                     3: "D",
                   };
                   const letter = letMap[q.options!.indexOf(opt)] ?? opt;
+                  const value = q.type === "match" ? opt : letter;
                   const isSelected =
                     (answers[q.id] ?? "").trim().toLowerCase() ===
-                    letter.toLowerCase();
+                    value.toLowerCase();
                   return (
                     <Button
                       key={opt}
                       type="button"
                       variant="outline"
                       className={cn(
-                        "h-auto justify-start text-left py-3 px-4",
+                        "min-h-[52px] justify-start text-left px-4 py-3 text-base",
                         isSelected &&
                           "border-primary bg-primary/10 text-primary"
                       )}
                       onClick={() =>
-                        setAnswers((prev) => ({ ...prev, [q.id]: letter }))
+                        setAnswers((prev) => ({ ...prev, [q.id]: value }))
                       }
                     >
                       {letter}. {opt}
@@ -958,96 +950,6 @@ export default function StudentQuizPage() {
               />
             )}
 
-            {q.type === "match" && q.options && (
-              <div className="space-y-3">
-                <p className="text-xs text-muted-foreground">
-                  Match each item on the left with the correct option on the
-                  right.
-                </p>
-                {(() => {
-                  // Parse "Match: Left: [A, B, C] Right: [1, 2, 3]"
-                  const text = q.question ?? "";
-                  const leftMatch = text.match(/Left:\s*\[([^\]]+)\]/i);
-                  const rightMatch = text.match(/Right:\s*\[([^\]]+)\]/i);
-                  const leftItems = leftMatch
-                    ? leftMatch[1]
-                        .split(",")
-                        .map((s) => s.trim())
-                        .filter(Boolean)
-                    : [];
-                  const rightItems = rightMatch
-                    ? rightMatch[1]
-                        .split(",")
-                        .map((s) => s.trim())
-                        .filter(Boolean)
-                    : [];
-
-                  const current = answers[q.id] ?? "";
-                  const mapping: Record<string, string> = {};
-                  current
-                    .split("|")
-                    .map((p) => p.trim())
-                    .filter(Boolean)
-                    .forEach((p) => {
-                      const [l, r] = p.split(":").map((s) => s.trim());
-                      if (l && r) mapping[l] = r;
-                    });
-
-                  const updatePair = (left: string, right: string) => {
-                    setAnswers((prev) => {
-                      const cur = prev[q.id] ?? "";
-                      const entries = cur
-                        .split("|")
-                        .map((p) => p.trim())
-                        .filter(Boolean)
-                        .map((p) => {
-                          const [l, r] = p.split(":").map((s) => s.trim());
-                          return { l, r };
-                        })
-                        .filter((e) => e.l && e.r);
-                      const other = entries.filter((e) => e.l !== left);
-                      if (right) {
-                        other.push({ l: left, r: right });
-                      }
-                      const joined = other
-                        .map((e) => `${e.l}:${e.r}`)
-                        .join("|");
-                      return { ...prev, [q.id]: joined };
-                    });
-                  };
-
-                  return (
-                    <div className="grid gap-3 sm:grid-cols-2">
-                      <div className="space-y-2">
-                        {leftItems.map((l) => (
-                          <div
-                            key={l}
-                            className="flex items-center justify-between gap-2"
-                          >
-                            <span className="text-sm font-medium">{l}</span>
-                            <Select
-                              value={mapping[l] ?? ""}
-                              onValueChange={(v) => updatePair(l, v)}
-                            >
-                              <SelectTrigger className="w-24">
-                                <SelectValue placeholder="Select" />
-                              </SelectTrigger>
-                              <SelectContent>
-                                {rightItems.map((r) => (
-                                  <SelectItem key={r} value={r}>
-                                    {r}
-                                  </SelectItem>
-                                ))}
-                              </SelectContent>
-                            </Select>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  );
-                })()}
-              </div>
-            )}
 
             {hintState.text && (
               <div

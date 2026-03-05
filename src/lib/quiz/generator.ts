@@ -62,7 +62,15 @@ QUESTION FORMAT RULES:
 - **multiple_correct**: Provide options array of 4-5 options. Exactly 2-3 of these options must be correct. correctAnswer must be a pipe-separated list of the exact correct options in their text form (e.g. "Option A|Option C"). Do NOT include incorrect options in correctAnswer. Never return fewer than 4 options or more than 5.
 - **true_false**: No options array. correctAnswer = "True" or "False".
 - **short**: No options array. correctAnswer = concise 1-2 sentence model answer.
-- **match**: Generate 4-5 left items and 4-5 right items that can be matched. Format question text EXACTLY as: "Match the following:\nColumn A: [term1, term2, term3, term4]\nColumn B: [def1, def2, def3, def4]". correctAnswer must be pipe-separated pairs of "term:def" (e.g. "term1:def2|term2:def4|term3:def1|term4:def3"). Do NOT include an options array for match type.
+- **match**:
+  - type: "match"
+  - question.text: Describe the two columns clearly, for example:
+    "Match the following:\n\nColumn A:\n1. [term1]\n2. [term2]\n3. [term3]\n4. [term4]\n\nColumn B:\n(a) [def1]\n(b) [def2]\n(c) [def3]\n(d) [def4]"
+  - options: array of EXACTLY 4 combination options, just like MCQ, for example:
+    ["1-a, 2-b, 3-c, 4-d", "1-b, 2-a, 3-d, 4-c", "1-c, 2-d, 3-a, 4-b", "1-a, 2-c, 3-d, 4-b"]
+    Only ONE of these combinations is fully correct. Other options must be plausible (partially right) but wrong overall.
+  - correctAnswer: the one correct combination string, e.g. "1-a, 2-c, 3-b, 4-d".
+  - The student will see these options exactly like an MCQ and will pick one option.
 - **explanation**: Must be educational, explaining WHY the answer is correct. Do NOT just restate the answer.
 - **unit**: Optional, e.g. "Unit 1: Laws of Thermodynamics".
 
@@ -148,7 +156,7 @@ export function parseQuizResponse(rawText: string): QuizQuestion[] | null {
 
       const options =
         Array.isArray(item?.options) &&
-        (type === "mcq" || type === "multiple_correct")
+        (type === "mcq" || type === "multiple_correct" || type === "match")
           ? (item.options as string[]).map(String)
           : undefined;
       const unit =

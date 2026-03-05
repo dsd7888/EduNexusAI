@@ -61,6 +61,8 @@ export async function POST(request: NextRequest) {
     const subjectId = String(body?.subjectId ?? "").trim();
     const message = String(body?.message ?? "").trim();
     const history = Array.isArray(body?.history) ? body.history : [];
+    const requestSessionId =
+      String(body?.sessionId ?? "").trim() || null;
 
     if (!subjectId || !message) {
       return Response.json(
@@ -176,7 +178,7 @@ export async function POST(request: NextRequest) {
         console.log("[chat] Cache empty — calling AI");
       }
 
-      // ── CACHE HIT: return immediately ───────────────────────
+      // ── CACHE HIT: update metadata (messages will be saved later) ─────
       if (cachedResponse && cacheHitId) {
         await adminClient
           .from("semantic_cache")
@@ -185,159 +187,193 @@ export async function POST(request: NextRequest) {
             last_used_at: new Date().toISOString(),
           })
           .eq("id", cacheHitId);
-
-        return Response.json({
-          response: cachedResponse,
-          content: cachedResponse,
-          cached: true,
-        });
       }
     } catch (err) {
       console.error("[chat] Cache exception:", err);
     }
 
     // ── CACHE MISS: call AI ──────────────────────────────────
-    const systemPrompt = buildTutorSystemPrompt({
-      subjectName: subject.name,
-      subjectCode: subject.code,
-      semester: subject.semester,
-      branch: subject.branch,
-      syllabusContent: contentRow.content ?? "",
-      referenceBooks: contentRow.reference_books ?? "",
-    });
+    let aiResponse: string | null = null;
 
-    const normalizedHistory: HistoryMessage[] = (history as any[])
-      .filter(
-        (m) =>
-          m &&
-          (m.role === "user" || m.role === "assistant") &&
-          typeof m.content === "string"
-      )
-      .slice(-6);
+    if (!cachedResponse) {
+      const systemPrompt = buildTutorSystemPrompt({
+        subjectName: subject.name,
+        subjectCode: subject.code,
+        semester: subject.semester,
+        branch: subject.branch,
+        syllabusContent: contentRow.content ?? "",
+        referenceBooks: contentRow.reference_books ?? "",
+      });
 
-    const messagesForAI: HistoryMessage[] = [
-      ...normalizedHistory,
-      { role: "user", content: message },
-    ];
+      const normalizedHistory: HistoryMessage[] = (history as any[])
+        .filter(
+          (m) =>
+            m &&
+            (m.role === "user" || m.role === "assistant") &&
+            typeof m.content === "string"
+        )
+        .slice(-6);
 
-    const ai = await routeAI("chat", {
-      systemPrompt,
-      messages: messagesForAI,
-    });
-    const aiResponse = String(ai.content ?? "");
+      const messagesForAI: HistoryMessage[] = [
+        ...normalizedHistory,
+        { role: "user", content: message },
+      ];
 
-    // ── CACHE WRITE ──────────────────────────────────────────
-    try {
-      const { error: cacheWriteError } = await adminClient
-        .from("semantic_cache")
-        .insert({
-          subject_id: subjectId,
-          module_id: null,
-          query_text: message,
-          query_embedding: embeddingForDB,
-          response: aiResponse,
-          hit_count: 0,
-          last_used_at: new Date().toISOString(),
-        });
+      const ai = await routeAI("chat", {
+        systemPrompt,
+        messages: messagesForAI,
+      });
+      aiResponse = String(ai.content ?? "");
 
-      if (cacheWriteError) {
-        console.error("[chat] Cache write error:", cacheWriteError.message);
-      } else {
-        console.log("[chat] Cache write SUCCESS");
-      }
-    } catch (err) {
-      console.error("[chat] Cache write exception:", err);
-    }
-
-    // 7. Save chat messages
-    let sessionId: string | null = null;
-
-    try {
-      const { data: existingSession } = await adminClient
-        .from("chat_sessions")
-        .select("id")
-        .eq("student_id", profile.id)
-        .eq("subject_id", subjectId)
-        .maybeSingle();
-
-      if (existingSession) {
-        sessionId = existingSession.id as string;
-        await adminClient
-          .from("chat_sessions")
-          .update({ updated_at: new Date().toISOString() })
-          .eq("id", sessionId);
-      } else {
-        const { data: newSession, error: insertSessionError } = await adminClient
-          .from("chat_sessions")
+      // ── CACHE WRITE ──────────────────────────────────────────
+      try {
+        const { error: cacheWriteError } = await adminClient
+          .from("semantic_cache")
           .insert({
-            student_id: profile.id,
             subject_id: subjectId,
-          })
-          .select("id")
-          .single();
+            module_id: null,
+            query_text: message,
+            query_embedding: embeddingForDB,
+            response: aiResponse,
+            hit_count: 0,
+            last_used_at: new Date().toISOString(),
+          });
 
-        if (!insertSessionError && newSession) {
-          sessionId = newSession.id as string;
+        if (cacheWriteError) {
+          console.error("[chat] Cache write error:", cacheWriteError.message);
+        } else {
+          console.log("[chat] Cache write SUCCESS");
         }
+      } catch (err) {
+        console.error("[chat] Cache write exception:", err);
       }
-    } catch (err) {
-      console.error("[chat] chat_sessions error:", err);
     }
 
-    if (sessionId) {
+    // 7. Ensure we have a session to attach messages to
+    let finalSessionId: string | null = requestSessionId;
+
+    if (!finalSessionId) {
+      try {
+        // Fallback: find most recent session for this subject
+        const { data: existingSession } = await adminClient
+          .from("chat_sessions")
+          .select("id")
+          .eq("student_id", profile.id)
+          .eq("subject_id", subjectId)
+          .order("created_at", { ascending: false })
+          .limit(1)
+          .maybeSingle();
+
+        if (existingSession) {
+          finalSessionId = String(existingSession.id);
+        } else {
+          const { data: newSession } = await adminClient
+            .from("chat_sessions")
+            .insert({
+              student_id: profile.id,
+              subject_id: subjectId,
+            })
+            .select("id")
+            .single();
+          if (newSession) {
+            finalSessionId = String(newSession.id);
+          }
+        }
+      } catch (err) {
+        console.error("[chat] chat_sessions error:", err);
+      }
+    }
+
+    const finalResponse = cachedResponse ?? aiResponse ?? "";
+
+    // Always save messages (for both cache hits and misses)
+    if (finalSessionId && finalResponse) {
       try {
         await adminClient.from("chat_messages").insert([
           {
-            session_id: sessionId,
+            session_id: finalSessionId,
             role: "user",
             content: message,
           },
           {
-            session_id: sessionId,
+            session_id: finalSessionId,
             role: "assistant",
-            content: aiResponse,
+            content: finalResponse,
           },
         ]);
       } catch (err) {
         console.error("[chat] chat_messages insert error:", err);
       }
+
+      // Keep only last 5 sessions per student (delete older ones)
+      // This runs async, don't await
+      adminClient
+        .from("chat_sessions")
+        .select("id, created_at")
+        .eq("student_id", profile.id)
+        .order("created_at", { ascending: false })
+        .then(({ data: allSessions }) => {
+          if (allSessions && allSessions.length > 5) {
+            const toDelete = allSessions.slice(5).map((s: any) => s.id);
+            adminClient
+              .from("chat_messages")
+              .delete()
+              .in("session_id", toDelete)
+              .then(() => {
+                adminClient
+                  .from("chat_sessions")
+                  .delete()
+                  .in("id", toDelete);
+              });
+          }
+        });
     }
 
-    // 8. Track usage
-    try {
-      const today = new Date().toISOString().slice(0, 10);
-      const { data: existingUsage } = await adminClient
-        .from("usage_analytics")
-        .select("id, event_count")
-        .eq("date", today)
-        .eq("user_id", profile.id)
-        .eq("subject_id", subjectId)
-        .eq("event_type", "chat")
-        .maybeSingle();
-
-      if (existingUsage) {
-        await adminClient
+    // 8. Track usage (only for non-cache responses to avoid double counting)
+    if (!cachedResponse) {
+      try {
+        const today = new Date().toISOString().slice(0, 10);
+        const { data: existingUsage } = await adminClient
           .from("usage_analytics")
-          .update({
-            event_count: (existingUsage.event_count ?? 0) + 1,
-          })
-          .eq("id", existingUsage.id);
-      } else {
-        await adminClient.from("usage_analytics").insert({
-          date: today,
-          user_id: profile.id,
-          subject_id: subjectId,
-          event_type: "chat",
-          event_count: 1,
-        });
+          .select("id, event_count")
+          .eq("date", today)
+          .eq("user_id", profile.id)
+          .eq("subject_id", subjectId)
+          .eq("event_type", "chat")
+          .maybeSingle();
+
+        if (existingUsage) {
+          await adminClient
+            .from("usage_analytics")
+            .update({
+              event_count: (existingUsage.event_count ?? 0) + 1,
+            })
+            .eq("id", existingUsage.id);
+        } else {
+          await adminClient.from("usage_analytics").insert({
+            date: today,
+            user_id: profile.id,
+            subject_id: subjectId,
+            event_type: "chat",
+            event_count: 1,
+          });
+        }
+      } catch (err) {
+        console.error("[chat] usage_analytics error:", err);
       }
-    } catch (err) {
-      console.error("[chat] usage_analytics error:", err);
+    }
+
+    if (cachedResponse) {
+      return Response.json({
+        response: cachedResponse,
+        content: cachedResponse,
+        cached: true,
+      });
     }
 
     return Response.json({
-      response: aiResponse,
-      content: aiResponse,
+      response: finalResponse,
+      content: finalResponse,
       cached: false,
     });
   } catch (err) {

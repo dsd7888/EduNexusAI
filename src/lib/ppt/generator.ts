@@ -63,50 +63,58 @@ export function buildOutlinePrompt(options: {
     customTopic,
     depth,
   } = options;
-
   const topic = moduleName ?? customTopic ?? "the module";
   const isModule = Boolean(moduleName);
-  const targetRange = isModule ? "20-25" : "12-15";
 
-  return `You are an expert university lecturer designing a slide outline for ${subjectName} (${subjectCode}).
+  const slideCountGuide = {
+    basic: isModule ? "22–28" : "14–18",
+    intermediate: isModule ? "28–35" : "18–24",
+    advanced: isModule ? "35–45" : "24–32",
+  }[depth];
+
+  return `You are a senior university professor designing a slide deck for ${subjectName} (${subjectCode}).
 
 SYLLABUS CONTENT:
 ${syllabusContent}
 
-TASK:
-- Create a slide OUTLINE only (no content yet) for: ${topic}
-- Target approximately ${targetRange} slides (this is a guideline, not a hard limit).
-- Depth level: ${depth}.
+TASK: Create a slide OUTLINE (titles + types only, no content yet) for: ${topic}
+Depth: ${depth} | Target slide count: ${slideCountGuide}
 
-RULES:
-- Do NOT generate any actual slide content yet.
-- Only decide slide TYPES and TITLES.
-- Every major concept should get:
-  - At least one concept slide
-  - At least one worked example slide
-- Add diagram slides only for concepts that truly benefit from a visual.
-- Avoid filler slides; but do not skip important concepts.
+MANDATORY STRUCTURE per major concept:
+  1. concept slide — definition, properties, mathematical basis
+  2. concept slide — deeper treatment, derivations, edge cases  
+  3. diagram slide — visual that genuinely aids understanding
+  4. example slide — numerical or theoretical worked example
+  5. example slide — second worked example (different application)
 
-OUTPUT FORMAT:
-Return ONLY a valid JSON object with this exact structure. No markdown. No backticks.
+GLOBAL REQUIREMENTS:
+  - Start with: 1 title slide + 1 overview slide
+  - End with: 2–3 practice slides + 1 summary slide
+  - Every formula-heavy concept gets a dedicated diagram slide
+  - Comparison slides where 2+ concepts are contrasted
+  - Do NOT add filler — every slide must serve a clear purpose
+  - Do NOT skip concepts from the syllabus content
+
+SLIDE TYPE RULES:
+  title    — opening slide only (1 total)
+  overview — agenda only (1 total)
+  concept  — any explanatory content, theory, derivations, comparisons
+  diagram  — SVG visual only (equations, processes, structures, cycles)
+  example  — worked problem with full solution
+  practice — student practice question with answer
+  summary  — final takeaways only (1 total)
+
+OUTPUT: Return ONLY valid JSON, no markdown, no backticks:
 {
-  "presentationTitle": "string - overall title for the deck",
-  "subject": "string - subject name",
-  "topic": "string - topic or module name",
+  "presentationTitle": "string",
+  "subject": "string",
+  "topic": "string",
   "outline": [
     { "index": 0, "type": "title", "title": "string" },
-    { "index": 1, "type": "overview", "title": "string" },
-    { "index": 2, "type": "concept", "title": "string" },
-    { "index": 3, "type": "example", "title": "string" },
-    { "index": 4, "type": "diagram", "title": "string" },
-    { "index": 5, "type": "practice", "title": "string" },
-    { "index": 6, "type": "summary", "title": "string" }
+    ...
   ]
 }
-
-NOTES:
-- type must always be one of: "title" | "overview" | "concept" | "diagram" | "example" | "practice" | "summary".
-- index must start at 0 and increase sequentially with no gaps.`;
+Indexes must start at 0 and increment sequentially with no gaps.`;
 }
 
 export function buildBatchContentPrompt(options: {
@@ -127,7 +135,19 @@ export function buildBatchContentPrompt(options: {
     2
   );
 
-  return `You are an expert university lecturer creating detailed slide content for ${subjectName}.
+  return `CRITICAL OUTPUT RULES — VIOLATION WILL CAUSE SYSTEM FAILURE:
+1. Return ONLY a valid JSON array. Nothing else.
+2. Start your response with [ and end with ]
+3. No text before the [
+4. No text after the ]
+5. No markdown fences (no \`\`\`)
+6. No comments inside JSON
+7. No trailing commas
+8. All string values must use double quotes
+9. Escape any double quotes inside strings with \\"
+10. Do not truncate — complete all ${slides.length} slide objects fully
+
+You are an expert university lecturer creating detailed slide content for ${subjectName}.
 
 SYLLABUS CONTENT:
 ${syllabusContent}
@@ -185,7 +205,10 @@ Each SlideContent must match this TypeScript shape:
 VERY IMPORTANT:
 - The returned array length must equal the number of input slides.
 - Preserve the order of slides exactly as in the input.
-- Do NOT include any text before or after the JSON array.`;
+- Do NOT include any text before or after the JSON array.
+
+Remember: Your entire response must be parseable by JSON.parse().
+Start with [ and end with ]. Nothing else.`;
 }
 
 // Existing full JSON prompt (may be used in other flows)
@@ -350,356 +373,796 @@ function addHeaderBar(
   });
 }
 
-export async function generatePPTXBuffer(data: PPTSlideJSON): Promise<Buffer> {
+// ── PPTX GENERATOR (16:9, 10x5.625) ─────────────────────
+
+const SLIDE_W = 10;
+const SLIDE_H = 5.625;
+
+const ZONE = {
+  header: { x: 0, y: 0, w: 10, h: 0.82 },
+  body: { x: 0.35, y: 0.95, w: 9.3, h: 3.85 },
+  footer: { x: 0, y: 5.1, w: 10, h: 0.525 },
+  accent: { x: 0, y: 0.82, w: 0.07, h: 4.28 },
+} as const;
+
+const FONT = {
+  title: { size: 22, bold: true },
+  subtitle: { size: 16, bold: true },
+  body: { size: 14, bold: false },
+  small: { size: 11, bold: false },
+  tiny: { size: 10, bold: false },
+} as const;
+
+const MAX_BULLETS_PER_SLIDE = 6;
+const MAX_BULLET_CHARS = 160;
+
+function cap(text: string, _max = MAX_BULLET_CHARS): string {
+  if (!text) return "";
+  return stripMd(text);
+}
+
+function capTitle(text: string, max = 90): string {
+  if (!text) return "";
+  const clean = stripMd(text);
+  return clean.length > max ? `${clean.slice(0, max - 1)}…` : clean;
+}
+
+function chunkBullets(bullets: string[]): string[][] {
+  if (!bullets.length) return [[]];
+
+  const MAX = 6;
+  const MIN_LAST_CHUNK = 3; // don't create a cont. slide for < 3 bullets
+
+  if (bullets.length <= MAX) return [bullets];
+
+  const chunks: string[][] = [];
+  let i = 0;
+
+  while (i < bullets.length) {
+    const remaining = bullets.length - i;
+
+    // If remaining fits in one chunk, take it all
+    if (remaining <= MAX) {
+      // But if this would create a tiny orphan continuation,
+      // redistribute: split previous chunk to balance
+      if (remaining < MIN_LAST_CHUNK && chunks.length > 0) {
+        const prev = chunks[chunks.length - 1];
+        const combined = [...prev, ...bullets.slice(i)];
+        const half = Math.ceil(combined.length / 2);
+        chunks[chunks.length - 1] = combined.slice(0, half);
+        chunks.push(combined.slice(half));
+      } else {
+        chunks.push(bullets.slice(i));
+      }
+      break;
+    }
+
+    chunks.push(bullets.slice(i, i + MAX));
+    i += MAX;
+  }
+
+  return chunks.length ? chunks : [[]];
+}
+
+function addHeader(
+  pptx: PptxGenJS,
+  slide: PptxGenJS.Slide,
+  title: string,
+  bgColor: string,
+  textColor = C.white
+) {
+  slide.addShape(pptx.ShapeType.rect, {
+    x: 0,
+    y: 0,
+    w: SLIDE_W,
+    h: ZONE.header.h,
+    fill: { color: bgColor },
+    line: { color: bgColor },
+  });
+  slide.addShape(pptx.ShapeType.rect, {
+    x: 0,
+    y: ZONE.header.h - 0.04,
+    w: SLIDE_W,
+    h: 0.04,
+    fill: { color: C.dark },
+    line: { color: C.dark },
+  });
+  slide.addText(capTitle(title, 90), {
+    x: ZONE.header.x + 0.25,
+    y: 0,
+    w: ZONE.header.w - 0.5,
+    h: ZONE.header.h,
+    fontSize: FONT.title.size,
+    bold: true,
+    color: textColor,
+    fontFace: "Calibri",
+    valign: "middle",
+    wrap: true,
+    autoFit: true,
+  });
+}
+
+function addAccentBar(slide: PptxGenJS.Slide, color: string) {
+  slide.addShape("rect", {
+    x: 0,
+    y: ZONE.accent.y,
+    w: ZONE.accent.w,
+    h: ZONE.accent.h,
+    fill: { color },
+    line: { color },
+  });
+}
+
+function addPageNumber(
+  slide: PptxGenJS.Slide,
+  num: number,
+  total: number
+): void {
+  slide.addText(`${num} / ${total}`, {
+    x: 8.5,
+    y: 5.35,
+    w: 1.2,
+    h: 0.25,
+    fontSize: 9,
+    color: C.textMuted,
+    align: "right",
+    fontFace: "Calibri",
+  });
+}
+
+export async function generatePPTXBuffer(
+  data: PPTSlideJSON
+): Promise<Buffer> {
   const pptx = new PptxGenJS();
   pptx.layout = "LAYOUT_16x9";
   pptx.title = data.presentationTitle;
   pptx.subject = data.subject;
 
-  data.slides.forEach((slideContent, slideIndex) => {
-    const slide = pptx.addSlide();
+  // Estimate total slides (concept slides may fan out)
+  let estimatedTotal = 0;
+  for (const s of data.slides) {
+    if (s.type === "concept") {
+      const chunks = chunkBullets(s.bullets ?? []);
+      estimatedTotal += Math.max(1, chunks.length);
+    } else {
+      estimatedTotal += 1;
+    }
+  }
+  const totalSlides = Math.max(1, estimatedTotal);
 
-    switch (slideContent.type) {
+  let slideNum = 1;
+  let practiceNum = 0;
+
+  for (const slideData of data.slides) {
+    switch (slideData.type) {
       case "title": {
+        const slide = pptx.addSlide();
+
         slide.addShape(pptx.ShapeType.rect, {
           x: 0,
           y: 0,
-          w: 10,
-          h: 7.5,
+          w: SLIDE_W,
+          h: SLIDE_H,
           fill: { color: C.primary },
+          line: { color: C.primary },
         });
         slide.addShape(pptx.ShapeType.rect, {
           x: 0,
-          y: 6.8,
-          w: 10,
-          h: 0.7,
+          y: 3.8,
+          w: SLIDE_W,
+          h: SLIDE_H - 3.8,
           fill: { color: C.dark },
+          line: { color: C.dark },
         });
-        slide.addText(stripMd(slideContent.title), {
-          x: 0.5,
-          y: 1.5,
-          w: 9,
-          h: 2.5,
-          fontSize: 40,
+
+        slide.addShape(pptx.ShapeType.rect, {
+          x: 8.5,
+          y: 0,
+          w: 1.5,
+          h: 0.06,
+          fill: { color: C.accent },
+          line: { color: C.accent },
+        });
+        slide.addShape(pptx.ShapeType.rect, {
+          x: 9.94,
+          y: 0,
+          w: 0.06,
+          h: 1.5,
+          fill: { color: C.accent },
+          line: { color: C.accent },
+        });
+
+        slide.addText(capTitle(slideData.title, 80), {
+          x: 0.6,
+          y: 1.0,
+          w: 8.8,
+          h: 2.2,
+          fontSize: 34,
           bold: true,
           color: C.white,
-          align: "center",
           fontFace: "Calibri",
-        });
-        slide.addText(`${data.subject} — ${data.topic}`, {
-          x: 0.5,
-          y: 4,
-          w: 9,
-          h: 1,
-          fontSize: 22,
-          color: C.accent,
           align: "center",
+          valign: "middle",
+          wrap: true,
+          autoFit: true,
         });
-        slide.addText(stripMd(data.subject), {
-          x: 0.5,
-          y: 6.9,
-          w: 9,
+
+        slide.addShape(pptx.ShapeType.rect, {
+          x: 2,
+          y: 3.5,
+          w: 6,
+          h: 0.04,
+          fill: { color: C.accent },
+          line: { color: C.accent },
+        });
+
+        slide.addText(capTitle(data.subject), {
+          x: 0.6,
+          y: 3.6,
+          w: 8.8,
           h: 0.5,
-          fontSize: 14,
-          color: C.white,
+          fontSize: 16,
+          color: C.accent,
+          fontFace: "Calibri",
           align: "center",
+          wrap: true,
+          autoFit: true,
         });
+
+        slide.addText(capTitle(data.topic, 60), {
+          x: 0.6,
+          y: 4.1,
+          w: 8.8,
+          h: 0.4,
+          fontSize: 12,
+          color: "BFDBFE",
+          fontFace: "Calibri",
+          align: "center",
+          italic: true,
+        });
+
+        addPageNumber(slide, slideNum, totalSlides);
+        slideNum += 1;
         break;
       }
 
       case "overview": {
-        slide.addShape(pptx.ShapeType.rect, {
-          x: 0,
-          y: 0,
-          w: 0.08,
-          h: 7.5,
-          fill: { color: C.primary },
-        });
-        addHeaderBar(pptx, slide, `Agenda — ${data.topic}`, C.primary);
-        const bulletText =
-          (slideContent.bullets ?? [])
-            .map((b) => stripMd(b))
-            .join("\n") || "No agenda items.";
-        slide.addText(bulletText, {
-          x: 0.5,
-          y: 1.3,
-          w: 9,
-          h: 5.8,
-          fontSize: 18,
-          color: C.textDark,
-          bullet: { type: "bullet" },
-        });
+        const slide = pptx.addSlide();
+        addHeader(pptx, slide, `Overview — ${data.topic}`, C.primary);
+        addAccentBar(slide, "60A5FA");
+
+        const bullets = slideData.bullets ?? [];
+        const half = Math.ceil(bullets.length / 2);
+        const col1 = bullets.slice(0, half);
+        const col2 = bullets.slice(half);
+
+        slide.addText(
+          col1.map((b) => ({
+            text: cap(b),
+            options: {
+              bullet: { type: "bullet", indent: 10 },
+              color: C.textDark,
+              fontSize: 13,
+            },
+          })),
+          {
+            x: 0.4,
+            y: ZONE.body.y,
+            w: 4.4,
+            h: ZONE.body.h,
+            fontFace: "Calibri",
+            valign: "top",
+            wrap: true,
+            autoFit: true,
+            lineSpacingMultiple: 1.4,
+          }
+        );
+
+        if (col2.length > 0) {
+          slide.addText(
+            col2.map((b) => ({
+              text: cap(b),
+              options: {
+                bullet: { type: "bullet", indent: 10 },
+                color: C.textDark,
+                fontSize: 13,
+              },
+            })),
+            {
+              x: 5.1,
+              y: ZONE.body.y,
+              w: 4.6,
+              h: ZONE.body.h,
+              fontFace: "Calibri",
+              valign: "top",
+              wrap: true,
+              autoFit: true,
+              lineSpacingMultiple: 1.4,
+            }
+          );
+        }
+
+        addPageNumber(slide, slideNum, totalSlides);
+        slideNum += 1;
         break;
       }
 
       case "concept": {
-        addHeaderBar(pptx, slide, stripMd(slideContent.title), C.primary);
-        slide.addShape(pptx.ShapeType.rect, {
-          x: 0,
-          y: 1.1,
-          w: 0.06,
-          h: 6.4,
-          fill: { color: C.accent },
-        });
-        const conceptBullets =
-          (slideContent.bullets ?? []).map((b) => stripMd(b)).join("\n") ||
-          stripMd(slideContent.title);
-        slide.addText(conceptBullets, {
-          x: 0.4,
-          y: 1.3,
-          w: 9.3,
-          h: 5.5,
-          fontSize: 16,
-          color: C.textDark,
-          lineSpacingMultiple: 1.3,
-          bullet: { type: "bullet", indent: 15 },
-        });
-        if (slideContent.note) {
-          slide.addShape(pptx.ShapeType.rect, {
+        const chunks = chunkBullets(slideData.bullets ?? []);
+        chunks.forEach((chunk, idx) => {
+          const slide = pptx.addSlide();
+          const titleText =
+            idx === 0 ? slideData.title : `${slideData.title} (cont.)`;
+
+          addHeader(pptx, slide, titleText, C.primary);
+          addAccentBar(slide, C.accent);
+
+          slide.addShape("rect", {
             x: 0,
-            y: 6.8,
-            w: 10,
-            h: 0.7,
-            fill: { color: C.accent },
+            y: ZONE.header.h,
+            w: SLIDE_W,
+            h: SLIDE_H - ZONE.header.h,
+            fill: { color: C.lightGray },
+            line: { color: C.lightGray },
           });
-          slide.addText(stripMd(slideContent.note), {
-            x: 0.3,
-            y: 6.85,
-            w: 9.4,
-            h: 0.6,
-            fontSize: 12,
-            italic: true,
-            color: C.textMuted,
+
+          slide.addShape("rect", {
+            x: ZONE.body.x,
+            y: ZONE.body.y - 0.05,
+            w: ZONE.body.w,
+            h: ZONE.body.h + 0.1,
+            fill: { color: C.white },
+            line: { color: C.border, width: 0.75 },
+            shadow: {
+              type: "outer",
+              blur: 3,
+              offset: 2,
+              angle: 45,
+              color: "CBD5E1",
+              opacity: 0.5,
+            },
           });
-        }
+
+          const bulletFontSize =
+            chunk.length <= 4 ? 15 : chunk.length <= 6 ? 14 : 13;
+          const hasNote = Boolean(slideData.note) && idx === chunks.length - 1;
+          const bodyHeight = hasNote ? ZONE.body.h - 0.7 : ZONE.body.h - 0.1;
+
+          slide.addText(
+            chunk
+              .filter(Boolean)
+              .map((b) => ({
+                text: `  ${cap(b)}\n`,
+                options: {
+                  color: C.textDark,
+                  fontSize: bulletFontSize,
+                  bullet: { type: "bullet", indent: 15, marginPt: 4 },
+                },
+              })),
+            {
+              x: ZONE.body.x + 0.1,
+              y: ZONE.body.y + 0.1,
+              w: ZONE.body.w - 0.2,
+              h: bodyHeight,
+              fontFace: "Calibri",
+              valign: "top",
+              wrap: true,
+              autoFit: true,
+              lineSpacingMultiple: 1.5,
+            }
+          );
+
+          if (slideData.note && idx === chunks.length - 1) {
+            slide.addShape("rect", {
+              x: 0,
+              y: SLIDE_H - 0.5,
+              w: SLIDE_W,
+              h: 0.5,
+              fill: { color: C.accent },
+              line: { color: C.accent },
+            });
+            slide.addText(`💡 ${cap(slideData.note, 120)}`, {
+              x: 0.3,
+              y: SLIDE_H - 0.5,
+              w: 9.4,
+              h: 0.5,
+              fontSize: 10,
+              italic: true,
+              color: C.dark,
+              fontFace: "Calibri",
+              valign: "middle",
+              wrap: true,
+              autoFit: true,
+            });
+          }
+
+          addPageNumber(slide, slideNum, totalSlides);
+          slideNum += 1;
+        });
         break;
       }
 
       case "diagram": {
-        addHeaderBar(pptx, slide, slideContent.title, C.dark);
-        if (slideContent.svgCode) {
-          const svgBase64 = Buffer.from(slideContent.svgCode).toString("base64");
+        const slide = pptx.addSlide();
+        addHeader(pptx, slide, slideData.title, "0F766E");
+
+        slide.addShape("rect", {
+          x: 0,
+          y: ZONE.header.h,
+          w: SLIDE_W,
+          h: SLIDE_H - ZONE.header.h,
+          fill: { color: C.lightGray },
+          line: { color: C.lightGray },
+        });
+
+        if (slideData.svgCode) {
+          const svgBase64 = Buffer.from(slideData.svgCode).toString(
+            "base64"
+          );
           const dataUrl = `data:image/svg+xml;base64,${svgBase64}`;
+          const hasCaption = Boolean(slideData.diagramCaption);
+          const imgH = hasCaption ? 3.6 : 4.1;
+
           slide.addImage({
-            x: 0.3,
-            y: 1.2,
-            w: 9.4,
-            h: 5.3,
             data: dataUrl,
+            x: 0.4,
+            y: ZONE.body.y,
+            w: 9.2,
+            h: imgH,
+            sizing: { type: "contain", w: 9.2, h: imgH },
+          });
+
+          if (hasCaption && slideData.diagramCaption) {
+            slide.addShape("rect", {
+              x: 0,
+              y: SLIDE_H - 0.52,
+              w: SLIDE_W,
+              h: 0.52,
+              fill: { color: "0E7490" },
+              line: { color: "0E7490" },
+            });
+            slide.addText(`📊 ${cap(slideData.diagramCaption, 130)}`, {
+              x: 0.3,
+              y: SLIDE_H - 0.52,
+              w: 9.4,
+              h: 0.52,
+              fontSize: 11,
+              italic: true,
+              color: C.white,
+              fontFace: "Calibri",
+              valign: "middle",
+              wrap: true,
+              autoFit: true,
+            });
+          }
+        } else if (slideData.diagramCaption) {
+          slide.addShape("rect", {
+            x: 0.5,
+            y: ZONE.body.y,
+            w: 9,
+            h: ZONE.body.h,
+            fill: { color: "E0F2FE" },
+            line: { color: "7DD3FC", width: 1 },
+          });
+          slide.addText(`📊 ${cap(slideData.diagramCaption, 400)}`, {
+            x: 0.7,
+            y: ZONE.body.y + 0.2,
+            w: 8.6,
+            h: ZONE.body.h - 0.4,
+            fontSize: 14,
+            color: "075985",
+            fontFace: "Calibri",
+            valign: "middle",
+            wrap: true,
+            autoFit: true,
+            lineSpacingMultiple: 1.6,
           });
         }
-        if (slideContent.diagramCaption) {
-          slide.addShape(pptx.ShapeType.rect, {
-            x: 0,
-            y: 6.7,
-            w: 10,
-            h: 0.8,
-            fill: { color: C.accent },
-          });
-          slide.addText(stripMd(slideContent.diagramCaption), {
-            x: 0.3,
-            y: 6.75,
-            w: 9.4,
-            h: 0.65,
-            fontSize: 13,
-            italic: true,
-            color: C.textMuted,
-          });
-        }
+
+        addPageNumber(slide, slideNum, totalSlides);
+        slideNum += 1;
         break;
       }
 
       case "example": {
-        slide.addShape(pptx.ShapeType.rect, {
+        const slide = pptx.addSlide();
+        slide.addShape("rect", {
           x: 0,
           y: 0,
-          w: 10,
-          h: 7.5,
-          fill: { color: C.lightGray },
+          w: SLIDE_W,
+          h: SLIDE_H,
+          fill: { color: "F0FDF4" },
+          line: { color: "F0FDF4" },
         });
-        addHeaderBar(
+        addHeader(
           pptx,
           slide,
-          `📝 Worked Example — ${stripMd(slideContent.title)}`,
+          `📝 ${capTitle(slideData.title, 70)}`,
           C.success
         );
-        const ex = slideContent.example;
+
+        const ex = slideData.example;
         if (ex) {
-          slide.addShape(pptx.ShapeType.rect, {
-            x: 0.3,
-            y: 1.2,
-            w: 9.4,
-            h: 1.1,
+          const problemBoxH = 0.9;
+          const answerBarH = 0.7;
+          const availableH =
+            SLIDE_H - ZONE.header.h - problemBoxH - answerBarH - 0.15;
+          const stepCount = (ex.steps ?? []).length;
+          const stepFontSize =
+            stepCount <= 4 ? 13 : stepCount <= 6 ? 12 : 11;
+
+          slide.addShape("rect", {
+            x: 0.35,
+            y: ZONE.header.h + 0.08,
+            w: 9.3,
+            h: problemBoxH,
             fill: { color: "DCFCE7" },
+            line: { color: C.success, width: 1.5 },
           });
-          slide.addText(`Problem: ${stripMd(ex.problem)}`, {
+          slide.addText(`Problem: ${cap(ex.problem, 180)}`, {
             x: 0.5,
-            y: 1.25,
-            w: 9,
-            h: 1,
-            fontSize: 15,
+            y: ZONE.header.h + 0.08,
+            w: 9.1,
+            h: problemBoxH,
+            fontSize: 13,
             bold: true,
-            color: C.textDark,
+            color: "14532D",
+            fontFace: "Calibri",
+            valign: "middle",
+            wrap: true,
+            autoFit: true,
           });
-          const stepsText = ex.steps
-            .map((s, i) => `Step ${i + 1}: ${stripMd(s)}`)
+
+          const stepsText = (ex.steps ?? [])
+            .map((s, i) => `Step ${i + 1}: ${cap(s, 130)}`)
             .join("\n");
+
           slide.addText(stepsText, {
-            x: 0.3,
-            y: 2.4,
-            w: 9.4,
-            h: 3.5,
-            fontSize: 14,
+            x: 0.35,
+            y: ZONE.header.h + problemBoxH + 0.1,
+            w: 9.3,
+            h: availableH,
+            fontSize: stepFontSize,
             color: C.textDark,
-            lineSpacingMultiple: 1.4,
+            fontFace: "Calibri",
+            valign: "top",
+            wrap: true,
+            autoFit: true,
+            lineSpacingMultiple: 1.5,
           });
-          slide.addShape(pptx.ShapeType.rect, {
-            x: 0.3,
-            y: 6.1,
-            w: 9.4,
-            h: 0.8,
+
+          slide.addShape("rect", {
+            x: 0,
+            y: SLIDE_H - answerBarH,
+            w: SLIDE_W,
+            h: answerBarH,
             fill: { color: C.success },
+            line: { color: C.success },
           });
-          slide.addText(`✓ Answer: ${stripMd(ex.answer)}`, {
-            x: 0.5,
-            y: 6.15,
-            w: 9,
-            h: 0.65,
-            fontSize: 15,
+          slide.addText(`✓  ${cap(ex.answer, 150)}`, {
+            x: 0.3,
+            y: SLIDE_H - answerBarH,
+            w: 9.4,
+            h: answerBarH,
+            fontSize: 14,
             bold: true,
             color: C.white,
+            fontFace: "Calibri",
+            valign: "middle",
+            wrap: true,
+            autoFit: true,
           });
         }
+
+        addPageNumber(slide, slideNum, totalSlides);
+        slideNum += 1;
         break;
       }
 
       case "practice": {
-        addHeaderBar(
+        const slide = pptx.addSlide();
+        slide.addShape("rect", {
+          x: 0,
+          y: 0,
+          w: SLIDE_W,
+          h: SLIDE_H,
+          fill: { color: "FFFBEB" },
+          line: { color: "FFFBEB" },
+        });
+
+        practiceNum += 1;
+        addHeader(
           pptx,
           slide,
-          `✏️ Practice Question ${slideIndex + 1}`,
+          "✏️ Practice Question",
           C.warning
         );
-        const q = slideContent.question;
+
+        const q = slideData.question;
         if (q) {
-          slide.addText(stripMd(q.text), {
-            x: 0.3,
-            y: 1.2,
-            w: 9.4,
-            h: 2,
-            fontSize: 18,
+          slide.addShape("ellipse", {
+            x: 0.35,
+            y: 1.0,
+            w: 0.55,
+            h: 0.55,
+            fill: { color: C.warning },
+            line: { color: C.warning },
+          });
+          slide.addText(String(practiceNum), {
+            x: 0.35,
+            y: 1.0,
+            w: 0.55,
+            h: 0.55,
+            fontSize: 16,
+            bold: true,
+            color: C.white,
+            fontFace: "Calibri",
+            align: "center",
+            valign: "middle",
+          });
+
+          slide.addText(cap(q.text, 200), {
+            x: 1.05,
+            y: 1.0,
+            w: 8.6,
+            h: 1.1,
+            fontSize: 15,
             bold: true,
             color: C.textDark,
+            fontFace: "Calibri",
+            valign: "top",
+            wrap: true,
+            autoFit: true,
+            lineSpacingMultiple: 1.3,
           });
-          if (q.options && q.options.length > 0) {
-            const optsText = q.options
+
+          if (q.options && q.options.length) {
+            const labels = ["A", "B", "C", "D"];
+            const optText = q.options
               .map(
-                (o, i) =>
-                  `${String.fromCharCode(65 + i)}) ${stripMd(o)}`
+                (o, i) => `${labels[i] ?? i + 1}. ${cap(o, 120)}`
               )
               .join("\n");
-            slide.addText(optsText, {
+            slide.addText(optText, {
               x: 0.5,
-              y: 3.3,
-              w: 9,
-              h: 2.4,
-              fontSize: 15,
-              color: C.textDark,
-              lineSpacingMultiple: 1.5,
+              y: 2.25,
+              w: 9.1,
+              h: 1.9,
+              fontSize: 13,
+              color: C.textMuted,
+              fontFace: "Calibri",
+              valign: "top",
+              wrap: true,
+              autoFit: true,
+              lineSpacingMultiple: 1.6,
             });
           }
-          slide.addShape(pptx.ShapeType.rect, {
-            x: 0.3,
-            y: 6.5,
-            w: 9.4,
-            h: 0.7,
+
+          slide.addShape("rect", {
+            x: 0,
+            y: SLIDE_H - 0.6,
+            w: SLIDE_W,
+            h: 0.6,
             fill: { color: C.accent },
+            line: { color: C.accent },
           });
-          slide.addText(
-            `Answer: ${stripMd(q.answer)} — ${stripMd(q.explanation)}`,
-            {
-              x: 0.5,
-              y: 6.55,
-              w: 9,
-              h: 0.6,
-              fontSize: 13,
-              color: C.dark,
-            }
-          );
+
+          const ansText = q.answer
+            ? `Answer: ${cap(q.answer, 80)}${
+                q.explanation
+                  ? `  —  ${cap(q.explanation, 100)}`
+                  : ""
+              }`
+            : "";
+
+          slide.addText(ansText, {
+            x: 0.3,
+            y: SLIDE_H - 0.6,
+            w: 9.4,
+            h: 0.6,
+            fontSize: 11,
+            color: C.dark,
+            italic: true,
+            fontFace: "Calibri",
+            valign: "middle",
+            wrap: true,
+            autoFit: true,
+          });
         }
+
+        addPageNumber(slide, slideNum, totalSlides);
+        slideNum += 1;
         break;
       }
 
       case "summary": {
-        slide.addShape(pptx.ShapeType.rect, {
+        const slide = pptx.addSlide();
+        slide.addShape("rect", {
           x: 0,
           y: 0,
-          w: 10,
-          h: 7.5,
+          w: SLIDE_W,
+          h: SLIDE_H,
           fill: { color: C.dark },
+          line: { color: C.dark },
         });
-        slide.addText("Key Takeaways ✓", {
+        slide.addShape("rect", {
+          x: 0,
+          y: 0,
+          w: SLIDE_W,
+          h: 0.06,
+          fill: { color: C.accent },
+          line: { color: C.accent },
+        });
+        slide.addShape("rect", {
+          x: 0,
+          y: SLIDE_H - 0.06,
+          w: SLIDE_W,
+          h: 0.06,
+          fill: { color: C.accent },
+          line: { color: C.accent },
+        });
+
+        slide.addText("Key Takeaways", {
           x: 0.5,
-          y: 0.3,
+          y: 0.1,
           w: 9,
-          h: 1,
-          fontSize: 34,
+          h: 0.75,
+          fontSize: 28,
           bold: true,
           color: C.white,
+          fontFace: "Calibri",
           align: "center",
+          valign: "middle",
         });
-        slide.addShape(pptx.ShapeType.rect, {
-          x: 1,
-          y: 1.4,
-          w: 8,
-          h: 0.05,
-          fill: { color: C.accent },
+
+        slide.addShape("rect", {
+          x: 1.5,
+          y: 0.85,
+          w: 7,
+          h: 0.04,
+          fill: { color: "60A5FA" },
+          line: { color: "60A5FA" },
         });
-        const summaryBullets = (slideContent.bullets ?? [])
-          .map((b) => `✓ ${stripMd(b)}`)
-          .join("\n");
-        if (summaryBullets) {
-          slide.addText(summaryBullets, {
-            x: 0.8,
-            y: 1.6,
-            w: 8.5,
-            h: 5.2,
-            fontSize: 18,
-            color: C.white,
-            lineSpacingMultiple: 1.5,
-          });
-        }
-        slide.addText(`End of ${data.topic}`, {
+
+        const bullets = slideData.bullets ?? [];
+        slide.addText(
+          (bullets.length ? bullets : ["No key takeaways provided."]).map(
+            (b) => ({
+              text: `✓  ${cap(b)}\n`,
+              options: { color: C.white, fontSize: 14 },
+            })
+          ),
+          {
+            x: 0.7,
+            y: 1.0,
+            w: 8.6,
+            h: 3.9,
+            fontFace: "Calibri",
+            valign: "top",
+            wrap: true,
+            autoFit: true,
+            lineSpacingMultiple: 1.6,
+          }
+        );
+
+        slide.addText(`End of ${capTitle(data.topic, 60)}`, {
           x: 0.5,
-          y: 7.0,
+          y: SLIDE_H - 0.45,
           w: 9,
-          h: 0.4,
-          fontSize: 13,
-          color: C.accent,
-          align: "center",
+          h: 0.35,
+          fontSize: 11,
+          color: "93C5FD",
           italic: true,
+          fontFace: "Calibri",
+          align: "center",
         });
+
+        addPageNumber(slide, slideNum, totalSlides);
+        slideNum += 1;
         break;
       }
-
-      default:
-        addHeaderBar(pptx, slide, slideContent.title, C.primary);
-        if (slideContent.bullets?.length) {
-          slide.addText(
-            slideContent.bullets.map((b) => stripMd(b)).join("\n"),
-            {
-            x: 0.5,
-            y: 1.3,
-            w: 9,
-            h: 5.5,
-            fontSize: 16,
-            color: C.textDark,
-            bullet: { type: "bullet" },
-            }
-          );
-        }
     }
-  });
+  }
 
   const result = await pptx.stream();
   const uint8 =
@@ -778,19 +1241,101 @@ export function parseOutlineResponse(rawText: string): SlideOutline | null {
 export function parseBatchContent(rawText: string): SlideContent[] | null {
   try {
     let cleaned = rawText.trim();
-    cleaned = cleaned
-      .replace(/^```json\s*/i, "")
-      .replace(/^```\s*/i, "")
-      .replace(/\s*```$/i, "")
-      .trim();
-    const first = cleaned.indexOf("[");
-    const last = cleaned.lastIndexOf("]");
-    if (first === -1 || last === -1) return null;
-    cleaned = cleaned.slice(first, last + 1);
-    const parsed = JSON.parse(cleaned);
-    if (!Array.isArray(parsed)) return null;
-    return parsed as SlideContent[];
-  } catch {
+
+    // Strip markdown fences
+    cleaned = cleaned.replace(/^```json\s*/i, "");
+    cleaned = cleaned.replace(/^```\s*/i, "");
+    cleaned = cleaned.replace(/\s*```$/i, "");
+    cleaned = cleaned.trim();
+
+    // Find the JSON array boundaries
+    const firstBracket = cleaned.indexOf("[");
+    const lastBracket = cleaned.lastIndexOf("]");
+
+    if (firstBracket === -1 || lastBracket === -1) {
+      console.error("[parseBatchContent] No JSON array found");
+      return null;
+    }
+
+    cleaned = cleaned.slice(firstBracket, lastBracket + 1);
+
+    // Attempt 1: direct parse
+    try {
+      const parsed = JSON.parse(cleaned);
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        return parsed as SlideContent[];
+      }
+    } catch {
+      // Try repair strategies
+    }
+
+    // Attempt 2: fix trailing commas
+    const fixedTrailing = cleaned.replace(/,\s*}/g, "}").replace(/,\s*]/g, "]");
+    try {
+      const parsed = JSON.parse(fixedTrailing);
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        console.log("[parseBatchContent] Recovered via trailing comma fix");
+        return parsed as SlideContent[];
+      }
+    } catch {}
+
+    // Attempt 3: truncation recovery
+    // If JSON is cut off mid-way, try to salvage complete objects
+    try {
+      // Find all complete slide objects by counting braces
+      let depth = 0;
+      let inString = false;
+      let escape = false;
+      let lastCompleteIndex = 1; // after opening [
+
+      for (let i = 1; i < cleaned.length; i++) {
+        const char = cleaned[i];
+
+        if (escape) {
+          escape = false;
+          continue;
+        }
+        if (char === "\\" && inString) {
+          escape = true;
+          continue;
+        }
+        if (char === '"' && !escape) {
+          inString = !inString;
+          continue;
+        }
+        if (inString) continue;
+
+        if (char === "{") depth++;
+        if (char === "}") {
+          depth--;
+          if (depth === 0) lastCompleteIndex = i + 1;
+        }
+      }
+
+      if (lastCompleteIndex > 1) {
+        // Reconstruct array with only complete objects
+        const partial =
+          "[" +
+          cleaned
+            .slice(1, lastCompleteIndex)
+            .replace(/,\s*$/, "") +
+          "]";
+        const parsed = JSON.parse(partial);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          console.log(
+            "[parseBatchContent] Recovered",
+            parsed.length,
+            "slides from truncated JSON"
+          );
+          return parsed as SlideContent[];
+        }
+      }
+    } catch {}
+
+    console.error("[parseBatchContent] All recovery attempts failed");
+    return null;
+  } catch (err) {
+    console.error("[parseBatchContent] Outer error:", err);
     return null;
   }
 }
