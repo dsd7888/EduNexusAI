@@ -1,11 +1,5 @@
 "use client";
 
-import "katex/dist/katex.min.css";
-
-import ReactMarkdown from "react-markdown";
-import rehypeKatex from "rehype-katex";
-import remarkMath from "remark-math";
-
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -16,6 +10,7 @@ import {
 } from "@/components/ui/card";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Skeleton } from "@/components/ui/skeleton";
+import MarkdownRenderer from "@/components/chat/MarkdownRenderer";
 import { createBrowserClient } from "@/lib/db/supabase-browser";
 import { Clock, Download, Loader2, MessageSquare } from "lucide-react";
 import Link from "next/link";
@@ -385,12 +380,7 @@ export default function StudentHistoryPage() {
                             <div className="max-w-[80%]">
                               <Card className="border bg-card">
                                 <CardContent className="px-4 py-3">
-                                  <ReactMarkdown
-                                    remarkPlugins={[remarkMath]}
-                                    rehypePlugins={[rehypeKatex]}
-                                  >
-                                    {m.content}
-                                  </ReactMarkdown>
+                                  <MarkdownRenderer content={m.content} />
                                 </CardContent>
                               </Card>
                               <div className="mt-0.5 text-[10px] text-muted-foreground">

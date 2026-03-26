@@ -73,11 +73,13 @@ function createGeminiProvider(): AIProvider {
         }
 
         const modelName = MODEL_MAP[modelKey];
+        const maxOutputTokens =
+          modelName.includes("pro") ? 32768 : maxTokens;
         const modelParams: Parameters<typeof genAI.getGenerativeModel>[0] = {
           model: modelName,
           generationConfig: {
             temperature,
-            maxOutputTokens: maxTokens,
+            maxOutputTokens,
           },
         };
 

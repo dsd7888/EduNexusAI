@@ -34,6 +34,75 @@ type FontBundle = {
   boldItalic: PDFFont;
 };
 
+function sanitizeForPDF(text: string): string {
+  if (!text) return "";
+  return text
+    // Currency
+    .replace(/₹/g, "Rs.")
+    .replace(/€/g, "EUR")
+    .replace(/£/g, "GBP")
+    .replace(/\$/g, "$")
+    // Arrows
+    .replace(/→/g, "->")
+    .replace(/←/g, "<-")
+    .replace(/↑/g, "^")
+    .replace(/↓/g, "v")
+    .replace(/▲/g, "+")
+    .replace(/▼/g, "-")
+    // Check marks and crosses
+    .replace(/✓/g, "[OK]")
+    .replace(/✗/g, "[X]")
+    .replace(/✔/g, "[OK]")
+    .replace(/✘/g, "[X]")
+    .replace(/☑/g, "[OK]")
+    .replace(/☐/g, "[ ]")
+    // Smart quotes → straight quotes
+    .replace(/[\u2018\u2019]/g, "'")
+    .replace(/[\u201C\u201D]/g, '"')
+    // Em/en dashes
+    .replace(/\u2014/g, "--")
+    .replace(/\u2013/g, "-")
+    // Ellipsis
+    .replace(/\u2026/g, "...")
+    // Bullet points
+    .replace(/•/g, "*")
+    .replace(/·/g, "-")
+    // Degree symbol
+    .replace(/°/g, " deg")
+    // Superscripts
+    .replace(/²/g, "^2")
+    .replace(/³/g, "^3")
+    // Subscripts
+    .replace(/₁/g, "1")
+    .replace(/₂/g, "2")
+    .replace(/₃/g, "3")
+    // Mathematical
+    .replace(/×/g, "x")
+    .replace(/÷/g, "/")
+    .replace(/≥/g, ">=")
+    .replace(/≤/g, "<=")
+    .replace(/≠/g, "!=")
+    .replace(/±/g, "+/-")
+    .replace(/∞/g, "infinity")
+    .replace(/π/g, "pi")
+    .replace(/Ω/g, "Ohm")
+    .replace(/μ/g, "u")
+    .replace(/α/g, "alpha")
+    .replace(/β/g, "beta")
+    .replace(/γ/g, "gamma")
+    .replace(/θ/g, "theta")
+    .replace(/σ/g, "sigma")
+    .replace(/Δ/g, "Delta")
+    .replace(/∑/g, "Sum")
+    .replace(/∫/g, "Integral")
+    .replace(/√/g, "sqrt")
+    // Normalize control characters so pdf-lib/Helvetica doesn't crash
+    .replace(/[\r\n\t]+/g, " ")
+    .replace(/[\u0000-\u001F]/g, " ")
+    // Remove any remaining non-latin characters Helvetica cannot render
+    .replace(/[^\x00-\x7F]/g, "");
+}
+
 export class PDFBuilder {
   private doc: PDFDocument;
   private pages: PDFPage[] = [];
@@ -58,6 +127,11 @@ export class PDFBuilder {
   private sanitize(text: string): string {
     if (!text) return "";
     return text
+      // pdf-lib WinAnsi can't encode control characters like newline.
+      // Convert them to spaces so width calculations don't crash.
+      .replace(/[\r\n\t]+/g, " ")
+      // Extra safety: remove remaining ASCII control chars (0x00-0x1F)
+      .replace(/[\u0000-\u001F]/g, " ")
       // Greek letters
       .replace(/ρ/g, "rho")
       .replace(/μ/g, "mu")
@@ -181,10 +255,8 @@ export class PDFBuilder {
     const lineHeight = options.lineHeight ?? size * 1.5;
     const align = options.align ?? "left";
 
-    const safeContent = this.sanitize(content);
-
     // Word wrap
-    const words = safeContent.split(" ");
+    const words = sanitizeForPDF(content).split(" ");
     const lines: string[] = [];
     let current = "";
 
@@ -342,6 +414,10 @@ export class PDFBuilder {
 
   // Page header with logo area and colored bar
   addPageHeader(title: string, subtitle: string, meta?: string) {
+    const safeTitle = sanitizeForPDF(title);
+    const safeSubtitle = sanitizeForPDF(subtitle);
+    const safeMeta = meta ? sanitizeForPDF(meta) : undefined;
+
     // Top color bar
     this.drawRect(0, 0, PAGE_W, 56, COLORS.primary);
 
@@ -355,7 +431,7 @@ export class PDFBuilder {
     });
 
     // Title
-    this.currentPage.drawText(this.sanitize(title), {
+    this.currentPage.drawText(safeTitle, {
       x: MARGIN,
       y: PAGE_H - 50,
       size: 11,
@@ -367,14 +443,14 @@ export class PDFBuilder {
 
     // Subtitle block
     this.space(12);
-    this.text(subtitle, {
+    this.text(safeSubtitle, {
       font: this.fonts.bold,
       size: 16,
       color: COLORS.text,
     });
-    if (meta) {
+    if (safeMeta) {
       this.space(2);
-      this.text(meta, {
+      this.text(safeMeta, {
         font: this.fonts.regular,
         size: 10,
         color: COLORS.muted,

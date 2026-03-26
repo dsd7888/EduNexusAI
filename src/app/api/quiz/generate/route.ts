@@ -120,7 +120,11 @@ export async function POST(request: NextRequest) {
 
     if (!contentRows || contentRows.length === 0) {
       return Response.json(
-        { error: "No syllabus content found for selected subjects" },
+        {
+          error: "no_content",
+          message:
+            "No syllabus content found for the selected subjects. Ask your admin to add content first.",
+        },
         { status: 404 }
       );
     }
@@ -186,7 +190,11 @@ export async function POST(request: NextRequest) {
     if (!questions || questions.length === 0) {
       console.error("[quiz/generate] parseQuizResponse returned null or empty");
       return Response.json(
-        { error: "Failed to generate valid quiz" },
+        {
+          error: "generation_failed",
+          message:
+            "Could not generate quiz questions. Please try again or select different modules.",
+        },
         { status: 500 }
       );
     }
@@ -211,6 +219,24 @@ export async function POST(request: NextRequest) {
     const storedDifficulty =
       difficulty === "mixed" ? "medium" : difficulty;
 
+    const isPartial = questions.length < questionCount;
+    if (isPartial && questions.length < 3) {
+      return Response.json(
+        {
+          error: "generation_failed",
+          message:
+            "Could not generate quiz questions. Please try again or select different modules.",
+        },
+        { status: 500 }
+      );
+    }
+
+    if (isPartial) {
+      console.warn(
+        `[quiz/generate] Partial: got ${questions.length} questions`
+      );
+    }
+
     const { data: quiz, error: insertError } = await adminClient
       .from("quizzes")
       .insert({
@@ -233,9 +259,10 @@ export async function POST(request: NextRequest) {
     }
 
     return Response.json({
-      quizId: quiz?.id,
+      quizId: quiz.id,
       title,
       questions,
+      ...(isPartial ? { partial: true } : {}),
     });
   } catch (err) {
     console.error("[quiz/generate] POST error:", err);

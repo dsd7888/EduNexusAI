@@ -6,6 +6,17 @@ import {
   AccordionItem,
   AccordionTrigger,
 } from "@/components/ui/accordion";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -34,6 +45,7 @@ import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import type { QuizQuestion } from "@/lib/quiz/generator";
 import { createBrowserClient } from "@/lib/db/supabase-browser";
 import {
+  AlertTriangle,
   Brain,
   CheckCircle2,
   Clock,
@@ -139,13 +151,18 @@ export default function StudentQuizPage() {
 
   // ── TAKING STATE ───────────────────────────────────────────
   const [view, setView] = useState<View>("setup");
-  const [quizId, setQuizId] = useState("");
+  const [quizId, setQuizId] = useState<string | null>(null);
   const [questions, setQuestions] = useState<QuizQuestion[]>([]);
   const [currentIndex, setCurrentIndex] = useState(0);
   const [answers, setAnswers] = useState<Record<string, string>>({});
   const [elapsed, setElapsed] = useState(0);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [showEndQuizDialog, setShowEndQuizDialog] = useState(false);
   const [hints, setHints] = useState<Record<string, HintState>>({});
+  const [quizTabWarning, setQuizTabWarning] = useState(false);
+
+  const quizStorageKey = `quiz_attempt_${quizId ?? "current"}`;
+  const quizAnswersKey = quizId ? `quiz_${quizId}` : null;
 
   // ── RESULTS STATE ──────────────────────────────────────────
   const [score, setScore] = useState(0);
@@ -397,12 +414,13 @@ export default function StudentQuizPage() {
       qs.forEach((q) => {
         hintInit[q.id] = { text: null, isLoading: false, used: false };
       });
-      setQuizId(data.quizId ?? "");
+      setQuizId(typeof data.quizId === "string" ? data.quizId : null);
       setQuestions(qs);
       setHints(hintInit);
       setAnswers({});
       setCurrentIndex(0);
       setElapsed(0);
+      setQuizTabWarning(false);
       setView("taking");
     } catch (e) {
       console.error(e);
@@ -421,6 +439,43 @@ export default function StudentQuizPage() {
       void fetchHistory();
     }
   }, [view, historyLoaded, loadingHistory, fetchHistory]);
+
+  useEffect(() => {
+    if (view !== "taking" || !quizAnswersKey) return;
+    try {
+      localStorage.setItem(
+        quizAnswersKey,
+        JSON.stringify({
+          answers,
+          currentIndex,
+          quizId,
+          questions,
+          savedAt: Date.now(),
+          quizStorageKey,
+        })
+      );
+    } catch {}
+  }, [answers, currentIndex, view, quizId, questions, quizAnswersKey]);
+
+  useEffect(() => {
+    if (view !== "taking") return;
+    const warn = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      e.returnValue = "Your quiz answers will be lost. Are you sure?";
+      return e.returnValue;
+    };
+    window.addEventListener("beforeunload", warn);
+    return () => window.removeEventListener("beforeunload", warn);
+  }, [view]);
+
+  useEffect(() => {
+    if (view !== "taking") return;
+    const handleVis = () => {
+      if (!document.hidden) setQuizTabWarning(true);
+    };
+    document.addEventListener("visibilitychange", handleVis);
+    return () => document.removeEventListener("visibilitychange", handleVis);
+  }, [view]);
 
   const handleGetHint = async (q: QuizQuestion) => {
     if (hints[q.id]?.used || hints[q.id]?.isLoading) return;
@@ -476,6 +531,11 @@ export default function StudentQuizPage() {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data?.error ?? "Failed to submit");
+      if (quizAnswersKey) {
+        try {
+          localStorage.removeItem(quizAnswersKey);
+        } catch {}
+      }
       setScore(data.score ?? 0);
       setCorrectCount(data.correctCount ?? 0);
       setTotalCount(data.totalCount ?? 0);
@@ -491,9 +551,14 @@ export default function StudentQuizPage() {
   };
 
   const resetToSetup = () => {
+    if (quizAnswersKey) {
+      try {
+        localStorage.removeItem(quizAnswersKey);
+      } catch {}
+    }
     setView("setup");
     setQuestions([]);
-    setQuizId("");
+    setQuizId(null);
     setBreakdown([]);
   };
 
@@ -518,6 +583,9 @@ export default function StudentQuizPage() {
         return val.trim() !== "";
       })()
     : false;
+  const answeredCount = Object.keys(answers).filter(
+    (key) => String(answers[key] ?? "").trim() !== ""
+  ).length;
 
   const renderTabs = () => (
     <div className="mb-4 flex gap-2 border-b pb-2">
@@ -789,6 +857,22 @@ export default function StudentQuizPage() {
 
     return (
       <div className="space-y-6">
+        {quizTabWarning && (
+          <div
+            className="fixed top-4 left-1/2 z-50 flex -translate-x-1/2 cursor-pointer items-center gap-2 rounded-lg bg-amber-500 px-4 py-2 text-white shadow-lg"
+            onClick={() => setQuizTabWarning(false)}
+            role="button"
+            tabIndex={0}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" || e.key === " ") setQuizTabWarning(false);
+            }}
+          >
+            <AlertTriangle className="size-4 shrink-0" />
+            <span className="text-sm font-medium">
+              Tab switch detected. Click to dismiss.
+            </span>
+          </div>
+        )}
         {renderTabs()}
         <div className="flex items-center justify-between">
           <span className="text-muted-foreground text-sm">
@@ -997,27 +1081,58 @@ export default function StudentQuizPage() {
                   </>
                 )}
               </div>
-              <Button
-                disabled={!hasAnswer || isSubmitting}
-                onClick={() => {
-                  if (currentIndex < questions.length - 1) {
-                    setCurrentIndex((i) => i + 1);
-                  } else {
-                    handleSubmit();
-                  }
-                }}
-              >
-                {isSubmitting ? (
-                  <>
-                    <Loader2 className="size-4 animate-spin" />
-                    Submitting...
-                  </>
-                ) : currentIndex < questions.length - 1 ? (
-                  "Next →"
-                ) : (
-                  "Submit Quiz"
-                )}
-              </Button>
+              <div className="flex items-center gap-2">
+                <AlertDialog
+                  open={showEndQuizDialog}
+                  onOpenChange={setShowEndQuizDialog}
+                >
+                  <AlertDialogTrigger asChild>
+                    <Button variant="outline" size="sm" disabled={isSubmitting}>
+                      End Quiz
+                    </Button>
+                  </AlertDialogTrigger>
+                  <AlertDialogContent>
+                    <AlertDialogHeader>
+                      <AlertDialogTitle>Submit quiz early?</AlertDialogTitle>
+                      <AlertDialogDescription>
+                        You&apos;ve answered {answeredCount} of {questions.length} questions.
+                        Remaining questions will be marked incorrect.
+                      </AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <AlertDialogFooter>
+                      <AlertDialogCancel>Continue Quiz</AlertDialogCancel>
+                      <AlertDialogAction
+                        className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                        onClick={handleSubmit}
+                      >
+                        Submit Now
+                      </AlertDialogAction>
+                    </AlertDialogFooter>
+                  </AlertDialogContent>
+                </AlertDialog>
+
+                <Button
+                  disabled={!hasAnswer || isSubmitting}
+                  onClick={() => {
+                    if (currentIndex < questions.length - 1) {
+                      setCurrentIndex((i) => i + 1);
+                    } else {
+                      handleSubmit();
+                    }
+                  }}
+                >
+                  {isSubmitting ? (
+                    <>
+                      <Loader2 className="size-4 animate-spin" />
+                      Submitting...
+                    </>
+                  ) : currentIndex < questions.length - 1 ? (
+                    "Next →"
+                  ) : (
+                    "Submit Quiz"
+                  )}
+                </Button>
+              </div>
             </div>
           </CardContent>
         </Card>

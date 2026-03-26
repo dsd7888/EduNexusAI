@@ -61,8 +61,8 @@ export async function POST(request: NextRequest) {
     const subjectId = String(body?.subjectId ?? "").trim();
     const message = String(body?.message ?? "").trim();
     const history = Array.isArray(body?.history) ? body.history : [];
-    const requestSessionId =
-      String(body?.sessionId ?? "").trim() || null;
+    const sessionId =
+      typeof body?.sessionId === "string" ? body.sessionId.trim() : null;
 
     if (!subjectId || !message) {
       return Response.json(
@@ -88,7 +88,11 @@ export async function POST(request: NextRequest) {
 
     if (!contentRow) {
       return Response.json(
-        { error: "No syllabus content found for this subject." },
+        {
+          error: "no_syllabus",
+          message:
+            "This subject has no content yet. Please ask your faculty to add syllabus content.",
+        },
         { status: 404 }
       );
     }
@@ -178,18 +182,9 @@ export async function POST(request: NextRequest) {
         console.log("[chat] Cache empty — calling AI");
       }
 
-      // ── CACHE HIT: update metadata (messages will be saved later) ─────
-      if (cachedResponse && cacheHitId) {
-        await adminClient
-          .from("semantic_cache")
-          .update({
-            hit_count: cacheHitCount + 1,
-            last_used_at: new Date().toISOString(),
-          })
-          .eq("id", cacheHitId);
-      }
     } catch (err) {
       console.error("[chat] Cache exception:", err);
+      console.warn("[chat] Cache unavailable, proceeding without cache");
     }
 
     // ── CACHE MISS: call AI ──────────────────────────────────
@@ -219,74 +214,35 @@ export async function POST(request: NextRequest) {
         { role: "user", content: message },
       ];
 
-      const ai = await routeAI("chat", {
-        systemPrompt,
-        messages: messagesForAI,
-      });
-      aiResponse = String(ai.content ?? "");
-
-      // ── CACHE WRITE ──────────────────────────────────────────
       try {
-        const { error: cacheWriteError } = await adminClient
-          .from("semantic_cache")
-          .insert({
-            subject_id: subjectId,
-            module_id: null,
-            query_text: message,
-            query_embedding: embeddingForDB,
-            response: aiResponse,
-            hit_count: 0,
-            last_used_at: new Date().toISOString(),
-          });
-
-        if (cacheWriteError) {
-          console.error("[chat] Cache write error:", cacheWriteError.message);
-        } else {
-          console.log("[chat] Cache write SUCCESS");
-        }
+        const ai = await routeAI("chat", {
+          systemPrompt,
+          messages: messagesForAI,
+        });
+        aiResponse = String(ai.content ?? "");
+        if (!aiResponse.trim()) throw new Error("Empty response");
       } catch (err) {
-        console.error("[chat] Cache write exception:", err);
+        console.error("[chat] AI call failed:", err);
+        return Response.json(
+          {
+            response:
+              "I'm having trouble connecting right now. Please try again in a moment.",
+            content:
+              "I'm having trouble connecting right now. Please try again in a moment.",
+            cached: false,
+            fallback: true,
+          },
+          { status: 200 }
+        );
       }
-    }
 
-    // 7. Ensure we have a session to attach messages to
-    let finalSessionId: string | null = requestSessionId;
-
-    if (!finalSessionId) {
-      try {
-        // Fallback: find most recent session for this subject
-        const { data: existingSession } = await adminClient
-          .from("chat_sessions")
-          .select("id")
-          .eq("student_id", profile.id)
-          .eq("subject_id", subjectId)
-          .order("created_at", { ascending: false })
-          .limit(1)
-          .maybeSingle();
-
-        if (existingSession) {
-          finalSessionId = String(existingSession.id);
-        } else {
-          const { data: newSession } = await adminClient
-            .from("chat_sessions")
-            .insert({
-              student_id: profile.id,
-              subject_id: subjectId,
-            })
-            .select("id")
-            .single();
-          if (newSession) {
-            finalSessionId = String(newSession.id);
-          }
-        }
-      } catch (err) {
-        console.error("[chat] chat_sessions error:", err);
-      }
     }
 
     const finalResponse = cachedResponse ?? aiResponse ?? "";
 
-    // Always save messages (for both cache hits and misses)
+    // 7. Save chat messages
+    const finalSessionId = sessionId; // comes from frontend now
+
     if (finalSessionId && finalResponse) {
       try {
         await adminClient.from("chat_messages").insert([
@@ -329,7 +285,47 @@ export async function POST(request: NextRequest) {
         });
     }
 
-    // 8. Track usage (only for non-cache responses to avoid double counting)
+    // 8. Cache metadata updates
+    if (cachedResponse && cacheHitId) {
+      try {
+        await adminClient
+          .from("semantic_cache")
+          .update({
+            hit_count: cacheHitCount + 1,
+            last_used_at: new Date().toISOString(),
+          })
+          .eq("id", cacheHitId);
+      } catch (err) {
+        console.error("[chat] Cache hit update error:", err);
+      }
+    }
+
+    // 9. Cache write for misses
+    if (!cachedResponse && aiResponse) {
+      try {
+        const { error: cacheWriteError } = await adminClient
+          .from("semantic_cache")
+          .insert({
+            subject_id: subjectId,
+            module_id: null,
+            query_text: message,
+            query_embedding: embeddingForDB,
+            response: aiResponse,
+            hit_count: 0,
+            last_used_at: new Date().toISOString(),
+          });
+
+        if (cacheWriteError) {
+          console.error("[chat] Cache write error:", cacheWriteError.message);
+        } else {
+          console.log("[chat] Cache write SUCCESS");
+        }
+      } catch (err) {
+        console.error("[chat] Cache write exception:", err);
+      }
+    }
+
+    // 10. Track usage (only for non-cache responses to avoid double counting)
     if (!cachedResponse) {
       try {
         const today = new Date().toISOString().slice(0, 10);

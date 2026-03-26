@@ -12,6 +12,7 @@ import {
   LayoutDashboard,
   MessageCircle,
   Menu,
+  Target,
   X,
 } from "lucide-react";
 
@@ -66,6 +67,10 @@ export default function StudentLayout({ children }: LayoutProps) {
         <NavLink href="/student/quiz">
           <Brain className="size-4" />
           <span>Quiz</span>
+        </NavLink>
+        <NavLink href="/student/placement">
+          <Target className="size-4" />
+          <span>Placement Prep</span>
         </NavLink>
         <NavLink href="/student/history">
           <Clock className="size-4" />

@@ -1,5 +1,6 @@
 import type { NextRequest } from "next/server";
 
+import { buildQuickNotesPrompt } from "@/lib/ai/prompts";
 import { getGeminiProvider } from "@/lib/ai/providers/gemini";
 import { routeAI } from "@/lib/ai/router";
 import {
@@ -80,7 +81,10 @@ export async function GET(request: NextRequest) {
 
     if (contentError || !contentRow) {
       return Response.json(
-        { error: "No syllabus content found for this subject" },
+        {
+          error: "no_content",
+          message: "No syllabus content available for this subject yet.",
+        },
         { status: 404 }
       );
     }
@@ -108,35 +112,27 @@ export async function GET(request: NextRequest) {
     const syllabusContent = String(contentRow.content ?? "");
     const topicLabel = moduleName || subjectRow.name;
 
-    const prompt = `Generate comprehensive quick notes for ${
-      moduleName ? `module "${moduleName}"` : `the subject "${subjectRow.name}"`
-    }.
-
-Syllabus content:
-${syllabusContent}
-
-Format the notes exactly as:
-
-# ${topicLabel}
-
-## Key Concepts
-- Bullet points of core ideas, definitions, formulas
-
-## Important Formulas / Rules
-- List all key formulas with brief explanation
-
-## Quick Summary
-- 3-5 sentence overview of the entire topic
-
-## Remember For Exams
-- Most important points to memorize
-
-Be concise but complete. Use markdown formatting. Return only the markdown notes.`;
+    const prompt = buildQuickNotesPrompt({
+      topicLabel,
+      subjectName: subjectRow.name,
+      syllabusContent,
+      moduleName,
+    });
 
     const ai = await routeAI("chat", {
       messages: [{ role: "user", content: prompt }],
     });
     const aiResponse = String(ai.content ?? "").trim();
+
+    if (!aiResponse) {
+      return Response.json(
+        {
+          error: "generation_failed",
+          message: "Could not generate notes. Please try again.",
+        },
+        { status: 500 }
+      );
+    }
 
     // Generate embedding and cache
     try {

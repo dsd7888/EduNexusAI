@@ -1,17 +1,12 @@
 "use client";
 
-import "katex/dist/katex.min.css";
-
-import ReactMarkdown from "react-markdown";
-import rehypeKatex from "rehype-katex";
-import remarkMath from "remark-math";
-
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Skeleton } from "@/components/ui/skeleton";
+import MarkdownRenderer from "@/components/chat/MarkdownRenderer";
 import { createBrowserClient } from "@/lib/db/supabase-browser";
 import { HelpCircle, Lightbulb, Zap } from "lucide-react";
 import Link from "next/link";
@@ -53,11 +48,6 @@ export default function StudentSubjectChatPage() {
 
   const bottomRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
-
-  const historyForRequest = useMemo(() => {
-    const last = messages.slice(-6);
-    return last;
-  }, [messages]);
 
   const scrollToBottom = useCallback(() => {
     requestAnimationFrame(() => {
@@ -130,6 +120,17 @@ export default function StudentSubjectChatPage() {
 
     const run = async () => {
       try {
+        // Create new session for this visit
+        const sessionRes = await fetch("/api/chat/session", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ subjectId }),
+        });
+        if (sessionRes.ok) {
+          const { sessionId } = await sessionRes.json();
+          setSessionId(sessionId);
+        }
+
         const res = await fetch("/api/chat/suggestions", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -149,29 +150,6 @@ export default function StudentSubjectChatPage() {
     run();
   }, [subjectId, hasSyllabus, syllabusContent]);
 
-  // Create a new session for this page visit
-  useEffect(() => {
-    if (!subjectId) return;
-
-    const createSession = async () => {
-      try {
-        const res = await fetch("/api/chat/session", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ subjectId }),
-        });
-        const data = await res.json().catch(() => ({}));
-        if (data.sessionId) {
-          setSessionId(String(data.sessionId));
-        }
-      } catch {
-        // If session creation fails, chat can still function without session tracking
-      }
-    };
-
-    createSession();
-  }, [subjectId]);
-
   const sendMessage = useCallback(
     async (text: string) => {
       const trimmed = text.trim();
@@ -188,11 +166,13 @@ export default function StudentSubjectChatPage() {
           body: JSON.stringify({
             subjectId,
             message: trimmed,
-            history: historyForRequest,
+            history: messages
+              .slice(-6)
+              .map((m) => ({ role: m.role, content: m.content })),
             sessionId,
           }),
         });
-        const json = await res.json().catch(() => ({}));
+        const data = await res.json().catch(() => ({}));
         if (res.status === 429) {
           setIsRateLimited(true);
           const friendly =
@@ -202,9 +182,21 @@ export default function StudentSubjectChatPage() {
             {
               role: "assistant",
               content:
-                typeof json?.message === "string" && json.message
-                  ? `${json.message}\n\n${friendly}`
+                typeof data?.message === "string" && data.message
+                  ? `${data.message}\n\n${friendly}`
                   : friendly,
+            },
+          ]);
+          return;
+        }
+
+        if (res.status === 404 && data?.error === "no_syllabus") {
+          setMessages((prev) => [
+            ...prev,
+            {
+              role: "assistant",
+              content:
+                "⚠️ This subject has no syllabus content yet. Please ask your admin to add content.",
             },
           ]);
           return;
@@ -215,13 +207,13 @@ export default function StudentSubjectChatPage() {
             ...prev,
             {
               role: "assistant",
-              content: json?.error ?? "Something went wrong. Please try again.",
+              content: "I couldn't process that request. Please try again.",
             },
           ]);
           return;
         }
         const reply = String(
-          json?.content ?? json?.response ?? json?.message ?? ""
+          data?.content ?? data?.response ?? data?.message ?? ""
         );
         setMessages((prev) => [...prev, { role: "assistant", content: reply }]);
       } catch {
@@ -237,7 +229,7 @@ export default function StudentSubjectChatPage() {
         requestAnimationFrame(() => inputRef.current?.focus());
       }
     },
-    [historyForRequest, subjectId, sessionId, isRateLimited]
+    [subjectId, sessionId, isRateLimited, inputValue, messages]
   );
 
   const handleSubmit = async () => {
@@ -389,49 +381,7 @@ export default function StudentSubjectChatPage() {
                 <div key={idx} className="flex justify-start">
                   <Card className="max-w-[90%] border bg-card">
                     <CardContent className="px-4 py-3">
-                      <ReactMarkdown
-                        remarkPlugins={[remarkMath]}
-                        rehypePlugins={[rehypeKatex]}
-                        components={{
-                          p: ({ children }) => (
-                            <p className="mb-2 last:mb-0">{children}</p>
-                          ),
-                          ul: ({ children }) => (
-                            <ul className="list-disc pl-4 mb-2 space-y-1">
-                              {children}
-                            </ul>
-                          ),
-                          ol: ({ children }) => (
-                            <ol className="list-decimal pl-4 mb-2 space-y-1">
-                              {children}
-                            </ol>
-                          ),
-                          li: ({ children }) => (
-                            <li className="text-sm">{children}</li>
-                          ),
-                          strong: ({ children }) => (
-                            <strong className="font-semibold">{children}</strong>
-                          ),
-                          h3: ({ children }) => (
-                            <h3 className="font-semibold text-base mt-3 mb-1">
-                              {children}
-                            </h3>
-                          ),
-                          h4: ({ children }) => (
-                            <h4 className="font-semibold text-sm mt-2 mb-1">
-                              {children}
-                            </h4>
-                          ),
-                          hr: () => <hr className="my-3 border-border" />,
-                          code: ({ children }) => (
-                            <code className="bg-muted px-1 py-0.5 rounded text-xs font-mono">
-                              {children}
-                            </code>
-                          ),
-                        }}
-                      >
-                        {m.content}
-                      </ReactMarkdown>
+                      <MarkdownRenderer content={m.content} />
                     </CardContent>
                   </Card>
                 </div>

@@ -83,7 +83,7 @@ export default function RegisterPage() {
   const [confirmPassword, setConfirmPassword] = useState("");
   const [role, setRole] = useState<"student" | "faculty" | "">("");
   const [department, setDepartment] = useState("");
-  const [branch, setBranch] = useState<"chem" | "mech" | "">("");
+  const [branch, setBranch] = useState("");
   const [semester, setSemester] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
@@ -361,13 +361,18 @@ export default function RegisterPage() {
               <>
                 <div className="space-y-2 transition-all">
                   <label htmlFor="branch" className="sr-only">Branch</label>
-                  <Select value={branch} onValueChange={(v) => { setBranch(v as "chem" | "mech"); setTimeout(() => semesterRef.current?.focus(), 0); }} disabled={loading}>
+                  <Select value={branch} onValueChange={(v) => { setBranch(v); setTimeout(() => semesterRef.current?.focus(), 0); }} disabled={loading}>
                     <SelectTrigger ref={branchTriggerRef} id="branch" className="w-full" aria-invalid={!!fieldErrors.branch}>
                       <SelectValue placeholder="Select branch" />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="chem">Chemistry</SelectItem>
-                      <SelectItem value="mech">Mechanical</SelectItem>
+                      <SelectItem value="Mechanical">Mechanical Engineering</SelectItem>
+                      <SelectItem value="Chemical">Chemical Engineering</SelectItem>
+                      <SelectItem value="Computer Science">Computer Science</SelectItem>
+                      <SelectItem value="Information Technology">Information Technology</SelectItem>
+                      <SelectItem value="Electronics">Electronics & Communication</SelectItem>
+                      <SelectItem value="Electrical">Electrical Engineering</SelectItem>
+                      <SelectItem value="Civil">Civil Engineering</SelectItem>
                     </SelectContent>
                   </Select>
                   {fieldErrors.branch && <p className="text-sm text-destructive">{fieldErrors.branch}</p>}

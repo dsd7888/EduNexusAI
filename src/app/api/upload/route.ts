@@ -6,6 +6,68 @@ import { type NextRequest, NextResponse } from "next/server";
 
 const ALLOWED_TYPE = ["syllabus", "notes", "pyq"] as const;
 
+async function extractTextWithLlamaParse(
+  fileBuffer: Buffer,
+  fileName: string
+): Promise<string> {
+  const apiKey = process.env.LLAMA_CLOUD_API_KEY;
+  if (!apiKey) {
+    throw new Error("LLAMA_CLOUD_API_KEY not set");
+  }
+
+  const formData = new FormData();
+  const arrayBuffer = Uint8Array.from(fileBuffer).buffer as ArrayBuffer;
+  formData.append(
+    "file",
+    new Blob([arrayBuffer], { type: "application/pdf" }),
+    fileName
+  );
+
+  // Step 1: Upload file
+  const uploadRes = await fetch(
+    "https://api.cloud.llamaindex.ai/api/parsing/upload",
+    {
+      method: "POST",
+      headers: { Authorization: `Bearer ${apiKey}` },
+      body: formData,
+    }
+  );
+
+  if (!uploadRes.ok) {
+    const err = await uploadRes.text();
+    throw new Error(`LlamaParse upload failed: ${err}`);
+  }
+
+  const { id } = await uploadRes.json();
+  console.log(`[LlamaParse] Job started: ${id}`);
+
+  // Step 2: Poll for result (max 90s, check every 5s)
+  for (let attempt = 0; attempt < 18; attempt++) {
+    await new Promise((r) => setTimeout(r, 5000));
+
+    const resultRes = await fetch(
+      `https://api.cloud.llamaindex.ai/api/parsing/job/${id}/result/markdown`,
+      { headers: { Authorization: `Bearer ${apiKey}` } }
+    );
+
+    if (resultRes.ok) {
+      const { markdown } = await resultRes.json();
+      console.log(
+        `[LlamaParse] Done. Characters extracted: ${markdown.length}`
+      );
+      return markdown;
+    }
+
+    // 404 means still processing — keep polling
+    if (resultRes.status !== 404) {
+      const err = await resultRes.text();
+      throw new Error(`LlamaParse result error: ${err}`);
+    }
+  }
+
+  throw new Error("LlamaParse timeout after 90s");
+}
+
 async function getSubjectCode(subjectId: string): Promise<string> {
   const adminClient = createAdminClient();
   const { data } = await adminClient
@@ -142,6 +204,9 @@ export async function POST(request: NextRequest) {
     const filePath = `${type}/${subjectId}/${fileName}`;
 
     const fileBuffer = await file.arrayBuffer();
+    const buffer = Buffer.from(fileBuffer);
+    const extractedText = await extractTextWithLlamaParse(buffer, file.name);
+    console.log(`[upload] Extracted text length: ${extractedText.length}`);
     const { error: uploadError } = await supabase.storage
       .from("documents")
       .upload(filePath, fileBuffer, {

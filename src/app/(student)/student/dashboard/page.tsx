@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { BookOpen, Brain, ChevronRight, MessageSquare } from "lucide-react";
+import { BookOpen, Brain, ChevronRight, MessageSquare, Target } from "lucide-react";
 
 import { createBrowserClient } from "@/lib/db/supabase-browser";
 import { Button } from "@/components/ui/button";
@@ -34,10 +34,17 @@ interface QuizAttemptRow {
   quizzes: any;
 }
 
+interface PlacementAttemptRow {
+  score: number;
+  created_at: string;
+  placement_companies: any;
+}
+
 export default function StudentDashboard() {
   const [profile, setProfile] = useState<Profile | null>(null);
   const [subjects, setSubjects] = useState<SubjectRow[]>([]);
   const [recentAttempts, setRecentAttempts] = useState<QuizAttemptRow[]>([]);
+  const [placementAttempts, setPlacementAttempts] = useState<PlacementAttemptRow[]>([]);
   const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
@@ -87,6 +94,15 @@ export default function StudentDashboard() {
           .limit(3);
 
         setRecentAttempts((attemptRows ?? []) as QuizAttemptRow[]);
+
+        const { data: placementRows } = await supabase
+          .from("placement_attempts")
+          .select("score, created_at, placement_companies(name)")
+          .eq("student_id", user.id)
+          .order("created_at", { ascending: false })
+          .limit(3);
+
+        setPlacementAttempts((placementRows ?? []) as PlacementAttemptRow[]);
       } catch (err) {
         console.error("[student/dashboard] load error:", err);
       } finally {
@@ -108,6 +124,11 @@ export default function StudentDashboard() {
     const total = recentAttempts.reduce((sum, a) => sum + (a.score ?? 0), 0);
     return Math.round((total / recentAttempts.length) * 10) / 10;
   }, [recentAttempts]);
+
+  const bestPlacementScore = useMemo(() => {
+    if (!placementAttempts.length) return null;
+    return Math.max(...placementAttempts.map((a) => a.score ?? 0));
+  }, [placementAttempts]);
 
   const formatDate = (iso: string) =>
     new Date(iso).toLocaleDateString("en-IN", {
@@ -141,7 +162,7 @@ export default function StudentDashboard() {
       </div>
 
       {/* QUICK STATS */}
-      <div className="grid gap-4 md:grid-cols-3">
+      <div className="grid gap-4 md:grid-cols-4">
         <Card>
           <CardHeader className="flex flex-row items-center justify-between pb-2">
             <CardTitle className="text-xs font-medium text-muted-foreground">
@@ -191,6 +212,27 @@ export default function StudentDashboard() {
             <div className="text-2xl font-semibold">Always on</div>
             <p className="text-xs text-muted-foreground">
               Ask anything about your syllabus
+            </p>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between pb-2">
+            <CardTitle className="text-xs font-medium text-muted-foreground">
+              Best Placement Score
+            </CardTitle>
+            <Target className="size-5 text-purple-500" />
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-semibold">
+              {isLoading
+                ? "—"
+                : bestPlacementScore != null
+                  ? `${bestPlacementScore}%`
+                  : "Not started"}
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Latest placement readiness peak
             </p>
           </CardContent>
         </Card>
@@ -255,6 +297,70 @@ export default function StudentDashboard() {
               </Card>
             ))}
           </div>
+        )}
+      </div>
+
+      {/* PLACEMENT READINESS */}
+      <div className="space-y-3">
+        <div className="flex items-center justify-between">
+          <h2 className="text-lg font-semibold">Placement Readiness</h2>
+          <Button asChild variant="ghost" size="sm">
+            <Link href="/student/placement">
+              View All
+              <ChevronRight className="ml-1 size-4" />
+            </Link>
+          </Button>
+        </div>
+
+        {isLoading ? (
+          <p className="text-sm text-muted-foreground">Loading placement stats...</p>
+        ) : placementAttempts.length === 0 ? (
+          <Card>
+            <CardHeader className="flex flex-row items-center gap-2">
+              <Target className="size-5 text-primary" />
+              <CardTitle className="text-sm font-medium">
+                Start placement prep to see your readiness score
+              </CardTitle>
+            </CardHeader>
+            <CardFooter>
+              <Button asChild size="sm">
+                <Link href="/student/placement">
+                  Practice Now
+                  <ChevronRight className="ml-1 size-4" />
+                </Link>
+              </Button>
+            </CardFooter>
+          </Card>
+        ) : (
+          <Card>
+            <CardContent className="divide-y px-0">
+              {placementAttempts.map((attempt, idx) => {
+                const companyRel = attempt.placement_companies;
+                const companyName =
+                  (Array.isArray(companyRel)
+                    ? companyRel[0]?.name
+                    : companyRel?.name) ?? "Unknown Company";
+                const score = attempt.score ?? 0;
+                return (
+                  <div
+                    // eslint-disable-next-line react/no-array-index-key
+                    key={idx}
+                    className="flex items-center justify-between px-6 py-3 text-sm"
+                  >
+                    <div className="min-w-0">
+                      <p className="truncate font-medium">{companyName}</p>
+                      <p className="text-xs text-muted-foreground">
+                        {formatDate(attempt.created_at)}
+                      </p>
+                    </div>
+                    <Badge variant={scoreBadgeVariant(score)} className="ml-3 shrink-0">
+                      {score.toFixed(1)}%
+                    </Badge>
+                  </div>
+                );
+              })}
+            </CardContent>
+          </Card>
         )}
       </div>
 

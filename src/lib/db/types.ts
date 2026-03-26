@@ -224,3 +224,62 @@ export interface UsageAnalytics {
   cost_inr: number | null;
   created_at: string;
 }
+
+export type PlacementCompany = {
+  id: string;
+  name: string;
+  branches: string[];
+  aptitude_pattern: {
+    quantitative: number;
+    logical: number;
+    verbal: number;
+    technical: number;
+  };
+  difficulty: "easy" | "medium" | "hard";
+  avg_package_lpa: number | null;
+  logo_url: string | null;
+  created_at: string;
+};
+
+export type PlacementAttempt = {
+  id: string;
+  student_id: string;
+  company_id: string;
+  score: number;
+  category_scores: Record<string, number>;
+  total_questions: number;
+  correct_answers: number;
+  time_taken: number | null;
+  created_at: string;
+};
+
+export type PlacementGap = {
+  category: string;
+  studentScore: number;
+  target: number;
+  gap: number;
+  status: "good" | "warning" | "weak";
+};
+
+export type PracticeAttempt = {
+  id: string;
+  student_id: string;
+  module_category: string;
+  subcategory: string;
+  branch: string | null;
+  score: number;
+  total_questions: number;
+  correct_answers: number;
+  time_taken: number | null;
+  created_at: string;
+};
+
+// Module definition type
+export type PracticeModule = {
+  id: string; // slug e.g. 'profit_loss'
+  label: string; // 'Profit & Loss'
+  category: string; // 'quantitative'
+  branches: string[]; // [] means all branches
+  icon: string; // lucide icon name
+  description: string;
+};

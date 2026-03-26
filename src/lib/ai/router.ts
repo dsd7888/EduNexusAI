@@ -7,6 +7,7 @@ const TASK_TO_MODEL: Record<string, "flash" | "pro"> = {
   ppt_gen: "flash",
   qpaper_gen: "flash",
   refine: "flash",
+  placement_gen: "pro",
 };
 
 const DEFAULT_MODEL: "flash" | "pro" = "flash";

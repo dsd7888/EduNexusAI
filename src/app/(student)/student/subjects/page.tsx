@@ -1,11 +1,6 @@
 "use client";
 
-import "katex/dist/katex.min.css";
-
-import ReactMarkdown from "react-markdown";
-import rehypeKatex from "rehype-katex";
-import remarkMath from "remark-math";
-
+import MarkdownRenderer from "@/components/chat/MarkdownRenderer";
 import { createBrowserClient } from "@/lib/db/supabase-browser";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -425,12 +420,7 @@ export default function StudentSubjectsPage() {
                   </div>
                 </div>
                 <div className="max-h-[60vh] overflow-y-auto rounded-md border p-3 text-sm">
-                  <ReactMarkdown
-                    remarkPlugins={[remarkMath]}
-                    rehypePlugins={[rehypeKatex]}
-                  >
-                    {notesContent}
-                  </ReactMarkdown>
+                  <MarkdownRenderer content={notesContent} />
                 </div>
               </div>
             )}
