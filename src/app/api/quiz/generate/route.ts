@@ -1,4 +1,7 @@
-import { buildQuizPrompt, parseQuizResponse } from "@/lib/quiz/generator";
+import {
+  buildQuizPrompt,
+  normalizeQuizQuestions,
+} from "@/lib/quiz/generator";
 import { routeAI } from "@/lib/ai/router";
 import {
   createAdminClient,
@@ -9,6 +12,58 @@ import type { NextRequest } from "next/server";
 
 const VALID_DIFFICULTIES = ["easy", "medium", "hard", "mixed"] as const;
 const VALID_TYPES = ["mcq", "true_false", "short", "multiple_correct", "match"] as const;
+
+function parseQuizResponse(raw: string): any[] | null {
+  let cleaned = raw
+    .replace(/```json\s*/gi, "")
+    .replace(/```\s*/gi, "")
+    .trim();
+
+  try {
+    const parsed = JSON.parse(cleaned);
+    if (Array.isArray(parsed) && parsed.length >= 1) return parsed;
+    if (parsed?.questions && Array.isArray(parsed.questions))
+      return parsed.questions;
+  } catch {}
+
+  try {
+    const start = cleaned.indexOf("[");
+    const end = cleaned.lastIndexOf("]");
+    if (start !== -1 && end > start) {
+      const fixed = cleaned
+        .slice(start, end + 1)
+        .replace(/,\s*}/g, "}")
+        .replace(/,\s*]/g, "]");
+      const parsed = JSON.parse(fixed);
+      if (Array.isArray(parsed) && parsed.length >= 1) return parsed;
+    }
+  } catch {}
+
+  try {
+    const objects: any[] = [];
+    const search = cleaned;
+    let depth = 0;
+    let objStart = -1;
+    for (let i = 0; i < search.length; i++) {
+      if (search[i] === "{") {
+        if (depth === 0) objStart = i;
+        depth++;
+      } else if (search[i] === "}") {
+        depth--;
+        if (depth === 0 && objStart !== -1) {
+          try {
+            const obj = JSON.parse(search.slice(objStart, i + 1));
+            if (obj.question || obj.text) objects.push(obj);
+          } catch {}
+          objStart = -1;
+        }
+      }
+    }
+    if (objects.length >= 1) return objects;
+  } catch {}
+
+  return null;
+}
 
 export async function POST(request: NextRequest) {
   try {
@@ -146,6 +201,8 @@ export async function POST(request: NextRequest) {
       )
       .join("\n\n");
 
+    const syllabusForPrompt = (combinedSyllabus ?? "").slice(0, 2000);
+
     const subjectNameForPrompt = subjectBlocks
       .map((s) => s.name)
       .join(", ");
@@ -172,7 +229,7 @@ export async function POST(request: NextRequest) {
 
     const prompt = buildQuizPrompt({
       subjectName: subjectNameForPrompt,
-      syllabusContent: combinedSyllabus,
+      syllabusContent: syllabusForPrompt,
       questionCount,
       difficulty,
       questionTypes: questionTypesFinal,
@@ -185,10 +242,19 @@ export async function POST(request: NextRequest) {
     });
 
     const rawText = String(ai.content ?? "");
-    const questions = parseQuizResponse(rawText);
+    const rawItems = parseQuizResponse(rawText);
+    if (rawItems === null) {
+      console.error("[quiz/generate] parseQuizResponse returned null");
+      return Response.json(
+        { error: "Failed to generate quiz. Please try again." },
+        { status: 500 }
+      );
+    }
+
+    const questions = normalizeQuizQuestions(rawItems);
 
     if (!questions || questions.length === 0) {
-      console.error("[quiz/generate] parseQuizResponse returned null or empty");
+      console.error("[quiz/generate] normalizeQuizQuestions returned null or empty");
       return Response.json(
         {
           error: "generation_failed",

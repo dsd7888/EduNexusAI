@@ -27,6 +27,53 @@ export const PAGE_H = 842; // A4 height in points
 export const MARGIN = 48;
 export const CONTENT_W = PAGE_W - MARGIN * 2;
 
+export async function fetchMermaidAsPng(
+  mermaidCode: string
+): Promise<Uint8Array | null> {
+  try {
+    const encoded = Buffer.from(mermaidCode.trim(), "utf-8").toString(
+      "base64url"
+    );
+    const url = `https://mermaid.ink/img/${encoded}?type=png&bgColor=white`;
+    const res = await fetch(url, {
+      signal: AbortSignal.timeout(8000),
+    });
+    if (!res.ok) {
+      console.warn("[mermaid.ink] HTTP", res.status);
+      return null;
+    }
+    const buffer = await res.arrayBuffer();
+    return new Uint8Array(buffer);
+  } catch (err) {
+    console.error("[mermaid.ink] Failed:", err);
+    return null;
+  }
+}
+
+export function extractMermaidBlocks(text: string): Array<{
+  type: "text" | "mermaid";
+  content: string;
+}> {
+  const parts: Array<{ type: "text" | "mermaid"; content: string }> = [];
+  const regex = /```mermaid\s*([\s\S]*?)```/gi;
+  let lastIndex = 0;
+  let match: RegExpExecArray | null;
+
+  while ((match = regex.exec(text)) !== null) {
+    if (match.index > lastIndex) {
+      const before = text.slice(lastIndex, match.index).trim();
+      if (before) parts.push({ type: "text", content: before });
+    }
+    parts.push({ type: "mermaid", content: (match[1] ?? "").trim() });
+    lastIndex = match.index + match[0].length;
+  }
+
+  const remaining = text.slice(lastIndex).trim();
+  if (remaining) parts.push({ type: "text", content: remaining });
+
+  return parts.length > 0 ? parts : [{ type: "text", content: text }];
+}
+
 type FontBundle = {
   regular: PDFFont;
   bold: PDFFont;
@@ -221,6 +268,43 @@ export class PDFBuilder {
       color,
     });
     this.y += 8;
+  }
+
+  async addImage(pngBytes: Uint8Array, caption?: string): Promise<void> {
+    const img = await this.doc.embedPng(pngBytes);
+    const { width, height } = img.scale(1);
+
+    const maxW = CONTENT_W * 0.85;
+    const scale = Math.min(1, maxW / width);
+    const drawW = width * scale;
+    const drawH = height * scale;
+
+    const needed = drawH + 20 + (caption ? 16 : 0);
+    this.checkNewPage(needed);
+
+    const x = MARGIN + (CONTENT_W - drawW) / 2;
+
+    this.currentPage.drawImage(img, {
+      x,
+      y: this.py(this.y) - drawH,
+      width: drawW,
+      height: drawH,
+    });
+    this.y += drawH;
+
+    if (caption) {
+      this.space(4);
+      this.currentPage.drawText(caption, {
+        x: MARGIN,
+        y: this.py(this.y + 9),
+        size: 8,
+        font: this.fonts.italic,
+        color: COLORS.light,
+        maxWidth: CONTENT_W,
+      });
+      this.y += 12;
+    }
+    this.space(8);
   }
 
   // Draw a filled rectangle

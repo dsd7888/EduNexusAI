@@ -115,67 +115,51 @@ Keep it to 2-3 sentences max. Friendly, encouraging tone.
 NEVER say "the answer is", "correct answer", "the right answer", or similar.`;
 }
 
-export function parseQuizResponse(rawText: string): QuizQuestion[] | null {
-  try {
-    let text = String(rawText ?? "").trim();
-    if (!text) return null;
+/** Normalizes AI output items into validated quiz questions (after JSON extraction). */
+export function normalizeQuizQuestions(items: unknown[]): QuizQuestion[] | null {
+  if (!Array.isArray(items) || items.length < 1) return null;
 
-    if (text.startsWith("```")) {
-      text = text.replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/i, "").trim();
-    }
+  const result: QuizQuestion[] = [];
+  for (let i = 0; i < items.length; i++) {
+    const q = items[i];
+    if (!q || typeof q !== "object") continue;
+    const item = q as Record<string, unknown>;
+    const id = String(item?.id ?? `q${i + 1}`);
+    const question = String(item?.question ?? "");
+    const type = item?.type;
+    const validType =
+      type === "mcq" ||
+      type === "true_false" ||
+      type === "short" ||
+      type === "multiple_correct" ||
+      type === "match";
+    if (!validType || !question) continue;
 
-    const parsed: unknown = JSON.parse(text);
-    if (!parsed || typeof parsed !== "object") return null;
+    const correctAnswer = String(item?.correctAnswer ?? "");
+    const explanation = String(item?.explanation ?? "");
+    const difficulty = item?.difficulty;
+    const validDifficulty =
+      difficulty === "easy" || difficulty === "medium" || difficulty === "hard";
+    if (!correctAnswer || !explanation || !validDifficulty) continue;
 
-    const obj = parsed as Record<string, unknown>;
-    const questions = obj?.questions;
-    if (!Array.isArray(questions) || questions.length < 1) return null;
+    const options =
+      Array.isArray(item?.options) &&
+      (type === "mcq" || type === "multiple_correct" || type === "match")
+        ? (item.options as string[]).map(String)
+        : undefined;
+    const unit = item?.unit != null ? String(item.unit) : undefined;
 
-    const result: QuizQuestion[] = [];
-    for (let i = 0; i < questions.length; i++) {
-      const q = questions[i];
-      if (!q || typeof q !== "object") continue;
-      const item = q as Record<string, unknown>;
-      const id = String(item?.id ?? `q${i + 1}`);
-      const question = String(item?.question ?? "");
-      const type = item?.type;
-      const validType =
-        type === "mcq" ||
-        type === "true_false" ||
-        type === "short" ||
-        type === "multiple_correct" ||
-        type === "match";
-      if (!validType || !question) continue;
-
-      const correctAnswer = String(item?.correctAnswer ?? "");
-      const explanation = String(item?.explanation ?? "");
-      const difficulty = item?.difficulty;
-      const validDifficulty =
-        difficulty === "easy" || difficulty === "medium" || difficulty === "hard";
-      if (!correctAnswer || !explanation || !validDifficulty) continue;
-
-      const options =
-        Array.isArray(item?.options) &&
-        (type === "mcq" || type === "multiple_correct" || type === "match")
-          ? (item.options as string[]).map(String)
-          : undefined;
-      const unit =
-        item?.unit != null ? String(item.unit) : undefined;
-
-      result.push({
-        id,
-        question,
-        type,
-        options,
-        correctAnswer,
-        explanation,
-        difficulty,
-        unit,
-      });
-    }
-
-    return result.length > 0 ? result : null;
-  } catch {
-    return null;
+    result.push({
+      id,
+      question,
+      type,
+      options,
+      correctAnswer,
+      explanation,
+      difficulty,
+      unit,
+    });
   }
+
+  return result.length > 0 ? result : null;
 }

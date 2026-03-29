@@ -57,6 +57,7 @@ import Link from "next/link";
 import {
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
 } from "react";
@@ -132,6 +133,8 @@ function truncate(str: string, len: number): string {
   return str.slice(0, len) + "...";
 }
 
+const activeQuizGenerations = new Set<string>();
+
 export default function StudentQuizPage() {
   // ── SETUP STATE ────────────────────────────────────────────
   const [subjects, setSubjects] = useState<SubjectRow[]>([]);
@@ -160,9 +163,16 @@ export default function StudentQuizPage() {
   const [showEndQuizDialog, setShowEndQuizDialog] = useState(false);
   const [hints, setHints] = useState<Record<string, HintState>>({});
   const [quizTabWarning, setQuizTabWarning] = useState(false);
+  /** Wall-clock start for elapsed timer (restore on resume). */
+  const [quizSessionStart, setQuizSessionStart] = useState<number | null>(null);
+  const [inProgressQuiz, setInProgressQuiz] = useState<{
+    quizId: string;
+    questionsAnswered: number;
+    total: number;
+    savedAt: number;
+  } | null>(null);
 
-  const quizStorageKey = `quiz_attempt_${quizId ?? "current"}`;
-  const quizAnswersKey = quizId ? `quiz_${quizId}` : null;
+  const quizStorageKey = quizId ? `quiz_session_${quizId}` : null;
 
   // ── RESULTS STATE ──────────────────────────────────────────
   const [score, setScore] = useState(0);
@@ -173,7 +183,6 @@ export default function StudentQuizPage() {
   const [resultsPage, setResultsPage] = useState(1);
   const RESULTS_PER_PAGE = 10;
   const breakdownRef = useRef<HTMLDivElement | null>(null);
-  const isGeneratingRef = useRef(false);
   // ── HISTORY STATE ──────────────────────────────────────────
   const [historyAttempts, setHistoryAttempts] = useState<HistoryAttempt[]>([]);
   const [loadingHistory, setLoadingHistory] = useState(false);
@@ -219,7 +228,9 @@ export default function StudentQuizPage() {
       const { data, error } = await supabase
         .from("modules")
         .select("id, name, module_number, subject_id, subjects(name, code)")
-        .in("subject_id", ids);
+        .in("subject_id", ids)
+        .order("subject_id", { ascending: true })
+        .order("module_number", { ascending: true });
       if (!error && data) {
         const rows: ModuleRow[] = (data as any[]).map((m) => {
           const subj = m.subjects as { name: string; code: string } | null;
@@ -375,6 +386,32 @@ export default function StudentQuizPage() {
     }
   }, [selectedSubjectIds, fetchModules, subjects]);
 
+  const modulesBySubject = useMemo(() => {
+    const map = new Map<
+      string,
+      {
+        subjectId: string;
+        subjectName: string;
+        subjectCode: string;
+        modules: ModuleRow[];
+      }
+    >();
+
+    for (const mod of modules) {
+      const key = mod.subject_id;
+      if (!map.has(key)) {
+        map.set(key, {
+          subjectId: key,
+          subjectName: mod.subject_name,
+          subjectCode: mod.subject_code,
+          modules: [],
+        });
+      }
+      map.get(key)!.modules.push(mod);
+    }
+    return Array.from(map.values());
+  }, [modules]);
+
   const toggleQuestionType = (
     id: "mcq" | "true_false" | "short" | "multiple_correct" | "match"
   ) => {
@@ -393,9 +430,10 @@ export default function StudentQuizPage() {
   };
 
   const generateQuiz = useCallback(async () => {
-    if (isGeneratingRef.current) return;
     if (!selectedSubjectIds.length) return;
-    isGeneratingRef.current = true;
+    const lockKey = `quiz_${[...selectedSubjectIds].sort().join("_")}`;
+    if (activeQuizGenerations.has(lockKey)) return;
+    activeQuizGenerations.add(lockKey);
     setIsGenerating(true);
     try {
       const res = await fetch("/api/quiz/generate", {
@@ -417,19 +455,38 @@ export default function StudentQuizPage() {
       qs.forEach((q) => {
         hintInit[q.id] = { text: null, isLoading: false, used: false };
       });
-      setQuizId(typeof data.quizId === "string" ? data.quizId : null);
+      const newQuizId = typeof data.quizId === "string" ? data.quizId : null;
+      const started = Date.now();
+      setQuizId(newQuizId);
       setQuestions(qs);
       setHints(hintInit);
       setAnswers({});
       setCurrentIndex(0);
       setElapsed(0);
+      setQuizSessionStart(started);
       setQuizTabWarning(false);
       setView("taking");
+      if (newQuizId) {
+        try {
+          const configKey = `quiz_config_${[...selectedSubjectIds].sort().join("_")}`;
+          localStorage.setItem(
+            configKey,
+            JSON.stringify({ quizId: newQuizId, savedAt: Date.now() })
+          );
+          Object.keys(localStorage)
+            .filter((k) => k.startsWith("quiz_session_"))
+            .forEach((k) => {
+              if (k !== `quiz_session_${newQuizId}`) {
+                localStorage.removeItem(k);
+              }
+            });
+        } catch {}
+      }
     } catch (e) {
       console.error(e);
       alert(e instanceof Error ? e.message : "Failed to generate quiz");
     } finally {
-      isGeneratingRef.current = false;
+      activeQuizGenerations.delete(lockKey);
       setIsGenerating(false);
     }
   }, [
@@ -452,21 +509,66 @@ export default function StudentQuizPage() {
   }, [view, historyLoaded, loadingHistory, fetchHistory]);
 
   useEffect(() => {
-    if (view !== "taking" || !quizAnswersKey) return;
+    try {
+      const keys = Object.keys(localStorage).filter((k) =>
+        k.startsWith("quiz_session_")
+      );
+      for (const key of keys) {
+        const raw = localStorage.getItem(key);
+        const saved = raw ? (JSON.parse(raw) as Record<string, unknown>) : {};
+        const ageMinutes =
+          (Date.now() - Number(saved.savedAt ?? 0)) / 60000;
+        if (
+          ageMinutes < 60 &&
+          Array.isArray(saved.questions) &&
+          saved.questions.length > 0
+        ) {
+          const sid = String(
+            saved.quizId ?? key.replace(/^quiz_session_/, "")
+          );
+          if (!sid) {
+            localStorage.removeItem(key);
+            continue;
+          }
+          setInProgressQuiz({
+            quizId: sid,
+            questionsAnswered: Object.keys(
+              (saved.answers as Record<string, string>) ?? {}
+            ).length,
+            total: (saved.questions as unknown[]).length,
+            savedAt: Number(saved.savedAt ?? 0),
+          });
+          break;
+        }
+        localStorage.removeItem(key);
+      }
+    } catch {}
+  }, []);
+
+  useEffect(() => {
+    if (view !== "taking" || !quizId || !quizStorageKey) return;
     try {
       localStorage.setItem(
-        quizAnswersKey,
+        quizStorageKey,
         JSON.stringify({
-          answers,
-          currentIndex,
           quizId,
           questions,
+          answers,
+          currentIndex,
+          startTime: quizSessionStart,
           savedAt: Date.now(),
-          quizStorageKey,
         })
       );
     } catch {}
-  }, [answers, currentIndex, view, quizId, questions, quizAnswersKey]);
+  }, [
+    answers,
+    currentIndex,
+    view,
+    quizId,
+    questions,
+    quizStorageKey,
+    quizSessionStart,
+  ]);
 
   useEffect(() => {
     if (view !== "taking") return;
@@ -542,11 +644,15 @@ export default function StudentQuizPage() {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data?.error ?? "Failed to submit");
-      if (quizAnswersKey) {
+      if (quizStorageKey) {
         try {
-          localStorage.removeItem(quizAnswersKey);
+          localStorage.removeItem(quizStorageKey);
         } catch {}
       }
+      try {
+        const configKey = `quiz_config_${[...selectedSubjectIds].sort().join("_")}`;
+        localStorage.removeItem(configKey);
+      } catch {}
       setScore(data.score ?? 0);
       setCorrectCount(data.correctCount ?? 0);
       setTotalCount(data.totalCount ?? 0);
@@ -562,14 +668,19 @@ export default function StudentQuizPage() {
   };
 
   const resetToSetup = () => {
-    if (quizAnswersKey) {
+    if (quizId) {
       try {
-        localStorage.removeItem(quizAnswersKey);
+        localStorage.removeItem(`quiz_session_${quizId}`);
       } catch {}
     }
+    try {
+      const configKey = `quiz_config_${[...selectedSubjectIds].sort().join("_")}`;
+      localStorage.removeItem(configKey);
+    } catch {}
     setView("setup");
     setQuestions([]);
     setQuizId(null);
+    setQuizSessionStart(null);
     setBreakdown([]);
   };
 
@@ -624,6 +735,98 @@ export default function StudentQuizPage() {
     return (
       <div className="space-y-6">
         {renderTabs()}
+        {inProgressQuiz && (
+          <div
+            className="flex items-center justify-between gap-4 rounded-lg border border-amber-200 bg-amber-50 p-4 dark:bg-amber-950/30"
+          >
+            <div className="flex items-center gap-3">
+              <Clock className="size-4 shrink-0 text-amber-600" />
+              <div>
+                <p className="text-sm font-semibold text-amber-800 dark:text-amber-200">
+                  Quiz in progress
+                </p>
+                <p className="text-xs text-amber-700 dark:text-amber-300">
+                  {inProgressQuiz.questionsAnswered} of {inProgressQuiz.total}{" "}
+                  questions answered
+                </p>
+              </div>
+            </div>
+            <div className="flex shrink-0 gap-2">
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                className="h-7 border-amber-400 text-xs text-amber-700"
+                onClick={() => {
+                  const key = `quiz_session_${inProgressQuiz.quizId}`;
+                  try {
+                    const raw = localStorage.getItem(key);
+                    const saved = raw
+                      ? (JSON.parse(raw) as {
+                          quizId?: string;
+                          questions?: QuizQuestion[];
+                          answers?: Record<string, string>;
+                          currentIndex?: number;
+                          startTime?: number;
+                        })
+                      : null;
+                    if (saved?.questions?.length) {
+                      const hintInit: Record<string, HintState> = {};
+                      saved.questions.forEach((q) => {
+                        hintInit[q.id] = {
+                          text: null,
+                          isLoading: false,
+                          used: false,
+                        };
+                      });
+                      setHints(hintInit);
+                      setQuizId(
+                        typeof saved.quizId === "string"
+                          ? saved.quizId
+                          : inProgressQuiz.quizId
+                      );
+                      setQuestions(saved.questions);
+                      setAnswers(saved.answers ?? {});
+                      setCurrentIndex(saved.currentIndex ?? 0);
+                      const st =
+                        typeof saved.startTime === "number"
+                          ? saved.startTime
+                          : Date.now();
+                      setQuizSessionStart(st);
+                      setElapsed(
+                        Math.max(0, Math.floor((Date.now() - st) / 1000))
+                      );
+                      setQuizTabWarning(false);
+                      setView("taking");
+                      setInProgressQuiz(null);
+                    }
+                  } catch {
+                    /* ignore */
+                  }
+                }}
+              >
+                Resume →
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant="ghost"
+                className="h-7 text-xs text-muted-foreground"
+                onClick={() => {
+                  const key = `quiz_session_${inProgressQuiz.quizId}`;
+                  try {
+                    localStorage.removeItem(key);
+                  } catch {
+                    /* ignore */
+                  }
+                  setInProgressQuiz(null);
+                }}
+              >
+                Discard
+              </Button>
+            </div>
+          </div>
+        )}
         <div className="flex items-center gap-2">
           <Brain className="size-8 text-primary" />
           <h1 className="text-2xl font-semibold tracking-tight">Quiz</h1>
@@ -720,22 +923,36 @@ export default function StudentQuizPage() {
                   </div>
                 ) : (
                   <div className="flex flex-col gap-2">
-                    {modules.map((m) => (
+                    {modulesBySubject.map((group) => (
                       <div
-                        key={m.id}
-                        className="flex items-center space-x-2"
+                        key={group.subjectId}
+                        className="space-y-2"
                       >
-                        <Checkbox
-                          id={`topic-${m.id}`}
-                          checked={selectedTopics.includes(m.name)}
-                          onCheckedChange={() => toggleTopic(m.name)}
-                        />
-                        <Label
-                          htmlFor={`topic-${m.id}`}
-                          className="text-sm font-normal cursor-pointer"
-                        >
-                          Module {m.module_number}: {m.name}
-                        </Label>
+                        <div className="flex items-center gap-2 pt-2 first:pt-0">
+                          <span className="text-xs font-semibold uppercase tracking-wide text-primary">
+                            {group.subjectCode || "—"}
+                          </span>
+                          <span className="text-xs text-muted-foreground">
+                            — {group.subjectName}
+                          </span>
+                          <div className="h-px flex-1 bg-border" />
+                        </div>
+                        {group.modules.map((m) => (
+                          <label
+                            key={m.id}
+                            htmlFor={`topic-${m.id}`}
+                            className="flex cursor-pointer items-center gap-3 rounded-lg p-2 hover:bg-muted/50"
+                          >
+                            <Checkbox
+                              id={`topic-${m.id}`}
+                              checked={selectedTopics.includes(m.name)}
+                              onCheckedChange={() => toggleTopic(m.name)}
+                            />
+                            <span className="text-sm">
+                              Module {m.module_number}: {m.name}
+                            </span>
+                          </label>
+                        ))}
                       </div>
                     ))}
                   </div>
@@ -917,7 +1134,7 @@ export default function StudentQuizPage() {
           </CardHeader>
           <CardContent className="space-y-4">
             {(q.type === "mcq" || q.type === "match") && q.options && (
-              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+              <div className="grid grid-cols-1 gap-3">
                 {q.options.map((opt) => {
                   const letMap: Record<number, string> = {
                     0: "A",

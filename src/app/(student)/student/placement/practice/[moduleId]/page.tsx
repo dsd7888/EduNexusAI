@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import {
+  AlertTriangle,
   BookOpen,
   CheckCircle,
   Download,
@@ -79,6 +80,7 @@ export default function PracticePlacementPage() {
   const router = useRouter();
   const params = useParams<{ moduleId: string }>();
   const moduleId = params?.moduleId;
+  const practiceStorageKey = moduleId ? `practice_session_${moduleId}` : "";
 
   const [view, setView] = useState<View>("loading");
   const [questions, setQuestions] = useState<PracticeQuestion[]>([]);
@@ -91,6 +93,7 @@ export default function PracticePlacementPage() {
 
   const [startTime, setStartTime] = useState<number | null>(null);
   const [isExporting, setIsExporting] = useState(false);
+  const [tabWarning, setTabWarning] = useState(false);
 
   const difficultyBadge = useCallback((lvl?: string) => {
     const normalized = String(lvl ?? "").toLowerCase();
@@ -192,10 +195,12 @@ export default function PracticePlacementPage() {
   }, [moduleId, router]);
 
   useEffect(() => {
-    if (!moduleId) return;
+    if (!moduleId || !practiceStorageKey) return;
 
     try {
-      const savedResult = localStorage.getItem(`practice_result_${moduleId}`);
+      const savedResult = localStorage.getItem(
+        `practice_result_${moduleId}`
+      );
       if (savedResult) {
         const parsed = JSON.parse(savedResult) as {
           completedAt?: number;
@@ -229,19 +234,120 @@ export default function PracticePlacementPage() {
       }
     } catch {}
 
+    try {
+      const savedSession = localStorage.getItem(practiceStorageKey);
+      if (savedSession) {
+        const parsed = JSON.parse(savedSession) as {
+          savedAt?: number;
+          questions?: PracticeQuestion[];
+          answers?: Record<string, string>;
+          currentIndex?: number;
+          showExplanation?: boolean;
+          startTime?: number | null;
+          moduleInfo?: ModuleInfo | null;
+          moduleId?: string;
+        };
+        const ageMinutes = (Date.now() - (parsed.savedAt ?? 0)) / 60000;
+        if (
+          ageMinutes < 60 &&
+          Array.isArray(parsed.questions) &&
+          parsed.questions.length > 0
+        ) {
+          const mid = String(moduleId);
+          setQuestions(parsed.questions);
+          setAnswers(parsed.answers ?? {});
+          setCurrentIndex(parsed.currentIndex ?? 0);
+          setShowExplanation(parsed.showExplanation ?? false);
+          setStartTime(
+            typeof parsed.startTime === "number"
+              ? parsed.startTime
+              : Date.now()
+          );
+          if (
+            parsed.moduleInfo &&
+            typeof parsed.moduleInfo.id === "string" &&
+            parsed.moduleInfo.label
+          ) {
+            setModuleInfo({
+              id: parsed.moduleInfo.id,
+              label: String(parsed.moduleInfo.label),
+              category: String(parsed.moduleInfo.category ?? "practice"),
+            });
+          } else {
+            const mod =
+              PRACTICE_MODULES.find((m) => m.id === mid) ??
+              PRACTICE_MODULES.find(
+                (m) => mid.includes(m.id) || m.id.includes(mid)
+              );
+            setModuleInfo(
+              mod
+                ? { id: mod.id, label: mod.label, category: mod.category }
+                : null
+            );
+          }
+          setView("test");
+          return;
+        }
+        localStorage.removeItem(practiceStorageKey);
+      }
+    } catch {}
+
     void generatePractice();
-  }, [moduleId, generatePractice]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- restore/generate once per moduleId
+  }, [moduleId, practiceStorageKey]);
 
   useEffect(() => {
-    if (view === "results") return;
+    if (view !== "test" || questions.length === 0 || !practiceStorageKey)
+      return;
+    try {
+      localStorage.setItem(
+        practiceStorageKey,
+        JSON.stringify({
+          questions,
+          answers,
+          currentIndex,
+          showExplanation,
+          startTime,
+          moduleInfo,
+          moduleId,
+          savedAt: Date.now(),
+        })
+      );
+    } catch {}
+  }, [
+    answers,
+    currentIndex,
+    moduleId,
+    moduleInfo,
+    practiceStorageKey,
+    questions,
+    showExplanation,
+    startTime,
+    view,
+  ]);
 
-    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
-      if (view === "loading" || view === "test") {
-        e.preventDefault();
-        e.returnValue = "Your practice session will be lost.";
-        return e.returnValue;
-      }
+  useEffect(() => {
+    if (view !== "test") return;
+    const handleVis = () => {
+      if (!document.hidden) setTabWarning(true);
     };
+    document.addEventListener("visibilitychange", handleVis);
+    return () => document.removeEventListener("visibilitychange", handleVis);
+  }, [view]);
+
+  useEffect(() => {
+    if (view !== "test") return;
+    const warn = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      e.returnValue = "Your practice session will be lost.";
+      return e.returnValue;
+    };
+    window.addEventListener("beforeunload", warn);
+    return () => window.removeEventListener("beforeunload", warn);
+  }, [view]);
+
+  useEffect(() => {
+    if (view !== "loading") return;
 
     const handlePopState = (e: PopStateEvent) => {
       e.preventDefault();
@@ -249,10 +355,8 @@ export default function PracticePlacementPage() {
     };
 
     window.history.pushState(null, "", window.location.href);
-    window.addEventListener("beforeunload", handleBeforeUnload);
     window.addEventListener("popstate", handlePopState);
     return () => {
-      window.removeEventListener("beforeunload", handleBeforeUnload);
       window.removeEventListener("popstate", handlePopState);
     };
   }, [view]);
@@ -317,13 +421,18 @@ export default function PracticePlacementPage() {
           );
         } catch {}
       }
+      if (practiceStorageKey) {
+        try {
+          localStorage.removeItem(practiceStorageKey);
+        } catch {}
+      }
       setResults(data);
       setView("results");
     } catch (err) {
       console.error("[placement/practice/submit]", err);
       toast.error("Submit failed. Please try again.");
     }
-  }, [answers, moduleId, moduleInfo, questions, router, startTime]);
+  }, [answers, moduleId, moduleInfo, practiceStorageKey, questions, router, startTime]);
 
   const handleExport = useCallback(async () => {
     if (!results) return;
@@ -530,6 +639,17 @@ export default function PracticePlacementPage() {
   // view === "test"
   return (
     <div className="space-y-4">
+      {tabWarning && (
+        <div
+          className="fixed top-4 left-1/2 z-50 flex -translate-x-1/2 cursor-pointer items-center gap-2 rounded-lg bg-amber-500 px-4 py-2 text-white shadow-lg"
+          onClick={() => setTabWarning(false)}
+        >
+          <AlertTriangle className="size-4" />
+          <span className="text-sm font-medium">
+            Tab switch detected. Click to dismiss.
+          </span>
+        </div>
+      )}
       <div className="flex items-center justify-between gap-3 rounded-lg border p-3">
         <div className="flex min-w-0 items-center gap-3">
           {moduleInfo && (
