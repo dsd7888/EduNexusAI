@@ -61,3 +61,9 @@ The smarter architecture for post-pilot:
 **Slide templates as structured prompts.** Instead of one big batch prompt, each slide type gets its own focused prompt. Concept slide prompt is 200 tokens. Example slide prompt is 150 tokens. Much more reliable than asking Flash to generate 5 different slide types in one call.
 
 None of this requires a different tech stack. All implementable with what you have. Priority order for post-pilot: parallel batches first (biggest speed win, 2 hours), then JSON schema enforcement (biggest reliability win, 1 day), then iterative refinement (biggest quality win, 3 days).
+
+1. Practice Q based on quiz feedbacks -- just like placement prep
+2. Medical oriented-- adaptable to fields
+3. Placement—text box based answers too, with yt reference… &/ same such reference sources in AI chat.
+4. pdf embedd and all using gemini 
+5. Look into Q paper and  handwritten ans input.

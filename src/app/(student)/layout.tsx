@@ -13,6 +13,7 @@ import {
   MessageSquare,
   Menu,
   Target,
+  User,
   X,
 } from "lucide-react";
 
@@ -80,9 +81,9 @@ export default function StudentLayout({ children }: LayoutProps) {
           <Clock className="size-4" />
           <span>Chat History</span>
         </NavLink>
-        <NavLink href="/student/history">
-          <History className="size-4" />
-          <span>History</span>
+        <NavLink href="/student/profile">
+          <User className="size-4" />
+          <span>Profile</span>
         </NavLink>
       </nav>
 

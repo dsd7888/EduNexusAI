@@ -279,6 +279,8 @@ export default function PlacementHistoryPage() {
           gaps: [],
           questions: selectedAttempt.questions,
           answers: selectedAttempt.answers ?? {},
+          topStrengths: selectedAttempt.top_strengths ?? [],
+          subcategoryGaps: selectedAttempt.subcategory_gaps ?? [],
         }),
       });
       if (!res.ok) throw new Error("Export failed");
@@ -487,16 +489,14 @@ export default function PlacementHistoryPage() {
                           </CardHeader>
                           <CardContent className="space-y-3">
                             {(selectedAttempt.subcategory_gaps ?? [])
-                              .slice(0, 3)
-                              .map((gap) => (
+                              .slice(0, 6)
+                              .map((gap, gapIdx) => (
                                 <div
-                                  key={gap.subcategory}
-                                  className="flex flex-wrap items-center justify-between gap-2 rounded border border-red-100 px-3 py-2 dark:border-red-900"
+                                  key={gap.subcategory || gap.label || `gap-${gapIdx}`}
+                                  className="flex items-center justify-between rounded-lg bg-red-50 p-2 dark:bg-red-950/20"
                                 >
                                   <div>
-                                    <p className="text-sm font-medium">
-                                      {gap.label}
-                                    </p>
+                                    <p className="text-sm font-medium">{gap.label}</p>
                                     <p className="text-xs text-muted-foreground">
                                       {gap.score}%
                                     </p>
@@ -504,10 +504,10 @@ export default function PlacementHistoryPage() {
                                   <Button
                                     size="sm"
                                     variant="outline"
-                                    className="shrink-0"
+                                    className="h-7 text-xs"
                                     onClick={() =>
-                                      router.push(
-                                        `/student/placement/practice/${gap.subcategory}`
+                                      router.replace(
+                                        `/student/placement/practice/${gap.subcategory ?? gap.label?.toLowerCase().replace(/\s+/g, "_")}`
                                       )
                                     }
                                   >
@@ -584,6 +584,7 @@ export default function PlacementHistoryPage() {
                                 </p>
                               ) : (
                                 filteredQuestions.map((q, index) => {
+                                  const rowKey = `${String(q.id)}-${index}`;
                                   const studentAns = String(
                                     answers[q.id] ?? ""
                                   )
@@ -595,7 +596,7 @@ export default function PlacementHistoryPage() {
                                   const isCorrect = studentAns === correctAns;
                                   return (
                                     <div
-                                      key={q.id}
+                                      key={rowKey}
                                       className="space-y-3 border-b pb-4 last:border-b-0"
                                     >
                                       <div className="flex items-center justify-between gap-2">
@@ -642,7 +643,7 @@ export default function PlacementHistoryPage() {
                                               correctAns === letter;
                                             return (
                                               <div
-                                                key={`${q.id}-opt-${idx}`}
+                                                key={`${rowKey}-opt-${idx}`}
                                                 className={cn(
                                                   "rounded-md border px-3 py-2 text-sm",
                                                   isStudent &&
@@ -676,15 +677,15 @@ export default function PlacementHistoryPage() {
                                         className="text-sm text-primary hover:underline"
                                         onClick={() =>
                                           setShowExplanation((prev) =>
-                                            prev === q.id ? null : q.id
+                                            prev === rowKey ? null : rowKey
                                           )
                                         }
                                       >
-                                        {showExplanation === q.id
+                                        {showExplanation === rowKey
                                           ? "Hide Explanation"
                                           : "Show Explanation"}
                                       </button>
-                                      {showExplanation === q.id &&
+                                      {showExplanation === rowKey &&
                                         q.explanation && (
                                           <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
                                             {q.explanation}

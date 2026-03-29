@@ -36,6 +36,8 @@ export async function POST(request: NextRequest) {
       timeTaken,
       categoryScores,
       gaps,
+      topStrengths,
+      subcategoryGaps,
       questions,
       answers,
     } = await request.json();
@@ -47,6 +49,10 @@ export async function POST(request: NextRequest) {
       categoryScores && typeof categoryScores === "object"
         ? (categoryScores as Record<string, number>)
         : {};
+    const safeTopStrengths = Array.isArray(topStrengths) ? topStrengths : [];
+    const safeSubcategoryGaps = Array.isArray(subcategoryGaps)
+      ? subcategoryGaps
+      : [];
 
     const { builder } = await createPDFBuilder();
 
@@ -115,6 +121,43 @@ export async function POST(request: NextRequest) {
       );
     }
     builder.space(8);
+    builder.drawLine();
+
+    if (safeTopStrengths.length > 0) {
+      builder.space(8);
+      builder.sectionHeading("Strong Areas");
+      builder.space(3);
+      for (const s of safeTopStrengths.slice(0, 3)) {
+        const row = s as { label?: string; subcategory?: string; score?: number };
+        builder.text(
+          `[OK] ${row.label ?? row.subcategory ?? ""}  —  ${row.score ?? 0}%`,
+          { size: 11, color: rgb(0.086, 0.639, 0.29) }
+        );
+        builder.space(2);
+      }
+    }
+
+    if (safeSubcategoryGaps.length > 0) {
+      builder.space(6);
+      builder.sectionHeading("Focus Areas — Recommended Practice");
+      builder.space(3);
+      for (const g of safeSubcategoryGaps.slice(0, 6)) {
+        const row = g as {
+          label?: string;
+          subcategory?: string;
+          score?: number;
+          target?: number;
+        };
+        const targetPct = row.target ?? 65;
+        builder.text(
+          `[X] ${row.label ?? row.subcategory ?? ""}  —  ${row.score ?? 0}%  (target: ${targetPct}%)`,
+          { size: 11, color: rgb(0.863, 0.196, 0.184) }
+        );
+        builder.space(2);
+      }
+    }
+
+    builder.space(6);
     builder.drawLine();
 
     builder.space(4);

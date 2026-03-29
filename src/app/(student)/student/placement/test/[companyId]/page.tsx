@@ -202,6 +202,8 @@ export default function PlacementTestPage() {
           gaps: results.gaps,
           questions,
           answers,
+          topStrengths: results.topStrengths ?? [],
+          subcategoryGaps: results.subcategoryGaps ?? [],
         }),
       });
 
@@ -837,11 +839,12 @@ export default function PlacementTestPage() {
                     </p>
                   ) : (
                     filteredQuestions.map((q, index) => {
+                      const rowKey = `${String(q.id)}-${index}`;
                       const studentAns = String(answers[q.id] ?? "").trim().toUpperCase();
                       const correctAns = String(q.answer ?? "").trim().toUpperCase();
                       const isCorrect = studentAns === correctAns;
                       return (
-                        <div key={q.id} className="space-y-3 border-b pb-4 last:border-b-0">
+                        <div key={rowKey} className="space-y-3 border-b pb-4 last:border-b-0">
                           <div className="flex items-center justify-between gap-2">
                             <div className="flex items-center gap-2">
                               <Badge variant="outline">Q{index + 1}</Badge>
@@ -873,7 +876,7 @@ export default function PlacementTestPage() {
                               const isRight = correctAns === letter;
                               return (
                                 <div
-                                  key={`${q.id}-opt-${idx}`}
+                                  key={`${rowKey}-opt-${idx}`}
                                   className={cn(
                                     "rounded-md border px-3 py-2 text-sm",
                                     isStudent && isCorrect && "border-green-200 bg-green-50",
@@ -900,13 +903,17 @@ export default function PlacementTestPage() {
                             type="button"
                             className="text-sm text-primary hover:underline"
                             onClick={() =>
-                              setShowExplanation((prev) => (prev === q.id ? null : q.id))
+                              setShowExplanation((prev) =>
+                                prev === rowKey ? null : rowKey
+                              )
                             }
                           >
-                            {showExplanation === q.id ? "Hide Explanation" : "Show Explanation"}
+                            {showExplanation === rowKey
+                              ? "Hide Explanation"
+                              : "Show Explanation"}
                           </button>
 
-                          {showExplanation === q.id && q.explanation && (
+                          {showExplanation === rowKey && q.explanation && (
                             <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
                               {q.explanation}
                             </div>

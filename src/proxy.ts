@@ -66,6 +66,10 @@ async function getProfileRole(userId: string): Promise<UserRole | null> {
   }
 }
 
+function roleOrDefault(role: UserRole | null): UserRole {
+  return role ?? "student";
+}
+
 export async function proxy(request: NextRequest) {
   let response = NextResponse.next({ request });
 
@@ -82,20 +86,50 @@ export async function proxy(request: NextRequest) {
     data: { user },
   } = await supabase.auth.getUser();
 
-  const pathname = request.nextUrl.pathname;
+  const path = request.nextUrl.pathname;
 
-  // API routes (except auth callback) - allow through without checks
-  if (pathname.startsWith("/api/") && pathname !== "/api/auth/callback") {
+  if (path === "/api/auth/callback") {
     return response;
   }
 
-  // 1. Public routes
-  if (isPublicPath(pathname)) {
+  // ── API route protection (must run before generic API passthrough) ──
+  if (path.startsWith("/api/")) {
+    const isFacultyTierApi =
+      path.startsWith("/api/generate/") ||
+      path.startsWith("/api/qpaper") ||
+      path.startsWith("/api/refine") ||
+      path.startsWith("/api/approvals") ||
+      path.startsWith("/api/faculty");
+    const isSuperadminTierApi =
+      path.startsWith("/api/upload") || path.startsWith("/api/admin");
+
+    if (isFacultyTierApi || isSuperadminTierApi) {
+      if (!user) {
+        return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+      }
+      const role = roleOrDefault(await getProfileRole(user.id));
+
+      if (isFacultyTierApi && role === "student") {
+        return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+      }
+      if (
+        isSuperadminTierApi &&
+        role !== "superadmin" &&
+        role !== "dept_admin"
+      ) {
+        return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+      }
+    }
+
+    return response;
+  }
+
+  // ── Public routes ──
+  if (isPublicPath(path)) {
     if (!user) {
       return response;
     }
-    // User is logged in on /login or /register - fetch profile and redirect to dashboard
-    if (pathname === "/login" || pathname === "/register") {
+    if (path === "/login" || path === "/register") {
       const role = await getProfileRole(user.id);
       const dashboard = role ? getDashboardForRole(role) : "/";
       return redirectWithCookies(response, new URL(dashboard, request.url).toString());
@@ -103,11 +137,56 @@ export async function proxy(request: NextRequest) {
     return response;
   }
 
-  // 2. Protected routes - only check session, let layout handle role
-  if (isProtectedPath(pathname)) {
+  // ── Protected page routes: session + role ──
+  if (isProtectedPath(path)) {
     if (!user) {
       return redirectWithCookies(response, new URL("/login", request.url).toString());
     }
+
+    // OAuth / auth loading — session only
+    if (path.startsWith("/auth/loading")) {
+      return response;
+    }
+
+    const role = roleOrDefault(await getProfileRole(user.id));
+
+    const isSuperadminRoute = path.startsWith("/superadmin");
+    const isFacultyRoute = path.startsWith("/faculty");
+    const isStudentRoute = path.startsWith("/student");
+
+    if (isSuperadminRoute) {
+      if (role !== "superadmin" && role !== "dept_admin") {
+        const dest =
+          role === "faculty" ? "/faculty/dashboard" : "/student/dashboard";
+        return redirectWithCookies(
+          response,
+          new URL(dest, request.url).toString()
+        );
+      }
+    }
+
+    if (isFacultyRoute) {
+      if (
+        role !== "faculty" &&
+        role !== "superadmin" &&
+        role !== "dept_admin"
+      ) {
+        return redirectWithCookies(
+          response,
+          new URL("/student/dashboard", request.url).toString()
+        );
+      }
+    }
+
+    if (isStudentRoute) {
+      if (role === "faculty") {
+        return redirectWithCookies(
+          response,
+          new URL("/faculty/dashboard", request.url).toString()
+        );
+      }
+    }
+
     return response;
   }
 

@@ -230,7 +230,7 @@ export default function PracticePlacementPage() {
     } catch {}
 
     void generatePractice();
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps -- run once on mount only
+  }, [moduleId, generatePractice]);
 
   useEffect(() => {
     if (view === "results") return;
