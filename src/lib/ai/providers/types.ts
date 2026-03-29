@@ -9,6 +9,8 @@ export interface ChatParams {
   temperature?: number;
   maxTokens?: number;
   model?: "flash" | "pro";
+  /** Set by router so the provider can tune generation (e.g. thinking, temperature). */
+  task?: string;
 }
 
 export interface ChatResponse {

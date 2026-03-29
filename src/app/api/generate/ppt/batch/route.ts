@@ -52,6 +52,11 @@ export async function POST(request: NextRequest) {
 
     const body = await request.json().catch(() => ({} as Record<string, unknown>));
     const subjectId = String(body?.subjectId ?? "").trim();
+    const moduleId = String(body?.moduleId ?? "").trim() || undefined;
+    const customTopic =
+      body?.customTopic != null
+        ? String(body.customTopic).trim() || undefined
+        : undefined;
     const slidesRaw = body?.slides;
     const validTypes: SlideType[] = [
       "title", "overview", "concept", "diagram", "example", "practice", "summary",
@@ -92,7 +97,7 @@ export async function POST(request: NextRequest) {
 
     const { data: contentRow, error: contentError } = await adminClient
       .from("subject_content")
-      .select("content")
+      .select("content, reference_books")
       .eq("subject_id", subjectId)
       .maybeSingle();
 
@@ -124,15 +129,37 @@ export async function POST(request: NextRequest) {
     }
 
     const subjectName = (subject as { name?: string }).name ?? "";
-    const syllabusContent = String(
-      (contentRow as { content?: string }).content ?? ""
-    );
+    const row = contentRow as { content?: string; reference_books?: string };
+    const fullSyllabus = String(row.content ?? "");
+    const referenceBooks = String(row.reference_books ?? "");
+
+    let moduleName: string | undefined;
+    let moduleDescription = "";
+
+    if (moduleId) {
+      const { data: mod, error: modErr } = await adminClient
+        .from("modules")
+        .select("name, description")
+        .eq("id", moduleId)
+        .eq("subject_id", subjectId)
+        .maybeSingle();
+
+      if (!modErr && mod) {
+        const m = mod as { name?: string; description?: string | null };
+        moduleName = m.name;
+        moduleDescription = String(m.description ?? "");
+      }
+    }
 
     const batchPrompt = buildBatchContentPrompt({
       subjectName,
-      syllabusContent,
+      fullSyllabus,
       depth,
       slides,
+      referenceBooks,
+      moduleName,
+      customTopic,
+      moduleDescription,
     });
     async function generateBatchWithRetry(
       prompt: string,

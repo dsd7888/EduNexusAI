@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import { BookOpen, Clock, Info, Target } from "lucide-react";
+import { BookOpen, Clock, History, Info, Target } from "lucide-react";
 import * as LucideIcons from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
@@ -37,6 +37,14 @@ function getPracticeScoreBadgeClass(score: number): string {
   return "bg-red-100 text-red-700";
 }
 
+type RecentPracticeResult = {
+  moduleId: string;
+  moduleLabel: string;
+  score: number;
+  mastery: string;
+  completedAt: number;
+};
+
 export default function PlacementPage() {
   const router = useRouter();
   const [companies, setCompanies] = useState<PlacementCompany[]>([]);
@@ -49,6 +57,9 @@ export default function PlacementPage() {
   const [isLoading, setIsLoading] = useState(true);
   const [inProgressTests, setInProgressTests] = useState<
     Array<{ companyId: string; companyName: string; answeredCount: number }>
+  >([]);
+  const [recentPracticeResults, setRecentPracticeResults] = useState<
+    RecentPracticeResult[]
   >([]);
 
   useEffect(() => {
@@ -190,6 +201,38 @@ export default function PlacementPage() {
     [studentBranch]
   );
 
+  useEffect(() => {
+    if (isLoading) return;
+
+    const recent: RecentPracticeResult[] = [];
+    for (const mod of availableModules) {
+      try {
+        const saved = localStorage.getItem(`practice_result_${mod.id}`);
+        if (saved) {
+          const parsed = JSON.parse(saved) as {
+            completedAt?: number;
+            score?: number;
+            mastery?: string;
+          };
+          const ageHours = (Date.now() - (parsed.completedAt ?? 0)) / 3600000;
+          if (ageHours < 24) {
+            recent.push({
+              moduleId: mod.id,
+              moduleLabel: mod.label,
+              score: Number(parsed.score ?? 0),
+              mastery: String(parsed.mastery ?? ""),
+              completedAt: Number(parsed.completedAt ?? 0),
+            });
+          }
+        }
+      } catch {}
+    }
+
+    setRecentPracticeResults(
+      recent.sort((a, b) => b.completedAt - a.completedAt)
+    );
+  }, [isLoading, availableModules]);
+
   const grouped = useMemo(
     () => groupModulesByCategory(availableModules),
     [availableModules]
@@ -204,20 +247,33 @@ export default function PlacementPage() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-start gap-3">
-        <Target className="size-6 text-primary" />
-        <div>
-          <h1 className="text-2xl font-semibold tracking-tight">Placement Readiness</h1>
-          <p className="text-sm text-muted-foreground">
-            Prepare for campus placements with company-specific tests
-          </p>
-          <p className="mt-1 flex items-center gap-1 text-xs text-muted-foreground">
-            <Info className="size-3" />
-            Questions are modelled on real campus placement papers (TCS NQT,
-            Infosys InfyTQ, and similar) with company-specific topic weightage
-            and difficulty.
-          </p>
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+        <div className="flex items-start gap-3">
+          <Target className="size-6 shrink-0 text-primary" />
+          <div>
+            <h1 className="text-2xl font-semibold tracking-tight">
+              Placement Readiness
+            </h1>
+            <p className="text-sm text-muted-foreground">
+              Prepare for campus placements with company-specific tests
+            </p>
+            <p className="mt-1 flex items-center gap-1 text-xs text-muted-foreground">
+              <Info className="size-3" />
+              Questions are modelled on real campus placement papers (TCS NQT,
+              Infosys InfyTQ, and similar) with company-specific topic weightage
+              and difficulty.
+            </p>
+          </div>
         </div>
+        <Button
+          variant="outline"
+          size="sm"
+          className="shrink-0 self-start"
+          onClick={() => router.push("/student/placement/history")}
+        >
+          <History className="mr-2 size-4" />
+          View History
+        </Button>
       </div>
 
       {inProgressTests.length > 0 && (
@@ -289,6 +345,51 @@ export default function PlacementPage() {
           </Card>
         )}
       </section>
+
+      {recentPracticeResults.length > 0 && (
+        <div className="space-y-2">
+          <h3 className="text-sm font-semibold">Recent Practice Sessions</h3>
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
+            {recentPracticeResults.slice(0, 6).map((result) => (
+              <div
+                key={result.moduleId}
+                role="button"
+                tabIndex={0}
+                className="flex cursor-pointer items-center justify-between rounded-lg border p-3 transition-colors hover:border-primary"
+                onClick={() =>
+                  router.push(`/student/placement/practice/${result.moduleId}`)
+                }
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    router.push(`/student/placement/practice/${result.moduleId}`);
+                  }
+                }}
+              >
+                <div>
+                  <p className="text-sm font-medium">{result.moduleLabel}</p>
+                  <p className="text-xs capitalize text-muted-foreground">
+                    {result.mastery.replace(/_/g, " ")}
+                  </p>
+                </div>
+                <Badge
+                  className={
+                    result.score >= 80
+                      ? "bg-green-100 text-green-800"
+                      : result.score >= 60
+                        ? "bg-blue-100 text-blue-800"
+                        : result.score >= 40
+                          ? "bg-amber-100 text-amber-800"
+                          : "bg-red-100 text-red-800"
+                  }
+                >
+                  {result.score}%
+                </Badge>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       <section className="space-y-3">
         <h2 className="text-base font-semibold">Choose a Company to Practice</h2>

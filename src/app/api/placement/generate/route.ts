@@ -1,6 +1,15 @@
 import { routeAI } from "@/lib/ai/router";
 import { createAdminClient, createServerClient } from "@/lib/db/supabase-server";
-import { buildPlacementTestPrompt, cleanQuestions } from "@/lib/placement/generator";
+import {
+  buildFlashPlacementPrompt,
+  buildPlacementTestPrompt,
+  cleanQuestions,
+} from "@/lib/placement/generator";
+import {
+  checkBankHealth,
+  getQuestionsFromBank,
+  saveToBankAndRecord,
+} from "@/lib/placement/bankManager";
 import type { NextRequest } from "next/server";
 
 function parsePlacementQuestions(raw: string): any[] | null {
@@ -228,18 +237,143 @@ export async function POST(request: NextRequest) {
         ? combinedSyllabus
         : getBranchFallbackSyllabus(studentBranch ?? "Engineering");
 
-    // Build single prompt for all 30 questions
-    const prompt = buildPlacementTestPrompt({
+    const promptOptions = {
       companyName: (company as any).name,
       branch: profile.branch ?? "Engineering",
       aptitudePattern: (company as any).aptitude_pattern,
       syllabusContent: syllabusForPrompt,
       difficulty: (company as any).difficulty,
-      totalQuestions: 30,
+    };
+
+    // Step 1: Check if student's question history gives us enough
+    const userId = user.id;
+
+    // Calculate distribution for 20 questions
+    const pattern = (company as any).aptitude_pattern as Record<string, number>;
+    const distribution = {
+      quantitative: Math.round(((pattern as any).quantitative / 100) * 20),
+      logical: Math.round(((pattern as any).logical / 100) * 20),
+      verbal: Math.round(((pattern as any).verbal / 100) * 20),
+      technical: Math.round(((pattern as any).technical / 100) * 20),
+    };
+    const sum = Object.values(distribution).reduce((a, b) => a + b, 0);
+    const diff = 20 - sum;
+    if (diff > 0) {
+      distribution.quantitative += diff;
+    } else if (diff < 0) {
+      const largest = Object.entries(distribution).sort(
+        ([, a], [, b]) => b - a
+      )[0][0] as keyof typeof distribution;
+      distribution[largest] += diff;
+      for (const key of Object.keys(distribution)) {
+        const k = key as keyof typeof distribution;
+        distribution[k] = Math.max(1, distribution[k]);
+      }
+    }
+
+    // Step 2: Try serving from bank
+    const banked = await getQuestionsFromBank({
+      companyId: (company as any).id,
+      branch: profile.branch ?? "Engineering",
+      studentId: userId,
+      totalNeeded: 20,
+      distribution,
     });
 
-    console.log("[placement/generate] Generating 30 questions with Pro...");
-    const questions = await generateWithRetry(prompt, 2); // 2 retries max
+    if (banked && banked.questions.length >= 16) {
+      console.log(
+        `[placement/generate] Served ${banked.questions.length} from bank`
+      );
+
+      // Record that student saw these questions
+      await saveToBankAndRecord({
+        companyId: (company as any).id,
+        branch: profile.branch ?? "Engineering",
+        studentId: userId,
+        questions: [], // no new questions to save
+        usedBankIds: banked.bankIds,
+      });
+
+      // 10. Track usage analytics
+      try {
+        const today = new Date().toISOString().slice(0, 10);
+        const { data: existingUsage } = await adminClient
+          .from("usage_analytics")
+          .select("id, event_count")
+          .eq("date", today)
+          .eq("user_id", user.id)
+          .eq("event_type", "placement_test")
+          .maybeSingle();
+
+        if (existingUsage) {
+          await adminClient
+            .from("usage_analytics")
+            .update({
+              event_count: (existingUsage.event_count ?? 0) + 1,
+            })
+            .eq("id", existingUsage.id);
+        } else {
+          await adminClient.from("usage_analytics").insert({
+            date: today,
+            user_id: user.id,
+            subject_id: null,
+            event_type: "placement_test",
+            event_count: 1,
+          });
+        }
+      } catch (err) {
+        console.error("[placement/generate] usage_analytics error:", err);
+      }
+
+      return Response.json({
+        questions: banked.questions,
+        companyName: (company as any).name as string,
+        source: "bank",
+      });
+    }
+
+    // Step 3: Bank empty/insufficient — generate new
+    console.log("[placement/generate] Bank miss — generating fresh questions");
+
+    // Try Flash first (cost saving)
+    let questions: any[] | null = null;
+
+    try {
+      console.log("[placement/generate] Trying Flash...");
+      const flashPrompt = buildFlashPlacementPrompt({
+        ...promptOptions,
+        totalQuestions: 20,
+      });
+
+      const flashResult = await routeAI("quiz_gen", {
+        messages: [{ role: "user", content: flashPrompt }],
+      });
+      const flashRaw = String(flashResult.content ?? "");
+      const flashParsed = parsePlacementQuestions(flashRaw);
+      if (flashParsed && flashParsed.length >= 14) {
+        console.log(
+          `[placement/generate] Flash success: ${flashParsed.length} questions`
+        );
+        questions = cleanQuestions(flashParsed);
+        if (flashParsed.length < 20) {
+          console.log(
+            `[placement/generate] Flash partial (${flashParsed.length}/20) — using anyway`
+          );
+        }
+      } else {
+        console.log("[placement/generate] Flash insufficient — trying Pro");
+      }
+    } catch {
+      console.log("[placement/generate] Flash failed — trying Pro");
+    }
+
+    // Fall back to Pro if Flash didn't deliver
+    if (!questions || questions.length < 16) {
+      questions = await generateWithRetry(
+        buildPlacementTestPrompt({ ...promptOptions, totalQuestions: 20 }),
+        2
+      );
+    }
 
     if (!questions || questions.length < 10) {
       console.error(
@@ -251,11 +385,28 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    if (questions.length < 28) {
+    if (questions.length < 18) {
       console.warn(`[placement/generate] Partial: ${questions.length} questions`);
     }
 
     console.log(`[placement/generate] Done: ${questions.length} questions`);
+
+    // Step 4: Save new questions to bank for future students
+    try {
+      await saveToBankAndRecord({
+        companyId: (company as any).id,
+        branch: profile.branch ?? "Engineering",
+        studentId: userId,
+        questions,
+        usedBankIds: [],
+      });
+      console.log(
+        `[placement/generate] Saved ${questions.length} questions to bank`
+      );
+    } catch (err) {
+      console.error("[placement/generate] Bank save failed:", err);
+      // Don't fail the request — questions are still returned
+    }
 
     // 10. Track usage analytics
     try {
@@ -291,6 +442,7 @@ export async function POST(request: NextRequest) {
     return Response.json({
       questions,
       companyName: (company as any).name as string,
+      source: "generated",
     });
   } catch (err) {
     console.error("[placement/generate] error:", err);

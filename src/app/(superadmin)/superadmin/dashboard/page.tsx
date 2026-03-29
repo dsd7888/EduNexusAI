@@ -7,11 +7,13 @@ import {
   BarChart2,
   BookOpen,
   CheckSquare,
+  Database,
   GraduationCap,
   Upload,
   Users,
   Zap,
 } from "lucide-react";
+import { toast } from "sonner";
 
 import { createBrowserClient } from "@/lib/db/supabase-browser";
 import { Button } from "@/components/ui/button";
@@ -29,6 +31,8 @@ interface Stats {
   facultyCount: number;
   subjectCount: number;
   contentCount: number;
+  bankTotal: number;
+  historyTotal: number;
 }
 
 interface UploadRow {
@@ -62,6 +66,8 @@ export default function SuperadminDashboard() {
           { count: facultyCount },
           { count: subjectCount },
           { count: contentCount },
+          { count: bankTotal },
+          { count: historyTotal },
         ] = await Promise.all([
           supabase
             .from("profiles")
@@ -78,6 +84,13 @@ export default function SuperadminDashboard() {
             .from("generated_content")
             .select("id", { count: "exact", head: true })
             .eq("status", "ready"),
+          supabase
+            .from("placement_question_bank")
+            .select("id", { count: "exact", head: true })
+            .eq("is_stale", false),
+          supabase
+            .from("student_question_history")
+            .select("id", { count: "exact", head: true }),
         ]);
 
         setStats({
@@ -85,6 +98,8 @@ export default function SuperadminDashboard() {
           facultyCount: facultyCount ?? 0,
           subjectCount: subjectCount ?? 0,
           contentCount: contentCount ?? 0,
+          bankTotal: bankTotal ?? 0,
+          historyTotal: historyTotal ?? 0,
         });
 
         // 2. Pending approvals
@@ -158,7 +173,7 @@ export default function SuperadminDashboard() {
       </div>
 
       {/* PLATFORM STATS */}
-      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
         <Card>
           <CardHeader className="flex flex-row items-center justify-between pb-2">
             <CardTitle className="text-xs font-medium text-muted-foreground">
@@ -211,7 +226,45 @@ export default function SuperadminDashboard() {
             </div>
           </CardContent>
         </Card>
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between pb-2">
+            <CardTitle className="text-xs font-medium text-muted-foreground">
+              Questions in Bank
+            </CardTitle>
+            <Database className="size-5 text-purple-500" />
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-semibold">
+              {isLoading ? "—" : stats?.bankTotal ?? 0}
+            </div>
+            <p className="mt-1 text-xs text-muted-foreground">
+              {isLoading
+                ? "—"
+                : `${stats?.historyTotal ?? 0} student attempts tracked`}
+            </p>
+          </CardContent>
+        </Card>
       </div>
+
+      <Button
+        size="sm"
+        variant="outline"
+        onClick={async () => {
+          try {
+            const res = await fetch("/api/admin/cleanup", { method: "POST" });
+            const data = await res.json().catch(() => ({} as { error?: string }));
+            if (!res.ok) {
+              toast.error(data?.error ?? "Cleanup failed");
+              return;
+            }
+            toast.success("Cleanup complete");
+          } catch {
+            toast.error("Cleanup failed");
+          }
+        }}
+      >
+        Run DB Cleanup
+      </Button>
 
       {/* PENDING APPROVALS ALERT */}
       {pendingApprovals > 0 && (

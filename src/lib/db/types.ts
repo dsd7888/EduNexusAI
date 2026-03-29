@@ -247,10 +247,16 @@ export type PlacementAttempt = {
   company_id: string;
   score: number;
   category_scores: Record<string, number>;
+  subcategory_scores?: Record<string, number> | null;
   total_questions: number;
   correct_answers: number;
   time_taken: number | null;
   created_at: string;
+  questions?: unknown[] | null;
+  answers?: Record<string, string> | null;
+  subcategory_gaps?: unknown[] | null;
+  top_strengths?: unknown[] | null;
+  weaknesses?: string[] | null;
 };
 
 export type PlacementGap = {

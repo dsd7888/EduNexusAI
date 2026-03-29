@@ -12,11 +12,16 @@ import {
   XCircle,
 } from "lucide-react";
 import { toast } from "sonner";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
+import { PRACTICE_MODULES } from "@/lib/placement/modules";
+
+const activePracticeGenerations = new Set<string>();
 
 type View = "loading" | "test" | "results";
 
@@ -36,6 +41,39 @@ type ModuleInfo = {
   label: string;
   category: string;
 };
+
+function PlacementQuestionMarkdown({ text }: { text: string }) {
+  return (
+    <div className="prose prose-sm dark:prose-invert max-w-none">
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm]}
+        components={{
+          table: ({ children }) => (
+            <div className="my-2 overflow-x-auto">
+              <table className="w-full border-collapse text-sm">{children}</table>
+            </div>
+          ),
+          th: ({ children }) => (
+            <th className="border border-border bg-muted/60 px-2 py-1.5 text-left text-xs font-semibold">
+              {children}
+            </th>
+          ),
+          td: ({ children }) => (
+            <td className="border border-border px-2 py-1.5 text-sm">{children}</td>
+          ),
+          tr: ({ children }) => (
+            <tr className="even:bg-muted/20">{children}</tr>
+          ),
+          p: ({ children }) => (
+            <p className="mb-0 font-medium text-foreground">{children}</p>
+          ),
+        }}
+      >
+        {text}
+      </ReactMarkdown>
+    </div>
+  );
+}
 
 export default function PracticePlacementPage() {
   const router = useRouter();
@@ -99,8 +137,11 @@ export default function PracticePlacementPage() {
     return Math.min(100, ((currentIndex + 1) / total) * 100);
   }, [currentIndex, questions.length]);
 
-  const loadPractice = useCallback(async () => {
+  const generatePractice = useCallback(async () => {
     if (!moduleId) return;
+    const lockKey = `practice_${moduleId}`;
+    if (activePracticeGenerations.has(lockKey)) return;
+    activePracticeGenerations.add(lockKey);
     setView("loading");
     setResults(null);
     setAnswers({});
@@ -119,7 +160,7 @@ export default function PracticePlacementPage() {
 
       const data = await res.json().catch(() => ({} as any));
       if (!res.ok) {
-        toast.error("Could not start practice session", {
+        toast.error("Failed to generate practice", {
           description: data?.error ?? "Please try again.",
         });
         router.push("/student/placement");
@@ -128,6 +169,12 @@ export default function PracticePlacementPage() {
 
       const qs = Array.isArray(data?.questions) ? data.questions : [];
       const m = data?.module;
+      if (!qs.length) {
+        toast.error("No questions generated");
+        router.push("/student/placement");
+        return;
+      }
+
       setQuestions(qs);
       setModuleInfo(
         m
@@ -137,15 +184,78 @@ export default function PracticePlacementPage() {
       setStartTime(Date.now());
       setView("test");
     } catch (err) {
-      console.error("[placement/practice/generate]", err);
-      toast.error("Could not start practice session");
+      console.error("[practice]", err);
       router.push("/student/placement");
+    } finally {
+      activePracticeGenerations.delete(lockKey);
     }
   }, [moduleId, router]);
 
   useEffect(() => {
-    loadPractice();
-  }, [loadPractice]);
+    if (!moduleId) return;
+
+    try {
+      const savedResult = localStorage.getItem(`practice_result_${moduleId}`);
+      if (savedResult) {
+        const parsed = JSON.parse(savedResult) as {
+          completedAt?: number;
+          questions?: PracticeQuestion[];
+          moduleLabel?: string;
+          mastery?: string;
+        };
+        const ageMinutes = (Date.now() - (parsed.completedAt ?? 0)) / 60000;
+        if (ageMinutes < 60) {
+          const mid = String(moduleId);
+          const mod =
+            PRACTICE_MODULES.find((m) => m.id === mid) ??
+            PRACTICE_MODULES.find(
+              (m) => mid.includes(m.id) || m.id.includes(mid)
+            );
+          setModuleInfo(
+            mod
+              ? { id: mod.id, label: mod.label, category: mod.category }
+              : {
+                  id: mid,
+                  label: String(parsed.moduleLabel ?? mid),
+                  category: String(parsed.questions?.[0]?.category ?? "practice"),
+                }
+          );
+          setResults(parsed);
+          if (parsed.questions?.length) setQuestions(parsed.questions);
+          setView("results");
+          return;
+        }
+        localStorage.removeItem(`practice_result_${moduleId}`);
+      }
+    } catch {}
+
+    void generatePractice();
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps -- run once on mount only
+
+  useEffect(() => {
+    if (view === "results") return;
+
+    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+      if (view === "loading" || view === "test") {
+        e.preventDefault();
+        e.returnValue = "Your practice session will be lost.";
+        return e.returnValue;
+      }
+    };
+
+    const handlePopState = (e: PopStateEvent) => {
+      e.preventDefault();
+      window.history.pushState(null, "", window.location.href);
+    };
+
+    window.history.pushState(null, "", window.location.href);
+    window.addEventListener("beforeunload", handleBeforeUnload);
+    window.addEventListener("popstate", handlePopState);
+    return () => {
+      window.removeEventListener("beforeunload", handleBeforeUnload);
+      window.removeEventListener("popstate", handlePopState);
+    };
+  }, [view]);
 
   const handleOptionLetter = useCallback((opt: string, idx: number) => {
     const trimmed = String(opt ?? "").trim();
@@ -194,13 +304,26 @@ export default function PracticePlacementPage() {
         return;
       }
 
+      if (moduleId) {
+        try {
+          localStorage.setItem(
+            `practice_result_${moduleId}`,
+            JSON.stringify({
+              ...data,
+              questions,
+              completedAt: Date.now(),
+              moduleId,
+            })
+          );
+        } catch {}
+      }
       setResults(data);
       setView("results");
     } catch (err) {
       console.error("[placement/practice/submit]", err);
       toast.error("Submit failed. Please try again.");
     }
-  }, [answers, moduleInfo, questions, router, startTime]);
+  }, [answers, moduleId, moduleInfo, questions, router, startTime]);
 
   const handleExport = useCallback(async () => {
     if (!results) return;
@@ -343,7 +466,7 @@ export default function PracticePlacementPage() {
                         Q{idx + 1}
                       </Badge>
                     </div>
-                    <p className="font-medium">{qa.question}</p>
+                    <PlacementQuestionMarkdown text={String(qa.question ?? "")} />
                     <p className="text-sm text-muted-foreground">
                       Your answer: <span className="font-medium">{qa.studentAnswer || "—"}</span> · Correct:{" "}
                       <span className="font-medium">{qa.correctAnswer || "—"}</span>
@@ -360,7 +483,18 @@ export default function PracticePlacementPage() {
         </Card>
 
         <div className="flex flex-wrap gap-3">
-          <Button onClick={loadPractice} className="flex-1" variant="default">
+          <Button
+            className="flex-1"
+            variant="default"
+            onClick={() => {
+              if (moduleId) {
+                try {
+                  localStorage.removeItem(`practice_result_${moduleId}`);
+                } catch {}
+              }
+              window.location.reload();
+            }}
+          >
             Practice Again
           </Button>
           <Button
@@ -449,7 +583,9 @@ export default function PracticePlacementPage() {
             </div>
           </div>
 
-          <CardTitle className="text-base font-semibold">{currentQ?.question ?? ""}</CardTitle>
+          <CardTitle className="text-base font-semibold">
+            <PlacementQuestionMarkdown text={String(currentQ?.question ?? "")} />
+          </CardTitle>
         </CardHeader>
         <CardContent className="space-y-3">
           <div className="grid gap-2">

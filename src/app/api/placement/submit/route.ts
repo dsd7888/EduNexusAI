@@ -4,7 +4,6 @@ import type { NextRequest } from "next/server";
 
 export async function POST(request: NextRequest) {
   try {
-    // 1. Auth check — student only
     const supabase = await createServerClient();
     const {
       data: { user },
@@ -29,7 +28,6 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // 2. Parse body
     const { companyId, questions, answers, timeTaken } = await request.json();
 
     if (!companyId || !Array.isArray(questions) || !answers) {
@@ -39,24 +37,11 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // 3. Score
     const { score, correctAnswers, categoryScores } = scorePlacementAttempt(
       questions,
       answers
     );
 
-    // 4. Save attempt
-    await adminClient.from("placement_attempts").insert({
-      student_id: user.id,
-      company_id: companyId,
-      score,
-      category_scores: categoryScores,
-      total_questions: questions.length,
-      correct_answers: correctAnswers,
-      time_taken: timeTaken,
-    });
-
-    // 5. Fetch company benchmark
     const { data: company } = await adminClient
       .from("placement_companies")
       .select("name, aptitude_pattern, avg_package_lpa")
@@ -67,9 +52,8 @@ export async function POST(request: NextRequest) {
       return Response.json({ error: "Company not found" }, { status: 404 });
     }
 
-    // 6. Build gap analysis
     const categoryGaps = Object.entries(categoryScores).map(([cat, catScore]) => {
-      const target = 65; // minimum passing bar for any category
+      const target = 65;
       return {
         category: cat,
         studentScore: catScore,
@@ -84,7 +68,6 @@ export async function POST(request: NextRequest) {
       };
     });
 
-    // 7. Subcategory-level analysis (drives topic UI)
     const subcategoryStats: Record<
       string,
       { total: number; correct: number }
@@ -107,54 +90,97 @@ export async function POST(request: NextRequest) {
       subcategoryScores[sub] = Math.round(pct);
     }
 
-    // Ensure subcategoryGaps includes ALL subcategories, sorted worst-first
     const allSubcategoryGaps = Object.entries(subcategoryScores)
-      .map(([sub, score]) => ({
+      .map(([sub, sc]) => ({
         subcategory: sub,
-        score: score as number,
+        score: sc as number,
         label: sub
           .replace(/_/g, " ")
           .replace(/\b\w/g, (c: string) => c.toUpperCase()),
         attempted: subcategoryStats[sub].total,
         correct: subcategoryStats[sub].correct,
         status:
-          (score as number) >= 65
+          (sc as number) >= 65
             ? "good"
-            : (score as number) >= 50
+            : (sc as number) >= 50
               ? "warning"
               : "weak",
       }))
-      .sort((a, b) => a.score - b.score); // worst first
+      .sort((a, b) => a.score - b.score);
 
     const subcategoryGaps = allSubcategoryGaps.filter((g) => g.status !== "good");
 
-    // Top 3 strongest topics
     const topStrengths = allSubcategoryGaps
       .filter((g) => g.status === "good")
       .sort((a, b) => b.score - a.score)
       .slice(0, 3);
 
-    // 8. Return result
+    const weaknesses = subcategoryGaps.slice(0, 5).map((w) => w.subcategory);
+
+    const { error: insertError } = await adminClient
+      .from("placement_attempts")
+      .insert({
+        student_id: user.id,
+        company_id: companyId,
+        score,
+        category_scores: categoryScores,
+        subcategory_scores: subcategoryScores,
+        total_questions: questions.length,
+        correct_answers: correctAnswers,
+        time_taken: timeTaken,
+        questions,
+        answers,
+        subcategory_gaps: subcategoryGaps,
+        top_strengths: topStrengths,
+        weaknesses,
+      });
+
+    if (insertError) {
+      console.error("[placement/submit] insert error:", insertError);
+      return Response.json(
+        { error: "Failed to save attempt" },
+        { status: 500 }
+      );
+    }
+
+    void (async () => {
+      try {
+        const { data: allAttempts } = await adminClient
+          .from("placement_attempts")
+          .select("id, created_at")
+          .eq("student_id", user.id)
+          .eq("company_id", companyId)
+          .order("created_at", { ascending: false });
+
+        if (allAttempts && allAttempts.length > 3) {
+          const toDelete = allAttempts.slice(3).map((a: { id: string }) => a.id);
+          if (toDelete.length > 0) {
+            await adminClient.from("placement_attempts").delete().in("id", toDelete);
+          }
+        }
+      } catch (err) {
+        console.error("[placement/submit] prune attempts:", err);
+      }
+    })();
+
     return Response.json({
       score,
       correctAnswers,
       totalQuestions: questions.length,
       categoryScores,
-      // old category-level gaps preserved for overview usage
       gaps: categoryGaps,
       companyName: (company as any).name,
       timeTaken,
 
       subcategoryScores,
-      subcategoryGaps, // all weak/warning topics
-      topStrengths, // top 3 strong topics
-      allSubcategoryGaps, // complete picture
+      subcategoryGaps,
+      topStrengths,
+      allSubcategoryGaps,
       strengths: topStrengths.map((s) => s.subcategory),
-      weaknesses: subcategoryGaps.slice(0, 5).map((w) => w.subcategory),
+      weaknesses,
     });
   } catch (err) {
     console.error("[placement/submit] error:", err);
     return Response.json({ error: "Failed to submit test" }, { status: 500 });
   }
 }
-

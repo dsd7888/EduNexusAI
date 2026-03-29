@@ -238,6 +238,52 @@ Do not stop at 10 or 15. Do not summarize.
 Begin with [ and end with ]. Nothing else.`;
 }
 
+export function buildFlashPlacementPrompt(options: {
+  companyName: string;
+  branch: string;
+  aptitudePattern: {
+    quantitative: number;
+    logical: number;
+    verbal: number;
+    technical: number;
+  };
+  syllabusContent: string;
+  difficulty: string;
+  totalQuestions?: number;
+}): string {
+  const { companyName, branch, aptitudePattern, syllabusContent, difficulty } =
+    options;
+  const total = options.totalQuestions ?? 20;
+
+  const counts = {
+    quantitative: Math.round((aptitudePattern.quantitative / 100) * total),
+    logical: Math.round((aptitudePattern.logical / 100) * total),
+    verbal: Math.round((aptitudePattern.verbal / 100) * total),
+    technical: Math.round((aptitudePattern.technical / 100) * total),
+  };
+  const sum = Object.values(counts).reduce((a, b) => a + b, 0);
+  counts.quantitative += total - sum;
+
+  return `Generate ${total} campus placement aptitude questions for ${companyName} (${branch} branch, ${difficulty} difficulty).
+
+Distribution: Quantitative=${counts.quantitative}, Logical=${counts.logical}, Verbal=${counts.verbal}, Technical=${counts.technical}
+
+Technical questions context: ${syllabusContent.slice(0, 800)}
+
+Rules:
+- Each question: realistic values, 4 options (A/B/C/D), one correct answer
+- Quantitative: percentages, time-distance, SI/CI, number series, ratios
+- Logical: syllogisms, coding-decoding, blood relations, directions, series
+- Verbal: fill blanks, error identification, synonyms/antonyms, RC (1 passage + 2 Qs)
+- Technical: application-level, numerical where possible, from syllabus above
+- Explanation: 2-3 sentences showing solution method
+
+Return ONLY JSON array. Start with [ end with ]. No other text.
+[{"id":"q1","category":"quantitative","subcategory":"profit_loss","question":"...","options":["A. ...","B. ...","C. ...","D. ..."],"answer":"A","explanation":"...","difficulty":"${difficulty}"}]
+
+Generate all ${total} questions. Do not stop early.`;
+}
+
 export function scorePlacementAttempt(
   questions: any[],
   answers: Record<string, string>

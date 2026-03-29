@@ -5,6 +5,10 @@ import { createAdminClient, createServerClient } from "@/lib/db/supabase-server"
 import { getModulesForBranch, PRACTICE_MODULES } from "@/lib/placement/modules";
 import { getBranchFallbackSyllabus } from "@/lib/placement/fallbackSyllabus";
 import { cleanQuestions } from "@/lib/placement/generator";
+import {
+  getPracticeQuestionsFromBank,
+  savePracticeToBank,
+} from "@/lib/placement/bankManager";
 
 function parsePlacementQuestions(raw: string): any[] | null {
   // Attempt 1: direct parse after cleaning fences
@@ -219,6 +223,37 @@ export async function POST(request: NextRequest) {
       return Response.json({ error: "Module not found" }, { status: 404 });
     }
 
+    // Try bank first
+    const banked = await getPracticeQuestionsFromBank({
+      moduleId: moduleId,
+      branch: profile.branch ?? null,
+      studentId: user.id,
+      totalNeeded: 12,
+    });
+
+    if (banked && banked.questions.length >= 10) {
+      console.log(`[practice/generate] Served ${banked.questions.length} from bank`);
+
+      await savePracticeToBank({
+        moduleId,
+        branch: profile.branch ?? null,
+        studentId: user.id,
+        questions: [],
+        usedBankIds: banked.bankIds,
+      });
+
+      return Response.json({
+        questions: banked.questions,
+        module: {
+          id: moduleId,
+          matchedId: module.id,
+          label: module.label,
+          category: module.category,
+        },
+        source: "bank",
+      });
+    }
+
     // 4. Student profile already loaded (branch, semester)
     const studentBranch = (profile.branch ?? "Engineering") as string;
 
@@ -308,6 +343,21 @@ Begin with [ and end with ]. Nothing else.`;
       );
     }
 
+    try {
+      await savePracticeToBank({
+        moduleId,
+        branch: profile.branch ?? null,
+        studentId: user.id,
+        questions,
+        usedBankIds: [],
+      });
+      console.log(
+        `[practice/generate] Saved ${questions.length} to practice bank`
+      );
+    } catch (err) {
+      console.error("[practice/generate] Bank save failed:", err);
+    }
+
     return Response.json({
       questions,
       module: {
@@ -316,6 +366,7 @@ Begin with [ and end with ]. Nothing else.`;
         label: module.label,
         category: module.category,
       },
+      source: "generated",
     });
   } catch (err) {
     console.error("[placement/practice/generate] error:", err);

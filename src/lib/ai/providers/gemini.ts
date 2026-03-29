@@ -63,9 +63,9 @@ function createGeminiProvider(): AIProvider {
         const {
           messages,
           systemPrompt,
-          temperature = 0.7,
           maxTokens = 8192,
           model: modelKey = "flash",
+          task: taskName = "",
         } = params;
 
         if (messages.length === 0) {
@@ -73,14 +73,39 @@ function createGeminiProvider(): AIProvider {
         }
 
         const modelName = MODEL_MAP[modelKey];
-        const maxOutputTokens =
-          modelName.includes("pro") ? 32768 : maxTokens;
+
+        // Structured output tasks need thinking disabled
+        // Thinking tokens eat into maxOutputTokens on gemini-2.5-flash
+        const isStructuredTask = [
+          "ppt_gen",
+          "quiz_gen",
+          "qpaper_gen",
+          "refine",
+          "placement_gen",
+        ].includes(taskName);
+
+        const temperature =
+          params.temperature ?? (isStructuredTask ? 0.4 : 0.7);
+
+        // Pro always gets full token budget
+        const maxOutputTokens = modelName.includes("pro")
+          ? 32768
+          : maxTokens; // already set per-task in router
+
+        const generationConfig: Record<string, unknown> = {
+          temperature,
+          maxOutputTokens,
+        };
+
+        if (isStructuredTask && modelName.includes("flash")) {
+          generationConfig.thinkingConfig = { thinkingBudget: 0 };
+        }
+
         const modelParams: Parameters<typeof genAI.getGenerativeModel>[0] = {
           model: modelName,
-          generationConfig: {
-            temperature,
-            maxOutputTokens,
-          },
+          generationConfig: generationConfig as Parameters<
+            typeof genAI.getGenerativeModel
+          >[0]["generationConfig"],
         };
 
         if (systemPrompt) {

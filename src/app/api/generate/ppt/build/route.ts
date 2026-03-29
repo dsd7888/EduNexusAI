@@ -50,6 +50,9 @@ export async function POST(request: NextRequest) {
     const presentationTitle = String(body?.presentationTitle ?? "").trim();
     const subject = String(body?.subject ?? "").trim();
     const topic = String(body?.topic ?? "").trim();
+    const addLogo = Boolean(body?.addLogo);
+    const logoUrl =
+      typeof body?.logoUrl === "string" ? body.logoUrl : "";
     const slidesRaw = body?.slides;
     const slides: SlideContent[] = Array.isArray(slidesRaw)
       ? (slidesRaw as SlideContent[])
@@ -79,6 +82,8 @@ export async function POST(request: NextRequest) {
       subject: subject || presentationTitle,
       topic: topic || presentationTitle,
       slides,
+      addLogo: addLogo ?? false,
+      logoUrl: logoUrl ?? "",
     };
 
     const buffer = await generatePPTXBuffer(pptData);

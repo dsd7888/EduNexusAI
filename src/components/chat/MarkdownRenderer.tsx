@@ -4,6 +4,7 @@ import "katex/dist/katex.min.css";
 
 import ReactMarkdown from "react-markdown";
 import rehypeKatex from "rehype-katex";
+import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import { lazy, Suspense, type ReactNode } from "react";
 
@@ -16,7 +17,7 @@ interface Props {
 export default function MarkdownRenderer({ content }: Props) {
   return (
     <ReactMarkdown
-      remarkPlugins={[remarkMath]}
+      remarkPlugins={[remarkMath, remarkGfm]}
       rehypePlugins={[rehypeKatex]}
       components={{
         p: ({ children }) => <p className="mb-2 last:mb-0">{children}</p>,
@@ -37,6 +38,49 @@ export default function MarkdownRenderer({ content }: Props) {
           <h4 className="mt-2 mb-1 text-sm font-semibold">{children}</h4>
         ),
         hr: () => <hr className="my-3 border-border" />,
+        table({ children, ...props }: any) {
+          return (
+            <div className="my-3 overflow-x-auto">
+              <table className="w-full border-collapse text-sm" {...props}>
+                {children}
+              </table>
+            </div>
+          );
+        },
+        thead({ children, ...props }: any) {
+          return (
+            <thead className="bg-muted/60 font-semibold" {...props}>
+              {children}
+            </thead>
+          );
+        },
+        th({ children, ...props }: any) {
+          return (
+            <th
+              className="border border-border px-3 py-2 text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground"
+              {...props}
+            >
+              {children}
+            </th>
+          );
+        },
+        td({ children, ...props }: any) {
+          return (
+            <td className="border border-border px-3 py-2 text-sm" {...props}>
+              {children}
+            </td>
+          );
+        },
+        tr({ children, ...props }: any) {
+          return (
+            <tr
+              className="even:bg-muted/20 transition-colors hover:bg-muted/40"
+              {...props}
+            >
+              {children}
+            </tr>
+          );
+        },
         pre: ({ children }) => {
           const child = Array.isArray(children) ? children[0] : children;
           const className =

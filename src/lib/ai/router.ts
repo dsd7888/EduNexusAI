@@ -22,9 +22,21 @@ export async function routeAI(
 ): Promise<ChatResponse> {
   const resolvedParams: ChatParams = {
     ...params,
+    task,
     model: params.model ?? TASK_TO_MODEL[task] ?? DEFAULT_MODEL,
     maxTokens:
-      task === "ppt_gen" ? params.maxTokens ?? 8192 : params.maxTokens,
+      params.maxTokens ??
+      (task === "ppt_gen"
+        ? 32768
+        : task === "placement_gen"
+          ? 32768
+          : task === "quiz_gen"
+            ? 8192
+            : task === "qpaper_gen"
+              ? 16384
+              : task === "refine"
+                ? 8192
+                : 4096),
   };
 
   const providerName =

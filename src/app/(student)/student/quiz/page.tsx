@@ -173,6 +173,7 @@ export default function StudentQuizPage() {
   const [resultsPage, setResultsPage] = useState(1);
   const RESULTS_PER_PAGE = 10;
   const breakdownRef = useRef<HTMLDivElement | null>(null);
+  const isGeneratingRef = useRef(false);
   // ── HISTORY STATE ──────────────────────────────────────────
   const [historyAttempts, setHistoryAttempts] = useState<HistoryAttempt[]>([]);
   const [loadingHistory, setLoadingHistory] = useState(false);
@@ -391,8 +392,10 @@ export default function StudentQuizPage() {
     );
   };
 
-  const handleGenerate = async () => {
+  const generateQuiz = useCallback(async () => {
+    if (isGeneratingRef.current) return;
     if (!selectedSubjectIds.length) return;
+    isGeneratingRef.current = true;
     setIsGenerating(true);
     try {
       const res = await fetch("/api/quiz/generate", {
@@ -426,9 +429,17 @@ export default function StudentQuizPage() {
       console.error(e);
       alert(e instanceof Error ? e.message : "Failed to generate quiz");
     } finally {
+      isGeneratingRef.current = false;
       setIsGenerating(false);
     }
-  };
+  }, [
+    selectedSubjectIds,
+    questionCount,
+    difficulty,
+    questionTypes,
+    selectedTopics,
+    focusTopic,
+  ]);
 
   useEffect(() => {
     if (view === "taking") {
@@ -833,7 +844,7 @@ export default function StudentQuizPage() {
             <Button
               className="w-full"
               disabled={selectedSubjectIds.length === 0 || isGenerating}
-              onClick={handleGenerate}
+              onClick={() => void generateQuiz()}
             >
               {isGenerating ? (
                 <>

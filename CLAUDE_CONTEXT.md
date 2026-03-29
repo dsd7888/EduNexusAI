@@ -610,3 +610,5 @@ I run them, share Cursor summary for cross-check, then continue.
 8. **Re-enable RLS** on profiles and documents
 9. **Re-enable email confirmation** before go-live
 Additional but important: Check every prompting code, if the prompts are highly optimised according to official documentation. i.e. Finest Prompt engineering. 
+
+TODO: Aptitude engine, management side, soft skills

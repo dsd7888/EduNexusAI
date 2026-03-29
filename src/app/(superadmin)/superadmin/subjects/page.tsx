@@ -547,7 +547,9 @@ export default function SubjectsPage() {
                      />
                    </div>
                    <div className="space-y-2 sm:col-span-2">
-                     <label className="text-sm font-medium">Description (optional)</label>
+                     <label className="text-sm font-medium">
+                       Module Description (optional — used by AI for content context)
+                     </label>
                      <Textarea
                        value={moduleDescription}
                        onChange={(e) => setModuleDescription(e.target.value)}

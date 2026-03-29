@@ -23,6 +23,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Switch } from "@/components/ui/switch";
 import { createBrowserClient } from "@/lib/db/supabase-browser";
 import {
   BookOpen,
@@ -87,7 +88,7 @@ export default function FacultyGeneratePage() {
   const [modules, setModules] = useState<ModuleRow[]>([]);
   const [selectedSubjectId, setSelectedSubjectId] = useState("");
   const [inputMode, setInputMode] = useState<InputMode>("module");
-  const [selectedModuleName, setSelectedModuleName] = useState("");
+  const [selectedModuleId, setSelectedModuleId] = useState("");
   const [customTopic, setCustomTopic] = useState("");
   const [depth, setDepth] = useState<Depth>("intermediate");
   const [view, setView] = useState<View>("form");
@@ -100,6 +101,8 @@ export default function FacultyGeneratePage() {
     GENERATING_MESSAGES[0]
   );
   const [progress, setProgress] = useState(0);
+  const [addLogo, setAddLogo] = useState(false);
+  const [logoUrl, setLogoUrl] = useState<string | null>(null);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const progressRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -170,6 +173,7 @@ export default function FacultyGeneratePage() {
   }, [fetchAssignedSubjects]);
 
   useEffect(() => {
+    setSelectedModuleId("");
     if (selectedSubjectId) {
       fetchModules(selectedSubjectId);
     } else {
@@ -208,6 +212,20 @@ export default function FacultyGeneratePage() {
     };
   }, [view]);
 
+  useEffect(() => {
+    const logoPath = "/university-logo.png";
+    const img = new Image();
+    img.onload = () => {
+      setLogoUrl(logoPath);
+      console.log("[generate] Logo found at", logoPath);
+    };
+    img.onerror = () => {
+      console.log("[generate] No logo at", logoPath);
+      setLogoUrl(null);
+    };
+    img.src = logoPath;
+  }, []);
+
   async function generatePresentation() {
     setView("generating");
     setResult(null);
@@ -220,7 +238,8 @@ export default function FacultyGeneratePage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           subjectId: selectedSubjectId,
-          moduleName: inputMode === "module" ? selectedModuleName : undefined,
+          moduleId:
+            inputMode === "module" ? selectedModuleId || undefined : undefined,
           customTopic:
             inputMode === "topic" ? customTopic.trim() || undefined : undefined,
           depth,
@@ -229,8 +248,8 @@ export default function FacultyGeneratePage() {
       if (!outlineRes.ok) throw new Error("Failed to generate outline");
       const { outline } = await outlineRes.json();
 
-      // STEP 2: Generate content in batches of 8
-      const BATCH_SIZE = 8;
+      // STEP 2: Generate content in batches of 5 (Flash output limits)
+      const BATCH_SIZE = 5;
       const allSlides: SlideContent[] = [];
       const totalBatches = Math.ceil(outline.outline.length / BATCH_SIZE);
 
@@ -248,6 +267,12 @@ export default function FacultyGeneratePage() {
             subjectId: selectedSubjectId,
             slides: batch,
             depth,
+            moduleId:
+              inputMode === "module" ? selectedModuleId || undefined : undefined,
+            customTopic:
+              inputMode === "topic"
+                ? customTopic.trim() || undefined
+                : undefined,
           }),
         });
 
@@ -257,7 +282,8 @@ export default function FacultyGeneratePage() {
         }
 
         if (i + BATCH_SIZE < outline.outline.length) {
-          await new Promise((r) => setTimeout(r, 800));
+          // Smaller delay since batches are smaller
+          await new Promise((r) => setTimeout(r, 600));
         }
       }
 
@@ -274,6 +300,8 @@ export default function FacultyGeneratePage() {
           subject: outline.subject,
           topic: outline.topic,
           slides: allSlides,
+          addLogo,
+          logoUrl: addLogo ? logoUrl : null,
         }),
       });
 
@@ -308,7 +336,7 @@ export default function FacultyGeneratePage() {
 
   const handleGenerate = () => {
     if (!selectedSubjectId) return;
-    if (inputMode === "module" && !selectedModuleName) return;
+    if (inputMode === "module" && !selectedModuleId) return;
     if (inputMode === "topic" && !customTopic.trim()) return;
     generatePresentation();
   };
@@ -318,13 +346,13 @@ export default function FacultyGeneratePage() {
     setResult(null);
     setGeneratingMessage(GENERATING_MESSAGES[0]);
     setProgress(0);
-    setSelectedModuleName("");
+    setSelectedModuleId("");
     setCustomTopic("");
   };
 
   const canGenerate =
     selectedSubjectId &&
-    (inputMode === "module" ? selectedModuleName : customTopic.trim());
+    (inputMode === "module" ? selectedModuleId : customTopic.trim());
 
   // ──── VIEW: form ─────────────────────────────────────────
   if (view === "form") {
@@ -351,7 +379,7 @@ export default function FacultyGeneratePage() {
                 value={selectedSubjectId}
                 onValueChange={(v) => {
                   setSelectedSubjectId(v);
-                  setSelectedModuleName("");
+                  setSelectedModuleId("");
                 }}
               >
                 <SelectTrigger className="w-full">
@@ -402,15 +430,15 @@ export default function FacultyGeneratePage() {
               <div className="space-y-2">
                 <Label>Module</Label>
                 <Select
-                  value={selectedModuleName}
-                  onValueChange={setSelectedModuleName}
+                  value={selectedModuleId}
+                  onValueChange={setSelectedModuleId}
                 >
                   <SelectTrigger className="w-full">
                     <SelectValue placeholder="Select module..." />
                   </SelectTrigger>
                   <SelectContent>
                     {modules.map((m) => (
-                      <SelectItem key={m.id} value={m.name}>
+                      <SelectItem key={m.id} value={m.id}>
                         Module {m.module_number}: {m.name}
                       </SelectItem>
                     ))}
@@ -498,6 +526,26 @@ export default function FacultyGeneratePage() {
             </p>
           </CardContent>
         </Card>
+
+        {logoUrl && (
+          <div className="flex items-center gap-3 rounded-lg border p-3">
+            <img
+              src={logoUrl}
+              alt="Logo"
+              className="h-8 w-auto object-contain"
+              onError={() => setLogoUrl(null)}
+            />
+            <div className="min-w-0 flex-1">
+              <p className="text-sm font-medium">
+                Add university logo to title slide
+              </p>
+              <p className="text-muted-foreground text-xs">
+                Official presentation
+              </p>
+            </div>
+            <Switch checked={addLogo} onCheckedChange={setAddLogo} />
+          </div>
+        )}
 
         <Button
           className="w-full h-12 text-base"

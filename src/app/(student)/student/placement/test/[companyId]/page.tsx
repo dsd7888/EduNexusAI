@@ -37,8 +37,45 @@ import {
   Tooltip,
 } from "recharts";
 import { cn } from "@/lib/utils";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
+
+const activeGenerations = new Set<string>();
 
 type View = "loading" | "test" | "results";
+
+function PlacementQuestionMarkdown({ text }: { text: string }) {
+  return (
+    <div className="prose prose-sm dark:prose-invert max-w-none">
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm]}
+        components={{
+          table: ({ children }) => (
+            <div className="my-2 overflow-x-auto">
+              <table className="w-full border-collapse text-sm">{children}</table>
+            </div>
+          ),
+          th: ({ children }) => (
+            <th className="border border-border bg-muted/60 px-2 py-1.5 text-left text-xs font-semibold">
+              {children}
+            </th>
+          ),
+          td: ({ children }) => (
+            <td className="border border-border px-2 py-1.5 text-sm">{children}</td>
+          ),
+          tr: ({ children }) => (
+            <tr className="even:bg-muted/20">{children}</tr>
+          ),
+          p: ({ children }) => (
+            <p className="mb-0 font-medium text-foreground">{children}</p>
+          ),
+        }}
+      >
+        {text}
+      </ReactMarkdown>
+    </div>
+  );
+}
 
 function GeneratingProgress() {
   const [progress, setProgress] = useState(5);
@@ -188,62 +225,74 @@ export default function PlacementTestPage() {
   }, [answers, questions, results]);
 
   const generateTest = useCallback(async () => {
+    const lockKey = `placement_${params.companyId}`;
+    if (activeGenerations.has(lockKey)) {
+      console.log("[placement/test] Already generating, skipping");
+      return;
+    }
+    activeGenerations.add(lockKey);
     setView("loading");
-    const res = await fetch("/api/placement/generate", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ companyId: params.companyId }),
-    });
-
-    const data = await res.json().catch(() => ({} as any));
-
-    if (!res.ok) {
-      toast.error("Could not generate test", {
-        description: data?.error ?? "Please try again.",
+    try {
+      const res = await fetch("/api/placement/generate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ companyId: params.companyId }),
       });
+
+      const data = await res.json().catch(() => ({} as any));
+
+      if (!res.ok) {
+        toast.error("Could not generate test", {
+          description: data?.error ?? "Please try again.",
+        });
+        router.push("/student/placement");
+        return;
+      }
+
+      const { questions: qs, companyName: name } = data as {
+        questions?: any[];
+        companyName?: string;
+        partial?: boolean;
+        error?: string;
+      };
+
+      if (!qs?.length) {
+        toast.error("No questions generated");
+        router.push("/student/placement");
+        return;
+      }
+
+      if (data.partial) {
+        toast.info(`Test ready — ${qs.length} questions`, {
+          description: "Slightly shorter test due to generation limits.",
+        });
+      }
+
+      setQuestions(qs);
+      setCompanyName(String(name ?? "Placement Test"));
+      setAnswers({});
+      setCurrentIndex(0);
+      setStartTime(Date.now());
+      setTimeLeft(qs.length * 60);
+      setTimerPaused(false);
+      setTabSwitchCount(0);
+      setTabWarning(false);
+      setView("test");
+    } catch (err) {
+      console.error("[placement/test]", err);
       router.push("/student/placement");
-      return;
+    } finally {
+      activeGenerations.delete(lockKey);
     }
-
-    const { questions: qs, companyName: name } = data as {
-      questions?: any[];
-      companyName?: string;
-      partial?: boolean;
-      error?: string;
-    };
-
-    if (!qs?.length) {
-      toast.error("No questions generated");
-      router.push("/student/placement");
-      return;
-    }
-
-    if (data.partial) {
-      toast.info(`Test ready — ${qs.length} questions`, {
-        description: "Slightly shorter test due to generation limits.",
-      });
-    }
-
-    setQuestions(qs);
-    setCompanyName(String(name ?? "Placement Test"));
-    setAnswers({});
-    setCurrentIndex(0);
-    setStartTime(Date.now());
-    setTimeLeft(qs.length * 60);
-    setTimerPaused(false);
-    setTabSwitchCount(0);
-    setTabWarning(false);
-    setView("test");
   }, [params.companyId, router]);
 
   useEffect(() => {
-    // Check for existing in-progress test
+    // Check for saved state first — single mount, no duplicate generateTest
     try {
       const saved = localStorage.getItem(storageKey);
       if (saved) {
         const parsed = JSON.parse(saved);
         const ageMinutes = (Date.now() - parsed.savedAt) / 60000;
-
         if (ageMinutes < 60 && parsed.questions?.length > 0) {
           setRestoredState(parsed);
           return;
@@ -252,8 +301,10 @@ export default function PlacementTestPage() {
       }
     } catch {}
 
+    // No saved state — generate once
     void generateTest();
-  }, [params.companyId, storageKey, generateTest]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- intentional: run once on mount only
+  }, []);
 
   useEffect(() => {
     if (restoredState) setShowResumeDialog(true);
@@ -371,9 +422,7 @@ export default function PlacementTestPage() {
             <AlertDialogFooter>
               <AlertDialogCancel
                 onClick={() => {
-                  try {
-                    localStorage.removeItem(storageKey);
-                  } catch {}
+                  localStorage.removeItem(storageKey);
                   setRestoredState(null);
                   setShowResumeDialog(false);
                   void generateTest();
@@ -408,8 +457,8 @@ export default function PlacementTestPage() {
           <div className="space-y-2">
             <h2 className="text-xl font-semibold">Preparing your test...</h2>
             <p className="max-w-sm text-sm text-muted-foreground">
-              Generating 30 questions tailored to your branch. This takes 2–3 minutes — please
-              don&apos;t close this page.
+              Generating 20 questions tailored to your branch. This may take a couple of minutes —
+              please don&apos;t close this page.
             </p>
           </div>
           <div className="w-64 space-y-2">
@@ -655,7 +704,7 @@ export default function PlacementTestPage() {
                             variant="outline"
                             className="h-7 w-full border-primary text-xs text-primary hover:bg-primary/5"
                             onClick={() =>
-                              router.push(
+                              router.replace(
                                 `/student/placement/practice/${topic.subcategory}`
                               )
                             }
@@ -705,7 +754,7 @@ export default function PlacementTestPage() {
                                 variant="ghost"
                                 className="h-7 shrink-0 text-xs text-primary"
                                 onClick={() =>
-                                  router.push(
+                                  router.replace(
                                     `/student/placement/practice/${gap.subcategory}`
                                   )
                                 }
@@ -815,7 +864,7 @@ export default function PlacementTestPage() {
                             </span>
                           </div>
 
-                          <p className="font-medium">{q.question}</p>
+                          <PlacementQuestionMarkdown text={String(q.question ?? "")} />
 
                           <div className="space-y-2">
                             {(q.options ?? []).map((opt: string, idx: number) => {
@@ -980,7 +1029,7 @@ export default function PlacementTestPage() {
             )}
           </div>
           <CardTitle className="text-base font-semibold">
-            {current?.question ?? ""}
+            <PlacementQuestionMarkdown text={String(current?.question ?? "")} />
           </CardTitle>
         </CardHeader>
         <CardContent className="space-y-2">

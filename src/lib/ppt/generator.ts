@@ -1,3 +1,4 @@
+import path from "path";
 import PptxGenJS from "pptxgenjs";
 
 // ── TYPES ──────────────────────────────────────────────────
@@ -17,6 +18,8 @@ export interface SlideContent {
   bullets?: string[];
   svgCode?: string;
   diagramCaption?: string;
+  /** Rare alternate path for example steps (prefer example.steps). */
+  steps?: string[];
   example?: {
     problem: string;
     steps: string[];
@@ -36,6 +39,8 @@ export interface PPTSlideJSON {
   subject: string;
   topic: string;
   slides: SlideContent[];
+  addLogo?: boolean;
+  logoUrl?: string;
 }
 
 export interface SlideOutline {
@@ -50,35 +55,139 @@ export interface SlideOutline {
 export function buildOutlinePrompt(options: {
   subjectName: string;
   subjectCode: string;
-  syllabusContent: string;
+  /** Full subject syllabus text (caller may slice); outline uses first 3000 chars for context. */
+  fullSyllabus: string;
   moduleName?: string;
   customTopic?: string;
+  /** From modules.description when generating for a module. */
+  moduleDescription?: string;
   depth: "basic" | "intermediate" | "advanced";
+  /** Optional textbook list from DB — guides pedagogy and notation. */
+  referenceBooks?: string;
 }): string {
   const {
     subjectName,
     subjectCode,
-    syllabusContent,
+    fullSyllabus,
     moduleName,
     customTopic,
+    moduleDescription = "",
     depth,
+    referenceBooks = "",
   } = options;
-  const topic = moduleName ?? customTopic ?? "the module";
+  const focusLabel = moduleName ?? customTopic ?? "the module";
   const isModule = Boolean(moduleName);
 
   const slideCountGuide = {
-    basic: isModule ? "22–28" : "14–18",
-    intermediate: isModule ? "28–35" : "18–24",
-    advanced: isModule ? "35–45" : "24–32",
+    basic: isModule ? "16–20" : "14–18",
+    intermediate: isModule ? "20–26" : "18–24",
+    advanced: isModule ? "26–32" : "24–32",
   }[depth];
 
-  return `You are a senior university professor designing a slide deck for ${subjectName} (${subjectCode}).
+  const syllabusContext = fullSyllabus.slice(0, 3000);
+  const refInline =
+    referenceBooks.trim().length > 0
+      ? `
 
-SYLLABUS CONTENT:
-${syllabusContent}
+REFERENCE TEXTBOOKS: ${referenceBooks.trim()}
+Follow their notation and pedagogical sequence.
+`
+      : "";
 
-TASK: Create a slide OUTLINE (titles + types only, no content yet) for: ${topic}
+  return `You are an expert educator creating a professional slide deck for ${subjectName} (${subjectCode}).
+
+Adapt slide types to this subject's nature:
+- If STEM/Engineering: use derivations, worked numericals, process diagrams
+- If Medical/Health: use clinical cases, anatomical diagrams, diagnostic criteria
+- If Architecture/Design: use design principles, spatial diagrams, case studies
+- If Management/Commerce: use frameworks, data tables, case analyses
+- If Humanities: use thematic analysis, examples, comparative studies
+
+Choose slide types that a domain expert would actually use.
+
+FULL SUBJECT SYLLABUS (for context and cross-referencing):
+${syllabusContext}
+
+YOUR FOCUS MODULE: "${focusLabel}"
+${moduleDescription.trim() ? `Module description: ${moduleDescription.trim()}` : ""}
+
+Use the full syllabus to:
+1. Understand where this module fits in the subject
+2. Reference prerequisite concepts correctly
+3. Avoid duplicating content from other modules
+4. Include cross-references like "As we saw in Unit 1..." where appropriate
+${refInline}
+TASK: Create a slide OUTLINE (titles + types only, no content yet) for: ${focusLabel}
 Depth: ${depth} | Target slide count: ${slideCountGuide}
+
+IMPORTANT: Every slide must be completable in a single batch.
+Concept slides: max 7 tight bullets.
+Example slides: max 6 calculation steps.
+Prefer quality over quantity — fewer slides, richer content.
+
+When the syllabus includes a topic that is explicitly listed with sub-points (derivation, assumptions, applications), that topic MUST get its own dedicated concept slide, not be merged into another topic's slide.
+Example: 'Bernoulli's equation' listed with derivation, assumptions, applications → must be its own slide.
+
+MANDATORY TEACHING SEQUENCE — in this exact order:
+
+EULER'S EQUATION IS MANDATORY when syllabus mentions 'Euler' in the dynamics section (NOT the Lagrangian/Eulerian kinematics section — those are different):
+
+Add a concept slide titled exactly:
+'Euler's Equation of Motion: Derivation'
+
+This slide must include:
+- Newton's 2nd law for fluid element along streamline
+- Result: -∂P/∂s - ρg(∂z/∂s) = ρ(DV/Dt)
+- For steady flow: -dP/ρ - g·dz = V·dV
+- Integration gives Bernoulli's equation (bridge to next slide)
+
+This slide MUST appear BEFORE the Bernoulli slide.
+Without it, Bernoulli has no derivation context.
+
+When syllabus includes Bernoulli (fluid dynamics, after Euler above):
+2. CONCEPT slide: 'Bernoulli's Equation: Derivation & Assumptions'
+   Must derive from Euler's equation by integrating along streamline
+   Result: P/γ + V²/2g + z = constant = H (total head)
+   Assumptions (ALL must appear): steady, inviscid, incompressible,
+   along a streamline, no shaft work, no heat transfer
+
+3. EXAMPLE slide: 'Worked Example: Applying Bernoulli's Equation'
+   Use a pipe flow or nozzle problem with numbers
+   Show how each assumption is satisfied
+
+These 3 slides are NON-NEGOTIABLE when Bernoulli is in the syllabus.
+
+PRACTICE QUESTION DISTRIBUTION:
+Generate one practice question per major topic group:
+- One on continuity/flow classification
+- One on Bernoulli's equation (MUST include this)
+- One on energy equation OR momentum equation
+- One on flow measurement (venturimeter OR Pitot tube)
+
+NEVER have all practice questions test the same topic area.
+
+HGL/TEL rule: If HGL/TEL diagram is included,
+add a CONCEPT slide BEFORE the diagram explaining:
+what HGL represents (P/γ + z), what TEL represents (P/γ + V²/2g + z),
+and the vertical distance V²/2g between them.
+
+Pitot tube: If included in syllabus, generate:
+1. CONCEPT slide: 'Pitot Tube: Measuring Local Velocity'
+   Stagnation vs static pressure, formula: V = √(2ΔP/ρ)
+2. DIAGRAM slide showing the tube in a pipe
+
+A diagram without a concept slide teaches nothing.
+
+THERMODYNAMICS SPECIFIC:
+If module covers Second Law or Heat Engines:
+- MUST include a diagram slide: 'Carnot Cycle: P-V and T-S Diagrams'
+  Show 4 processes on P-V plane:
+  1→2 Isothermal expansion (at T_H)
+  2→3 Adiabatic expansion
+  3→4 Isothermal compression (at T_L)
+  4→1 Adiabatic compression
+
+This diagram IS the Second Law in visual form.
 
 MANDATORY STRUCTURE per major concept:
   1. concept slide — definition, properties, mathematical basis
@@ -119,11 +228,38 @@ Indexes must start at 0 and increment sequentially with no gaps.`;
 
 export function buildBatchContentPrompt(options: {
   subjectName: string;
-  syllabusContent: string;
+  /** Full subject syllabus; first 3000 chars used for batch context. */
+  fullSyllabus: string;
   depth: string;
   slides: { index: number; type: SlideType; title: string }[];
+  moduleName?: string;
+  customTopic?: string;
+  moduleDescription?: string;
+  /** Optional textbook list from DB — notation and pedagogy. */
+  referenceBooks?: string;
 }): string {
-  const { subjectName, syllabusContent, depth, slides } = options;
+  const {
+    subjectName,
+    fullSyllabus,
+    depth,
+    slides,
+    referenceBooks = "",
+    moduleName,
+    customTopic,
+    moduleDescription = "",
+  } = options;
+
+  const focusLabel = moduleName ?? customTopic ?? "";
+  const syllabusContext = fullSyllabus.slice(0, 3000);
+
+  const referenceBlock =
+    referenceBooks.trim().length > 0
+      ? `
+
+REFERENCE TEXTBOOKS: ${referenceBooks.trim()}
+Follow the pedagogical sequence and notation conventions from these books.
+`
+      : "";
 
   const slidesJson = JSON.stringify(
     slides.map((s) => ({
@@ -149,9 +285,14 @@ export function buildBatchContentPrompt(options: {
 
 You are an expert university lecturer creating detailed slide content for ${subjectName}.
 
-SYLLABUS CONTENT:
-${syllabusContent}
+FULL SUBJECT SYLLABUS (for context and cross-referencing):
+${syllabusContext}
 
+YOUR FOCUS: "${focusLabel || "this section of the course"}"
+${moduleDescription.trim() ? `Module description: ${moduleDescription.trim()}` : ""}
+
+Use the full syllabus to align content with prerequisites and avoid contradicting other units.
+${referenceBlock}
 DEPTH LEVEL: ${depth}
 
 You are given a batch of slide titles and types from an existing outline. For each slide, generate COMPLETE content as SlideContent objects.
@@ -165,25 +306,91 @@ SLIDE TYPES:
 - \"practice\": Practice question (with answer and explanation).
 - \"summary\": Key takeaways.
 
-REQUIREMENTS BY TYPE:
+CONTENT REQUIREMENTS BY SLIDE TYPE:
 - \"title\": Use the title string as main heading; you may also include a short subtitle in bullets.
 - \"overview\": bullets should list the main concepts/topics.
-- \"concept\": bullets must be complete sentences explaining the concept, properties, and relevance.
+- \"concept\" slides — EXACTLY 5-7 bullets. Each bullet MUST:
+  - Be ONE complete sentence, maximum 110 characters
+  - Contain the actual fact/formula/definition (not a summary)
+  - End with a period
+  - NEVER be a paragraph — if you need more, split into two bullets
+  - Format: "Term/concept: brief explanation with value/formula if applicable."
+  
+  Examples of GOOD bullets (under 110 chars each):
+  ✓ "Bernoulli's equation: P + ½ρv² + ρgh = constant along a streamline."
+  ✓ "Reynolds number Re = ρvD/μ determines laminar (<2300) vs turbulent (>4000) flow."
+  ✓ "Continuity equation for incompressible flow: A₁V₁ = A₂V₂ (mass conservation)."
+  
+  Examples of BAD bullets (too long, paragraph-style):
+  ✗ "The continuity equation is a fundamental statement of conservation of mass within a control volume or system, and for steady incompressible flow it simplifies to A₁V₁ = A₂V₂."
+  
+  The "note" field (the 💡 tip bar at the bottom):
+  MUST follow this format:
+    "💡 Real world: [one concrete example where this is used]"
+  Examples:
+  ✓ "💡 Real world: Water speeding up through a garden hose nozzle follows continuity."
+  ✓ "💡 Real world: Aircraft wings use Bernoulli — faster air above = lower pressure = lift."
+  ✓ "💡 Real world: Fire sprinklers use momentum equation to calculate pipe support forces."
+  Never write a generic "this is important" note.
+  Always connect to something the student has seen in real life.
+  Max 80 characters for the whole note string.
 - \"diagram\": 
   - Generate complete, valid SVG in svgCode with viewBox="0 0 800 500".
   - Use clean colors: #2563EB, #1E40AF, #16A34A, #D97706, #DC2626, #6B7280, white backgrounds.
   - Include clear <text> labels and arrows using <defs><marker>.
   - diagramCaption: 1–2 sentence explanation of what the diagram shows.
-- \"example\": 
-  - example.problem: clear problem statement.
-  - example.steps: array of full-sentence steps showing the COMPLETE solution.
-  - example.answer: final numerical or conceptual answer.
-- \"practice\": 
-  - question.text: the question.
-  - question.options: optional MCQ options (A/B/C/D) when appropriate.
-  - question.answer: correct answer (or option letter).
-  - question.explanation: short explanation of why it is correct.
-- \"summary\": bullets should list the key takeaways as complete sentences.
+- \"example\" slides:
+  - example.problem: max 180 characters. State ONLY the given values and what to find.
+    Format: "Given: [values]. Find: [what to calculate]."
+  - example.steps: EXACTLY 4-6 steps. Each step max 100 characters.
+    Format: "Step N: [formula used] = [substitution] = [result with units]."
+    Example: "Step 2: A₂ = π(0.075)²/4 = 0.00442 m²."
+    NO explanations of why — just show the calculation.
+  - example.answer: max 80 characters. Final value + units only.
+    Example: "The average velocity at section 2 is 6.78 m/s."
+  CRITICAL MATH RULE: For venturimeter problems, ALWAYS verify:
+  Q = (A₁A₂/√(A₁²-A₂²)) × √(2ΔP/ρ)
+  Example check: D₁=15cm, D₂=7.5cm, ΔP=50kPa, ρ=1000:
+  A₁ = π(0.075)² = 0.01767 m²
+  A₂ = π(0.0375)² = 0.004418 m²
+  Q = (0.01767 × 0.004418 / √(0.01767²-0.004418²)) × √(100000/1000)
+  Q = (0.0000781 / 0.01710) × 10 = 0.00457 × 10 = 0.046 m³/s
+  Do NOT generate answer 0.083 for these inputs — that is wrong.
+  Always verify your answer matches the question's given values.
+
+  MOMENTUM EQUATION — 90° jet deflection:
+  When a jet deflects 90°: Vx_out=0, Vy_out=V_in
+  ṁ = ρAV where A = π(D/2)²
+  Fx = ṁ(0 - V_in) = -ṁV
+  Fy = ṁ(V_in - 0) = +ṁV
+  |F| = ṁV√2
+  Example check: D=5cm, V=20m/s
+  A = π(0.025)² = 0.001963 m²
+  ṁ = 1000 × 0.001963 × 20 = 39.27 kg/s
+  |F| = 39.27 × 20 × √2 = 1111 N
+  NOT 277.6 N — verify your arithmetic before outputting.
+
+  VENTURIMETER Q formula:
+  Q = (A₁×A₂ / √(A₁²-A₂²)) × √(2ΔP/ρ)
+  Example check: D₁=10cm, D₂=5cm, ΔP=20kPa
+  A₁ = π(0.05)² = 0.007854 m²
+  A₂ = π(0.025)² = 0.001963 m²
+  Q = (0.007854×0.001963/√(0.007854²-0.001963²)) × √(40)
+    = (0.00001542/0.007607) × 6.324
+    = 0.002027 × 6.324 = 0.01282 m³/s ≈ 0.013 m³/s
+  Generate answer options that actually include the correct value.
+  Never generate options where none of them match the solution.
+- \"practice\" slides:
+  - question.text: max 200 characters. Question + necessary data only.
+  - question.options: 4 options, each max 40 characters.
+  - question.answer: the letter only: "A", "B", "C", or "D"
+  - question.explanation: must show the KEY calculation step, not just restate the method. Max 150 chars.
+    BAD: "Apply momentum equation in x-direction."
+    GOOD: "ṁ = ρAV = 1000×0.005×20 = 100 kg/s; Fx = ṁ×ΔVx = 100×(0-20) = -2000 N."
+    Always include at least one number being substituted.
+- \"summary\" slides — 6-8 bullets.
+  Each bullet: max 100 characters. One key takeaway per bullet.
+  Format: "Key concept: [one-line takeaway]."
 
 INPUT SLIDES (DO NOT CHANGE index OR type, only fill content based on title and syllabus):
 ${slidesJson}
@@ -348,6 +555,23 @@ function stripMd(text: string): string {
     .trim();
 }
 
+function svgToBase64(svg: string): string {
+  const cleaned = svg
+    .replace(/<!--[\s\S]*?-->/g, "")
+    .replace(/\r\n/g, " ")
+    .replace(/\r/g, " ")
+    .replace(/\n/g, " ")
+    .trim();
+  const withNs = cleaned.includes("xmlns=")
+    ? cleaned
+    : cleaned.replace("<svg", '<svg xmlns="http://www.w3.org/2000/svg"');
+  return `data:image/svg+xml;base64,${Buffer.from(withNs, "utf-8").toString("base64")}`;
+}
+
+function isValidSVG(svg: string): boolean {
+  return Boolean(svg && svg.length > 100 && svg.includes("<svg") && svg.includes("viewBox"));
+}
+
 function addHeaderBar(
   pptx: PptxGenJS,
   slide: PptxGenJS.Slide,
@@ -393,7 +617,7 @@ const FONT = {
   tiny: { size: 10, bold: false },
 } as const;
 
-const MAX_BULLETS_PER_SLIDE = 6;
+const MAX_BULLETS_PER_SLIDE = 7;
 const MAX_BULLET_CHARS = 160;
 
 function cap(text: string, _max = MAX_BULLET_CHARS): string {
@@ -407,10 +631,85 @@ function capTitle(text: string, max = 90): string {
   return clean.length > max ? `${clean.slice(0, max - 1)}…` : clean;
 }
 
+function capBullet(text: string): string {
+  if (!text) return "";
+  const cleaned = stripMd(text);
+  // Hard cap at 130 chars for bullets to prevent overflow
+  return cleaned.length > 130 ? `${cleaned.slice(0, 127)}…` : cleaned;
+}
+
+function capStep(text: string): string {
+  if (!text) return "";
+  const cleaned = stripMd(text);
+  return cleaned.length > 110 ? `${cleaned.slice(0, 107)}…` : cleaned;
+}
+
+function capAnswer(text: string): string {
+  if (!text) return "";
+  const cleaned = stripMd(text);
+  return cleaned.length > 90 ? `${cleaned.slice(0, 87)}…` : cleaned;
+}
+
+/** Practice explanation: strip markdown and cap for rendering (prompt allows up to 150). */
+function capExplanation(text: string): string {
+  if (!text) return "";
+  const cleaned = stripMd(text);
+  return cleaned.length > 160 ? `${cleaned.slice(0, 157)}…` : cleaned;
+}
+
+function capNote(text: string): string {
+  if (!text) return "";
+  const cleaned = stripMd(text);
+  return cleaned.length > 80 ? `${cleaned.slice(0, 77)}…` : cleaned;
+}
+
+function capProblem(text: string): string {
+  if (!text) return "";
+  const cleaned = stripMd(text);
+  return cleaned.length > 180 ? `${cleaned.slice(0, 177)}…` : cleaned;
+}
+
+function splitToBullets(raw: string | string[]): string[] {
+  const input = Array.isArray(raw) ? raw : [raw];
+  return input
+    .flatMap((b) => b.split(/\n+/))
+    .map((b) => b.replace(/^[\s\-–—•*]+/, "").trim())
+    .filter((b) => b.length > 3)
+    .slice(0, 7);
+}
+
+/** Normalize AI bullet arrays: split on newlines, trim, drop short lines, max 7. */
+function normalizeSlideBullets(bullets: string[] | undefined): string[] {
+  return (bullets ?? [])
+    .flatMap((b: string) => b.split("\n"))
+    .map((b: string) => b.replace(/^\s+/, ""))
+    .filter((b: string) => b.trim().length > 3)
+    .slice(0, 7);
+}
+
+/** Collapse newlines/spaces in a single bullet line for PPTX; drop tiny fragments. */
+function cleanBulletLineForPpt(rawBullet: string): string | null {
+  const cleanText = rawBullet
+    .replace(/\n/g, " ")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+  if (cleanText.length < 3) return null;
+  return cleanText;
+}
+
+function isEquation(text: string): boolean {
+  const hasLhsSymbol = /[A-ZΦψρṁγ∂∇][₀-₉A-Za-z]?\s*=/.test(text);
+  const hasRhsValue =
+    /=\s*[-\d√∫(]/.test(text) || /=\s*[A-Z][₀-₉]/.test(text);
+  const notTooLong = text.length < 90;
+  const notSentence = text.split(" ").length < 12;
+  return (hasLhsSymbol || hasRhsValue) && notTooLong && notSentence;
+}
+
 function chunkBullets(bullets: string[]): string[][] {
   if (!bullets.length) return [[]];
 
-  const MAX = 6;
+  const MAX = 7;
   const MIN_LAST_CHUNK = 3; // don't create a cont. slide for < 3 bullets
 
   if (bullets.length <= MAX) return [bullets];
@@ -522,7 +821,7 @@ export async function generatePPTXBuffer(
   let estimatedTotal = 0;
   for (const s of data.slides) {
     if (s.type === "concept") {
-      const chunks = chunkBullets(s.bullets ?? []);
+      const chunks = chunkBullets(splitToBullets(s.bullets ?? []));
       estimatedTotal += Math.max(1, chunks.length);
     } else {
       estimatedTotal += 1;
@@ -621,6 +920,24 @@ export async function generatePPTXBuffer(
           italic: true,
         });
 
+        if (data.addLogo && data.logoUrl) {
+          try {
+            const logoPath = data.logoUrl.startsWith("/")
+              ? path.join(process.cwd(), "public", data.logoUrl.replace(/^\//, ""))
+              : data.logoUrl;
+            slide.addImage({
+              path: logoPath,
+              x: SLIDE_W - 1.9,
+              y: 0.12,
+              w: 1.6,
+              h: 0.58,
+              sizing: { type: "contain", w: 1.6, h: 0.58 },
+            });
+          } catch (err) {
+            console.warn("[ppt] Logo failed:", err);
+          }
+        }
+
         addPageNumber(slide, slideNum, totalSlides);
         slideNum += 1;
         break;
@@ -631,19 +948,23 @@ export async function generatePPTXBuffer(
         addHeader(pptx, slide, `Overview — ${data.topic}`, C.primary);
         addAccentBar(slide, "60A5FA");
 
-        const bullets = slideData.bullets ?? [];
-        const half = Math.ceil(bullets.length / 2);
-        const col1 = bullets.slice(0, half);
-        const col2 = bullets.slice(half);
+        const overviewBullets = splitToBullets(slideData.bullets ?? []);
+        const half = Math.ceil(overviewBullets.length / 2);
+        const col1 = overviewBullets.slice(0, half);
+        const col2 = overviewBullets.slice(half);
+
+        const overviewBulletBase = {
+          bullet: { code: "2022", indent: 15 } as any,
+          fontSize: 13,
+          color: "1e293b",
+          breakLine: true,
+          paraSpaceBefore: 3,
+        };
 
         slide.addText(
           col1.map((b) => ({
             text: cap(b),
-            options: {
-              bullet: { type: "bullet", indent: 10 },
-              color: C.textDark,
-              fontSize: 13,
-            },
+            options: { ...overviewBulletBase },
           })),
           {
             x: 0.4,
@@ -654,7 +975,6 @@ export async function generatePPTXBuffer(
             valign: "top",
             wrap: true,
             autoFit: true,
-            lineSpacingMultiple: 1.4,
           }
         );
 
@@ -662,11 +982,7 @@ export async function generatePPTXBuffer(
           slide.addText(
             col2.map((b) => ({
               text: cap(b),
-              options: {
-                bullet: { type: "bullet", indent: 10 },
-                color: C.textDark,
-                fontSize: 13,
-              },
+              options: { ...overviewBulletBase },
             })),
             {
               x: 5.1,
@@ -677,7 +993,6 @@ export async function generatePPTXBuffer(
               valign: "top",
               wrap: true,
               autoFit: true,
-              lineSpacingMultiple: 1.4,
             }
           );
         }
@@ -688,7 +1003,7 @@ export async function generatePPTXBuffer(
       }
 
       case "concept": {
-        const chunks = chunkBullets(slideData.bullets ?? []);
+        const chunks = chunkBullets(splitToBullets(slideData.bullets ?? []));
         chunks.forEach((chunk, idx) => {
           const slide = pptx.addSlide();
           const titleText =
@@ -723,57 +1038,102 @@ export async function generatePPTXBuffer(
             },
           });
 
-          const bulletFontSize =
-            chunk.length <= 4 ? 15 : chunk.length <= 6 ? 14 : 13;
           const hasNote = Boolean(slideData.note) && idx === chunks.length - 1;
-          const bodyHeight = hasNote ? ZONE.body.h - 0.7 : ZONE.body.h - 0.1;
+          const bullets = splitToBullets(chunk);
+          const count = bullets.length;
+          const fontSize =
+            count <= 4 ? 16 : count <= 5 ? 15 : count <= 6 ? 14 : 13;
+          const paraSpaceBefore =
+            count <= 4 ? 20 : count <= 5 ? 16 : count <= 6 ? 12 : 8;
+          const paraSpaceAfter =
+            count <= 4 ? 6 : count <= 5 ? 4 : count <= 6 ? 3 : 2;
+          const formulaBullet = bullets.find((b) => isEquation(b));
+          const hasFormula = Boolean(formulaBullet);
+          let bodyHeight = hasNote ? ZONE.body.h - 0.7 : ZONE.body.h - 0.15;
+          if (hasFormula) bodyHeight -= 0.65;
 
           slide.addText(
-            chunk
-              .filter(Boolean)
-              .map((b) => ({
-                text: `  ${cap(b)}\n`,
-                options: {
-                  color: C.textDark,
-                  fontSize: bulletFontSize,
-                  bullet: { type: "bullet", indent: 15, marginPt: 4 },
-                },
-              })),
+            bullets.map((b) => ({
+              text: capBullet(b),
+              options: {
+                bullet: { code: "2022", indent: 15 } as any,
+                fontSize,
+                color: "1e293b",
+                breakLine: true,
+                paraSpaceBefore,
+                paraSpaceAfter,
+              } as any,
+            })),
             {
-              x: ZONE.body.x + 0.1,
-              y: ZONE.body.y + 0.1,
-              w: ZONE.body.w - 0.2,
+              x: ZONE.body.x,
+              y: ZONE.body.y,
+              w: ZONE.body.w,
               h: bodyHeight,
               fontFace: "Calibri",
-              valign: "top",
-              wrap: true,
+              valign: "middle",
               autoFit: true,
-              lineSpacingMultiple: 1.5,
             }
           );
 
-          if (slideData.note && idx === chunks.length - 1) {
+          if (hasFormula && formulaBullet) {
+            const formulaText = formulaBullet
+              .replace(/^[^:]+:\s*/, "")
+              .trim();
             slide.addShape("rect", {
-              x: 0,
-              y: SLIDE_H - 0.5,
-              w: SLIDE_W,
-              h: 0.5,
-              fill: { color: C.accent },
-              line: { color: C.accent },
+              x: ZONE.body.x + 0.2,
+              y: ZONE.body.y + ZONE.body.h - 1.0,
+              w: ZONE.body.w - 0.4,
+              h: 0.55,
+              fill: { color: "1E3A5F" },
+              line: { color: "2563EB", width: 1.5 },
             });
-            slide.addText(`💡 ${cap(slideData.note, 120)}`, {
-              x: 0.3,
-              y: SLIDE_H - 0.5,
-              w: 9.4,
-              h: 0.5,
-              fontSize: 10,
-              italic: true,
-              color: C.dark,
+            slide.addText(capBullet(formulaText), {
+              x: ZONE.body.x + 0.3,
+              y: ZONE.body.y + ZONE.body.h - 1.0,
+              w: ZONE.body.w - 0.6,
+              h: 0.55,
+              fontSize: 13,
               fontFace: "Calibri",
+              color: "FFFFFF",
+              bold: true,
+              align: "center",
               valign: "middle",
               wrap: true,
               autoFit: true,
             });
+          }
+
+          if (slideData.note && idx === chunks.length - 1) {
+            const noteText = (slideData.note ?? "")
+              .split(/\n/)[0]
+              .replace(/^💡\s*/g, "")
+              .replace(/ — /g, ". ")
+              .trim();
+            const tipFinal =
+              noteText.length > 3 ? `💡  ${capNote(noteText)}` : "";
+            if (tipFinal) {
+              slide.addShape("rect", {
+                x: 0,
+                y: SLIDE_H - 0.5,
+                w: SLIDE_W,
+                h: 0.5,
+                fill: { color: C.accent },
+                line: { color: C.accent },
+              });
+              slide.addText(tipFinal, {
+                x: 0.3,
+                y: SLIDE_H - 0.5,
+                w: 9.4,
+                h: 0.5,
+                fontSize: 10,
+                italic: true,
+                color: C.dark,
+                fontFace: "Calibri",
+                valign: "middle",
+                wrap: true,
+                autoFit: true,
+              });
+            }
           }
 
           addPageNumber(slide, slideNum, totalSlides);
@@ -795,21 +1155,21 @@ export async function generatePPTXBuffer(
           line: { color: C.lightGray },
         });
 
-        if (slideData.svgCode) {
-          const svgBase64 = Buffer.from(slideData.svgCode).toString(
-            "base64"
-          );
-          const dataUrl = `data:image/svg+xml;base64,${svgBase64}`;
-          const hasCaption = Boolean(slideData.diagramCaption);
-          const imgH = hasCaption ? 3.6 : 4.1;
+        const hasCaption = Boolean(slideData.diagramCaption);
+        const svgRaw = slideData.svgCode ?? "";
 
+        if (isValidSVG(svgRaw)) {
           slide.addImage({
-            data: dataUrl,
-            x: 0.4,
+            data: svgToBase64(svgRaw),
+            x: ZONE.body.x,
             y: ZONE.body.y,
-            w: 9.2,
-            h: imgH,
-            sizing: { type: "contain", w: 9.2, h: imgH },
+            w: ZONE.body.w,
+            h: ZONE.body.h - (hasCaption ? 0.7 : 0.1),
+            sizing: {
+              type: "contain",
+              w: ZONE.body.w,
+              h: ZONE.body.h - 0.5,
+            },
           });
 
           if (hasCaption && slideData.diagramCaption) {
@@ -835,7 +1195,7 @@ export async function generatePPTXBuffer(
               autoFit: true,
             });
           }
-        } else if (slideData.diagramCaption) {
+        } else if (!svgRaw.trim() && slideData.diagramCaption) {
           slide.addShape("rect", {
             x: 0.5,
             y: ZONE.body.y,
@@ -857,6 +1217,49 @@ export async function generatePPTXBuffer(
             autoFit: true,
             lineSpacingMultiple: 1.6,
           });
+        } else {
+          slide.addShape("rect", {
+            x: ZONE.body.x,
+            y: ZONE.body.y,
+            w: ZONE.body.w,
+            h: ZONE.body.h - 0.5,
+            fill: { color: "F1F5F9" },
+            line: { color: "CBD5E1", width: 1 },
+          });
+          slide.addText(`[ Visual diagram for: ${capTitle(slideData.title, 50)} ]`, {
+            x: ZONE.body.x,
+            y: ZONE.body.y + 1.5,
+            w: ZONE.body.w,
+            h: 0.6,
+            fontSize: 13,
+            color: "94A3B8",
+            align: "center",
+            fontFace: "Calibri",
+          });
+
+          if (hasCaption && slideData.diagramCaption) {
+            slide.addShape("rect", {
+              x: 0,
+              y: SLIDE_H - 0.52,
+              w: SLIDE_W,
+              h: 0.52,
+              fill: { color: "0E7490" },
+              line: { color: "0E7490" },
+            });
+            slide.addText(`📊 ${cap(slideData.diagramCaption, 130)}`, {
+              x: 0.3,
+              y: SLIDE_H - 0.52,
+              w: 9.4,
+              h: 0.52,
+              fontSize: 11,
+              italic: true,
+              color: C.white,
+              fontFace: "Calibri",
+              valign: "middle",
+              wrap: true,
+              autoFit: true,
+            });
+          }
         }
 
         addPageNumber(slide, slideNum, totalSlides);
@@ -887,9 +1290,6 @@ export async function generatePPTXBuffer(
           const answerBarH = 0.7;
           const availableH =
             SLIDE_H - ZONE.header.h - problemBoxH - answerBarH - 0.15;
-          const stepCount = (ex.steps ?? []).length;
-          const stepFontSize =
-            stepCount <= 4 ? 13 : stepCount <= 6 ? 12 : 11;
 
           slide.addShape("rect", {
             x: 0.35,
@@ -899,7 +1299,7 @@ export async function generatePPTXBuffer(
             fill: { color: "DCFCE7" },
             line: { color: C.success, width: 1.5 },
           });
-          slide.addText(`Problem: ${cap(ex.problem, 180)}`, {
+          slide.addText(`Problem: ${capProblem(ex.problem)}`, {
             x: 0.5,
             y: ZONE.header.h + 0.08,
             w: 9.1,
@@ -913,23 +1313,36 @@ export async function generatePPTXBuffer(
             autoFit: true,
           });
 
-          const stepsText = (ex.steps ?? [])
-            .map((s, i) => `Step ${i + 1}: ${cap(s, 130)}`)
-            .join("\n");
+          const rawSteps = ex.steps ?? slideData.steps ?? [];
+          const steps = Array.isArray(rawSteps) ? rawSteps : [String(rawSteps)];
 
-          slide.addText(stepsText, {
-            x: 0.35,
-            y: ZONE.header.h + problemBoxH + 0.1,
-            w: 9.3,
-            h: availableH,
-            fontSize: stepFontSize,
-            color: C.textDark,
-            fontFace: "Calibri",
-            valign: "top",
-            wrap: true,
-            autoFit: true,
-            lineSpacingMultiple: 1.5,
-          });
+          slide.addText(
+            steps.map((step: string, idx: number) => {
+              const cleaned = capStep(
+                step.replace(/^Step\s*\d+\s*[:\-–]\s*/i, "").trim()
+              );
+              return {
+                text: `Step ${idx + 1}:  ${cleaned}`,
+                options: {
+                  bullet: false,
+                  fontSize: 12,
+                  color: "1e293b",
+                  breakLine: true,
+                  paraSpaceBefore: 5,
+                  bold: false,
+                } as any,
+              };
+            }),
+            {
+              x: ZONE.body.x,
+              y: ZONE.header.h + problemBoxH + 0.1,
+              w: ZONE.body.w,
+              h: availableH,
+              fontFace: "Calibri",
+              valign: "top",
+              autoFit: true,
+            }
+          );
 
           slide.addShape("rect", {
             x: 0,
@@ -939,7 +1352,7 @@ export async function generatePPTXBuffer(
             fill: { color: C.success },
             line: { color: C.success },
           });
-          slide.addText(`✓  ${cap(ex.answer, 150)}`, {
+          slide.addText(`✓  ${capAnswer(ex.answer)}`, {
             x: 0.3,
             y: SLIDE_H - answerBarH,
             w: 9.4,
@@ -1019,9 +1432,13 @@ export async function generatePPTXBuffer(
           if (q.options && q.options.length) {
             const labels = ["A", "B", "C", "D"];
             const optText = q.options
-              .map(
-                (o, i) => `${labels[i] ?? i + 1}. ${cap(o, 120)}`
-              )
+              .map((opt: string, i: number) => {
+                const stripped = opt
+                  .replace(/^\([A-Da-d]\)\s*/i, "")
+                  .replace(/^[A-Da-d][\.\)]\s*/i, "")
+                  .trim();
+                return `${labels[i] ?? i + 1}. ${cap(stripped)}`;
+              })
               .join("\n");
             slide.addText(optText, {
               x: 0.5,
@@ -1048,9 +1465,9 @@ export async function generatePPTXBuffer(
           });
 
           const ansText = q.answer
-            ? `Answer: ${cap(q.answer, 80)}${
+            ? `Answer: ${capAnswer(q.answer)}${
                 q.explanation
-                  ? `  —  ${cap(q.explanation, 100)}`
+                  ? `. ${capExplanation(q.explanation)}`
                   : ""
               }`
             : "";
@@ -1124,14 +1541,22 @@ export async function generatePPTXBuffer(
           line: { color: "60A5FA" },
         });
 
-        const bullets = slideData.bullets ?? [];
+        const takeawayBullets = splitToBullets(
+          slideData.bullets?.length
+            ? slideData.bullets
+            : ["No key takeaways provided."]
+        );
         slide.addText(
-          (bullets.length ? bullets : ["No key takeaways provided."]).map(
-            (b) => ({
-              text: `✓  ${cap(b)}\n`,
-              options: { color: C.white, fontSize: 14 },
-            })
-          ),
+          takeawayBullets.map((b) => ({
+            text: cap(b),
+            options: {
+              bullet: false,
+              fontSize: 13,
+              color: C.white,
+              breakLine: true,
+              paraSpaceBefore: 10,
+            } as any,
+          })),
           {
             x: 0.7,
             y: 1.0,
@@ -1141,7 +1566,6 @@ export async function generatePPTXBuffer(
             valign: "top",
             wrap: true,
             autoFit: true,
-            lineSpacingMultiple: 1.6,
           }
         );
 

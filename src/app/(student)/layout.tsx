@@ -10,7 +10,7 @@ import {
   GraduationCap,
   History,
   LayoutDashboard,
-  MessageCircle,
+  MessageSquare,
   Menu,
   Target,
   X,
@@ -57,7 +57,7 @@ export default function StudentLayout({ children }: LayoutProps) {
           <span>Dashboard</span>
         </NavLink>
         <NavLink href="/student/chat">
-          <MessageCircle className="size-4" />
+          <MessageSquare className="size-4" />
           <span>AI Chat</span>
         </NavLink>
         <NavLink href="/student/subjects">
@@ -71,6 +71,10 @@ export default function StudentLayout({ children }: LayoutProps) {
         <NavLink href="/student/placement">
           <Target className="size-4" />
           <span>Placement Prep</span>
+        </NavLink>
+        <NavLink href="/student/placement/history">
+          <History className="size-4" />
+          <span>Test History</span>
         </NavLink>
         <NavLink href="/student/history">
           <Clock className="size-4" />
