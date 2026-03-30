@@ -91,6 +91,8 @@ export default function FacultyRefinePage() {
   const [view, setView] = useState<View>("form");
   const [charCount, setCharCount] = useState(0);
 
+  const isGenerating = isRefining;
+
   const selectedSubject = subjects.find((s) => s.id === selectedSubjectId);
 
   const fetchAssignedSubjects = useCallback(async () => {
@@ -146,6 +148,29 @@ export default function FacultyRefinePage() {
   useEffect(() => {
     fetchAssignedSubjects();
   }, [fetchAssignedSubjects]);
+
+  useEffect(() => {
+    if (!isGenerating) return;
+
+    const handlePopState = (e: PopStateEvent) => {
+      e.preventDefault();
+      window.history.pushState(null, "", window.location.href);
+    };
+    window.history.pushState(null, "", window.location.href);
+    window.addEventListener("popstate", handlePopState);
+
+    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      e.returnValue = "Generation in progress. Leaving will cancel it.";
+      return e.returnValue;
+    };
+    window.addEventListener("beforeunload", handleBeforeUnload);
+
+    return () => {
+      window.removeEventListener("popstate", handlePopState);
+      window.removeEventListener("beforeunload", handleBeforeUnload);
+    };
+  }, [isGenerating]);
 
   const toggleType = (t: RefinementType) => {
     setRefinementTypes((prev) =>

@@ -106,6 +106,8 @@ export default function FacultyGeneratePage() {
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const progressRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
+  const isGenerating = view === "generating";
+
   const selectedSubjectName =
     subjects.find((s) => s.id === selectedSubjectId)?.name ?? "";
 
@@ -194,6 +196,29 @@ export default function FacultyGeneratePage() {
       intervalRef.current = null;
     };
   }, [view]);
+
+  useEffect(() => {
+    if (!isGenerating) return;
+
+    const handlePopState = (e: PopStateEvent) => {
+      e.preventDefault();
+      window.history.pushState(null, "", window.location.href);
+    };
+    window.history.pushState(null, "", window.location.href);
+    window.addEventListener("popstate", handlePopState);
+
+    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      e.returnValue = "Generation in progress. Leaving will cancel it.";
+      return e.returnValue;
+    };
+    window.addEventListener("beforeunload", handleBeforeUnload);
+
+    return () => {
+      window.removeEventListener("popstate", handlePopState);
+      window.removeEventListener("beforeunload", handleBeforeUnload);
+    };
+  }, [isGenerating]);
 
   useEffect(() => {
     if (view !== "generating") return;

@@ -498,3 +498,31 @@ Reference Books:
 
 Save
 Verify in Supabase → Table Editor → subject_content → should see the row
+
+
+
+
+
+
+□ Auth callback URL — must add Vercel URL to Supabase allowed redirects
+□ All env vars set on Vercel dashboard (not just .env.local)
+□ NEXT_PUBLIC_ vars need to be set as well
+□ Supabase anon key + service role key both present
+□ GOOGLE_GENERATIVE_AI_API_KEY present
+□ vercel.json function timeouts (PPT needs 300s — check if you're on Pro)
+
+□ Faculty profile page (we did student, not faculty)
+□ Faculty change password
+□ Superadmin change password  
+□ Loading states on placement history page
+□ Empty state when no placement attempts exist yet (new student)
+□ Student dashboard quick stats — are they pulling real data?
+□ PPT filename fix (still timestamp-based)
+□ Stop storing PPT files in Supabase (stream directly)
+□ Q Paper — you mentioned PYQ pattern learning improvement
+□ Mermaid diagrams in chat (was in original roadmap, never built)
+
+□ Mobile responsiveness on placement test (did we test?)
+□ Rate limiting working on live (different from dev)
+□ Semantic cache working on live
+

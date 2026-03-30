@@ -533,33 +533,24 @@ export async function generateQPaperPDF(
 
       // MCQ options
       if (q.type === "mcq" && q.options && q.options.length === 4) {
-        const optIndentX = MARGIN_LEFT + 20;
-        const [rawA, rawB, rawC, rawD] = q.options;
-        const a = sanitizeForPDF(rawA);
-        const b = sanitizeForPDF(rawB);
-        const c = sanitizeForPDF(rawC);
-        const d = sanitizeForPDF(rawD);
-        ctx = checkNewPage(ctx, LINE_HEIGHT * 3);
-        ctx.y = drawText(
-          ctx.page,
-          `(a) ${a}    (b) ${b}`,
-          optIndentX,
-          ctx.y,
-          timesRoman,
-          12,
-          headerColor,
-          PAGE_WIDTH - MARGIN_RIGHT - optIndentX
-        );
-        ctx.y = drawText(
-          ctx.page,
-          `(c) ${c}    (d) ${d}`,
-          optIndentX,
-          ctx.y,
-          timesRoman,
-          12,
-          headerColor,
-          PAGE_WIDTH - MARGIN_RIGHT - optIndentX
-        );
+        const optIndentX = MARGIN_LEFT + 16;
+        const labels = ["a", "b", "c", "d"] as const;
+        ctx = checkNewPage(ctx, LINE_HEIGHT * 5);
+        for (let j = 0; j < q.options.length; j++) {
+          ctx = checkNewPage(ctx, LINE_HEIGHT * 2);
+          const opt = sanitizeForPDF(String(q.options[j] ?? ""));
+          ctx.y = drawText(
+            ctx.page,
+            `    (${labels[j]})  ${opt}`,
+            optIndentX,
+            ctx.y,
+            timesRoman,
+            12,
+            headerColor,
+            PAGE_WIDTH - MARGIN_RIGHT - optIndentX
+          );
+          ctx.y -= 2;
+        }
       }
 
       ctx.y -= 8;
