@@ -96,6 +96,7 @@ export default function FacultyGeneratePage() {
     downloadUrl: string;
     title: string;
     slideCount: number;
+    fileName: string;
   } | null>(null);
   const [generatingMessage, setGeneratingMessage] = useState(
     GENERATING_MESSAGES[0]
@@ -331,7 +332,19 @@ export default function FacultyGeneratePage() {
       });
 
       if (!buildRes.ok) throw new Error("Failed to build presentation");
-      const result = await buildRes.json();
+      const buildResult = await buildRes.json() as {
+        downloadUrl: string;
+        title: string;
+        slideCount: number;
+        fileName: string;
+      };
+
+      const a = document.createElement("a");
+      a.href = buildResult.downloadUrl;
+      a.download = buildResult.fileName;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
 
       if (intervalRef.current) {
         clearInterval(intervalRef.current);
@@ -342,11 +355,7 @@ export default function FacultyGeneratePage() {
         progressRef.current = null;
       }
 
-      setResult({
-        downloadUrl: result.downloadUrl,
-        title: result.title,
-        slideCount: result.slideCount,
-      });
+      setResult(buildResult);
       setView("done");
     } catch (err) {
       if (intervalRef.current) clearInterval(intervalRef.current);
@@ -634,16 +643,13 @@ export default function FacultyGeneratePage() {
               </div>
             </div>
 
-            <Button asChild className="w-full h-12 text-base" size="lg">
-              <a
-                href={result.downloadUrl}
-                download
-                target="_blank"
-                rel="noopener noreferrer"
-              >
-                <Download className="size-5" />
-                Download Presentation (.pptx)
-              </a>
+            <Button
+              className="w-full h-12 text-base"
+              size="lg"
+              onClick={() => window.open(result.downloadUrl, "_blank")}
+            >
+              <Download className="size-5" />
+              Download Presentation (.pptx)
             </Button>
 
             <div className="w-full rounded-lg border border-amber-200 bg-amber-50 p-4 dark:border-amber-900 dark:bg-amber-950/50">

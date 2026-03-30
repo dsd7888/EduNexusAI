@@ -13,6 +13,12 @@ export async function POST(request: NextRequest) {
   try {
     console.log("[ppt/build] POST request received");
 
+    // Fire-and-forget cleanup of expired PPTs
+    void fetch(
+      new URL("/api/admin/cleanup-ppts", request.url).toString(),
+      { method: "POST" }
+    ).catch(() => {});
+
     const supabase = await createServerClient();
     const {
       data: { user },
@@ -89,28 +95,52 @@ export async function POST(request: NextRequest) {
     const buffer = await generatePPTXBuffer(pptData);
     console.log("[ppt/build] PPTX buffer generated, uploading...");
 
-    const fileName = `ppt_${Date.now()}_${user.id.slice(0, 8)}.pptx`;
-    const filePath = `presentations/${fileName}`;
+    const subjectSlug = (pptData.subject ?? "subject")
+      .replace(/[^a-zA-Z0-9]/g, "_")
+      .replace(/_+/g, "_")
+      .slice(0, 20);
+
+    const topicSlug = (pptData.topic ?? "presentation")
+      .replace(/[^a-zA-Z0-9]/g, "_")
+      .replace(/_+/g, "_")
+      .slice(0, 25);
+
+    const date = new Date().toISOString().slice(0, 10);
+    const fileName = `${subjectSlug}_${topicSlug}_${date}.pptx`;
+    const filePath = `presentations/tmp/${fileName}`;
+    const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
 
     const { error: uploadError } = await adminClient.storage
       .from("generated-content")
-      .upload(filePath, buffer, {
+      .upload(filePath, new Uint8Array(buffer), {
         contentType:
           "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-        upsert: false,
+        upsert: true,
+        metadata: {
+          created_at: new Date().toISOString(),
+          expires_at: expiresAt,
+          user_id: user.id,
+        },
       });
 
     if (uploadError) {
-      console.error("[ppt/build] Upload failed:", uploadError.message);
+      console.error("[ppt/build] Upload error:", uploadError);
       return Response.json(
-        { error: "Failed to upload presentation" },
+        { error: "Failed to store presentation" },
         { status: 500 }
       );
     }
 
-    const { data: urlData } = adminClient.storage
+    const { data: signedData, error: signedError } = await adminClient.storage
       .from("generated-content")
-      .getPublicUrl(filePath);
+      .createSignedUrl(filePath, 86400);
+
+    if (signedError || !signedData) {
+      return Response.json(
+        { error: "Failed to get download URL" },
+        { status: 500 }
+      );
+    }
 
     await adminClient.from("generated_content").insert({
       subject_id: subjectId,
@@ -119,21 +149,24 @@ export async function POST(request: NextRequest) {
       title: pptData.presentationTitle,
       file_path: filePath,
       metadata: {
+        fileName,
         slideCount: pptData.slides.length,
+        subject,
         topic,
-        downloadUrl: urlData.publicUrl,
+        slides,
+        expires_at: expiresAt,
       },
       generated_by: user.id,
-      status: "completed",
+      status: "ready",
     });
 
-    console.log("[ppt/build] Done. Download URL:", urlData.publicUrl);
+    console.log("[ppt/build] Done.", fileName);
 
     return Response.json({
-      success: true,
-      downloadUrl: urlData.publicUrl,
+      downloadUrl: signedData.signedUrl,
       title: presentationTitle,
       slideCount: slides.length,
+      fileName,
     });
   } catch (err) {
     console.error("[ppt/build] Error:", err);
