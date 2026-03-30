@@ -1,17 +1,34 @@
 "use client";
 
+import { useCallback, useEffect, useState } from "react";
+import {
+  DndContext,
+  closestCenter,
+  KeyboardSensor,
+  PointerSensor,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+} from "@dnd-kit/core";
+import {
+  arrayMove,
+  SortableContext,
+  sortableKeyboardCoordinates,
+  useSortable,
+  verticalListSortingStrategy,
+} from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
+import {
+  Download,
+  FileText,
+  GripVertical,
+  Loader2,
+  Plus,
+  Trash2,
+} from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
+import { Card } from "@/components/ui/card";
 import {
   Select,
   SelectContent,
@@ -19,25 +36,37 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Switch } from "@/components/ui/switch";
-import { Textarea } from "@/components/ui/textarea";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { createBrowserClient } from "@/lib/db/supabase-browser";
-import type { GeneratedQPaper } from "@/lib/qpaper/generator";
 import { cn } from "@/lib/utils";
-import {
-  CheckCircle,
-  Download,
-  FileText,
-  Loader2,
-  Plus,
-  Trash2,
-} from "lucide-react";
-import Link from "next/link";
-import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 
-type View = "form" | "generating" | "preview";
-type UniquenessMode = "all_new" | "mixed";
+// ── Types ────────────────────────────────────────────────────
+
+type QuestionType = "mcq" | "truefalse" | "short" | "long" | "numerical";
+
+type QuestionSource = "fresh" | "pyq_mix" | "pyq_pattern";
+
+interface SubPart {
+  id: string;
+  marks: number;
+  type: QuestionType;
+}
+
+interface Question {
+  id: string;
+  parts: SubPart[];
+  attemptAny?: number;
+  /** Optional — omit or "any" for no specific module */
+  moduleId?: string;
+}
+
+interface Section {
+  id: string;
+  name: string;
+  questions: Question[];
+}
 
 interface SubjectRow {
   id: string;
@@ -45,798 +74,843 @@ interface SubjectRow {
   code: string;
 }
 
-interface SectionConfig {
+interface ModuleRow {
   id: string;
-  sectionLabel: string;
-  questionType: string;
-  customTypeName: string;
-  numberOfQuestions: number;
-  marksPerQuestion: number;
-  hasSubQuestions: boolean;
-  subQuestionsCount: number;
-  subQuestionsMarks: number;
-  instructions: string;
+  name: string;
+  module_number: number;
 }
 
-const GENERATING_MESSAGES = [
-  "📚 Analyzing previous year questions...",
-  "🧠 Understanding exam patterns...",
-  "✍️ Generating new questions...",
-  "🔍 Checking for PYQ similarities...",
-  "📋 Formatting question paper...",
-  "⏳ Almost ready...",
-];
+// ── Helpers ──────────────────────────────────────────────────
 
-function defaultSection(): SectionConfig {
+const TYPE_LABELS: Record<QuestionType, string> = {
+  mcq: "MCQ (4 options)",
+  truefalse: "MCQ True/False",
+  short: "Short Answer (2-5M)",
+  long: "Long Answer (5M+)",
+  numerical: "Numerical",
+};
+
+const TYPE_DEFAULT_MARKS: Record<QuestionType, number> = {
+  mcq: 1,
+  truefalse: 1,
+  short: 3,
+  long: 5,
+  numerical: 5,
+};
+
+function uid() {
+  return Math.random().toString(36).slice(2, 9);
+}
+
+function makeQuestion(type: QuestionType = "long"): Question {
   return {
-    id: crypto.randomUUID(),
-    sectionLabel: "Section A",
-    questionType: "short",
-    customTypeName: "",
-    numberOfQuestions: 5,
-    marksPerQuestion: 2,
-    hasSubQuestions: false,
-    subQuestionsCount: 2,
-    subQuestionsMarks: 5,
-    instructions: "",
+    id: uid(),
+    parts: [
+      { id: uid(), marks: TYPE_DEFAULT_MARKS[type], type },
+      { id: uid(), marks: TYPE_DEFAULT_MARKS[type], type },
+    ],
   };
 }
 
-function computeSectionMarks(section: SectionConfig): number {
-  if (
-    section.hasSubQuestions &&
-    section.subQuestionsCount > 0 &&
-    section.subQuestionsMarks > 0
-  ) {
-    return (
-      section.numberOfQuestions *
-      section.subQuestionsCount *
-      section.subQuestionsMarks
-    );
+/** Marks counted toward the paper when attempt-any is set: first N parts. */
+function effectiveMarks(question: Question): number {
+  if (question.attemptAny !== undefined) {
+    return question.parts
+      .slice(0, question.attemptAny)
+      .reduce((s, p) => s + p.marks, 0);
   }
-  return section.numberOfQuestions * section.marksPerQuestion;
+  return question.parts.reduce((s, p) => s + p.marks, 0);
 }
 
-export default function FacultyQPaperPage() {
+function totalMarks(sections: Section[]): number {
+  return sections.reduce(
+    (sum, sec) =>
+      sum + sec.questions.reduce((qs, q) => qs + effectiveMarks(q), 0),
+    0
+  );
+}
+
+function sectionTotal(section: Section): number {
+  return section.questions.reduce((qs, q) => qs + effectiveMarks(q), 0);
+}
+
+function partTypeHint(t: QuestionType): string {
+  switch (t) {
+    case "mcq":
+      return "4 options, 1 correct";
+    case "truefalse":
+      return "True or False";
+    case "short":
+      return "concise answer, 2-5 marks";
+    case "long":
+      return "detailed answer, 5+ marks";
+    case "numerical":
+      return "step-by-step solution";
+    default:
+      return "";
+  }
+}
+
+const PART_LABELS = "abcdefghijklmnopqrstuvwxyz";
+
+// ── Sortable Question Card ───────────────────────────────────
+
+function SortableQuestion({
+  question,
+  qNumber,
+  onUpdate,
+  onRemove,
+  modules,
+  selectedModuleIds,
+}: {
+  question: Question;
+  qNumber: number;
+  onUpdate: (q: Question) => void;
+  onRemove: () => void;
+  modules: ModuleRow[];
+  selectedModuleIds: string[];
+}) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
+    useSortable({ id: question.id });
+
+  const style = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+    opacity: isDragging ? 0.5 : 1,
+  };
+
+  const lastPartType =
+    question.parts[question.parts.length - 1]?.type ?? "long";
+
+  const addPart = () => {
+    const newParts = [
+      ...question.parts,
+      {
+        id: uid(),
+        marks: TYPE_DEFAULT_MARKS[lastPartType],
+        type: lastPartType,
+      },
+    ];
+    let attemptAny = question.attemptAny;
+    if (attemptAny !== undefined && newParts.length > 1) {
+      attemptAny = Math.max(1, Math.min(attemptAny, newParts.length - 1));
+    }
+    onUpdate({
+      ...question,
+      parts: newParts,
+      attemptAny,
+    });
+  };
+
+  const removePart = (partId: string) => {
+    if (question.parts.length <= 1) return;
+    const newParts = question.parts.filter((p) => p.id !== partId);
+    let attemptAny = question.attemptAny;
+    if (newParts.length <= 1) attemptAny = undefined;
+    else if (attemptAny !== undefined) {
+      attemptAny = Math.max(1, Math.min(attemptAny, newParts.length - 1));
+    }
+    onUpdate({
+      ...question,
+      parts: newParts,
+      attemptAny,
+    });
+  };
+
+  const rawTotal = question.parts.reduce((s, p) => s + p.marks, 0);
+
+  return (
+    <div ref={setNodeRef} style={style}>
+      <Card className="p-4 space-y-3">
+        <div className="flex items-center gap-2 flex-wrap w-full">
+          <button
+            type="button"
+            {...attributes}
+            {...listeners}
+            className="text-muted-foreground hover:text-foreground cursor-grab active:cursor-grabbing touch-none shrink-0"
+            title="Drag to reorder"
+          >
+            <GripVertical className="size-5" />
+          </button>
+
+          <span className="font-semibold text-sm w-8 shrink-0">Q.{qNumber}</span>
+
+          {modules.length > 1 && (
+            <Select
+              value={question.moduleId ?? "any"}
+              onValueChange={(val) =>
+                onUpdate({
+                  ...question,
+                  moduleId: val === "any" ? undefined : val,
+                })
+              }
+            >
+              <SelectTrigger className="h-7 w-36 text-xs shrink-0">
+                <SelectValue placeholder="Any module" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="any" className="text-xs">
+                  Any module
+                </SelectItem>
+                {modules
+                  .filter((m) => selectedModuleIds.includes(m.id))
+                  .map((m) => (
+                    <SelectItem key={m.id} value={m.id} className="text-xs">
+                      M{m.module_number}: {m.name.slice(0, 20)}
+                      {m.name.length > 20 ? "…" : ""}
+                    </SelectItem>
+                  ))}
+              </SelectContent>
+            </Select>
+          )}
+
+          <div className="flex-1 min-w-2" />
+
+          <Badge
+            variant="secondary"
+            className="text-xs flex items-center gap-1 flex-wrap justify-end max-w-[min(100%,14rem)] shrink-0"
+          >
+            <span>{effectiveMarks(question)}M</span>
+            {question.attemptAny !== undefined && (
+              <span className="text-muted-foreground font-normal">
+                (of {rawTotal}M)
+              </span>
+            )}
+          </Badge>
+
+          <button
+            type="button"
+            onClick={onRemove}
+            className="text-muted-foreground hover:text-destructive transition-colors shrink-0"
+            title="Remove question"
+          >
+            <Trash2 className="size-4" />
+          </button>
+        </div>
+
+        <div className="ml-8 space-y-2">
+          {question.parts.map((part, idx) => (
+            <div
+              key={part.id}
+              className="flex items-center gap-2 text-sm flex-wrap"
+            >
+              <span className="text-muted-foreground w-6 shrink-0">
+                ({PART_LABELS[idx]})
+              </span>
+
+              <Select
+                value={part.type}
+                onValueChange={(val) => {
+                  const type = val as QuestionType;
+                  onUpdate({
+                    ...question,
+                    parts: question.parts.map((p) =>
+                      p.id === part.id
+                        ? { ...p, type, marks: TYPE_DEFAULT_MARKS[type] }
+                        : p
+                    ),
+                  });
+                }}
+              >
+                <SelectTrigger className="w-40 h-7 text-xs">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {Object.entries(TYPE_LABELS).map(([val, label]) => (
+                    <SelectItem key={val} value={val} className="text-xs">
+                      {label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+
+              <div className="flex items-center gap-1">
+                <Input
+                  type="number"
+                  min={1}
+                  max={20}
+                  value={part.marks}
+                  onChange={(e) =>
+                    onUpdate({
+                      ...question,
+                      parts: question.parts.map((p) =>
+                        p.id === part.id
+                          ? {
+                              ...p,
+                              marks: Math.max(
+                                1,
+                                parseInt(e.target.value, 10) || 1
+                              ),
+                            }
+                          : p
+                      ),
+                    })
+                  }
+                  className="w-14 h-7 text-center text-xs"
+                />
+                <span className="text-xs text-muted-foreground">M</span>
+              </div>
+
+              <span className="text-xs text-muted-foreground italic flex-1 min-w-[8rem]">
+                {partTypeHint(part.type)}
+              </span>
+
+              {question.parts.length > 1 && (
+                <button
+                  type="button"
+                  onClick={() => removePart(part.id)}
+                  className="text-muted-foreground hover:text-destructive ml-auto shrink-0"
+                >
+                  <Trash2 className="size-3" />
+                </button>
+              )}
+            </div>
+          ))}
+
+          <button
+            type="button"
+            onClick={addPart}
+            className="flex items-center gap-1 text-xs text-primary hover:underline mt-1"
+          >
+            <Plus className="size-3" /> Add part
+          </button>
+        </div>
+
+        <div className="ml-8 mt-2">
+          {question.attemptAny === undefined ? (
+            <button
+              type="button"
+              onClick={() =>
+                onUpdate({
+                  ...question,
+                  attemptAny: Math.max(1, question.parts.length - 1),
+                })
+              }
+              className="text-[11px] text-muted-foreground hover:text-primary transition-colors flex items-center gap-1"
+            >
+              <Plus className="size-3" />
+              Add &quot;attempt any X&quot; instruction
+            </button>
+          ) : (
+            <div className="flex items-center gap-2 text-xs">
+              <span className="text-muted-foreground">Attempt any</span>
+              <Input
+                type="number"
+                min={1}
+                max={question.parts.length}
+                value={question.attemptAny}
+                onChange={(e) =>
+                  onUpdate({
+                    ...question,
+                    attemptAny: Math.min(
+                      question.parts.length,
+                      Math.max(1, parseInt(e.target.value, 10) || 1)
+                    ),
+                  })
+                }
+                className="w-14 h-6 text-center text-xs"
+              />
+              <span className="text-muted-foreground">
+                out of {question.parts.length}
+              </span>
+              <button
+                type="button"
+                onClick={() => onUpdate({ ...question, attemptAny: undefined })}
+                className="text-muted-foreground hover:text-destructive ml-1"
+              >
+                <Trash2 className="size-3" />
+              </button>
+            </div>
+          )}
+        </div>
+      </Card>
+    </div>
+  );
+}
+
+// ── Main Page ────────────────────────────────────────────────
+
+export default function QpaperPage() {
   const [subjects, setSubjects] = useState<SubjectRow[]>([]);
   const [selectedSubjectId, setSelectedSubjectId] = useState("");
-  const [totalMarks, setTotalMarks] = useState<number>(100);
-  const [duration, setDuration] = useState<number>(180);
-  const [uniquenessMode, setUniquenessMode] =
-    useState<UniquenessMode>("all_new");
-  const [generalInstructions, setGeneralInstructions] = useState("");
-  const [sections, setSections] = useState<SectionConfig[]>([
-    defaultSection(),
+  const [duration, setDuration] = useState(180);
+  const [questionSource, setQuestionSource] =
+    useState<QuestionSource>("fresh");
+  const [pyqPercent, setPyqPercent] = useState(50);
+  const [modules, setModules] = useState<ModuleRow[]>([]);
+  const [selectedModuleIds, setSelectedModuleIds] = useState<string[]>([]);
+  const [sections, setSections] = useState<Section[]>([
+    {
+      id: uid(),
+      name: "Section A",
+      questions: [
+        {
+          id: uid(),
+          parts: Array.from({ length: 5 }, () => ({
+            id: uid(),
+            marks: 1,
+            type: "mcq" as QuestionType,
+          })),
+        },
+        makeQuestion("long"),
+        makeQuestion("long"),
+      ],
+    },
   ]);
-  const [view, setView] = useState<View>("form");
-  const [result, setResult] = useState<{
-    paper: GeneratedQPaper;
-    downloadUrl: string;
-  } | null>(null);
-  const [generatingMsg, setGeneratingMsg] = useState(GENERATING_MESSAGES[0]);
-  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const [isGenerating, setIsGenerating] = useState(false);
+  const [downloadUrl, setDownloadUrl] = useState<string | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
 
-  const isGenerating = view === "generating";
+  const sensors = useSensors(
+    useSensor(PointerSensor),
+    useSensor(KeyboardSensor, {
+      coordinateGetter: sortableKeyboardCoordinates,
+    })
+  );
 
-  const selectedSubject = subjects.find((s) => s.id === selectedSubjectId);
-
-  const fetchAssignedSubjects = useCallback(async () => {
+  const loadSubjects = useCallback(async () => {
     const supabase = createBrowserClient();
     const {
       data: { user },
-      error: authError,
     } = await supabase.auth.getUser();
-    if (authError || !user) {
-      setSubjects([]);
+    if (!user) {
+      setIsLoading(false);
       return;
     }
-
-    const { data: assignments, error: assignError } = await supabase
+    const { data: assignments } = await supabase
       .from("faculty_assignments")
-      .select("subject_id")
+      .select("subject_id, subjects(id, name, code)")
       .eq("faculty_id", user.id);
 
-    if (assignError) {
-      toast.error("Failed to load assigned subjects");
-      setSubjects([]);
-      return;
+    const subjs: SubjectRow[] = [];
+    const seen = new Set<string>();
+    for (const row of assignments ?? []) {
+      const rel = row.subjects as SubjectRow | SubjectRow[] | null | undefined;
+      const list = Array.isArray(rel) ? rel : rel ? [rel] : [];
+      for (const s of list) {
+        if (s?.id && !seen.has(s.id)) {
+          seen.add(s.id);
+          subjs.push(s);
+        }
+      }
     }
 
-    const ids = [
-      ...new Set(
-        (assignments ?? [])
-          .map((a: any) => a.subject_id as string | null)
-          .filter(Boolean)
-      ),
-    ] as string[];
-
-    if (ids.length === 0) {
-      setSubjects([]);
-      return;
-    }
-
-    const { data: subs, error: subError } = await supabase
-      .from("subjects")
-      .select("id, name, code")
-      .in("id", ids)
-      .order("code");
-
-    if (subError) {
-      toast.error("Failed to load subjects");
-      setSubjects([]);
-      return;
-    }
-
-    setSubjects((subs ?? []) as SubjectRow[]);
+    setSubjects(subjs);
+    if (subjs.length > 0) setSelectedSubjectId(subjs[0].id);
+    setIsLoading(false);
   }, []);
 
   useEffect(() => {
-    fetchAssignedSubjects();
-  }, [fetchAssignedSubjects]);
+    void loadSubjects();
+  }, [loadSubjects]);
 
   useEffect(() => {
-    if (view !== "generating") return;
-    let idx = 0;
-    const t = setInterval(() => {
-      idx = (idx + 1) % GENERATING_MESSAGES.length;
-      setGeneratingMsg(GENERATING_MESSAGES[idx]);
-    }, 5000);
-    intervalRef.current = t;
-    return () => {
-      if (intervalRef.current) clearInterval(intervalRef.current);
-      intervalRef.current = null;
+    if (!selectedSubjectId) {
+      setModules([]);
+      setSelectedModuleIds([]);
+      return;
+    }
+    const load = async () => {
+      const supabase = createBrowserClient();
+      const { data } = await supabase
+        .from("modules")
+        .select("id, name, module_number")
+        .eq("subject_id", selectedSubjectId)
+        .order("module_number");
+      const rows = (data ?? []) as ModuleRow[];
+      setModules(rows);
+      setSelectedModuleIds(rows.map((m) => m.id));
     };
-  }, [view]);
+    void load();
+  }, [selectedSubjectId]);
 
   useEffect(() => {
     if (!isGenerating) return;
-
-    const handlePopState = (e: PopStateEvent) => {
+    const block = (e: PopStateEvent) => {
       e.preventDefault();
       window.history.pushState(null, "", window.location.href);
     };
-    window.history.pushState(null, "", window.location.href);
-    window.addEventListener("popstate", handlePopState);
-
-    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+    const warn = (e: BeforeUnloadEvent) => {
       e.preventDefault();
-      e.returnValue = "Generation in progress. Leaving will cancel it.";
-      return e.returnValue;
+      e.returnValue = "Q Paper is being generated. Please wait.";
     };
-    window.addEventListener("beforeunload", handleBeforeUnload);
-
+    window.history.pushState(null, "", window.location.href);
+    window.addEventListener("popstate", block);
+    window.addEventListener("beforeunload", warn);
     return () => {
-      window.removeEventListener("popstate", handlePopState);
-      window.removeEventListener("beforeunload", handleBeforeUnload);
+      window.removeEventListener("popstate", block);
+      window.removeEventListener("beforeunload", warn);
     };
   }, [isGenerating]);
 
-  const totalCalculated = sections.reduce(
-    (acc, s) => acc + computeSectionMarks(s),
-    0
-  );
-  const mismatchPercent =
-    totalMarks > 0
-      ? Math.abs(totalCalculated - totalMarks) / totalMarks
-      : 0;
+  const addSection = () => {
+    setSections((prev) => [
+      ...prev,
+      {
+        id: uid(),
+        name: `Section ${String.fromCharCode(65 + prev.length)}`,
+        questions: [makeQuestion("long")],
+      },
+    ]);
+  };
 
-  const totalColor =
-    totalCalculated === totalMarks
-      ? "text-green-600"
-      : totalCalculated > totalMarks
-      ? "text-red-600"
-      : "text-amber-600";
+  const removeSection = (sectionId: string) => {
+    if (sections.length <= 1) return;
+    setSections((prev) => prev.filter((s) => s.id !== sectionId));
+  };
 
-  const marksOk = mismatchPercent <= 0.05;
-
-  const canGenerate =
-    !!selectedSubjectId && sections.length > 0 && marksOk;
-
-  const updateSection = (id: string, patch: Partial<SectionConfig>) => {
+  const updateSectionName = (sectionId: string, name: string) => {
     setSections((prev) =>
-      prev.map((s) => (s.id === id ? { ...s, ...patch } : s))
+      prev.map((s) => (s.id === sectionId ? { ...s, name } : s))
     );
   };
 
-  const handleAddSection = () => {
-    setSections((prev) => [...prev, defaultSection()]);
+  const addQuestion = (sectionId: string) => {
+    setSections((prev) =>
+      prev.map((s) =>
+        s.id === sectionId
+          ? { ...s, questions: [...s.questions, makeQuestion()] }
+          : s
+      )
+    );
   };
 
-  const handleRemoveSection = (id: string) => {
-    setSections((prev) => prev.filter((s) => s.id !== id));
+  const removeQuestion = (sectionId: string, questionId: string) => {
+    setSections((prev) =>
+      prev.map((s) =>
+        s.id === sectionId
+          ? { ...s, questions: s.questions.filter((q) => q.id !== questionId) }
+          : s
+      )
+    );
   };
+
+  const updateQuestion = (sectionId: string, updated: Question) => {
+    setSections((prev) =>
+      prev.map((s) =>
+        s.id === sectionId
+          ? {
+              ...s,
+              questions: s.questions.map((q) =>
+                q.id === updated.id ? updated : q
+              ),
+            }
+          : s
+      )
+    );
+  };
+
+  const handleDragEnd = (sectionId: string, event: DragEndEvent) => {
+    const { active, over } = event;
+    if (!over || active.id === over.id) return;
+    setSections((prev) =>
+      prev.map((s) => {
+        if (s.id !== sectionId) return s;
+        const oldIdx = s.questions.findIndex((q) => q.id === active.id);
+        const newIdx = s.questions.findIndex((q) => q.id === over.id);
+        if (oldIdx === -1 || newIdx === -1) return s;
+        return { ...s, questions: arrayMove(s.questions, oldIdx, newIdx) };
+      })
+    );
+  };
+
+  const totalMarksComputed = totalMarks(sections);
 
   const handleGenerate = async () => {
-    if (!canGenerate || !selectedSubject || !selectedSubjectId) return;
-
-    setView("generating");
-    setResult(null);
-
+    if (!selectedSubjectId) {
+      toast.error("Select a subject first");
+      return;
+    }
+    setIsGenerating(true);
+    setDownloadUrl(null);
     try {
-      const config = {
-        subjectName: selectedSubject.name,
-        subjectCode: selectedSubject.code,
-        totalMarks,
-        duration,
-        uniquenessMode,
-        sections: sections.map((s) => ({
-          sectionLabel: s.sectionLabel,
-          questionType: s.questionType,
-          customTypeName: s.customTypeName || undefined,
-          numberOfQuestions: s.numberOfQuestions,
-          marksPerQuestion: s.marksPerQuestion,
-          hasSubQuestions: s.hasSubQuestions,
-          subQuestionsCount: s.hasSubQuestions
-            ? s.subQuestionsCount
-            : undefined,
-          subQuestionsMarks: s.hasSubQuestions
-            ? s.subQuestionsMarks
-            : undefined,
-          instructions: s.instructions || undefined,
-        })),
-        generalInstructions:
-          generalInstructions ||
-          "1. Answer all questions in the answer booklet provided.\n2. Figures to the right indicate full marks.\n3. Assume reasonable data wherever necessary and state assumptions clearly.\n4. Use neat diagrams wherever necessary.",
-      };
-
       const res = await fetch("/api/generate/qpaper", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           subjectId: selectedSubjectId,
-          config,
+          sections,
+          totalMarks: totalMarksComputed,
+          duration,
+          questionSource,
+          selectedModuleIds,
+          pyqPercent: questionSource === "pyq_mix" ? pyqPercent : null,
         }),
       });
-      const json = await res.json();
-
-      if (!res.ok) {
-        toast.error(json?.error ?? "Failed to generate question paper");
-        setView("form");
-        return;
-      }
-
-      setResult({
-        paper: json.paper as GeneratedQPaper,
-        downloadUrl: json.downloadUrl as string,
-      });
-      setView("preview");
+      if (!res.ok) throw new Error(await res.text());
+      const data = (await res.json()) as { downloadUrl?: string };
+      if (data.downloadUrl) setDownloadUrl(data.downloadUrl);
+      toast.success("Question paper generated!");
     } catch (err) {
-      toast.error(
-        err instanceof Error ? err.message : "Failed to generate question paper"
-      );
-      setView("form");
+      console.error(err);
+      toast.error("Failed to generate. Please try again.");
     } finally {
-      if (intervalRef.current) {
-        clearInterval(intervalRef.current);
-        intervalRef.current = null;
-      }
+      setIsGenerating(false);
     }
   };
 
-  const handleReset = () => {
-    setView("form");
-    setResult(null);
-    setSections([defaultSection()]);
-    setGeneratingMsg(GENERATING_MESSAGES[0]);
-  };
+  return (
+    <div className="p-6 max-w-3xl mx-auto space-y-6">
+      <div>
+        <h1 className="text-2xl font-bold flex items-center gap-2">
+          <FileText className="size-6" />
+          Question Paper Generator
+        </h1>
+        <p className="text-muted-foreground text-sm mt-1">
+          Build your paper structure — AI generates the questions
+        </p>
+      </div>
 
-  // ──── VIEW: form ─────────────────────────────────────────
-  if (view === "form") {
-    return (
-      <div className="space-y-6">
-        <div className="flex items-center gap-2">
-          <FileText className="size-8 text-primary" />
-          <h1 className="text-2xl font-semibold tracking-tight">
-            Generate Question Paper
-          </h1>
-        </div>
-
-        <Card>
-          <CardHeader>
-            <CardTitle>Paper Details</CardTitle>
-            <CardDescription>
-              Choose subject and configure marks, duration, and instructions.
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="space-y-2">
-              <Label>Subject</Label>
-              <Select
-                value={selectedSubjectId}
-                onValueChange={setSelectedSubjectId}
-              >
-                <SelectTrigger className="w-full">
-                  <SelectValue placeholder="Select subject..." />
-                </SelectTrigger>
-                <SelectContent>
-                  {subjects.map((s) => (
-                    <SelectItem key={s.id} value={s.id}>
-                      {s.code} — {s.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-
-            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-              <div className="space-y-1">
-                <Label htmlFor="total-marks">Total Marks</Label>
-                <Input
-                  id="total-marks"
-                  type="number"
-                  min={1}
-                  value={totalMarks}
-                  onChange={(e) =>
-                    setTotalMarks(Number(e.target.value) || 0)
-                  }
-                />
-              </div>
-              <div className="space-y-1">
-                <Label htmlFor="duration">Duration (minutes)</Label>
-                <Input
-                  id="duration"
-                  type="number"
-                  min={30}
-                  value={duration}
-                  onChange={(e) =>
-                    setDuration(Number(e.target.value) || 0)
-                  }
-                />
-              </div>
-            </div>
-
-            <div className="space-y-1">
-              <Label htmlFor="general-instructions">
-                General Instructions
-              </Label>
-              <Textarea
-                id="general-instructions"
-                rows={4}
-                placeholder="Any special instructions for students (optional)"
-                value={generalInstructions}
-                onChange={(e) => setGeneralInstructions(e.target.value)}
+      <div className="flex flex-wrap gap-4">
+        <div className="flex-1 min-w-48">
+          <Label className="text-xs mb-1 block">Subject</Label>
+          <Select
+            value={selectedSubjectId}
+            onValueChange={setSelectedSubjectId}
+            disabled={isLoading || subjects.length === 0}
+          >
+            <SelectTrigger>
+              <SelectValue
+                placeholder={
+                  isLoading
+                    ? "Loading subjects..."
+                    : subjects.length === 0
+                      ? "No subjects assigned"
+                      : "Select subject"
+                }
               />
-            </div>
-
-            <div className="space-y-2">
-              <Label>Uniqueness Mode</Label>
-              <RadioGroup
-                value={uniquenessMode}
-                onValueChange={(v) => setUniquenessMode(v as UniquenessMode)}
-                className="grid gap-3 sm:grid-cols-2"
-              >
-                <div className="flex items-start space-x-3 rounded-lg border p-3">
-                  <RadioGroupItem value="all_new" id="mode-all-new" />
-                  <Label
-                    htmlFor="mode-all-new"
-                    className="cursor-pointer flex-1"
-                  >
-                    <span className="font-medium">All New Questions</span>
-                    <p className="text-muted-foreground text-sm mt-0.5">
-                      Every question is freshly generated.
-                    </p>
-                  </Label>
-                </div>
-                <div className="flex items-start space-x-3 rounded-lg border p-3">
-                  <RadioGroupItem value="mixed" id="mode-mixed" />
-                  <Label
-                    htmlFor="mode-mixed"
-                    className="cursor-pointer flex-1"
-                  >
-                    <span className="font-medium">
-                      Mixed (New + PYQ-inspired)
-                    </span>
-                    <p className="text-muted-foreground text-sm mt-0.5">
-                      ~60% new, ~40% inspired by past papers.
-                    </p>
-                  </Label>
-                </div>
-              </RadioGroup>
-            </div>
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between space-y-0">
-            <div>
-              <CardTitle>Question Sections</CardTitle>
-              <CardDescription>
-                Define how many questions, marks, and types per section.
-              </CardDescription>
-            </div>
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              onClick={handleAddSection}
-            >
-              <Plus className="size-4" />
-              Add Section
-            </Button>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            {sections.map((section, idx) => (
-              <Card
-                key={section.id}
-                className="relative border-dashed border-muted-foreground/30"
-              >
-                <div className="absolute right-3 top-3">
-                  <Badge variant="secondary">#{idx + 1}</Badge>
-                </div>
-                <CardContent className="pt-6 space-y-3">
-                  <div className="flex items-center gap-3">
-                    <div className="flex-1 space-y-1">
-                      <Label>Section Label</Label>
-                      <Input
-                        value={section.sectionLabel}
-                        onChange={(e) =>
-                          updateSection(section.id, {
-                            sectionLabel: e.target.value,
-                          })
-                        }
-                      />
-                    </div>
-                    {sections.length > 1 && (
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="icon"
-                        onClick={() => handleRemoveSection(section.id)}
-                        className="mt-6"
-                      >
-                        <Trash2 className="size-4" />
-                      </Button>
+            </SelectTrigger>
+            <SelectContent>
+              {subjects.map((s) => (
+                <SelectItem key={s.id} value={s.id}>
+                  {s.code} — {s.name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+        {modules.length > 0 && (
+          <div className="w-full basis-full">
+            <Label className="text-xs mb-2 block">
+              Modules to include
+              <span className="text-muted-foreground font-normal ml-1">
+                (uncheck to exclude from this paper)
+              </span>
+            </Label>
+            <div className="flex flex-wrap gap-2">
+              {modules.map((mod) => {
+                const selected = selectedModuleIds.includes(mod.id);
+                return (
+                  <button
+                    key={mod.id}
+                    type="button"
+                    onClick={() =>
+                      setSelectedModuleIds((prev) =>
+                        selected
+                          ? prev.filter((id) => id !== mod.id)
+                          : [...prev, mod.id]
+                      )
+                    }
+                    className={cn(
+                      "px-3 py-1 rounded-full text-xs font-medium border transition-colors",
+                      selected
+                        ? "bg-primary text-primary-foreground border-primary"
+                        : "bg-background text-muted-foreground border-border hover:border-primary/50"
                     )}
-                  </div>
-
-                  <div className="space-y-1">
-                    <Label>Question Type</Label>
-                    <Select
-                      value={section.questionType}
-                      onValueChange={(v) =>
-                        updateSection(section.id, {
-                          questionType: v,
-                          customTypeName:
-                            v === "custom" ? section.customTypeName : "",
-                        })
-                      }
-                    >
-                      <SelectTrigger className="w-full">
-                        <SelectValue placeholder="Select type..." />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="mcq">
-                          Multiple Choice (MCQ)
-                        </SelectItem>
-                        <SelectItem value="short">
-                          Short Answer (2-5M)
-                        </SelectItem>
-                        <SelectItem value="long">
-                          Long Answer (10M+)
-                        </SelectItem>
-                        <SelectItem value="numerical">
-                          Numerical Problem
-                        </SelectItem>
-                        <SelectItem value="true_false">
-                          True or False
-                        </SelectItem>
-                        <SelectItem value="fill_blank">
-                          Fill in the Blanks
-                        </SelectItem>
-                        <SelectItem value="custom">
-                          Other (specify)
-                        </SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </div>
-
-                  {section.questionType === "custom" && (
-                    <div className="space-y-1">
-                      <Label>Custom Type Name</Label>
-                      <Input
-                        value={section.customTypeName}
-                        onChange={(e) =>
-                          updateSection(section.id, {
-                            customTypeName: e.target.value,
-                          })
-                        }
-                        placeholder="e.g. Case Study, Matching, Diagram-based"
-                      />
-                    </div>
-                  )}
-
-                  <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                    <div className="space-y-1">
-                      <Label>No. of Questions</Label>
-                      <Input
-                        type="number"
-                        min={1}
-                        value={section.numberOfQuestions}
-                        onChange={(e) =>
-                          updateSection(section.id, {
-                            numberOfQuestions:
-                              Number(e.target.value) || 0,
-                          })
-                        }
-                      />
-                    </div>
-                    <div className="space-y-1">
-                      <Label>Marks per Question</Label>
-                      <Input
-                        type="number"
-                        min={1}
-                        value={section.marksPerQuestion}
-                        onChange={(e) =>
-                          updateSection(section.id, {
-                            marksPerQuestion: Number(e.target.value) || 0,
-                          })
-                        }
-                      />
-                    </div>
-                  </div>
-
-                  <div className="flex items-center justify-between gap-3">
-                    <div className="space-y-1">
-                      <Label>Has Sub-questions?</Label>
-                      <p className="text-muted-foreground text-xs">
-                        Use this for Q2(a), Q2(b) style questions.
-                      </p>
-                    </div>
-                    <Switch
-                      checked={section.hasSubQuestions}
-                      onCheckedChange={(checked) =>
-                        updateSection(section.id, {
-                          hasSubQuestions: checked,
-                        })
-                      }
-                    />
-                  </div>
-
-                  {section.hasSubQuestions && (
-                    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                      <div className="space-y-1">
-                        <Label>Sub-questions count</Label>
-                        <Input
-                          type="number"
-                          min={1}
-                          value={section.subQuestionsCount}
-                          onChange={(e) =>
-                            updateSection(section.id, {
-                              subQuestionsCount:
-                                Number(e.target.value) || 0,
-                            })
-                          }
-                        />
-                      </div>
-                      <div className="space-y-1">
-                        <Label>Marks each</Label>
-                        <Input
-                          type="number"
-                          min={1}
-                          value={section.subQuestionsMarks}
-                          onChange={(e) =>
-                            updateSection(section.id, {
-                              subQuestionsMarks:
-                                Number(e.target.value) || 0,
-                            })
-                          }
-                        />
-                      </div>
-                    </div>
-                  )}
-
-                  <div className="space-y-1">
-                    <Label>Section Instructions</Label>
-                    <Input
-                      value={section.instructions}
-                      onChange={(e) =>
-                        updateSection(section.id, {
-                          instructions: e.target.value,
-                        })
-                      }
-                      placeholder='e.g. "Attempt any 3 out of 5" (optional)'
-                    />
-                  </div>
-                </CardContent>
-              </Card>
-            ))}
-
-            <div className="flex items-center justify-between">
-              <p
+                  >
+                    Module {mod.module_number}: {mod.name}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        )}
+        <div>
+          <Label className="text-xs mb-1 block">Duration (min)</Label>
+          <Input
+            type="number"
+            value={duration}
+            onChange={(e) => setDuration(parseInt(e.target.value, 10) || 60)}
+            className="w-28"
+            min={15}
+            max={300}
+          />
+        </div>
+        <div>
+          <Label className="text-xs mb-1 block">Question Source</Label>
+          <div className="flex rounded-md border overflow-hidden text-xs font-medium">
+            {(
+              [
+                ["fresh", "All Fresh"],
+                ["pyq_mix", "PYQ + Fresh Mix"],
+                ["pyq_pattern", "PYQ Style Only"],
+              ] as const
+            ).map(([val, label]) => (
+              <button
+                key={val}
+                type="button"
+                onClick={() => setQuestionSource(val)}
                 className={cn(
-                  "text-sm font-medium",
-                  totalColor
+                  "px-3 py-2 transition-colors",
+                  questionSource === val
+                    ? "bg-primary text-primary-foreground"
+                    : "hover:bg-muted text-muted-foreground"
                 )}
               >
-                Current Total: {totalCalculated} / {totalMarks} marks
-              </p>
-              <p className="text-muted-foreground text-xs">
-                Calculated = Σ (questions × marks per question), including
-                sub-questions where enabled.
-              </p>
-            </div>
-          </CardContent>
-        </Card>
-
-        <Button
-          className="w-full h-11 text-base"
-          disabled={!canGenerate}
-          onClick={handleGenerate}
-        >
-          Generate Question Paper
-        </Button>
-      </div>
-    );
-  }
-
-  // ──── VIEW: generating ────────────────────────────────────
-  if (view === "generating") {
-    return (
-      <div className="flex min-h-[60vh] items-center justify-center">
-        <Card className="w-full max-w-md">
-          <CardContent className="flex flex-col items-center gap-6 pt-8 pb-8">
-            <Loader2 className="size-14 animate-spin text-primary" />
-            <h2 className="text-xl font-semibold">
-              Generating your question paper
-            </h2>
-            <p className="text-muted-foreground text-center text-sm">
-              {generatingMsg}
-            </p>
-            <p className="text-muted-foreground text-xs">
-              This may take 20–60 seconds. Please keep this tab open.
-            </p>
-          </CardContent>
-        </Card>
-      </div>
-    );
-  }
-
-  // ──── VIEW: preview ───────────────────────────────────────
-  if (view === "preview" && result) {
-    const { paper, downloadUrl } = result;
-    const headerSubject = `${paper.subjectName} (${paper.subjectCode})`;
-
-    return (
-      <div className="space-y-4">
-        <div className="sticky top-0 z-10 flex items-center justify-between border-b bg-background/80 px-1 py-3 backdrop-blur">
-          <div className="flex items-center gap-2">
-            <FileText className="size-6 text-primary" />
-            <div>
-              <h2 className="text-lg font-semibold truncate max-w-[260px] sm:max-w-md">
-                {paper.title}
-              </h2>
-              <p className="text-muted-foreground text-xs">
-                {headerSubject} • {paper.totalMarks} marks •{" "}
-                {paper.duration} minutes
-              </p>
-            </div>
+                {label}
+              </button>
+            ))}
           </div>
-          <div className="flex items-center gap-2">
-            <Button asChild size="sm">
-              <a
-                href={downloadUrl}
-                download
-                target="_blank"
-                rel="noopener noreferrer"
-              >
-                <Download className="size-4" />
-                Download PDF
-              </a>
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={handleReset}
-            >
-              Generate Another
-            </Button>
-            <Button variant="outline" size="sm" asChild>
-              <Link href="/faculty/dashboard">Back to Dashboard</Link>
-            </Button>
+          {questionSource === "pyq_mix" && (
+            <div className="mt-2 space-y-1">
+              <div className="flex items-center gap-3">
+                <input
+                  type="range"
+                  min={10}
+                  max={90}
+                  step={10}
+                  value={pyqPercent}
+                  onChange={(e) =>
+                    setPyqPercent(parseInt(e.target.value, 10))
+                  }
+                  className="flex-1 accent-primary"
+                />
+                <span className="text-xs font-medium w-24 text-right">
+                  {pyqPercent}% PYQ · {100 - pyqPercent}% Fresh
+                </span>
+              </div>
+              <div className="flex justify-between text-[10px] text-muted-foreground">
+                <span>More fresh</span>
+                <span>More PYQ</span>
+              </div>
+            </div>
+          )}
+          {questionSource === "pyq_pattern" && (
+            <p className="text-[10px] text-muted-foreground mt-1">
+              New questions matching PYQ difficulty and style
+            </p>
+          )}
+        </div>
+        <div className="flex items-end">
+          <div className="rounded-lg border px-4 py-2 bg-muted/30 text-center">
+            <p className="text-2xl font-bold text-primary">
+              {totalMarksComputed}M
+            </p>
+            <p className="text-xs text-muted-foreground">Total Marks</p>
           </div>
         </div>
-
-        <Card className="max-w-4xl mx-auto">
-          <CardContent className="pt-8 pb-6 space-y-4">
-            {/* HEADER */}
-            <div className="text-center space-y-1">
-              <p className="text-sm font-semibold tracking-wide">
-                UNIVERSITY EXAMINATION
-              </p>
-              <hr className="my-2" />
-              <p className="text-base font-semibold">{headerSubject}</p>
-              <p className="text-sm">
-                Total Marks: {paper.totalMarks} | Duration:{" "}
-                {paper.duration} Minutes
-              </p>
-              <hr className="my-2" />
-            </div>
-
-            {/* INSTRUCTIONS */}
-            {paper.generalInstructions?.trim() && (
-              <div className="space-y-1">
-                <p className="font-semibold text-sm">
-                  General Instructions:
-                </p>
-                <p className="text-muted-foreground text-sm italic whitespace-pre-line">
-                  {paper.generalInstructions}
-                </p>
-              </div>
-            )}
-
-            {/* SECTIONS */}
-            <div className="space-y-6 mt-2">
-              {paper.sections.map((section) => (
-                <div key={section.label} className="space-y-3">
-                  <div className="text-center space-y-1">
-                    <p className="text-sm font-semibold">
-                      --- {section.label} ---
-                    </p>
-                    {section.instructions && (
-                      <p className="text-xs text-muted-foreground italic">
-                        {section.instructions}
-                      </p>
-                    )}
-                  </div>
-
-                  <div className="space-y-3">
-                    {section.questions.map((q) => (
-                      <div
-                        key={q.questionNumber}
-                        className="space-y-1 border-b border-dashed border-muted-foreground/30 pb-2 last:border-b-0"
-                      >
-                        <div className="flex items-start justify-between gap-3">
-                          <div className="flex-1 space-y-1">
-                            <p className="text-sm leading-relaxed">
-                              <span className="font-semibold">
-                                {q.questionNumber}.
-                              </span>{" "}
-                              {q.text}
-                            </p>
-                            {q.type === "mcq" &&
-                              q.options &&
-                              q.options.length === 4 && (
-                                <div className="ml-6 text-sm space-y-0.5">
-                                  <p>
-                                    (a) {q.options[0]} &nbsp;&nbsp; (b){" "}
-                                    {q.options[1]}
-                                  </p>
-                                  <p>
-                                    (c) {q.options[2]} &nbsp;&nbsp; (d){" "}
-                                    {q.options[3]}
-                                  </p>
-                                </div>
-                              )}
-                            {q.isFromPYQ && (
-                              <Badge
-                                variant="outline"
-                                className="text-amber-700 border-amber-300 bg-amber-50 text-xs"
-                              >
-                                PYQ-inspired
-                              </Badge>
-                            )}
-                          </div>
-                          <div className="flex flex-col items-end gap-1">
-                            <span className="text-xs text-muted-foreground">
-                              [{q.marks}M]
-                            </span>
-                          </div>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              ))}
-            </div>
-
-            <div className="mt-4 text-center text-xs text-muted-foreground italic">
-              --- End of Question Paper ---
-            </div>
-          </CardContent>
-        </Card>
       </div>
-    );
-  }
 
-  return null;
+      {sections.map((section, sIdx) => (
+        <div key={section.id} className="space-y-3">
+          <div className="flex items-center gap-3">
+            <Input
+              value={section.name}
+              onChange={(e) => updateSectionName(section.id, e.target.value)}
+              className="font-semibold w-40 h-8 text-sm"
+            />
+            <span className="text-xs text-muted-foreground">
+              {sectionTotal(section)}M
+            </span>
+            <div className="flex-1 h-px bg-border" />
+            {sections.length > 1 && (
+              <button
+                type="button"
+                onClick={() => removeSection(section.id)}
+                className="text-xs text-muted-foreground hover:text-destructive"
+              >
+                Remove section
+              </button>
+            )}
+          </div>
+
+          <DndContext
+            sensors={sensors}
+            collisionDetection={closestCenter}
+            onDragEnd={(e) => handleDragEnd(section.id, e)}
+          >
+            <SortableContext
+              items={section.questions.map((q) => q.id)}
+              strategy={verticalListSortingStrategy}
+            >
+              <div className="space-y-2">
+                {section.questions.map((q, qIdx) => (
+                  <SortableQuestion
+                    key={q.id}
+                    question={q}
+                    qNumber={
+                      sections
+                        .slice(0, sIdx)
+                        .reduce((acc, s) => acc + s.questions.length, 0) +
+                      qIdx +
+                      1
+                    }
+                    onUpdate={(updated) => updateQuestion(section.id, updated)}
+                    onRemove={() => removeQuestion(section.id, q.id)}
+                    modules={modules}
+                    selectedModuleIds={selectedModuleIds}
+                  />
+                ))}
+              </div>
+            </SortableContext>
+          </DndContext>
+
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => addQuestion(section.id)}
+            className="w-full border-dashed"
+          >
+            <Plus className="size-4 mr-2" />
+            Add Question to {section.name}
+          </Button>
+        </div>
+      ))}
+
+      <Button
+        variant="ghost"
+        size="sm"
+        onClick={addSection}
+        className="text-muted-foreground"
+      >
+        <Plus className="size-4 mr-1" />
+        Add Section
+      </Button>
+
+      <div className="flex gap-3 pt-2">
+        <Button
+          onClick={handleGenerate}
+          disabled={isGenerating || !selectedSubjectId}
+          className="flex-1"
+          size="lg"
+        >
+          {isGenerating ? (
+            <>
+              <Loader2 className="mr-2 size-4 animate-spin" />
+              Generating...
+            </>
+          ) : (
+            "Generate Question Paper"
+          )}
+        </Button>
+
+        {downloadUrl && (
+          <Button
+            variant="outline"
+            size="lg"
+            onClick={() => window.open(downloadUrl, "_blank")}
+          >
+            <Download className="mr-2 size-4" />
+            Download PDF
+          </Button>
+        )}
+      </div>
+
+      {isGenerating && (
+        <p className="text-xs text-center text-muted-foreground">
+          Generating questions... please don&apos;t close this page.
+        </p>
+      )}
+    </div>
+  );
 }

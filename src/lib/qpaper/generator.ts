@@ -23,14 +23,128 @@ export interface SectionConfig {
   instructions?: string;
 }
 
+export type QuestionSource = "fresh" | "pyq_mix" | "pyq_pattern";
+
 export interface QPaperConfig {
   subjectName: string;
   subjectCode: string;
   totalMarks: number;
   duration: number;
   uniquenessMode: "all_new" | "mixed";
+  /** Faculty builder: how to blend PYQ style vs fresh questions. */
+  questionSource?: QuestionSource;
   sections: SectionConfig[];
   generalInstructions?: string;
+}
+
+/** Client-side drag-and-drop builder payload (faculty qpaper page). */
+export interface StructuredPart {
+  id: string;
+  marks: number;
+}
+
+export type StructuredQuestionType =
+  | "mcq"
+  | "truefalse"
+  | "short"
+  | "long"
+  | "numerical";
+
+export interface StructuredQuestion {
+  id: string;
+  type: StructuredQuestionType;
+  parts: StructuredPart[];
+}
+
+export interface StructuredSection {
+  id: string;
+  name: string;
+  questions: StructuredQuestion[];
+}
+
+function mapStructuredQuestionType(
+  t: StructuredQuestionType
+): QuestionType {
+  if (t === "truefalse") return "true_false";
+  return t;
+}
+
+/**
+ * Maps the interactive paper builder UI into the flat SectionConfig list
+ * consumed by {@link buildQPaperPrompt}.
+ */
+export function structuredSectionsToQPaperConfig(args: {
+  subjectName: string;
+  subjectCode: string;
+  totalMarks: number;
+  duration: number;
+  questionSource?: QuestionSource;
+  generalInstructions?: string;
+  sections: StructuredSection[];
+}): QPaperConfig {
+  const questionSource: QuestionSource = args.questionSource ?? "fresh";
+  const uniquenessMode: "all_new" | "mixed" =
+    questionSource === "pyq_mix" ? "mixed" : "all_new";
+
+  const sectionConfigs: SectionConfig[] = [];
+  const partLabels = "abcdefghijklmnopqrstuvwxyz";
+
+  for (const sec of args.sections) {
+    for (const q of sec.questions) {
+      if (!q.parts?.length) continue;
+
+      const mappedType = mapStructuredQuestionType(q.type);
+      const marks = q.parts.map((p) => p.marks);
+      const uniform = marks.every((m) => m === marks[0]);
+
+      let extraInstructions: string | undefined;
+      if (marks.length > 1 && !uniform) {
+        extraInstructions = `Marks per part: ${marks
+          .map((m, i) => `(${partLabels[i]}) ${m}M`)
+          .join(", ")}`;
+      }
+
+      if (q.parts.length === 1) {
+        sectionConfigs.push({
+          sectionLabel: sec.name,
+          questionType: mappedType,
+          numberOfQuestions: 1,
+          marksPerQuestion: q.parts[0].marks,
+          hasSubQuestions: false,
+          instructions: extraInstructions,
+        });
+      } else {
+        sectionConfigs.push({
+          sectionLabel: sec.name,
+          questionType: mappedType,
+          numberOfQuestions: 1,
+          marksPerQuestion: marks.reduce((a, b) => a + b, 0),
+          hasSubQuestions: true,
+          subQuestionsCount: q.parts.length,
+          subQuestionsMarks: uniform
+            ? marks[0]
+            : Math.max(
+                1,
+                Math.round(marks.reduce((a, b) => a + b, 0) / q.parts.length)
+              ),
+          instructions: extraInstructions,
+        });
+      }
+    }
+  }
+
+  return {
+    subjectName: args.subjectName,
+    subjectCode: args.subjectCode,
+    totalMarks: args.totalMarks,
+    duration: args.duration,
+    uniquenessMode,
+    questionSource,
+    sections: sectionConfigs,
+    generalInstructions:
+      args.generalInstructions ||
+      "1. Answer all questions in the answer booklet provided.\n2. Figures to the right indicate full marks.\n3. Assume reasonable data wherever necessary and state assumptions clearly.\n4. Use neat diagrams wherever necessary.",
+  };
 }
 
 export interface GeneratedQuestion {
@@ -67,6 +181,7 @@ export function buildQPaperPrompt(options: {
   uniquenessMode: "all_new" | "mixed";
 }): string {
   const { config, syllabusContent, pyqContext, uniquenessMode } = options;
+  const questionSource = config.questionSource ?? "fresh";
 
   const configJson = JSON.stringify(config.sections, null, 2);
 
@@ -82,6 +197,7 @@ EXAM CONFIGURATION:
 - Total Marks: ${config.totalMarks}
 - Duration: ${config.duration} minutes
 - Uniqueness Mode: ${uniquenessMode}
+- Question Source: ${questionSource} (fresh = all new from syllabus; pyq_mix = blend PYQ patterns with new; pyq_pattern = new questions written in PYQ style/difficulty)
 
 SECTION STRUCTURE (READ CAREFULLY AND MATCH EXACTLY):
 The paper has these sections (this is the authoritative structure):
@@ -115,14 +231,18 @@ TASK:
      - Use questionNumber like "Q2a", "Q2b" etc. for sub-questions.
 
 3. Uniqueness rules:
-   - If uniquenessMode = 'all_new':
+   - If questionSource = 'fresh' (or uniquenessMode = 'all_new' without pyq_mix):
      - Every question must be NEW — conceptually different from any PYQ.
      - Mark isFromPYQ: false for all questions.
-   - If uniquenessMode = 'mixed':
+   - If questionSource = 'pyq_mix' (uniquenessMode = 'mixed'):
      - Approximately 40% of questions can be inspired by PYQs
        (rephrased or slightly modified), and 60% must be new.
      - Set isFromPYQ = true only when the question is clearly inspired by a PYQ
        (similar structure or numbers), else false.
+   - If questionSource = 'pyq_pattern':
+     - Every question must be NEW — isFromPYQ: false for all.
+     - Still mirror typical PYQ phrasing, difficulty, and mark-weighting using the PYQ context
+       (length, style, and topic depth like real papers for this institution).
 
 4. Quality rules:
    - All questions must be answerable from the syllabus content.
@@ -581,6 +701,292 @@ export async function generateQPaperPDF(
       size,
       font: timesRoman,
       color: headerColor,
+    });
+  });
+
+  const pdfBytes = await pdfDoc.save();
+  return Buffer.from(pdfBytes);
+}
+
+/** AI JSON shape from the new qpaper route prompt (parts-based). */
+export interface StructuredPaperPart {
+  partLabel?: string;
+  type?: string;
+  marks: number;
+  question: string;
+  options?: string[];
+  correct_answer?: string;
+  solution?: string;
+}
+
+export interface StructuredPaperQuestion {
+  qNumber: number;
+  parts: StructuredPaperPart[];
+}
+
+export interface StructuredPaperSection {
+  name: string;
+  questions: StructuredPaperQuestion[];
+}
+
+export interface StructuredPaperData {
+  paperTitle?: string;
+  sections: StructuredPaperSection[];
+}
+
+export async function generateStructuredQPaperPDF(
+  paper: StructuredPaperData,
+  meta: {
+    subjectName: string;
+    subjectCode: string;
+    totalMarks: number;
+    duration: number;
+  },
+  options?: {
+    /** Per-section, per-question attemptAny from client (aligned by index). */
+    attemptAnyMatrix?: (number | undefined)[][];
+  }
+): Promise<Buffer> {
+  const pdfDoc = await PDFDocument.create();
+  const timesRoman = await pdfDoc.embedFont(StandardFonts.TimesRoman);
+  const timesBold = await pdfDoc.embedFont(StandardFonts.TimesRomanBold);
+  const timesItalic = await pdfDoc.embedFont(StandardFonts.TimesRomanItalic);
+  const mutedColor = rgb(0.35, 0.35, 0.35);
+  const lightColor = rgb(0.45, 0.45, 0.45);
+  const black = rgb(0, 0, 0);
+
+  const addPage = () => {
+    const page = pdfDoc.addPage([PAGE_WIDTH, PAGE_HEIGHT]);
+    return { page, y: PAGE_HEIGHT - MARGIN_TOP };
+  };
+
+  const checkNewPage = (
+    current: { page: any; y: number },
+    needed: number
+  ) => {
+    if (current.y - needed < MARGIN_BOTTOM) {
+      return addPage();
+    }
+    return current;
+  };
+
+  const drawText: DrawTextFn = (page, text, x, y, font, size, color, maxWidth) => {
+    const safe = sanitizeForPDF(text);
+    if (!safe) return y;
+    const words = safe.split(/\s+/);
+    let line = "";
+    let currentY = y;
+    const availableWidth = maxWidth ?? PAGE_WIDTH - MARGIN_LEFT - MARGIN_RIGHT;
+
+    for (const word of words) {
+      const testLine = line ? `${line} ${word}` : word;
+      const testWidth = font.widthOfTextAtSize(testLine, size);
+      if (testWidth > availableWidth && line) {
+        page.drawText(line, { x, y: currentY, size, font, color });
+        currentY -= LINE_HEIGHT;
+        line = word;
+      } else {
+        line = testLine;
+      }
+    }
+    if (line) {
+      page.drawText(line, { x, y: currentY, size, font, color });
+      currentY -= LINE_HEIGHT;
+    }
+    return currentY;
+  };
+
+  let ctx = addPage();
+  const centerX = PAGE_WIDTH / 2;
+
+  const title = sanitizeForPDF(
+    paper.paperTitle ?? `${meta.subjectName} Examination`
+  );
+  const titleW = timesBold.widthOfTextAtSize(title, 14);
+  ctx.page.drawText(title, {
+    x: centerX - titleW / 2,
+    y: ctx.y,
+    size: 14,
+    font: timesBold,
+    color: black,
+  });
+  ctx.y -= LINE_HEIGHT;
+
+  ctx.page.drawLine({
+    start: { x: MARGIN_LEFT, y: ctx.y },
+    end: { x: PAGE_WIDTH - MARGIN_RIGHT, y: ctx.y },
+    thickness: 1,
+    color: black,
+  });
+  ctx.y -= LINE_HEIGHT / 2;
+
+  const subjLine = sanitizeForPDF(
+    `${meta.subjectName} (${meta.subjectCode})`
+  );
+  const subjW = timesBold.widthOfTextAtSize(subjLine, 13);
+  ctx.page.drawText(subjLine, {
+    x: centerX - subjW / 2,
+    y: ctx.y,
+    size: 13,
+    font: timesBold,
+    color: black,
+  });
+  ctx.y -= LINE_HEIGHT;
+
+  const metaLine = sanitizeForPDF(
+    `Total Marks: ${meta.totalMarks}    Duration: ${meta.duration} minutes`
+  );
+  const metaW = timesRoman.widthOfTextAtSize(metaLine, 12);
+  ctx.page.drawText(metaLine, {
+    x: centerX - metaW / 2,
+    y: ctx.y,
+    size: 12,
+    font: timesRoman,
+    color: black,
+  });
+  ctx.y -= LINE_HEIGHT;
+
+  ctx.page.drawLine({
+    start: { x: MARGIN_LEFT, y: ctx.y },
+    end: { x: PAGE_WIDTH - MARGIN_RIGHT, y: ctx.y },
+    thickness: 1,
+    color: black,
+  });
+  ctx.y -= LINE_HEIGHT * 1.5;
+
+  const attemptAnyMatrix = options?.attemptAnyMatrix;
+
+  for (let sIdx = 0; sIdx < (paper.sections ?? []).length; sIdx++) {
+    const section = paper.sections![sIdx];
+    ctx = checkNewPage(ctx, LINE_HEIGHT * 6);
+    const secTitle = sanitizeForPDF(section.name ?? "Section");
+    const secW = timesBold.widthOfTextAtSize(secTitle, 13);
+    ctx.page.drawText(secTitle, {
+      x: centerX - secW / 2,
+      y: ctx.y,
+      size: 13,
+      font: timesBold,
+      color: black,
+    });
+    ctx.y -= LINE_HEIGHT * 2;
+
+    const questions = section.questions ?? [];
+    for (let qIdx = 0; qIdx < questions.length; qIdx++) {
+      const question = questions[qIdx];
+      ctx = checkNewPage(ctx, LINE_HEIGHT * 6);
+      const qn = question.qNumber ?? 0;
+      const qHeader = sanitizeForPDF(`Q.${qn}`);
+      ctx.page.drawText(qHeader, {
+        x: MARGIN_LEFT,
+        y: ctx.y,
+        size: 12,
+        font: timesBold,
+        color: black,
+      });
+      ctx.y -= LINE_HEIGHT * 1.5;
+
+      const parts = question.parts ?? [];
+      const multi = parts.length > 1;
+
+      const attemptAny = attemptAnyMatrix?.[sIdx]?.[qIdx];
+      if (attemptAny !== undefined && parts.length > 1) {
+        const attemptLine = sanitizeForPDF(
+          `  (Attempt any ${attemptAny} out of ${parts.length})`
+        );
+        ctx.page.drawText(attemptLine, {
+          x: MARGIN_LEFT,
+          y: ctx.y,
+          size: 10,
+          font: timesItalic,
+          color: mutedColor,
+        });
+        ctx.y -= LINE_HEIGHT * 0.9;
+      }
+
+      for (const part of parts) {
+        ctx = checkNewPage(ctx, LINE_HEIGHT * 8);
+        const startY = ctx.y;
+        const qText = multi
+          ? `  (${part.partLabel ?? "?"}) ${part.question ?? ""}`
+          : `  ${part.question ?? ""}`;
+        const indent = MARGIN_LEFT + 8;
+        ctx.y = drawText(
+          ctx.page,
+          qText,
+          indent,
+          ctx.y,
+          timesRoman,
+          11,
+          black,
+          PAGE_WIDTH - MARGIN_RIGHT - indent - 80
+        );
+
+        const partTypeNorm = String(part.type ?? "").toLowerCase().replace(/-/g, "_");
+        const isTrueFalse =
+          partTypeNorm === "truefalse" || partTypeNorm === "true_false";
+        const displayOptions =
+          isTrueFalse && !(part.options?.length)
+            ? ["True", "False"]
+            : (part.options ?? []);
+
+        if (displayOptions.length > 0) {
+          ctx.y -= 4;
+          const optIndent = indent + 8;
+          for (const opt of displayOptions) {
+            ctx = checkNewPage(ctx, LINE_HEIGHT * 2);
+            const o = sanitizeForPDF(String(opt));
+            ctx.y = drawText(
+              ctx.page,
+              o,
+              optIndent,
+              ctx.y,
+              timesRoman,
+              10.5,
+              mutedColor,
+              PAGE_WIDTH - MARGIN_RIGHT - optIndent
+            );
+            ctx.y -= 4;
+          }
+        }
+
+        const marks = Number(part.marks) || 0;
+        const markStr = `[${marks} Mark${marks > 1 ? "s" : ""}]`;
+        const markW = timesRoman.widthOfTextAtSize(markStr, 9);
+        ctx.page.drawText(sanitizeForPDF(markStr), {
+          x: PAGE_WIDTH - MARGIN_RIGHT - markW,
+          y: startY,
+          size: 9,
+          font: timesRoman,
+          color: lightColor,
+        });
+
+        ctx.y -= 6;
+      }
+
+      ctx.y -= LINE_HEIGHT;
+    }
+
+    ctx.y -= LINE_HEIGHT * 2;
+  }
+
+  const pages = pdfDoc.getPages();
+  pages.forEach((page, idx) => {
+    const footerText = sanitizeForPDF(`Page ${idx + 1}`);
+    const size = 10;
+    const textWidth = timesRoman.widthOfTextAtSize(footerText, size);
+    const y = MARGIN_BOTTOM / 2;
+    page.drawLine({
+      start: { x: MARGIN_LEFT, y: y + LINE_HEIGHT / 2 },
+      end: { x: PAGE_WIDTH - MARGIN_RIGHT, y: y + LINE_HEIGHT / 2 },
+      thickness: 0.5,
+      color: black,
+    });
+    page.drawText(footerText, {
+      x: PAGE_WIDTH - MARGIN_RIGHT - textWidth,
+      y,
+      size,
+      font: timesRoman,
+      color: black,
     });
   });
 
