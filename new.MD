@@ -504,13 +504,6 @@ Verify in Supabase → Table Editor → subject_content → should see the row
 
 
 
-□ Auth callback URL — must add Vercel URL to Supabase allowed redirects
-□ All env vars set on Vercel dashboard (not just .env.local)
-□ NEXT_PUBLIC_ vars need to be set as well
-□ Supabase anon key + service role key both present
-□ GOOGLE_GENERATIVE_AI_API_KEY present
-□ vercel.json function timeouts (PPT needs 300s — check if you're on Pro)
-
 □ Faculty profile page (we did student, not faculty)
 □ Faculty change password
 □ Superadmin change password  

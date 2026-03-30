@@ -8,6 +8,7 @@ import {
   LayoutDashboard,
   Presentation,
   Sparkles,
+  User,
 } from "lucide-react";
 
 import { NavLink } from "@/components/layout/NavLink";
@@ -58,6 +59,10 @@ export default function FacultyLayout({ children }: LayoutProps) {
           <NavLink href="/faculty/request-change">
             <GitPullRequest className="size-4" />
             <span>Request Change</span>
+          </NavLink>
+          <NavLink href="/faculty/profile">
+            <User className="size-4" />
+            <span>Profile</span>
           </NavLink>
         </nav>
 
