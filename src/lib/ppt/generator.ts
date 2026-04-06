@@ -13,17 +13,85 @@ export type SlideType =
   | "summary";
 
 function sanitizeMermaidCode(code: string): string {
-  return code
-    // Replace parentheses inside edge labels |...|
-    // e.g. |Heat Input (Q_in)| → |Heat Input Q_in|
-    .replace(/\|([^|]*)\(([^)]*)\)([^|]*)\|/g, "|$1$2$3|")
-    // Replace special chars that break Mermaid parser in labels
-    .replace(/\|([^|]*)[{}]([^|]*)\|/g, "|$1$2|")
-    // Remove subscript notation in labels (Q_in → Qin)
-    .replace(/\|([^|]*)_([^|]*)\|/g, (_, pre, post) => `|${pre}${post}|`)
-    // Trim whitespace in labels
-    .replace(/\|\s+/g, "|")
-    .replace(/\s+\|/g, "|");
+  if (!code || code.trim().length === 0) return code;
+
+  const lines = code.split("\n");
+
+  const sanitizedLines = lines.map((line) => {
+    const trimmed = line.trim();
+
+    // Skip empty lines and directive lines (graph TD, flowchart LR, etc.)
+    if (
+      !trimmed ||
+      /^(graph|flowchart|sequenceDiagram|stateDiagram|classDiagram|gitGraph|pie|gantt|erDiagram|journey|mindmap|timeline)\b/i.test(
+        trimmed
+      )
+    ) {
+      return line;
+    }
+
+    // Fix edge labels: content inside |...| pipes
+    let result = line.replace(/\|([^|]*)\|/g, (_, label) => {
+      const cleaned = label
+        .replace(/[(){}]/g, "")
+        .replace(/_/g, " ")
+        .replace(/:/g, "-")
+        .replace(/[<>&%#"]/g, "")
+        .replace(/\s{2,}/g, " ")
+        .trim();
+      return `|${cleaned}|`;
+    });
+
+    // Fix node labels: content inside [...] that contain special chars
+    result = result.replace(/(\w+)\[([^\]]*)\]/g, (match, id, label) => {
+      const needsQuoting = /[:&<>%#]/.test(label);
+      if (needsQuoting) {
+        const cleaned = label
+          .replace(/:/g, " -")
+          .replace(/[&<>%#]/g, "")
+          .replace(/"/g, "'")
+          .trim();
+        return `${id}["${cleaned}"]`;
+      }
+      return match;
+    });
+
+    // Fix node IDs that start with a number (invalid in Mermaid)
+    result = result.replace(
+      /(?:^|\s)(\d[\w]*)\s*(?:\[|\(|\{|-->|---)/g,
+      (match) => match.replace(/(\d[\w]*)/, "n$1")
+    );
+
+    // Fix subgraph labels with colons
+    result = result.replace(
+      /^(\s*subgraph\s+)(.+)$/,
+      (_, prefix, label) =>
+        prefix + label.replace(/:/g, " -").replace(/[&<>%#]/g, "")
+    );
+
+    return result;
+  });
+
+  const sanitized = sanitizedLines.join("\n");
+
+  // Final pass: if the diagram has >15 nodes, truncate to prevent render timeouts
+  const nodeCount = (sanitized.match(/\w+\s*[\[({]/g) || []).length;
+  if (nodeCount > 15) {
+    const header =
+      sanitizedLines.find((l) =>
+        /^(graph|flowchart|sequenceDiagram|stateDiagram)\b/i.test(l.trim())
+      ) || "graph TD";
+    const nodeLines = sanitizedLines
+      .filter(
+        (l) =>
+          l.trim() &&
+          !/^(graph|flowchart|sequenceDiagram|stateDiagram)\b/i.test(l.trim())
+      )
+      .slice(0, 15);
+    return [header, ...nodeLines].join("\n");
+  }
+
+  return sanitized;
 }
 
 export interface SlideContent {

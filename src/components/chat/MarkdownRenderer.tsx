@@ -26,8 +26,12 @@ function parseMessageSegments(content: string): Array<
     | { type: "svg"; code: string }
   > = [];
 
-  // Match: fenced ```svg, fenced ```mermaid, OR raw <svg...>...</svg> blocks
-  const fenceRegex = /```(mermaid|svg)\n([\s\S]*?)```|(<svg[\s\S]*?<\/svg>)/gi;
+  // Matches:
+  // 1. ```mermaid or ```svg fences (case-insensitive, optional whitespace after backticks)
+  // 2. ```xml and ```html fences that contain <svg> (AI sometimes uses these)
+  // 3. Raw <svg>...</svg> blocks not in any fence
+  const fenceRegex =
+    /```\s*(mermaid|svg|xml|html)\s*\n([\s\S]*?)```|(<svg[\s\S]*?<\/svg>)/gi;
   let lastIndex = 0;
   let match: RegExpExecArray | null;
 
@@ -41,11 +45,26 @@ function parseMessageSegments(content: string): Array<
     }
 
     if (match[1] && match[2]) {
-      // Fenced block: ```mermaid or ```svg
-      const fenceType = match[1].toLowerCase() as "mermaid" | "svg";
-      segments.push({ type: fenceType, code: match[2].trim() });
+      // Fenced block
+      const fenceType = match[1].toLowerCase();
+      const code = match[2].trim();
+
+      if (fenceType === "mermaid") {
+        segments.push({ type: "mermaid", code });
+      } else {
+        // svg, xml, html — check if it's actually an SVG
+        if (fenceType === "svg" || code.trimStart().startsWith("<svg")) {
+          segments.push({ type: "svg", code });
+        } else {
+          // xml/html that isn't SVG — render as text
+          segments.push({
+            type: "text",
+            content: content.slice(match.index, match.index + match[0].length),
+          });
+        }
+      }
     } else if (match[3]) {
-      // Raw <svg>...</svg> block
+      // Raw <svg>...</svg>
       segments.push({ type: "svg", code: match[3].trim() });
     }
 
