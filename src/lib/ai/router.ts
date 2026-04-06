@@ -36,7 +36,9 @@ export async function routeAI(
               ? 16384
               : task === "refine"
                 ? 8192
-                : 4096),
+                : task === "chat"
+                  ? 12288
+                  : 4096),
   };
 
   const providerName =

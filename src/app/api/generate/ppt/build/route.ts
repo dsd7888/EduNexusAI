@@ -3,6 +3,7 @@ import {
   type PPTSlideJSON,
   type SlideContent,
 } from "@/lib/ppt/generator";
+import { generateImagenImage, buildImagenPrompt } from "@/lib/ai/imagen";
 import {
   createAdminClient,
   createServerClient,
@@ -56,6 +57,17 @@ export async function POST(request: NextRequest) {
     const presentationTitle = String(body?.presentationTitle ?? "").trim();
     const subject = String(body?.subject ?? "").trim();
     const topic = String(body?.topic ?? "").trim();
+    // This route does not call routeAI directly (outline/batches are separate routes).
+    // To log a closer-to-true total here, the frontend can pass accumulated Flash costs.
+    const totalFlashCost =
+      typeof (body as any)?.totalFlashCostInr === "number"
+        ? Number((body as any).totalFlashCostInr)
+        : Array.isArray((body as any)?.batchCostsInr)
+          ? (body as any).batchCostsInr
+              .map((x: unknown) => Number(x))
+              .filter((n: number) => Number.isFinite(n))
+              .reduce((a: number, b: number) => a + b, 0)
+          : 0;
     const addLogo = Boolean(body?.addLogo);
     const logoUrl =
       typeof body?.logoUrl === "string" ? body.logoUrl : "";
@@ -83,17 +95,83 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    // Post-process: generate Imagen images for slides that need it
+    const imagenSlides = slides
+      .map((slide, idx) => ({ slide, idx }))
+      .filter(
+        (
+          x
+        ): x is { slide: SlideContent & { type: "diagram" }; idx: number } => {
+          const slide = x.slide as any;
+          return (
+            slide != null &&
+            typeof slide === "object" &&
+            slide.type === "diagram" &&
+            slide.diagramRenderType === "imagen" &&
+            Boolean(slide.imagenPrompt) &&
+            !slide.imageBase64
+          );
+        }
+      );
+
+    let totalImagenCost = 0;
+
+    if (imagenSlides.length > 0) {
+      console.log(`[ppt/build] Generating ${imagenSlides.length} Imagen image(s)`);
+
+      const imagenResults = await Promise.allSettled(
+        imagenSlides.map(async ({ slide, idx }) => {
+          const fullPrompt = buildImagenPrompt({
+            slideTitle: slide.title,
+            subject: subject || presentationTitle,
+            topic: topic || presentationTitle,
+            imagenPrompt: slide.imagenPrompt!,
+          });
+          const imageBase64 = await generateImagenImage(fullPrompt);
+
+          if (imageBase64) {
+            // Imagen cost estimate: ~$0.04 per image (imagen-4.0-fast) or
+            // ~$0.02 (gemini-2.5-flash-image), use conservative estimate
+            const imagenCostInr = 0.04 * 83.33; // ~₹3.33 per image
+            totalImagenCost += imagenCostInr;
+            console.log(
+              `[ppt/imagen] Slide imagen cost: ₹${imagenCostInr.toFixed(2)}`
+            );
+          }
+
+          return { idx, imageBase64 };
+        })
+      );
+
+      for (const result of imagenResults) {
+        if (result.status === "fulfilled" && result.value.imageBase64) {
+          slides[result.value.idx] = {
+            ...slides[result.value.idx],
+            imageBase64: result.value.imageBase64,
+          };
+          console.log(`[ppt/build] Imagen image generated for slide ${result.value.idx}`);
+        } else {
+          console.warn("[ppt/build] Imagen failed for a slide — will use fallback");
+        }
+      }
+    }
+
     const pptData: PPTSlideJSON = {
       presentationTitle,
       subject: subject || presentationTitle,
       topic: topic || presentationTitle,
       slides,
-      addLogo: addLogo ?? false,
-      logoUrl: logoUrl ?? "",
+      addLogo,
+      logoUrl: logoUrl || undefined,
     };
 
     const buffer = await generatePPTXBuffer(pptData);
     console.log("[ppt/build] PPTX buffer generated, uploading...");
+    if (totalFlashCost > 0 || totalImagenCost > 0) {
+      console.log(
+        `[ppt] Generation complete — Flash cost: ₹${totalFlashCost.toFixed(4)}, Imagen cost: ₹${totalImagenCost.toFixed(2)}, TOTAL: ₹${(totalFlashCost + totalImagenCost).toFixed(2)}`
+      );
+    }
 
     const subjectSlug = (pptData.subject ?? "subject")
       .replace(/[^a-zA-Z0-9]/g, "_")

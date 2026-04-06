@@ -27,11 +27,26 @@ export const PAGE_H = 842; // A4 height in points
 export const MARGIN = 48;
 export const CONTENT_W = PAGE_W - MARGIN * 2;
 
+function sanitizeMermaidCode(code: string): string {
+  return code
+    // Replace parentheses inside edge labels |...|
+    // e.g. |Heat Input (Q_in)| → |Heat Input Q_in|
+    .replace(/\|([^|]*)\(([^)]*)\)([^|]*)\|/g, "|$1$2$3|")
+    // Replace special chars that break Mermaid parser in labels
+    .replace(/\|([^|]*)[{}]([^|]*)\|/g, "|$1$2|")
+    // Remove subscript notation in labels (Q_in → Qin)
+    .replace(/\|([^|]*)_([^|]*)\|/g, (_, pre, post) => `|${pre}${post}|`)
+    // Trim whitespace in labels
+    .replace(/\|\s+/g, "|")
+    .replace(/\s+\|/g, "|");
+}
+
 export async function fetchMermaidAsPng(
   mermaidCode: string
 ): Promise<Uint8Array | null> {
   try {
-    const encoded = Buffer.from(mermaidCode.trim(), "utf-8").toString(
+    const safeMermaid = sanitizeMermaidCode(mermaidCode.trim());
+    const encoded = Buffer.from(safeMermaid, "utf-8").toString(
       "base64url"
     );
     const url = `https://mermaid.ink/img/${encoded}?type=png&bgColor=white`;
@@ -50,21 +65,72 @@ export async function fetchMermaidAsPng(
   }
 }
 
-export function extractMermaidBlocks(text: string): Array<{
-  type: "text" | "mermaid";
-  content: string;
-}> {
-  const parts: Array<{ type: "text" | "mermaid"; content: string }> = [];
-  const regex = /```mermaid\s*([\s\S]*?)```/gi;
+/** Encode SVG as a data URI (for consumers that accept inline SVG). */
+export function svgToDataUri(svgCode: string): string {
+  // Ensure SVG has xmlns
+  const withNs = svgCode.includes("xmlns=")
+    ? svgCode
+    : svgCode.replace("<svg", '<svg xmlns="http://www.w3.org/2000/svg"');
+  const base64 = Buffer.from(withNs, "utf-8").toString("base64");
+  return `data:image/svg+xml;base64,${base64}`;
+}
+
+/**
+ * Rasterize SVG to PNG for pdf-lib (embedPng). Uses sharp (bundled with Next.js).
+ */
+export async function svgCodeToPngBytes(
+  svgCode: string
+): Promise<Uint8Array | null> {
+  const trimmed = svgCode.trim();
+  const decoded = trimmed.startsWith("data:image/svg+xml;base64,")
+    ? Buffer.from(trimmed.split(",")[1] ?? "", "base64").toString("utf-8")
+    : trimmed;
+
+  const normalized = decoded.includes("xmlns=")
+    ? decoded.trim()
+    : decoded.trim().replace("<svg", '<svg xmlns="http://www.w3.org/2000/svg"');
+  try {
+    const sharp = (await import("sharp")).default;
+    const buf = await sharp(Buffer.from(normalized, "utf-8")).png().toBuffer();
+    return new Uint8Array(buf);
+  } catch (err) {
+    console.error("[pdf] SVG to PNG failed:", err);
+    return null;
+  }
+}
+
+export type DiagramBlock =
+  | { type: "text"; content: string }
+  | { type: "mermaid"; content: string }
+  | { type: "svg"; content: string };
+
+/**
+ * Split markdown-ish content into text, fenced mermaid, fenced svg, or raw <svg>...</svg>.
+ */
+export function extractDiagramBlocks(text: string): DiagramBlock[] {
+  const parts: DiagramBlock[] = [];
+  const fenceRegex =
+    /```(mermaid|svg)\n([\s\S]*?)```|(<svg[\s\S]*?<\/svg>)/gi;
   let lastIndex = 0;
   let match: RegExpExecArray | null;
 
-  while ((match = regex.exec(text)) !== null) {
+  while ((match = fenceRegex.exec(text)) !== null) {
     if (match.index > lastIndex) {
       const before = text.slice(lastIndex, match.index).trim();
       if (before) parts.push({ type: "text", content: before });
     }
-    parts.push({ type: "mermaid", content: (match[1] ?? "").trim() });
+
+    if (match[1] && match[2] !== undefined) {
+      const fenceType = match[1].toLowerCase() as "mermaid" | "svg";
+      if (fenceType === "mermaid") {
+        parts.push({ type: "mermaid", content: match[2].trim() });
+      } else {
+        parts.push({ type: "svg", content: svgToDataUri(match[2].trim()) });
+      }
+    } else if (match[3]) {
+      parts.push({ type: "svg", content: svgToDataUri(match[3].trim()) });
+    }
+
     lastIndex = match.index + match[0].length;
   }
 
@@ -73,6 +139,9 @@ export function extractMermaidBlocks(text: string): Array<{
 
   return parts.length > 0 ? parts : [{ type: "text", content: text }];
 }
+
+/** @deprecated Use extractDiagramBlocks — same behavior, wider diagram support */
+export const extractMermaidBlocks = extractDiagramBlocks;
 
 type FontBundle = {
   regular: PDFFont;

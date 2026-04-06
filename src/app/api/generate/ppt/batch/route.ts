@@ -61,19 +61,30 @@ export async function POST(request: NextRequest) {
     const validTypes: SlideType[] = [
       "title", "overview", "concept", "diagram", "example", "practice", "summary",
     ];
-    const slides: { index: number; type: SlideType; title: string }[] = Array.isArray(
-      slidesRaw
-    )
+    const validRenderHints = ["svg", "mermaid", "imagen"] as const;
+    type RenderHint = (typeof validRenderHints)[number];
+    const slides: {
+      index: number;
+      type: SlideType;
+      title: string;
+      renderHint?: RenderHint | null;
+    }[] = Array.isArray(slidesRaw)
       ? slidesRaw.map((s: unknown) => {
           const o = s as Record<string, unknown>;
           const rawType = String(o?.type ?? "concept");
           const type: SlideType = validTypes.includes(rawType as SlideType)
             ? (rawType as SlideType)
             : "concept";
+          const rawHint = o?.renderHint as string | null | undefined;
+          const renderHint: RenderHint | null =
+            rawHint && validRenderHints.includes(rawHint as RenderHint)
+              ? (rawHint as RenderHint)
+              : null;
           return {
             index: Number(o?.index ?? 0),
             type,
             title: String(o?.title ?? ""),
+            renderHint,
           };
         })
       : [];
@@ -92,6 +103,15 @@ export async function POST(request: NextRequest) {
       return Response.json(
         { error: "slides array is required and must not be empty" },
         { status: 400 }
+      );
+    }
+
+    const diagramCount = slides.filter((s) => s.type === "diagram").length;
+    if (diagramCount >= 2) {
+      console.warn(
+        "[ppt/batch] High diagram count:",
+        diagramCount,
+        "— SVG generation may exceed token limit"
       );
     }
 
@@ -168,8 +188,11 @@ export async function POST(request: NextRequest) {
       for (let attempt = 1; attempt <= maxRetries; attempt++) {
         console.log(`[ppt/batch] Attempt ${attempt}/${maxRetries}`);
         try {
+          const isDiagramBatch = slides.every(s => s.type === "diagram");
+          const maxTokens = isDiagramBatch ? 16384 : 32768;
           const ai = await routeAI("ppt_gen", {
             messages: [{ role: "user", content: prompt }],
+            maxTokens,
           });
 
           const text = String(ai.content ?? "");
@@ -257,8 +280,20 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    console.log(`[ppt/batch] Done. Generated ${batchContent.length} slides`);
-    return Response.json({ slides: batchContent });
+    // Annotate diagramRenderType from input renderHint so build route can identify imagen slides
+    const annotated = batchContent.map((slide, i) => {
+      const inputSlide = slides[i];
+      if (slide.type === "diagram" && inputSlide?.renderHint) {
+        return {
+          ...slide,
+          diagramRenderType: inputSlide.renderHint as SlideContent["diagramRenderType"],
+        };
+      }
+      return slide;
+    });
+
+    console.log(`[ppt/batch] Done. Generated ${annotated.length} slides`);
+    return Response.json({ slides: annotated });
   } catch (err) {
     console.error("[ppt/batch] Error:", err);
     const message =

@@ -117,74 +117,141 @@ export async function POST(request: NextRequest) {
     let cacheHitCount: number = 0;
     const SIMILARITY_THRESHOLD = 0.78;
 
+    function shouldBypassCache(message: string): boolean {
+      const m = message;
+
+      // 1. Numerical arrays or sets: [5, 3, 8], {1, 2, 3}
+      if (/[\[{][\d\s,.-]+[\]}]/.test(m)) return true;
+
+      // 2. Specific numeric values with units or in calculation context
+      // Matches: 300K, 15cm, 70kg, 8.5%, 180/120, 0.05 mol/L
+      if (
+        /\b\d+\.?\d*\s*(K|°C|°F|cm|mm|m|km|kg|g|mg|μg|L|mL|mol|Pa|kPa|MPa|bar|rpm|Hz|kHz|MHz|V|A|W|kW|MW|%|mmHg|psi|kcal|kJ|MJ)\b/i.test(
+          m
+        )
+      )
+        return true;
+
+      // 3. Inline math/calculations with specific numbers
+      if (/\b\d+\s*[+\-*/^=]\s*\d+/.test(m)) return true;
+
+      // 4. "calculate/find/solve/evaluate/determine" + any number
+      if (
+        /\b(calculate|compute|solve|evaluate|determine|find|derive|estimate)\b.*\d+/i.test(
+          m
+        )
+      )
+        return true;
+
+      // 5. "given that", "given:", "where X =" patterns with values
+      if (/\b(given\s*(that)?|where|assume|let)\b.*[=:]\s*\d+/i.test(m))
+        return true;
+
+      // 6. Personal pronouns indicating personal context
+      if (/\b(my|mine|our|i got|i have|i need|i am|i'm|i've|i was|i did)\b/i.test(m))
+        return true;
+
+      // 7. "this/the following/below" suggesting pasted content follows
+      if (
+        /\b(this (code|equation|reaction|formula|passage|text|problem|question|case|diagram)|the following|as follows|given below)\b/i.test(
+          m
+        )
+      )
+        return true;
+
+      // 8. Code blocks pasted inline (``` or significant indented blocks)
+      if (/```[\s\S]{20,}```/.test(m) || (m.match(/\n {4}/g) ?? []).length > 3)
+        return true;
+
+      // 9. Proper nouns that suggest specific case studies or named problems
+      // Patient names, company names in analysis context, specific case references
+      if (/\b(mr\.?|mrs\.?|ms\.?|dr\.?|patient|case study|case of)\s+[A-Z][a-z]+/i.test(m))
+        return true;
+
+      // 10. Specific named examples in analysis/compare context
+      // "analyse X", "critique X", "evaluate X" where X looks like a specific title
+      if (/\b(analyse|analyze|critique|evaluate|review|assess)\b\s+["']?[A-Z]/.test(m))
+        return true;
+
+      // 11. Long messages — likely contain pasted content or highly specific context
+      // A genuine conceptual question is rarely >400 chars
+      if (m.length > 400) return true;
+
+      return false;
+    }
+
     let queryEmbedding: number[] = [];
     let embeddingForDB = "";
 
-    try {
-      const gemini = getGeminiProvider();
-      queryEmbedding = await gemini.embed(message);
-      embeddingForDB = `[${queryEmbedding.join(",")}]`;
+    const userMessage = message;
+    const bypassCache = shouldBypassCache(userMessage);
 
-      // Fetch all cache rows for this subject (no vector ops in SQL)
-      const { data: cacheRows, error: cacheReadError } = await adminClient
-        .from("semantic_cache")
-        .select("id, query_embedding, response, hit_count")
-        .eq("subject_id", subjectId);
+    if (!shouldBypassCache(userMessage)) {
+      try {
+        const gemini = getGeminiProvider();
+        queryEmbedding = await gemini.embed(message);
+        embeddingForDB = `[${queryEmbedding.join(",")}]`;
 
-      if (cacheReadError) {
-        console.error("[chat] Cache read error:", cacheReadError.message);
-      }
+        // Fetch all cache rows for this subject (no vector ops in SQL)
+        const { data: cacheRows, error: cacheReadError } = await adminClient
+          .from("semantic_cache")
+          .select("id, query_embedding, response, hit_count")
+          .eq("subject_id", subjectId);
 
-      if (cacheRows && cacheRows.length > 0) {
-        function cosineSimilarity(a: number[], b: number[]): number {
-          let dot = 0,
-            normA = 0,
-            normB = 0;
-          for (let i = 0; i < a.length; i++) {
-            dot += a[i] * b[i];
-            normA += a[i] * a[i];
-            normB += b[i] * b[i];
-          }
-          const denom = Math.sqrt(normA) * Math.sqrt(normB);
-          return denom === 0 ? 0 : dot / denom;
+        if (cacheReadError) {
+          console.error("[chat] Cache read error:", cacheReadError.message);
         }
 
-        let bestSimilarity = 0;
-        let bestRow: (typeof cacheRows)[number] | null = null;
-
-        for (const row of cacheRows) {
-          const raw = row.query_embedding;
-          const stored: number[] = String(raw ?? "")
-            .replace(/^\[|\]$/g, "")
-            .split(",")
-            .map(Number);
-
-          const similarity = cosineSimilarity(queryEmbedding, stored);
-          if (similarity > bestSimilarity) {
-            bestSimilarity = similarity;
-            bestRow = row;
+        if (cacheRows && cacheRows.length > 0) {
+          function cosineSimilarity(a: number[], b: number[]): number {
+            let dot = 0,
+              normA = 0,
+              normB = 0;
+            for (let i = 0; i < a.length; i++) {
+              dot += a[i] * b[i];
+              normA += a[i] * a[i];
+              normB += b[i] * b[i];
+            }
+            const denom = Math.sqrt(normA) * Math.sqrt(normB);
+            return denom === 0 ? 0 : dot / denom;
           }
-        }
 
-        console.log(
-          `[chat] Best cache similarity: ${bestSimilarity.toFixed(4)}`
-        );
+          let bestSimilarity = 0;
+          let bestRow: (typeof cacheRows)[number] | null = null;
 
-        if (bestSimilarity >= SIMILARITY_THRESHOLD && bestRow) {
-          cachedResponse = String(bestRow.response ?? "");
-          cacheHitId = String(bestRow.id);
-          cacheHitCount = bestRow.hit_count ?? 0;
-          console.log("[chat] CACHE HIT");
+          for (const row of cacheRows) {
+            const raw = row.query_embedding;
+            const stored: number[] = String(raw ?? "")
+              .replace(/^\[|\]$/g, "")
+              .split(",")
+              .map(Number);
+
+            const similarity = cosineSimilarity(queryEmbedding, stored);
+            if (similarity > bestSimilarity) {
+              bestSimilarity = similarity;
+              bestRow = row;
+            }
+          }
+
+          console.log(
+            `[chat] Best cache similarity: ${bestSimilarity.toFixed(4)}`
+          );
+
+          if (bestSimilarity >= SIMILARITY_THRESHOLD && bestRow) {
+            cachedResponse = String(bestRow.response ?? "");
+            cacheHitId = String(bestRow.id);
+            cacheHitCount = bestRow.hit_count ?? 0;
+            console.log("[chat] CACHE HIT");
+          } else {
+            console.log("[chat] Cache miss — calling AI");
+          }
         } else {
-          console.log("[chat] Cache miss — calling AI");
+          console.log("[chat] Cache empty — calling AI");
         }
-      } else {
-        console.log("[chat] Cache empty — calling AI");
+      } catch (err) {
+        console.error("[chat] Cache exception:", err);
+        console.warn("[chat] Cache unavailable, proceeding without cache");
       }
-
-    } catch (err) {
-      console.error("[chat] Cache exception:", err);
-      console.warn("[chat] Cache unavailable, proceeding without cache");
     }
 
     // ── CACHE MISS: call AI ──────────────────────────────────
@@ -301,7 +368,7 @@ export async function POST(request: NextRequest) {
     }
 
     // 9. Cache write for misses
-    if (!cachedResponse && aiResponse) {
+    if (!bypassCache && !cachedResponse && aiResponse) {
       try {
         const { error: cacheWriteError } = await adminClient
           .from("semantic_cache")

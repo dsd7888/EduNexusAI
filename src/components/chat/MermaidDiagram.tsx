@@ -2,6 +2,20 @@
 
 import { useEffect, useState } from "react";
 
+function sanitizeMermaidCode(code: string): string {
+  return code
+    // Replace parentheses inside edge labels |...|
+    // e.g. |Heat Input (Q_in)| → |Heat Input Q_in|
+    .replace(/\|([^|]*)\(([^)]*)\)([^|]*)\|/g, "|$1$2$3|")
+    // Replace special chars that break Mermaid parser in labels
+    .replace(/\|([^|]*)[{}]([^|]*)\|/g, "|$1$2|")
+    // Remove subscript notation in labels (Q_in → Qin)
+    .replace(/\|([^|]*)_([^|]*)\|/g, (_, pre, post) => `|${pre}${post}|`)
+    // Trim whitespace in labels
+    .replace(/\|\s+/g, "|")
+    .replace(/\s+\|/g, "|");
+}
+
 interface Props {
   chart: string;
 }
@@ -30,7 +44,8 @@ export default function MermaidDiagram({ chart }: Props) {
         });
 
         const id = `mermaid-${Math.random().toString(36).slice(2)}`;
-        const { svg } = await mermaid.render(id, chart.trim());
+        const safeChart = sanitizeMermaidCode(chart.trim());
+        const { svg } = await mermaid.render(id, safeChart);
         if (!cancelled) setSvg(svg);
       } catch (err) {
         console.error("[MermaidDiagram] render error:", err);

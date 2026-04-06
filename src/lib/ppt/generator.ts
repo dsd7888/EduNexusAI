@@ -12,12 +12,34 @@ export type SlideType =
   | "practice"
   | "summary";
 
+function sanitizeMermaidCode(code: string): string {
+  return code
+    // Replace parentheses inside edge labels |...|
+    // e.g. |Heat Input (Q_in)| → |Heat Input Q_in|
+    .replace(/\|([^|]*)\(([^)]*)\)([^|]*)\|/g, "|$1$2$3|")
+    // Replace special chars that break Mermaid parser in labels
+    .replace(/\|([^|]*)[{}]([^|]*)\|/g, "|$1$2|")
+    // Remove subscript notation in labels (Q_in → Qin)
+    .replace(/\|([^|]*)_([^|]*)\|/g, (_, pre, post) => `|${pre}${post}|`)
+    // Trim whitespace in labels
+    .replace(/\|\s+/g, "|")
+    .replace(/\s+\|/g, "|");
+}
+
 export interface SlideContent {
   type: SlideType;
   title: string;
   bullets?: string[];
   svgCode?: string;
   diagramCaption?: string;
+  /** Render strategy for diagram slides */
+  diagramRenderType?: "svg" | "mermaid" | "imagen";
+  /** For imagen slides: detailed generation prompt */
+  imagenPrompt?: string;
+  /** For mermaid slides: valid mermaid code */
+  mermaidCode?: string;
+  /** Filled post-generation: base64 PNG from Imagen API */
+  imageBase64?: string;
   /** Rare alternate path for example steps (prefer example.steps). */
   steps?: string[];
   example?: {
@@ -47,7 +69,12 @@ export interface SlideOutline {
   presentationTitle: string;
   subject: string;
   topic: string;
-  outline: { index: number; type: SlideType; title: string }[];
+  outline: {
+    index: number;
+    type: SlideType;
+    title: string;
+    renderHint?: "svg" | "mermaid" | "imagen" | null;
+  }[];
 }
 
 // ── PROMPT BUILDERS ────────────────────────────────────────
@@ -94,136 +121,147 @@ Follow their notation and pedagogical sequence.
 `
       : "";
 
-  return `You are an expert educator creating a professional slide deck for ${subjectName} (${subjectCode}).
+  return `<persona>
+You are a senior academic curriculum designer with deep expertise in
+university-level education across all disciplines. You design slide outlines
+that expert lecturers actually use — structured for genuine learning,
+not just coverage.
+</persona>
 
-Adapt slide types to this subject's nature:
-- If STEM/Engineering: use derivations, worked numericals, process diagrams
-- If Medical/Health: use clinical cases, anatomical diagrams, diagnostic criteria
-- If Architecture/Design: use design principles, spatial diagrams, case studies
-- If Management/Commerce: use frameworks, data tables, case analyses
-- If Humanities: use thematic analysis, examples, comparative studies
+<context>
+<subject>${subjectName} (${subjectCode})</subject>
+<focus_topic>${focusLabel}</focus_topic>
+${moduleDescription.trim() ? `<module_description>${moduleDescription.trim()}</module_description>` : ""}
+<depth_level>${depth}</depth_level>
+<target_slide_count>${slideCountGuide}</target_slide_count>
+<domain_adaptation>
+Adapt entirely to this subject's domain:
+- STEM/Engineering: derivations, worked numericals, governing equations, precision diagrams
+- Medical/Health: clinical cases, anatomical diagrams, diagnostic criteria, pharmacological values
+- Management/Commerce/Law: frameworks, case analyses, ethical dimensions, policy implications
+- Humanities/Social Sciences: thematic analysis, comparative examples, historiography
+- Basic Sciences: first-principles reasoning, experimental setups, molecular/cellular diagrams
+</domain_adaptation>
 
-Choose slide types that a domain expert would actually use.
-
-FULL SUBJECT SYLLABUS (for context and cross-referencing):
+<full_syllabus>
 ${syllabusContext}
-
-YOUR FOCUS MODULE: "${focusLabel}"
-${moduleDescription.trim() ? `Module description: ${moduleDescription.trim()}` : ""}
-
-Use the full syllabus to:
-1. Understand where this module fits in the subject
-2. Reference prerequisite concepts correctly
-3. Avoid duplicating content from other modules
-4. Include cross-references like "As we saw in Unit 1..." where appropriate
+</full_syllabus>
 ${refInline}
-TASK: Create a slide OUTLINE (titles + types only, no content yet) for: ${focusLabel}
-Depth: ${depth} | Target slide count: ${slideCountGuide}
+</context>
 
-IMPORTANT: Every slide must be completable in a single batch.
-Concept slides: max 7 tight bullets.
-Example slides: max 6 calculation steps.
-Prefer quality over quantity — fewer slides, richer content.
+<task>
+Design a complete slide OUTLINE (titles and types only — no content yet) for: ${focusLabel}
 
-When the syllabus includes a topic that is explicitly listed with sub-points (derivation, assumptions, applications), that topic MUST get its own dedicated concept slide, not be merged into another topic's slide.
-Example: 'Bernoulli's equation' listed with derivation, assumptions, applications → must be its own slide.
+Use the full syllabus to understand prerequisites, avoid duplicating other modules,
+and add cross-references like "builds on Unit 2" where relevant.
+</task>
 
-MANDATORY TEACHING SEQUENCE — in this exact order:
+<slide_count_rules>
+Generate AS MANY slides as the content genuinely requires.
+When a syllabus item has sub-points (derivation, formula, assumptions, applications,
+clinical signs, diagnostic criteria) — each sub-point cluster deserves its own slide.
+Never compress two distinct concepts onto one slide.
+</slide_count_rules>
 
-EULER'S EQUATION IS MANDATORY when syllabus mentions 'Euler' in the dynamics section (NOT the Lagrangian/Eulerian kinematics section — those are different):
+<teaching_sequence>
+For every significant concept in the syllabus, follow this sequence:
+1. CONCEPT slide — definition, governing principle, mathematical/mechanistic basis
+2. CONCEPT slide — deeper treatment: derivation, limiting cases, clinical/engineering significance
+3. DIAGRAM slide — visual that makes the concept tangible (assign renderHint below)
+4. EXAMPLE slide — domain-appropriate worked example with real parameters
 
-Add a concept slide titled exactly:
-'Euler's Equation of Motion: Derivation'
+CANONICAL DIAGRAM RULE:
+For any named theoretical model, cycle, framework, mechanism, or structure
+that appears in the syllabus — if searching "[name] diagram" returns the same
+standard visual across every textbook — that diagram is MANDATORY as its own slide.
+The concept without its canonical diagram is incomplete.
+Examples of the principle (not exhaustive): a named thermodynamic cycle needs its
+P-V or T-S diagram; a named anatomical structure needs its labeled cross-section;
+a named algorithm needs its step-by-step state diagram; a named economic framework
+needs its standard visual; a named biological pathway needs its arrow diagram.
+</teaching_sequence>
 
-This slide must include:
-- Newton's 2nd law for fluid element along streamline
-- Result: -∂P/∂s - ρg(∂z/∂s) = ρ(DV/Dt)
-- For steady flow: -dP/ρ - g·dz = V·dV
-- Integration gives Bernoulli's equation (bridge to next slide)
+<renderhint_rules>
+For every diagram slide, assign exactly one renderHint based on what the diagram IS:
 
-This slide MUST appear BEFORE the Bernoulli slide.
-Without it, Bernoulli has no derivation context.
+"svg" — precise 2D technical content where geometry and labels are critical:
+- Quantitative graphs (P-V, T-S, stress-strain, dose-response, supply-demand)
+- Labeled schematics (apparatus, circuits, pipe systems, 2D anatomical cross-sections)
+- Waveforms and signal patterns (ECG, EEG, action potential, sound wave, seismic trace)
+- Free body diagrams, force diagrams, vector diagrams
+- Algorithm state diagrams (array states for sorting, pointer movement, tree traversal)
+- Data structure layouts (binary tree, graph adjacency, hash table, heap)
+- Chemical structural formulas, phase diagrams, titration curves
+- 2D schematic cross-sections of mechanical components (gear tooth, screw thread, valve)
 
-When syllabus includes Bernoulli (fluid dynamics, after Euler above):
-2. CONCEPT slide: 'Bernoulli's Equation: Derivation & Assumptions'
-   Must derive from Euler's equation by integrating along streamline
-   Result: P/γ + V²/2g + z = constant = H (total head)
-   Assumptions (ALL must appear): steady, inviscid, incompressible,
-   along a streamline, no shaft work, no heat transfer
+"mermaid" — sequential or logical flow where connections matter:
+- Step-by-step processes (synthesis pathway, diagnostic algorithm, manufacturing flow)
+- Decision trees (clinical decision-making, engineering design choice)
+- Cause-and-effect chains (pathophysiology cascade, economic feedback loop)
+- Hierarchical classifications, timelines, state transition diagrams
 
-3. EXAMPLE slide: 'Worked Example: Applying Bernoulli's Equation'
-   Use a pipe flow or nozzle problem with numbers
-   Show how each assumption is satisfied
+"imagen" — requires 3D spatial depth or photorealism that 2D cannot convey:
+- 3D anatomy (organs, joints, tissue layers, cellular ultrastructure)
+- Equipment internals requiring 3D geometry (turbines, pumps, reactors, MRI machines)
+- 3D mechanical assemblies (gearbox, ball bearing, piston-cylinder, cam-follower)
+- Physical phenomena needing depth (boundary layer flow, turbulent combustion, crystal structures)
+- Real laboratory/clinical setups (operating theatre, lab bench, construction site)
+- Computer hardware physical components (CPU die, RAM module, PCB layer stack)
 
-These 3 slides are NON-NEGOTIABLE when Bernoulli is in the syllabus.
+RULE: Default to "svg" for anything a textbook would draw in 2D.
+Only use "imagen" when 3D spatial understanding is genuinely necessary.
+</renderhint_rules>
 
-PRACTICE QUESTION DISTRIBUTION:
-Generate one practice question per major topic group:
-- One on continuity/flow classification
-- One on Bernoulli's equation (MUST include this)
-- One on energy equation OR momentum equation
-- One on flow measurement (venturimeter OR Pitot tube)
+<practice_distribution>
+One practice question per major concept group, distributed across the deck.
+Test different cognitive levels: recall → application → analysis → synthesis.
+For ${depth} depth: ${depth === 'basic' ? 'test definitions and direct application' : depth === 'intermediate' ? 'require combining 2+ concepts' : 'require analysis, clinical/engineering reasoning, or synthesis — not recall'}.
+Never cluster all practice questions at the end.
+CRITICAL: Practice question answer options must ONLY reference concepts
+taught earlier in this deck — never introduce untaught terms in options.
+</practice_distribution>
 
-NEVER have all practice questions test the same topic area.
+<structure_requirements>
+- Start: 1 title slide + 1 overview slide (overview must cover the FULL deck scope)
+- End: 1 summary slide
+- Every formula-heavy or mechanism-heavy concept: dedicated diagram slide
+- Comparison slides where 2+ related concepts benefit from side-by-side treatment
+- No filler slides — every slide must serve a learning purpose
+- No skipped syllabus concepts
+</structure_requirements>
 
-HGL/TEL rule: If HGL/TEL diagram is included,
-add a CONCEPT slide BEFORE the diagram explaining:
-what HGL represents (P/γ + z), what TEL represents (P/γ + V²/2g + z),
-and the vertical distance V²/2g between them.
+<slide_types>
+title    — opening slide, 1 total
+overview — full-deck agenda, 1 total
+concept  — theory, derivations, mechanisms, classifications, comparisons
+diagram  — visual (assign renderHint)
+example  — worked problem with full domain-appropriate solution
+practice — student question with answer
+summary  — final takeaways, 1 total
+</slide_types>
 
-Pitot tube: If included in syllabus, generate:
-1. CONCEPT slide: 'Pitot Tube: Measuring Local Velocity'
-   Stagnation vs static pressure, formula: V = √(2ΔP/ρ)
-2. DIAGRAM slide showing the tube in a pipe
+<output_format>
+Return ONLY valid JSON. No markdown. No backticks. No explanation.
+Start your response with { and end with }
 
-A diagram without a concept slide teaches nothing.
-
-THERMODYNAMICS SPECIFIC:
-If module covers Second Law or Heat Engines:
-- MUST include a diagram slide: 'Carnot Cycle: P-V and T-S Diagrams'
-  Show 4 processes on P-V plane:
-  1→2 Isothermal expansion (at T_H)
-  2→3 Adiabatic expansion
-  3→4 Isothermal compression (at T_L)
-  4→1 Adiabatic compression
-
-This diagram IS the Second Law in visual form.
-
-MANDATORY STRUCTURE per major concept:
-  1. concept slide — definition, properties, mathematical basis
-  2. concept slide — deeper treatment, derivations, edge cases  
-  3. diagram slide — visual that genuinely aids understanding
-  4. example slide — numerical or theoretical worked example
-  5. example slide — second worked example (different application)
-
-GLOBAL REQUIREMENTS:
-  - Start with: 1 title slide + 1 overview slide
-  - End with: 2–3 practice slides + 1 summary slide
-  - Every formula-heavy concept gets a dedicated diagram slide
-  - Comparison slides where 2+ concepts are contrasted
-  - Do NOT add filler — every slide must serve a clear purpose
-  - Do NOT skip concepts from the syllabus content
-
-SLIDE TYPE RULES:
-  title    — opening slide only (1 total)
-  overview — agenda only (1 total)
-  concept  — any explanatory content, theory, derivations, comparisons
-  diagram  — SVG visual only (equations, processes, structures, cycles)
-  example  — worked problem with full solution
-  practice — student practice question with answer
-  summary  — final takeaways only (1 total)
-
-OUTPUT: Return ONLY valid JSON, no markdown, no backticks:
 {
   "presentationTitle": "string",
   "subject": "string",
   "topic": "string",
   "outline": [
-    { "index": 0, "type": "title", "title": "string" },
-    ...
+    { "index": 0, "type": "title", "title": "string", "renderHint": null },
+    { "index": 1, "type": "overview", "title": "string", "renderHint": null },
+    { "index": 3, "type": "diagram", "title": "ECG: P-QRS-T Waveform", "renderHint": "svg" },
+    { "index": 7, "type": "diagram", "title": "Heart: 3D Chamber Anatomy", "renderHint": "imagen" },
+    { "index": 12, "type": "diagram", "title": "Diagnostic Algorithm: Chest Pain", "renderHint": "mermaid" }
   ]
 }
-Indexes must start at 0 and increment sequentially with no gaps.`;
+
+Rules:
+- renderHint is null for non-diagram slides
+- renderHint is required for all diagram slides
+- Indexes start at 0 and increment sequentially with no gaps
+</output_format>`;
 }
 
 export function buildBatchContentPrompt(options: {
@@ -231,7 +269,12 @@ export function buildBatchContentPrompt(options: {
   /** Full subject syllabus; first 3000 chars used for batch context. */
   fullSyllabus: string;
   depth: string;
-  slides: { index: number; type: SlideType; title: string }[];
+  slides: {
+    index: number;
+    type: SlideType;
+    title: string;
+    renderHint?: "svg" | "mermaid" | "imagen" | null;
+  }[];
   moduleName?: string;
   customTopic?: string;
   moduleDescription?: string;
@@ -266,22 +309,42 @@ Follow the pedagogical sequence and notation conventions from these books.
       index: s.index,
       type: s.type,
       title: s.title,
+      renderType: s.renderHint ?? (s.type === "diagram" ? "svg" : null),
     })),
     null,
     2
   );
 
-  return `CRITICAL OUTPUT RULES — VIOLATION WILL CAUSE SYSTEM FAILURE:
+  return `<output_rules>
+THESE RULES ARE ABSOLUTE. VIOLATION CAUSES SYSTEM FAILURE.
 1. Return ONLY a valid JSON array. Nothing else.
-2. Start your response with [ and end with ]
-3. No text before the [
-4. No text after the ]
-5. No markdown fences (no \`\`\`)
-6. No comments inside JSON
-7. No trailing commas
-8. All string values must use double quotes
-9. Escape any double quotes inside strings with \\"
-10. Do not truncate — complete all ${slides.length} slide objects fully
+2. First character of your response: [
+3. Last character of your response: ]
+4. No text before [. No text after ].
+5. No markdown fences anywhere (no \`\`\`).
+6. No comments inside JSON.
+7. No trailing commas.
+8. All strings use double quotes. Escape internal quotes with \\"
+9. Complete ALL ${slides.length} slide objects fully. Never truncate.
+10. Diagram slides: generate the most accurate, detailed SVG/Mermaid
+    possible — correct labels, arrows, annotations.
+</output_rules>
+
+<accuracy_mandate>
+ACCURACY IS NON-NEGOTIABLE.
+Every fact, formula, value, mechanism, clinical parameter, and example
+must be correct. Do not invent values. Use standard textbook values.
+When unsure of a specific value, state the principle clearly using
+a well-known general case rather than inventing a number.
+Before writing any worked example, verify EACH STEP individually:
+(1) confirm every intermediate calculation is arithmetically correct,
+(2) confirm units are consistent throughout,
+(3) confirm the final answer matches what step-by-step working produces.
+A correct final answer with wrong intermediate steps is invalid —
+students follow the steps, not just the answer.
+This content goes directly to university classrooms — errors
+damage student understanding and institutional trust.
+</accuracy_mandate>
 
 You are an expert university lecturer creating detailed slide content for ${subjectName}.
 
@@ -324,21 +387,156 @@ CONTENT REQUIREMENTS BY SLIDE TYPE:
   Examples of BAD bullets (too long, paragraph-style):
   ✗ "The continuity equation is a fundamental statement of conservation of mass within a control volume or system, and for steady incompressible flow it simplifies to A₁V₁ = A₂V₂."
   
-  The "note" field (the 💡 tip bar at the bottom):
-  MUST follow this format:
-    "💡 Real world: [one concrete example where this is used]"
-  Examples:
-  ✓ "💡 Real world: Water speeding up through a garden hose nozzle follows continuity."
-  ✓ "💡 Real world: Aircraft wings use Bernoulli — faster air above = lower pressure = lift."
-  ✓ "💡 Real world: Fire sprinklers use momentum equation to calculate pipe support forces."
-  Never write a generic "this is important" note.
-  Always connect to something the student has seen in real life.
-  Max 80 characters for the whole note string.
-- \"diagram\": 
-  - Generate complete, valid SVG in svgCode with viewBox="0 0 800 500".
-  - Use clean colors: #2563EB, #1E40AF, #16A34A, #D97706, #DC2626, #6B7280, white backgrounds.
-  - Include clear <text> labels and arrows using <defs><marker>.
-  - diagramCaption: 1–2 sentence explanation of what the diagram shows.
+  <note_field_rules>
+  The "note" field (the 💡 tip bar rendered at slide bottom):
+
+  This note must be something a great lecturer would say aloud in class
+  that students would write in the margin of their notes.
+
+  Domain formats:
+  - STEM/Engineering: "💡 Rule: [shorthand or limit to remember]"
+  - Medical: "💡 Clinical pearl: [one practical diagnostic or treatment insight]"
+  - Management/Commerce: "💡 In practice: [real company example or market behaviour]"
+  - Humanities: "💡 Key insight: [one interpretive or contextual observation]"
+  - Any domain: "💡 Real world: [concrete observation from daily life]"
+
+  DISQUALIFIED notes (do not write these):
+  ✗ Anything that just restates a limitation: "Rarely used in practice."
+  ✗ Anything that could appear on a Wikipedia article unchanged
+  ✗ Anything a student could derive themselves from the bullets
+  ✗ Generic importance claims: "This concept is fundamental."
+
+  QUALIFIED notes (write these):
+  ✓ "💡 Real world: Python's built-in sort is Timsort — a Merge+Insertion hybrid."
+  ✓ "💡 Clinical pearl: LAD occlusion = anterior STEMI = widowmaker artery."
+  ✓ "💡 Rule: Re > 4000 = turbulent — pipe engineers use this threshold daily."
+  ✓ "💡 Mnemonic: Atria Above, Ventricles Below — never mix them up."
+  ✓ "💡 Real world: Python's built-in sort is Timsort — a Merge+Insertion hybrid."
+  ✓ "💡 Real world: Bubble Sort shines only on nearly-sorted arrays of < 20 elements."
+  ✓ "💡 Real world: Binary search requires sorted data — that's why sorting matters."
+
+  For algorithm and data structure slides specifically: the note must name a
+  real system, language, or tool that uses this concept — not restate a limitation.
+
+  Max 90 characters total including the emoji prefix.
+  </note_field_rules>
+- \"diagram\" slides — CRITICAL: check the renderType field in the input slide.
+
+  If renderType is "svg":
+    Generate complete valid SVG in "svgCode" field.
+    viewBox="0 0 800 400". Clean technical diagram.
+    Use colors: #2563EB, #1E40AF, #16A34A, #D97706, #DC2626.
+    Include <text> labels and <defs><marker> arrows.
+    <svg_quality_rules>
+    Before writing any SVG code, mentally plan:
+    1. What elements are needed (shapes, labels, arrows)?
+    2. Approximate positions in an 800×400 viewBox — sketch left-to-right
+       or top-to-bottom to avoid overlap
+    3. What text labels each element needs (minimum 13px font)
+
+    Then generate SVG that meets ALL of these:
+    - viewBox="0 0 800 400" always
+    - <rect width="800" height="400" fill="#F8FAFC"/> as first element
+    - Every shape has a corresponding <text> label
+    - No elements overlap
+    - Arrows use <defs><marker> arrowheads
+    - Colors: #2563EB blue, #1E40AF dark blue, #16A34A green, #D97706 amber, #DC2626 red
+
+    For algorithm / data structure SVGs:
+    Show step-by-step state, not a snapshot. Sorting: show array at each
+    significant pass as horizontal labelled boxes stacked vertically,
+    current comparison pair highlighted, sorted elements in green.
+    Tree traversal: colour-code visited nodes by order.
+    Linked list: show before and after pointer states with arrows.
+    The diagram must teach the algorithm without any text alongside it.
+    </svg_quality_rules>
+    Set diagramCaption to 1-2 sentence explanation.
+    Leave imagenPrompt and mermaidCode as undefined.
+
+  If renderType is "mermaid":
+    Generate valid Mermaid diagram code in "mermaidCode" field.
+    Supported types: flowchart, graph, sequenceDiagram, stateDiagram.
+    Keep it clean — max 15 nodes for readability.
+    Set diagramCaption to 1-2 sentence explanation.
+    Leave svgCode and imagenPrompt as undefined.
+    Example:
+    "mermaidCode": "flowchart TD\\n  A[Input] --> B{Decision}\\n  B -->|Yes| C[Output A]\\n  B -->|No| D[Output B]"
+
+  MERMAID SYNTAX RULES — these will cause parse failures if violated:
+  - Never use parentheses () inside edge labels: |like (this)| ✗ → |like this| ✓
+  - Never use curly braces {} inside edge labels
+  - Never use subscript notation with underscore in labels: |Q_in| ✗ → |Qin| ✓
+  - Keep edge labels short — max 4 words
+  - Use only: letters, numbers, spaces, hyphens, colons inside labels
+
+  If renderType is "imagen":
+    Generate a detailed image generation prompt in "imagenPrompt" field.
+    Describe: what the object/scene is (use its specific name),
+    viewpoint (cross-section, isometric, cutaway, anterior view, etc.),
+    key components to label, style (technical illustration or anatomical diagram),
+    background (white or light neutral), and level of detail.
+
+    <imagen_examples>
+    The imagenPrompt must be a NARRATIVE PARAGRAPH describing what to
+    illustrate — not a keyword list. Narrative descriptions produce
+    significantly better image quality.
+
+    Medical anatomy:
+    "imagenPrompt": "An anterior view anatomical illustration of the human
+    heart showing all four chambers in accurate proportion. The right atrium
+    receives blood from the superior and inferior vena cava. The left atrium
+    connects to the four pulmonary veins. The right and left ventricles are
+    shown with the interventricular septum clearly visible. All four valves
+    are labelled: tricuspid, mitral, aortic, and pulmonary. The left anterior
+    descending, circumflex, and right coronary arteries are shown on the
+    surface. Medical illustration style, white background, publication quality."
+
+    Engineering equipment:
+    "imagenPrompt": "A cutaway isometric illustration of a centrifugal pump
+    showing its internal geometry. The transparent casing reveals the rotating
+    impeller with curved vanes drawing fluid axially through the inlet eye and
+    expelling it radially into the volute casing. The shaft, bearings, and
+    discharge port are all visible and labelled. Flow arrows show the complete
+    fluid path. Technical engineering illustration style, white background,
+    high contrast labels."
+
+    Mechanical assembly:
+    "imagenPrompt": "A 3D exploded view of a ball bearing assembly showing each
+    component separated along the central axis for clarity. Moving outward from
+    centre: inner race, steel balls evenly spaced in the cage/retainer, outer
+    race, and rubber seals on both sides. Component labels point to each part
+    with clean leader lines. The illustration communicates how the components
+    nest together. Engineering technical illustration, white background."
+
+    Cellular biology:
+    "imagenPrompt": "A detailed cross-section illustration of a eukaryotic animal
+    cell cut through the centre to reveal all major organelles. The nucleus
+    occupies the centre, showing the nuclear envelope with pores and a visible
+    nucleolus. Mitochondria, rough and smooth endoplasmic reticulum, Golgi
+    apparatus, lysosomes, and the plasma membrane are all shown in their correct
+    relative positions and sizes. Each organelle uses a distinct pastel colour
+    and carries a label. Scientific textbook illustration style, white background."
+
+    CS/Hardware:
+    "imagenPrompt": "A cutaway cross-section illustration of a modern CPU chip
+    package revealing its internal layer stack. From top to bottom: the metal
+    integrated heat spreader, thermal compound layer, silicon die showing
+    processor cores as rectangular regions, organic substrate, solder bumps,
+    and PCB connection pads. Each layer is colour-coded and labelled with a
+    clean leader line. Technical illustration style, white background,
+    publication quality."
+
+    Management/Strategy:
+    "imagenPrompt": "A clean isometric 3D business diagram showing a supply chain
+    network. On the left, a supplier warehouse feeds into a central manufacturing
+    facility. From there, two distribution centres branch out to multiple retail
+    stores on the right. Blue arrows show physical material flow; orange dashed
+    arrows show information flow in the reverse direction. Every node is labelled.
+    Professional business illustration style, white background."
+    </imagen_examples>
+
+    Leave svgCode and mermaidCode as undefined.
+    Set diagramCaption to 1-2 sentence explanation.
 - \"example\" slides:
   - example.problem: max 180 characters. State ONLY the given values and what to find.
     Format: "Given: [values]. Find: [what to calculate]."
@@ -348,39 +546,43 @@ CONTENT REQUIREMENTS BY SLIDE TYPE:
     NO explanations of why — just show the calculation.
   - example.answer: max 80 characters. Final value + units only.
     Example: "The average velocity at section 2 is 6.78 m/s."
-  CRITICAL MATH RULE: For venturimeter problems, ALWAYS verify:
-  Q = (A₁A₂/√(A₁²-A₂²)) × √(2ΔP/ρ)
-  Example check: D₁=15cm, D₂=7.5cm, ΔP=50kPa, ρ=1000:
-  A₁ = π(0.075)² = 0.01767 m²
-  A₂ = π(0.0375)² = 0.004418 m²
-  Q = (0.01767 × 0.004418 / √(0.01767²-0.004418²)) × √(100000/1000)
-  Q = (0.0000781 / 0.01710) × 10 = 0.00457 × 10 = 0.046 m³/s
-  Do NOT generate answer 0.083 for these inputs — that is wrong.
-  Always verify your answer matches the question's given values.
+  <example_accuracy_rules>
+  Worked examples must use real, consistent numbers throughout.
+  Before writing the answer, verify your calculation is correct for your inputs.
 
-  MOMENTUM EQUATION — 90° jet deflection:
-  When a jet deflects 90°: Vx_out=0, Vy_out=V_in
-  ṁ = ρAV where A = π(D/2)²
-  Fx = ṁ(0 - V_in) = -ṁV
-  Fy = ṁ(V_in - 0) = +ṁV
-  |F| = ṁV√2
-  Example check: D=5cm, V=20m/s
-  A = π(0.025)² = 0.001963 m²
-  ṁ = 1000 × 0.001963 × 20 = 39.27 kg/s
-  |F| = 39.27 × 20 × √2 = 1111 N
-  NOT 277.6 N — verify your arithmetic before outputting.
+  Domain-appropriate formats:
+  - STEM/Engineering: given values → formula identification → substitution →
+    result with correct units
+  - Medical: patient data → clinical reasoning steps → interpretation →
+    management decision
+  - Management: scenario data → framework application → insight → implication
+  - Humanities: source/context → analysis → interpretation → significance
 
-  VENTURIMETER Q formula:
-  Q = (A₁×A₂ / √(A₁²-A₂²)) × √(2ΔP/ρ)
-  Example check: D₁=10cm, D₂=5cm, ΔP=20kPa
-  A₁ = π(0.05)² = 0.007854 m²
-  A₂ = π(0.025)² = 0.001963 m²
-  Q = (0.007854×0.001963/√(0.007854²-0.001963²)) × √(40)
-    = (0.00001542/0.007607) × 6.324
-    = 0.002027 × 6.324 = 0.01282 m³/s ≈ 0.013 m³/s
-  Generate answer options that actually include the correct value.
-  Never generate options where none of them match the solution.
+  Unit consistency check: After verifying each step arithmetically,
+  confirm that units are consistent through every step, especially
+  when converting between J and kJ, m/s and km/h, kPa and Pa.
+  If a step converts kJ to J or vice versa, the unit label must
+  change accordingly. Writing "4514 kJ / 373 K = 12.10 J/K" is
+  a unit error — the result unit must match the input units.
+
+  MCQ VALIDATION (for practice slides — mandatory):
+  After calculating the correct answer, write that value down first, then
+  construct four options ensuring option A, B, C, or D exactly matches
+  that calculated value. If your draft options don't include the correct
+  answer, replace the nearest option with it. A question where no option
+  equals the correct answer is invalid and actively harms students.
+  When the correct answer is a decimal (e.g., 0.333), round it
+  to match the precision of the options before selecting the answer.
+  If 0.333 rounds to 0.3, select the option containing 0.3.
+  Design the four options such that only one option is within ±15%
+  of the correct answer — if your draft options have two options
+  within ±15%, replace the closer one with a value further away.
+  </example_accuracy_rules>
 - \"practice\" slides:
+PRACTICE ANSWER RULE: The correct answer and all wrong answer 
+options must only reference concepts, algorithms, or terms that 
+appear earlier in this presentation's outline. Never introduce 
+a new term in an answer option without it having been taught.
   - question.text: max 200 characters. Question + necessary data only.
   - question.options: 4 options, each max 40 characters.
   - question.answer: the letter only: "A", "B", "C", or "D"
@@ -403,11 +605,15 @@ Each SlideContent must match this TypeScript shape:
   "title": "string",
   "bullets"?: string[],
   "svgCode"?: string,
+  "mermaidCode"?: string,
+  "imagenPrompt"?: string,
+  "imageBase64"?: null,
   "diagramCaption"?: string,
   "example"?: { "problem": string, "steps": string[], "answer": string },
   "question"?: { "text": string, "options"?: string[], "answer": string, "explanation": string },
   "note"?: string
 }
+For diagram slides: only populate the field matching the slide's renderType (svgCode, mermaidCode, or imagenPrompt). Always set imageBase64 to null.
 
 VERY IMPORTANT:
 - The returned array length must equal the number of input slides.
@@ -817,9 +1023,14 @@ export async function generatePPTXBuffer(
   pptx.title = data.presentationTitle;
   pptx.subject = data.subject;
 
+  let totalCostInr = 0;
+  // Add this to accumulate costs — caller passes AI costs in via data
+  // We track imagen cost here per-image
+
   // Estimate total slides (concept slides may fan out)
   let estimatedTotal = 0;
   for (const s of data.slides) {
+    if (!s || typeof s !== "object") continue;
     if (s.type === "concept") {
       const chunks = chunkBullets(splitToBullets(s.bullets ?? []));
       estimatedTotal += Math.max(1, chunks.length);
@@ -833,6 +1044,7 @@ export async function generatePPTXBuffer(
   let practiceNum = 0;
 
   for (const slideData of data.slides) {
+    if (!slideData || typeof slideData !== "object") continue;
     switch (slideData.type) {
       case "title": {
         const slide = pptx.addSlide();
@@ -1042,11 +1254,11 @@ export async function generatePPTXBuffer(
           const bullets = splitToBullets(chunk);
           const count = bullets.length;
           const fontSize =
-            count <= 4 ? 16 : count <= 5 ? 15 : count <= 6 ? 14 : 13;
+            count <= 4 ? 18 : count <= 5 ? 17 : count <= 6 ? 16 : 14;
           const paraSpaceBefore =
-            count <= 4 ? 20 : count <= 5 ? 16 : count <= 6 ? 12 : 8;
+            count <= 4 ? 18 : count <= 5 ? 14 : count <= 6 ? 10 : 7;
           const paraSpaceAfter =
-            count <= 4 ? 6 : count <= 5 ? 4 : count <= 6 ? 3 : 2;
+            count <= 4 ? 5 : count <= 5 ? 4 : count <= 6 ? 3 : 2;
           const formulaBullet = bullets.find((b) => isEquation(b));
           const hasFormula = Boolean(formulaBullet);
           let bodyHeight = hasNote ? ZONE.body.h - 0.7 : ZONE.body.h - 0.15;
@@ -1156,110 +1368,143 @@ export async function generatePPTXBuffer(
         });
 
         const hasCaption = Boolean(slideData.diagramCaption);
-        const svgRaw = slideData.svgCode ?? "";
+        const captionBarY = SLIDE_H - 0.52;
+        const imgAreaH = hasCaption
+          ? captionBarY - ZONE.body.y - 0.05
+          : SLIDE_H - ZONE.body.y - 0.12;
 
-        if (isValidSVG(svgRaw)) {
+        // PRIORITY 1: Imagen-generated image (base64 PNG)
+        if (slideData.imageBase64) {
           slide.addImage({
-            data: svgToBase64(svgRaw),
+            data: `data:image/png;base64,${slideData.imageBase64}`,
             x: ZONE.body.x,
             y: ZONE.body.y,
             w: ZONE.body.w,
-            h: ZONE.body.h - (hasCaption ? 0.7 : 0.1),
-            sizing: {
-              type: "contain",
-              w: ZONE.body.w,
-              h: ZONE.body.h - 0.5,
-            },
+            h: imgAreaH,
+            sizing: { type: "contain", w: ZONE.body.w, h: imgAreaH },
           });
-
-          if (hasCaption && slideData.diagramCaption) {
-            slide.addShape("rect", {
-              x: 0,
-              y: SLIDE_H - 0.52,
-              w: SLIDE_W,
-              h: 0.52,
-              fill: { color: "0E7490" },
-              line: { color: "0E7490" },
+        }
+        // PRIORITY 2: SVG diagram
+        else if (isValidSVG(slideData.svgCode ?? "")) {
+          slide.addImage({
+            data: svgToBase64(slideData.svgCode!),
+            x: ZONE.body.x,
+            y: ZONE.body.y,
+            w: ZONE.body.w,
+            h: imgAreaH,
+            sizing: { type: "contain", w: ZONE.body.w, h: imgAreaH },
+          });
+        }
+        // PRIORITY 3: Mermaid code — render via mermaid.ink
+        else if (slideData.mermaidCode) {
+          try {
+            const safeMermaid = sanitizeMermaidCode(
+              slideData.mermaidCode.trim()
+            );
+            const encoded = Buffer.from(safeMermaid, "utf-8")
+              .toString("base64")
+              .replace(/\+/g, "-")
+              .replace(/\//g, "_")
+              .replace(/=/g, "");
+            const mermaidUrl = `https://mermaid.ink/img/${encoded}?type=png&bgColor=white`;
+            const res = await fetch(mermaidUrl, {
+              signal: AbortSignal.timeout(8000),
             });
-            slide.addText(`📊 ${cap(slideData.diagramCaption, 130)}`, {
-              x: 0.3,
-              y: SLIDE_H - 0.52,
-              w: 9.4,
-              h: 0.52,
-              fontSize: 11,
-              italic: true,
-              color: C.white,
+            if (res.ok) {
+              const buf = await res.arrayBuffer();
+              const b64 = Buffer.from(buf).toString("base64");
+              slide.addImage({
+                data: `data:image/png;base64,${b64}`,
+                x: ZONE.body.x,
+                y: ZONE.body.y,
+                w: ZONE.body.w,
+                h: imgAreaH,
+                sizing: { type: "contain", w: ZONE.body.w, h: imgAreaH },
+              });
+            } else {
+              throw new Error("mermaid.ink failed");
+            }
+          } catch {
+            // Fallback to caption-only
+            slide.addShape("rect", {
+              x: ZONE.body.x,
+              y: ZONE.body.y,
+              w: ZONE.body.w,
+              h: imgAreaH,
+              fill: { color: "E0F2FE" },
+              line: { color: "7DD3FC", width: 1 },
+            });
+            slide.addText(
+              `📊 ${cap(slideData.diagramCaption ?? slideData.title, 300)}`,
+              {
+                x: 0.7,
+                y: ZONE.body.y + 0.5,
+                w: 8.6,
+                h: imgAreaH - 1,
+                fontSize: 13,
+                color: "075985",
+                fontFace: "Calibri",
+                valign: "middle",
+                wrap: true,
+                autoFit: true,
+                lineSpacingMultiple: 1.6,
+              }
+            );
+          }
+        }
+        // PRIORITY 4: No visual — show caption or placeholder
+        else {
+          slide.addShape("rect", {
+            x: ZONE.body.x,
+            y: ZONE.body.y,
+            w: ZONE.body.w,
+            h: imgAreaH,
+            fill: { color: "F1F5F9" },
+            line: { color: "CBD5E1", width: 1 },
+          });
+          slide.addText(
+            slideData.diagramCaption
+              ? `📊 ${cap(slideData.diagramCaption, 400)}`
+              : `[ Visual: ${capTitle(slideData.title, 50)} ]`,
+            {
+              x: 0.7,
+              y: ZONE.body.y + 0.5,
+              w: 8.6,
+              h: imgAreaH - 1,
+              fontSize: 13,
+              color: "94A3B8",
               fontFace: "Calibri",
+              align: "center",
               valign: "middle",
               wrap: true,
               autoFit: true,
-            });
-          }
-        } else if (!svgRaw.trim() && slideData.diagramCaption) {
+            }
+          );
+        }
+
+        // Caption bar (shown for all render types)
+        if (hasCaption && slideData.diagramCaption) {
           slide.addShape("rect", {
-            x: 0.5,
-            y: ZONE.body.y,
-            w: 9,
-            h: ZONE.body.h,
-            fill: { color: "E0F2FE" },
-            line: { color: "7DD3FC", width: 1 },
+            x: 0,
+            y: SLIDE_H - 0.52,
+            w: SLIDE_W,
+            h: 0.52,
+            fill: { color: "0E7490" },
+            line: { color: "0E7490" },
           });
-          slide.addText(`📊 ${cap(slideData.diagramCaption, 400)}`, {
-            x: 0.7,
-            y: ZONE.body.y + 0.2,
-            w: 8.6,
-            h: ZONE.body.h - 0.4,
-            fontSize: 14,
-            color: "075985",
+          slide.addText(`📊 ${cap(slideData.diagramCaption, 130)}`, {
+            x: 0.3,
+            y: SLIDE_H - 0.52,
+            w: 9.4,
+            h: 0.52,
+            fontSize: 11,
+            italic: true,
+            color: C.white,
             fontFace: "Calibri",
             valign: "middle",
             wrap: true,
             autoFit: true,
-            lineSpacingMultiple: 1.6,
           });
-        } else {
-          slide.addShape("rect", {
-            x: ZONE.body.x,
-            y: ZONE.body.y,
-            w: ZONE.body.w,
-            h: ZONE.body.h - 0.5,
-            fill: { color: "F1F5F9" },
-            line: { color: "CBD5E1", width: 1 },
-          });
-          slide.addText(`[ Visual diagram for: ${capTitle(slideData.title, 50)} ]`, {
-            x: ZONE.body.x,
-            y: ZONE.body.y + 1.5,
-            w: ZONE.body.w,
-            h: 0.6,
-            fontSize: 13,
-            color: "94A3B8",
-            align: "center",
-            fontFace: "Calibri",
-          });
-
-          if (hasCaption && slideData.diagramCaption) {
-            slide.addShape("rect", {
-              x: 0,
-              y: SLIDE_H - 0.52,
-              w: SLIDE_W,
-              h: 0.52,
-              fill: { color: "0E7490" },
-              line: { color: "0E7490" },
-            });
-            slide.addText(`📊 ${cap(slideData.diagramCaption, 130)}`, {
-              x: 0.3,
-              y: SLIDE_H - 0.52,
-              w: 9.4,
-              h: 0.52,
-              fontSize: 11,
-              italic: true,
-              color: C.white,
-              fontFace: "Calibri",
-              valign: "middle",
-              wrap: true,
-              autoFit: true,
-            });
-          }
         }
 
         addPageNumber(slide, slideNum, totalSlides);
@@ -1589,6 +1834,13 @@ export async function generatePPTXBuffer(
   }
 
   const result = await pptx.stream();
+
+  if (totalCostInr > 0) {
+    console.log(
+      `[ppt] Total Imagen cost this deck: ₹${totalCostInr.toFixed(2)}`
+    );
+  }
+
   const uint8 =
     result instanceof ArrayBuffer
       ? new Uint8Array(result)

@@ -54,6 +54,13 @@ interface ModuleRow {
   module_number: number;
 }
 
+type OutlineItem = {
+  index: number;
+  type: string;
+  title: string;
+  renderHint?: "svg" | "mermaid" | "imagen" | null;
+};
+
 const GENERATING_MESSAGES = [
   "📚 Reading syllabus content...",
   "🧠 Planning slide structure...",
@@ -274,46 +281,104 @@ export default function FacultyGeneratePage() {
       if (!outlineRes.ok) throw new Error("Failed to generate outline");
       const { outline } = await outlineRes.json();
 
-      // STEP 2: Generate content in batches of 5 (Flash output limits)
+      // STEP 2: Generate content with solo diagram batches
+      // Separate diagram slides (solo) from content slides (batched)
       const BATCH_SIZE = 5;
-      const allSlides: SlideContent[] = [];
-      const totalBatches = Math.ceil(outline.outline.length / BATCH_SIZE);
+      const diagramSlides = outline.outline.filter((s: OutlineItem) => s.type === "diagram");
+      const contentSlides = outline.outline.filter((s: OutlineItem) => s.type !== "diagram");
 
-      for (let i = 0; i < outline.outline.length; i += BATCH_SIZE) {
-        const batchNum = Math.floor(i / BATCH_SIZE) + 1;
-        setGeneratingMessage(
-          `✍️ Writing slides (batch ${batchNum} of ${totalBatches})...`
-        );
+      // Build content batches (5 at a time)
+      const contentBatches: OutlineItem[][] = [];
+      for (let i = 0; i < contentSlides.length; i += BATCH_SIZE) {
+        contentBatches.push(contentSlides.slice(i, i + BATCH_SIZE));
+      }
 
-        const batch = outline.outline.slice(i, i + BATCH_SIZE);
-        const batchRes = await fetch("/api/generate/ppt/batch", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            subjectId: selectedSubjectId,
-            slides: batch,
-            depth,
-            moduleId:
-              inputMode === "module" ? selectedModuleId || undefined : undefined,
-            customTopic:
-              inputMode === "topic"
-                ? customTopic.trim() || undefined
-                : undefined,
-          }),
-        });
+      // Each diagram slide is its own solo batch
+      const diagramBatches: OutlineItem[][] = diagramSlides.map((s: OutlineItem) => [s]);
 
-        if (batchRes.ok) {
-          const { slides } = await batchRes.json();
-          allSlides.push(...(slides ?? []));
-        }
+      // All batches combined
+      const allBatches = [...contentBatches, ...diagramBatches];
 
-        if (i + BATCH_SIZE < outline.outline.length) {
-          // Smaller delay since batches are smaller
-          await new Promise((r) => setTimeout(r, 600));
+      setGeneratingMessage(
+        `✍️ Writing ${contentBatches.length} content batches + ` +
+          `${diagramBatches.length} diagram slides...`
+      );
+
+      const allSlides: (SlideContent | null)[] = new Array(outline.outline.length).fill(null);
+
+      async function processBatch(batch: OutlineItem[], batchLabel: string): Promise<void> {
+        try {
+          const batchRes = await fetch("/api/generate/ppt/batch", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              subjectId: selectedSubjectId,
+              moduleId: selectedModuleId || undefined,
+              customTopic: selectedModuleId ? undefined : customTopic,
+              slides: batch.map((s) => ({
+                index: s.index,
+                type: s.type,
+                title: s.title,
+                renderHint: s.renderHint ?? null,
+              })),
+              depth,
+            }),
+          });
+
+          if (batchRes.ok) {
+            const { slides } = await batchRes.json();
+            batch.forEach((outlineSlide, localIdx) => {
+              if (slides[localIdx] != null) {
+                allSlides[outlineSlide.index] = slides[localIdx];
+              }
+            });
+            console.log(`[generate] ${batchLabel} done`);
+          } else {
+            console.error(`[generate] ${batchLabel} failed:`, batchRes.status);
+          }
+        } catch (err) {
+          console.error(`[generate] ${batchLabel} error:`, err);
         }
       }
 
-      if (allSlides.length === 0) throw new Error("No slides generated");
+      // Run content batches with concurrency 3
+      const CONCURRENCY = 3;
+      for (let i = 0; i < contentBatches.length; i += CONCURRENCY) {
+        const chunk = contentBatches.slice(i, i + CONCURRENCY);
+        await Promise.all(
+          chunk.map((batch, localIdx) =>
+            processBatch(
+              batch,
+              `content batch ${i + localIdx + 1}/${contentBatches.length}`
+            )
+          )
+        );
+        if (i + CONCURRENCY < contentBatches.length) {
+          await new Promise((r) => setTimeout(r, 400));
+        }
+      }
+
+      setGeneratingMessage("🎨 Generating diagram visuals...");
+
+      // Run diagram batches with concurrency 2
+      // (each is solo, so low concurrency is fine)
+      for (let i = 0; i < diagramBatches.length; i += 2) {
+        const chunk = diagramBatches.slice(i, i + 2);
+        await Promise.all(
+          chunk.map((batch, localIdx) =>
+            processBatch(batch, `diagram ${i + localIdx + 1}/${diagramBatches.length}`)
+          )
+        );
+        if (i + 2 < diagramBatches.length) {
+          await new Promise((r) => setTimeout(r, 400));
+        }
+      }
+
+      const validSlides = allSlides.filter(
+        (s): s is SlideContent => s != null && typeof s === "object" && "type" in s
+      );
+
+      if (validSlides.length === 0) throw new Error("No slides generated");
 
       // STEP 3: Build PPTX and upload
       setGeneratingMessage("🎨 Building your presentation...");
@@ -339,13 +404,6 @@ export default function FacultyGeneratePage() {
         fileName: string;
       };
 
-      const a = document.createElement("a");
-      a.href = buildResult.downloadUrl;
-      a.download = buildResult.fileName;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-
       if (intervalRef.current) {
         clearInterval(intervalRef.current);
         intervalRef.current = null;
@@ -357,6 +415,17 @@ export default function FacultyGeneratePage() {
 
       setResult(buildResult);
       setView("done");
+
+      // Delay download slightly so beforeunload handler
+      // is removed before the <a> click fires
+      setTimeout(() => {
+        const a = document.createElement("a");
+        a.href = buildResult.downloadUrl;
+        a.download = buildResult.fileName ?? "presentation.pptx";
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+      }, 300);
     } catch (err) {
       if (intervalRef.current) clearInterval(intervalRef.current);
       if (progressRef.current) clearInterval(progressRef.current);

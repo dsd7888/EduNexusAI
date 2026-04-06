@@ -3,8 +3,9 @@ import { rgb } from "pdf-lib";
 import {
   COLORS,
   createPDFBuilder,
-  extractMermaidBlocks,
+  extractDiagramBlocks,
   fetchMermaidAsPng,
+  svgCodeToPngBytes,
 } from "@/lib/pdf/builder";
 import {
   createAdminClient,
@@ -114,14 +115,25 @@ export async function POST(request: Request) {
           rgb(0.973, 0.988, 0.973), // very light green
           rgb(0.086, 0.639, 0.29)
         );
-        const parts = extractMermaidBlocks(msg.content);
+        const parts = extractDiagramBlocks(msg.content);
         for (const part of parts) {
           if (part.type === "text") {
             if (part.content.trim()) {
               builder.markdown(part.content, 11);
             }
-          } else {
+          } else if (part.type === "mermaid") {
             const pngBytes = await fetchMermaidAsPng(part.content);
+            if (pngBytes) {
+              await builder.addImage(pngBytes, "Diagram");
+            } else {
+              builder.text("[Diagram — open in EduNexus AI to view]", {
+                size: 10,
+                color: COLORS.light,
+              });
+              builder.space(4);
+            }
+          } else {
+            const pngBytes = await svgCodeToPngBytes(part.content);
             if (pngBytes) {
               await builder.addImage(pngBytes, "Diagram");
             } else {
