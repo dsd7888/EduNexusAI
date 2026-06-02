@@ -11,7 +11,6 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import { Skeleton } from "@/components/ui/skeleton";
 import { CardSkeleton } from "@/components/layout/PageSkeleton";
 import {
   Dialog,
@@ -19,20 +18,12 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { ArrowUpDown, BookOpen } from "lucide-react";
+import { ArrowUpDown, BookOpen, MessageSquare } from "lucide-react";
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { buildProcessedSubjectGroups } from "@/lib/student/subjectGroups";
 import { cn } from "@/lib/utils";
-
-interface SubjectRow {
-  id: string;
-  code: string;
-  name: string;
-  department: string;
-  branch: string;
-  semester: number;
-}
+import { useStudentSubjects, type SubjectRow } from "@/hooks/useSupabaseData";
 
 function SubjectCard({
   subject,
@@ -51,16 +42,22 @@ function SubjectCard({
       )}
     >
       <CardHeader className="p-0 pb-3 sm:pb-4">
-        <CardTitle className="text-xl font-bold">{subject.code}</CardTitle>
-        <CardDescription>{subject.name}</CardDescription>
-        <Badge variant="secondary" className="mt-2 w-fit">
-          {subject.department}
+        <Badge variant="secondary" className="w-fit font-mono text-xs">
+          {subject.code}
         </Badge>
+        <CardTitle className="mt-2 text-lg font-semibold leading-snug">
+          {subject.name}
+        </CardTitle>
       </CardHeader>
       <CardFooter className="p-0 pt-2 sm:pt-3">
-        <div className="flex w-full flex-col gap-2 sm:flex-row sm:flex-wrap">
-          <Button asChild size="sm" className="min-w-[80px] flex-1">
-            <Link href={`/student/chat/${subject.id}`}>Chat</Link>
+        <div className="flex w-full flex-col gap-2 sm:flex-row">
+          {/* Chat is the primary action — filled and given more width so the
+              hierarchy reads at a glance; Notes/Quiz are clearly secondary. */}
+          <Button asChild size="sm" className="min-w-[80px] flex-[1.5]">
+            <Link href={`/student/chat/${subject.id}`}>
+              <MessageSquare className="mr-1 size-4" />
+              Chat
+            </Link>
           </Button>
           <Button
             type="button"
@@ -70,7 +67,7 @@ function SubjectCard({
             onClick={() => onOpenNotes(subject.id)}
           >
             <BookOpen className="mr-1 size-4" />
-            Quick Notes
+            Notes
           </Button>
           <Button asChild variant="outline" size="sm" className="min-w-[80px] flex-1">
             <Link href={`/student/quiz?subjectId=${subject.id}`}>Quiz</Link>
@@ -85,9 +82,11 @@ export default function StudentSubjectsPage() {
   const [name, setName] = useState<string>("Student");
   const [branch, setBranch] = useState<string | null>(null);
   const [semester, setSemester] = useState<number | null>(null);
-  const [subjects, setSubjects] = useState<SubjectRow[]>([]);
   const [loadingProfile, setLoadingProfile] = useState(true);
-  const [loadingSubjects, setLoadingSubjects] = useState(true);
+  const { subjects, isLoading: loadingSubjects } = useStudentSubjects(
+    branch,
+    semester
+  );
 
   const [groupBy, setGroupBy] = useState<"semester" | "code" | "none">(
     "semester"
@@ -132,40 +131,9 @@ export default function StudentSubjectsPage() {
     }
   }, []);
 
-  const fetchSubjects = useCallback(async () => {
-    if (branch == null) {
-      setLoadingSubjects(false);
-      setSubjects([]);
-      return;
-    }
-    setLoadingSubjects(true);
-    try {
-      const supabase = createBrowserClient();
-      const { data, error } = await supabase
-        .from("subjects")
-        .select("id, name, code, department, branch, semester")
-        .eq("branch", branch)
-        .order("semester", { ascending: true })
-        .order("code", { ascending: true });
-      if (error) {
-        setSubjects([]);
-        return;
-      }
-      setSubjects((data ?? []) as SubjectRow[]);
-    } finally {
-      setLoadingSubjects(false);
-    }
-  }, [branch]);
-
   useEffect(() => {
     fetchProfile();
   }, [fetchProfile]);
-
-  useEffect(() => {
-    if (!loadingProfile) {
-      fetchSubjects();
-    }
-  }, [loadingProfile, fetchSubjects]);
 
   const canLoadSubjects = branch != null;
   const showEmptyState =

@@ -6,32 +6,13 @@ import {
 } from "@/lib/db/supabase-server";
 import { checkRateLimit, RATE_LIMITS } from "@/lib/utils/rate-limit";
 import type { NextRequest } from "next/server";
+import { requireRole, apiError } from "@/lib/api/helpers";
 
 export async function POST(request: NextRequest) {
   try {
-    const supabase = await createServerClient();
-    const {
-      data: { user },
-      error: authError,
-    } = await supabase.auth.getUser();
-
-    if (authError || !user) {
-      return Response.json({ error: "Unauthorized" }, { status: 401 });
-    }
-
-    const adminClient = createAdminClient();
-    const { data: profile, error: profileError } = await adminClient
-      .from("profiles")
-      .select("role")
-      .eq("id", user.id)
-      .single();
-
-    if (profileError || !profile || profile.role !== "student") {
-      return Response.json(
-        { error: "Forbidden: Students only" },
-        { status: 403 }
-      );
-    }
+    const authResult = await requireRole(["student"]);
+    if (authResult instanceof Response) return authResult;
+    const { user, adminClient } = authResult;
 
     const rateCheck = await checkRateLimit({
       userId: user.id,
@@ -57,10 +38,7 @@ export async function POST(request: NextRequest) {
       body?.unit != null ? String(body.unit).trim() || undefined : undefined;
 
     if (!question || !subjectName) {
-      return Response.json(
-        { error: "question and subjectName are required" },
-        { status: 400 }
-      );
+      return apiError("question and subjectName are required", 400);
     }
 
     const prompt = buildSocraticHintPrompt({
@@ -80,6 +58,6 @@ export async function POST(request: NextRequest) {
     console.error("[quiz/hint] POST error:", err);
     const msg =
       err instanceof Error ? err.message : "Failed to get hint";
-    return Response.json({ error: msg }, { status: 500 });
+    return apiError(msg, 500);
   }
 }

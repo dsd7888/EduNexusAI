@@ -4,39 +4,13 @@ import {
   createServerClient,
 } from "@/lib/db/supabase-server";
 import type { NextRequest } from "next/server";
+import { requireRole, apiError } from "@/lib/api/helpers";
 
 export async function POST(request: NextRequest) {
   try {
-    const supabase = await createServerClient();
-    const {
-      data: { user },
-      error: authError,
-    } = await supabase.auth.getUser();
-
-    if (authError || !user) {
-      return Response.json({ error: "Unauthorized" }, { status: 401 });
-    }
-
-    const adminClient = createAdminClient();
-    const { data: profile, error: profileError } = await adminClient
-      .from("profiles")
-      .select("id, role")
-      .eq("id", user.id)
-      .single();
-
-    if (profileError || !profile) {
-      return Response.json(
-        { error: "Failed to load profile" },
-        { status: 500 }
-      );
-    }
-
-    if (profile.role !== "student") {
-      return Response.json(
-        { error: "Forbidden: Students only" },
-        { status: 403 }
-      );
-    }
+    const authResult = await requireRole(["student"]);
+    if (authResult instanceof Response) return authResult;
+    const { user, adminClient } = authResult;
 
     const body = await request.json().catch(() => ({} as any));
     const quizId = String(body?.quizId ?? "").trim();
@@ -131,10 +105,7 @@ export async function POST(request: NextRequest) {
 
     if (insertError) {
       console.error("[quiz/submit] insert error:", insertError);
-      return Response.json(
-        { error: "Failed to save attempt" },
-        { status: 500 }
-      );
+      return apiError("Failed to save attempt", 500);
     }
 
     const subjectId = quiz.subject_id;
@@ -179,6 +150,6 @@ export async function POST(request: NextRequest) {
     console.error("[quiz/submit] POST error:", err);
     const msg =
       err instanceof Error ? err.message : "Failed to submit quiz";
-    return Response.json({ error: msg }, { status: 500 });
+    return apiError(msg, 500);
   }
 }

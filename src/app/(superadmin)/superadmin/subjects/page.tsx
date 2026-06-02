@@ -1,6 +1,12 @@
  "use client";
- 
- import { createBrowserClient } from "@/lib/db/supabase-browser";
+
+import { createBrowserClient } from "@/lib/db/supabase-browser";
+import {
+  useAllSubjects,
+  useSubjectModules,
+  type SubjectRow,
+  type ModuleRow,
+} from "@/hooks/useSupabaseData";
  import {
    AlertDialog,
    AlertDialogAction,
@@ -36,38 +42,21 @@
    TableRow,
  } from "@/components/ui/table";
  import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
- import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
- import { Loader2, Trash2 } from "lucide-react";
+ import { FileText, Loader2, Trash2 } from "lucide-react";
+import Link from "next/link";
  import { useCallback, useEffect, useMemo, useState } from "react";
  import { toast } from "sonner";
- 
+
  type Branch = "chem" | "mech";
  
- interface SubjectRow {
-   id: string;
-   code: string;
-   name: string;
-   department: string;
-   branch: string;
-   semester: number;
- }
  
- interface ModuleRow {
-   id: string;
-   subject_id: string;
-   module_number: number;
-   name: string;
-   description: string | null;
- }
  
 export default function SubjectsPage() {
-  const [tab, setTab] = useState<"subjects" | "modules" | "syllabus">("subjects");
+  const [tab, setTab] = useState<"subjects" | "modules">("subjects");
  
-   const [subjects, setSubjects] = useState<SubjectRow[]>([]);
-   const [modules, setModules] = useState<ModuleRow[]>([]);
-   const [loadingSubjects, setLoadingSubjects] = useState(false);
-   const [loadingModules, setLoadingModules] = useState(false);
+   const { subjects: hookSubjects, isLoading: hookLoadingSubjects } =
+     useAllSubjects();
    const [saving, setSaving] = useState(false);
  
    // Subjects form
@@ -79,31 +68,17 @@ export default function SubjectsPage() {
  
    // Modules tab state
    const [selectedSubjectId, setSelectedSubjectId] = useState("");
-   const selectedSubject = useMemo(
+   const { modules: hookModules, isLoading: hookLoadingModules } =
+     useSubjectModules(selectedSubjectId ? selectedSubjectId : null);
+ 
+   const [subjects, setSubjects] = useState<SubjectRow[]>([]);
+   const [modules, setModules] = useState<ModuleRow[]>([]);
+   const [loadingSubjects, setLoadingSubjects] = useState(false);
+   const [loadingModules, setLoadingModules] = useState(false);
+  const selectedSubject = useMemo(
      () => subjects.find((s) => s.id === selectedSubjectId) ?? null,
      [subjects, selectedSubjectId]
    );
- 
-   // Modules form
-   const [moduleNumber, setModuleNumber] = useState("");
-   const [moduleName, setModuleName] = useState("");
-   const [moduleDescription, setModuleDescription] = useState("");
- 
-  // Syllabus Content tab state
-  const [syllabusSubjectId, setSyllabusSubjectId] = useState("");
-  const [syllabusContent, setSyllabusContent] = useState("");
-  const [referenceBooks, setReferenceBooks] = useState("");
-  const [loadingContent, setLoadingContent] = useState(false);
-  const [savingContent, setSavingContent] = useState(false);
-
-  // Confirm dialog
-  const [confirmOpen, setConfirmOpen] = useState(false);
-   const [confirmPayload, setConfirmPayload] = useState<
-     | { kind: "subject"; id: string; label: string }
-     | { kind: "module"; id: string; label: string }
-     | null
-   >(null);
- 
    const fetchSubjects = useCallback(async () => {
      setLoadingSubjects(true);
      try {
@@ -148,42 +123,29 @@ export default function SubjectsPage() {
    }, []);
  
    useEffect(() => {
-     fetchSubjects();
-   }, [fetchSubjects]);
+     setSubjects(hookSubjects);
+     setLoadingSubjects(hookLoadingSubjects);
+   }, [hookSubjects, hookLoadingSubjects]);
  
-  useEffect(() => {
-    if (tab === "modules") {
-      fetchModules(selectedSubjectId);
-    }
-  }, [tab, selectedSubjectId, fetchModules]);
+   useEffect(() => {
+     setModules(hookModules as ModuleRow[]);
+     setLoadingModules(hookLoadingModules);
+   }, [hookModules, hookLoadingModules]);
+   // Modules form
+   const [moduleNumber, setModuleNumber] = useState("");
+   const [moduleName, setModuleName] = useState("");
+   const [moduleDescription, setModuleDescription] = useState("");
+ 
+  // Confirm dialog
+  const [confirmOpen, setConfirmOpen] = useState(false);
+   const [confirmPayload, setConfirmPayload] = useState<
+     | { kind: "subject"; id: string; label: string }
+     | { kind: "module"; id: string; label: string }
+     | null
+   >(null);
+ 
+ 
 
-  useEffect(() => {
-    if (tab === "syllabus" && syllabusSubjectId) {
-      setLoadingContent(true);
-      fetch(`/api/subjects/content?subjectId=${encodeURIComponent(syllabusSubjectId)}`)
-        .then((res) => res.json())
-        .then((json) => {
-          if (json && json.error) {
-            toast.error(json.error);
-            setSyllabusContent("");
-            setReferenceBooks("");
-          } else {
-            setSyllabusContent(json?.content ?? "");
-            setReferenceBooks(json?.referenceBooks ?? "");
-          }
-        })
-        .catch(() => {
-          toast.error("Failed to load content");
-          setSyllabusContent("");
-          setReferenceBooks("");
-        })
-        .finally(() => setLoadingContent(false));
-    } else if (tab === "syllabus" && !syllabusSubjectId) {
-      setSyllabusContent("");
-      setReferenceBooks("");
-    }
-  }, [tab, syllabusSubjectId]);
- 
    const handleAddSubject = async () => {
      if (!name.trim() || !code.trim() || !department.trim() || !branch || !semester) {
        toast.error("Please fill all required fields");
@@ -279,35 +241,6 @@ export default function SubjectsPage() {
      }
    };
  
-   const handleSaveSyllabus = async () => {
-    if (!syllabusSubjectId) {
-      toast.error("Please select a subject");
-      return;
-    }
-    setSavingContent(true);
-    try {
-      const res = await fetch("/api/subjects/content", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          subjectId: syllabusSubjectId,
-          content: syllabusContent,
-          referenceBooks,
-        }),
-      });
-      const json = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        toast.error(json.error ?? "Failed to save");
-        return;
-      }
-      toast.success("Syllabus content saved");
-    } catch {
-      toast.error("Failed to save");
-    } finally {
-      setSavingContent(false);
-    }
-  };
-
   const askDeleteSubject = (s: SubjectRow) => {
      setConfirmPayload({
        kind: "subject",
@@ -375,7 +308,6 @@ export default function SubjectsPage() {
         <TabsList>
           <TabsTrigger value="subjects">Subjects</TabsTrigger>
           <TabsTrigger value="modules">Modules</TabsTrigger>
-          <TabsTrigger value="syllabus">Syllabus Content</TabsTrigger>
         </TabsList>
  
          <TabsContent value="subjects" className="mt-6 space-y-6">
@@ -449,7 +381,7 @@ export default function SubjectsPage() {
                      <TableHead>Department</TableHead>
                      <TableHead>Branch</TableHead>
                      <TableHead>Semester</TableHead>
-                     <TableHead className="w-[80px]">Actions</TableHead>
+                     <TableHead className="w-[220px]">Actions</TableHead>
                    </TableRow>
                  </TableHeader>
                  <TableBody>
@@ -474,16 +406,29 @@ export default function SubjectsPage() {
                          <TableCell>{s.branch}</TableCell>
                          <TableCell>{s.semester}</TableCell>
                          <TableCell>
-                           <Button
-                             variant="ghost"
-                             size="icon"
-                             className="h-8 w-8 text-destructive hover:text-destructive"
-                             onClick={() => askDeleteSubject(s)}
-                             disabled={saving}
-                             aria-label="Delete subject"
-                           >
-                             <Trash2 className="size-4" />
-                           </Button>
+                           <div className="flex items-center gap-2">
+                             <Button
+                               asChild
+                               variant="outline"
+                               size="sm"
+                               className="gap-1"
+                             >
+                               <Link href={`/superadmin/subjects/${s.id}/syllabus`}>
+                                 <FileText className="size-3.5" />
+                                 Manage Syllabus
+                               </Link>
+                             </Button>
+                             <Button
+                               variant="ghost"
+                               size="icon"
+                               className="h-8 w-8 text-destructive hover:text-destructive"
+                               onClick={() => askDeleteSubject(s)}
+                               disabled={saving}
+                               aria-label="Delete subject"
+                             >
+                               <Trash2 className="size-4" />
+                             </Button>
+                           </div>
                          </TableCell>
                        </TableRow>
                      ))
@@ -628,74 +573,6 @@ export default function SubjectsPage() {
                    </Table>
                  </CardContent>
                </Card>
-             </CardContent>
-           </Card>
-         </TabsContent>
-
-         <TabsContent value="syllabus" className="mt-6 space-y-6">
-           <Card>
-             <CardHeader>
-               <CardTitle>Syllabus Content</CardTitle>
-               <CardDescription>
-                 Add or edit syllabus text and reference books for each subject.
-               </CardDescription>
-             </CardHeader>
-             <CardContent className="space-y-6">
-               <div className="space-y-2">
-                 <Label htmlFor="syllabus-subject">Subject</Label>
-                 <Select value={syllabusSubjectId} onValueChange={setSyllabusSubjectId}>
-                   <SelectTrigger id="syllabus-subject" className="w-full">
-                     <SelectValue placeholder="Select subject" />
-                   </SelectTrigger>
-                   <SelectContent>
-                     {subjects.map((s) => (
-                       <SelectItem key={s.id} value={s.id}>
-                         {s.name} ({s.code})
-                       </SelectItem>
-                     ))}
-                   </SelectContent>
-                 </Select>
-               </div>
-
-               {syllabusSubjectId && (
-                 <>
-                   <div className="space-y-2">
-                     <Label htmlFor="syllabus-content">Syllabus Content</Label>
-                     <Textarea
-                       id="syllabus-content"
-                       placeholder="Enter syllabus content..."
-                       value={syllabusContent}
-                       onChange={(e) => setSyllabusContent(e.target.value)}
-                       rows={22}
-                       className="font-mono text-sm"
-                       disabled={loadingContent}
-                     />
-                   </div>
-                   <div className="space-y-2">
-                     <Label htmlFor="reference-books">Reference Books (comma-separated)</Label>
-                     <Input
-                       id="reference-books"
-                       placeholder="e.g. Book 1, Book 2, Book 3"
-                       value={referenceBooks}
-                       onChange={(e) => setReferenceBooks(e.target.value)}
-                       disabled={loadingContent}
-                     />
-                   </div>
-                   <Button
-                     onClick={handleSaveSyllabus}
-                     disabled={savingContent || loadingContent}
-                   >
-                     {savingContent ? (
-                       <Loader2 className="size-4 animate-spin" />
-                     ) : null}
-                     Save
-                   </Button>
-                 </>
-               )}
-
-               {syllabusSubjectId && loadingContent && (
-                 <p className="text-sm text-muted-foreground">Loading content...</p>
-               )}
              </CardContent>
            </Card>
          </TabsContent>

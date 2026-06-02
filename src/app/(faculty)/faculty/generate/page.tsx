@@ -24,13 +24,19 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
-import { createBrowserClient } from "@/lib/db/supabase-browser";
+import {
+  useFacultySubjects,
+  useSubjectModules,
+  type SubjectRow,
+  type ModuleRow,
+} from "@/hooks/useSupabaseData";
 import {
   BookOpen,
   CheckCircle,
   Download,
   Loader2,
   Presentation,
+  Wand2,
 } from "lucide-react";
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -42,23 +48,15 @@ type View = "form" | "generating" | "done";
 type InputMode = "module" | "topic";
 type Depth = "basic" | "intermediate" | "advanced";
 
-interface SubjectRow {
-  id: string;
-  name: string;
-  code: string;
-}
-
-interface ModuleRow {
-  id: string;
-  name: string;
-  module_number: number;
-}
-
 type OutlineItem = {
   index: number;
   type: string;
   title: string;
-  renderHint?: "svg" | "mermaid" | "imagen" | null;
+  renderHint?: "svg" | "mermaid" | "imagen" | "illustration" | "dual" | null;
+  leftVisual?: string;
+  rightVisual?: string;
+  leftPrompt?: string;
+  rightPrompt?: string;
 };
 
 const GENERATING_MESSAGES = [
@@ -91,8 +89,6 @@ const DEPTH_OPTIONS: { value: Depth; label: string; desc: string }[] = [
 ];
 
 export default function FacultyGeneratePage() {
-  const [subjects, setSubjects] = useState<SubjectRow[]>([]);
-  const [modules, setModules] = useState<ModuleRow[]>([]);
   const [selectedSubjectId, setSelectedSubjectId] = useState("");
   const [inputMode, setInputMode] = useState<InputMode>("module");
   const [selectedModuleId, setSelectedModuleId] = useState("");
@@ -104,6 +100,7 @@ export default function FacultyGeneratePage() {
     title: string;
     slideCount: number;
     fileName: string;
+    contentId: string;
   } | null>(null);
   const [generatingMessage, setGeneratingMessage] = useState(
     GENERATING_MESSAGES[0]
@@ -116,80 +113,15 @@ export default function FacultyGeneratePage() {
 
   const isGenerating = view === "generating";
 
+  const { subjects } = useFacultySubjects();
+  const { modules } = useSubjectModules(selectedSubjectId || null);
+
   const selectedSubjectName =
     subjects.find((s) => s.id === selectedSubjectId)?.name ?? "";
 
-  const fetchAssignedSubjects = useCallback(async () => {
-    const supabase = createBrowserClient();
-    const {
-      data: { user },
-      error: authError,
-    } = await supabase.auth.getUser();
-    if (authError || !user) {
-      setSubjects([]);
-      return;
-    }
-    const { data: assignments, error: assignError } = await supabase
-      .from("faculty_assignments")
-      .select("subject_id")
-      .eq("faculty_id", user.id);
-
-    if (assignError) {
-      toast.error("Failed to load assigned subjects");
-      setSubjects([]);
-      return;
-    }
-
-    const ids = [...new Set((assignments ?? []).map((a) => a.subject_id).filter(Boolean))];
-    if (ids.length === 0) {
-      setSubjects([]);
-      return;
-    }
-
-    const { data: subs, error: subError } = await supabase
-      .from("subjects")
-      .select("id, name, code")
-      .in("id", ids)
-      .order("code");
-
-    if (subError) {
-      toast.error("Failed to load subjects");
-      setSubjects([]);
-      return;
-    }
-    setSubjects((subs ?? []) as SubjectRow[]);
-  }, []);
-
-  const fetchModules = useCallback(async (subjectId: string) => {
-    if (!subjectId) {
-      setModules([]);
-      return;
-    }
-    const supabase = createBrowserClient();
-    const { data, error } = await supabase
-      .from("modules")
-      .select("id, name, module_number")
-      .eq("subject_id", subjectId)
-      .order("module_number");
-    if (!error && data) {
-      setModules((data ?? []) as ModuleRow[]);
-    } else {
-      setModules([]);
-    }
-  }, []);
-
-  useEffect(() => {
-    fetchAssignedSubjects();
-  }, [fetchAssignedSubjects]);
-
   useEffect(() => {
     setSelectedModuleId("");
-    if (selectedSubjectId) {
-      fetchModules(selectedSubjectId);
-    } else {
-      setModules([]);
-    }
-  }, [selectedSubjectId, fetchModules]);
+  }, [selectedSubjectId]);
 
   useEffect(() => {
     if (view !== "generating") return;
@@ -279,13 +211,20 @@ export default function FacultyGeneratePage() {
         }),
       });
       if (!outlineRes.ok) throw new Error("Failed to generate outline");
-      const { outline } = await outlineRes.json();
+      const { outline, costInr: outlineCostInr = 0 } = await outlineRes.json();
+
+      // Accumulate Flash cost across outline + all content/diagram batches
+      let totalFlashCostInr = outlineCostInr;
 
       // STEP 2: Generate content with solo diagram batches
       // Separate diagram slides (solo) from content slides (batched)
       const BATCH_SIZE = 5;
-      const diagramSlides = outline.outline.filter((s: OutlineItem) => s.type === "diagram");
-      const contentSlides = outline.outline.filter((s: OutlineItem) => s.type !== "diagram");
+      const isVisualSolo = (s: OutlineItem) =>
+        s.type === "diagram" || s.type === "dual_visual";
+      const diagramSlides = outline.outline.filter(isVisualSolo);
+      const contentSlides = outline.outline.filter(
+        (s: OutlineItem) => !isVisualSolo(s)
+      );
 
       // Build content batches (5 at a time)
       const contentBatches: OutlineItem[][] = [];
@@ -320,13 +259,22 @@ export default function FacultyGeneratePage() {
                 type: s.type,
                 title: s.title,
                 renderHint: s.renderHint ?? null,
+                ...(s.type === "dual_visual"
+                  ? {
+                      leftVisual: s.leftVisual,
+                      rightVisual: s.rightVisual,
+                      leftPrompt: s.leftPrompt,
+                      rightPrompt: s.rightPrompt,
+                    }
+                  : {}),
               })),
               depth,
             }),
           });
 
           if (batchRes.ok) {
-            const { slides } = await batchRes.json();
+            const { slides, costInr: batchCostInr = 0 } = await batchRes.json();
+            totalFlashCostInr += batchCostInr;
             batch.forEach((outlineSlide, localIdx) => {
               if (slides[localIdx] != null) {
                 allSlides[outlineSlide.index] = slides[localIdx];
@@ -335,6 +283,18 @@ export default function FacultyGeneratePage() {
             console.log(`[generate] ${batchLabel} done`);
           } else {
             console.error(`[generate] ${batchLabel} failed:`, batchRes.status);
+            // Insert placeholder slides for the failed batch so indexes stay intact
+            const failedSlides = batch.map((s) => ({
+              type: s.type ?? "concept",
+              title: s.title ?? "Slide",
+              bullets: ["Content could not be generated for this slide."],
+              note: "⚠️ This slide failed to generate. Use the Refine page to regenerate it.",
+              _failed: true,
+            }));
+            batch.forEach((outlineSlide, localIdx) => {
+              allSlides[outlineSlide.index] =
+                failedSlides[localIdx] as unknown as SlideContent;
+            });
           }
         } catch (err) {
           console.error(`[generate] ${batchLabel} error:`, err);
@@ -375,7 +335,7 @@ export default function FacultyGeneratePage() {
       }
 
       const validSlides = allSlides.filter(
-        (s): s is SlideContent => s != null && typeof s === "object" && "type" in s
+        (s): s is SlideContent => Boolean(s)
       );
 
       if (validSlides.length === 0) throw new Error("No slides generated");
@@ -390,9 +350,10 @@ export default function FacultyGeneratePage() {
           presentationTitle: outline.presentationTitle,
           subject: outline.subject,
           topic: outline.topic,
-          slides: allSlides,
+          slides: validSlides,
           addLogo,
           logoUrl: addLogo ? logoUrl : null,
+          totalFlashCostInr,
         }),
       });
 
@@ -402,6 +363,7 @@ export default function FacultyGeneratePage() {
         title: string;
         slideCount: number;
         fileName: string;
+        contentId: string;
       };
 
       if (intervalRef.current) {
@@ -581,7 +543,12 @@ export default function FacultyGeneratePage() {
               {DEPTH_OPTIONS.map((opt) => (
                 <div
                   key={opt.value}
-                  className="flex items-start space-x-3 rounded-lg border p-4"
+                  className={cn(
+                    "flex items-start space-x-3 rounded-lg border p-4 transition-colors",
+                    depth === opt.value
+                      ? "border-primary bg-primary/5 ring-1 ring-primary/20"
+                      : "hover:bg-muted/50"
+                  )}
                 >
                   <RadioGroupItem value={opt.value} id={`depth-${opt.value}`} />
                   <Label
@@ -720,6 +687,18 @@ export default function FacultyGeneratePage() {
               <Download className="size-5" />
               Download Presentation (.pptx)
             </Button>
+
+            {result.contentId ? (
+              <Link
+                href={`/faculty/generate/refine/${result.contentId}`}
+                className="w-full"
+              >
+                <Button variant="outline" className="w-full mt-2 gap-2">
+                  <Wand2 className="w-4 h-4" />
+                  Refine Slides
+                </Button>
+              </Link>
+            ) : null}
 
             <div className="w-full rounded-lg border border-amber-200 bg-amber-50 p-4 dark:border-amber-900 dark:bg-amber-950/50">
               <p className="text-amber-800 dark:text-amber-200 text-sm">

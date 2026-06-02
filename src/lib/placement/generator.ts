@@ -323,37 +323,16 @@ export function scorePlacementAttempt(
   };
 }
 
-export function cleanQuestionExplanations(questions: any[]): any[] {
-  const thinkingPatterns = [
-    /Let me re[-\s]?(check|read|verify|evaluate|calculate|try|examine)[^.]*\./gi,
-    /Let'?s (re-?|try|assume|check|adjust|fix|use|stick|go back|create|generate|make)[^.]*\./gi,
-    /I will (replace|change|adjust|fix|use|create)[^.]*\./gi,
-    /This is (getting|also|a good)[^.]*\./gi,
-    /There (must be|is) a (mistake|typo|error|definite issue)[^.]*\./gi,
-    /The (numbers|options|answer|calculation) (in the question|is|are|seems)[^.]*incorrect[^.]*\./gi,
-    /Why did I[^.]*\./gi,
-    /\(Note:[^)]*\)/gi,
-    /Let me re-write[^.]*\./gi,
-    /New Q:[^.]*\./gi,
-    /New Question:[^.]*\./gi,
-    /I'll use (these|this)[^.]*\./gi,
-    /Explanation re-written[^.]*\./gi,
-  ];
+function cleanQuestionExplanations(questions: any[]): any[] {
+  // Normalize AI-generated explanations so downstream rendering is consistent.
+  return (questions ?? []).map((q) => {
+    if (!q || typeof q !== "object") return q;
+    if (typeof q.explanation !== "string") return q;
 
-  return questions.map((q) => {
-    if (!q?.explanation) return q;
-
-    let cleaned = String(q.explanation);
-    for (const pattern of thinkingPatterns) {
-      cleaned = cleaned.replace(pattern, "");
-    }
-
-    cleaned = cleaned
-      .replace(/\s{2,}/g, " ")
-      .replace(/\.\s*\./g, ".")
+    const cleaned = q.explanation
+      .replace(/^\s*Explanation\s*:\s*/i, "")
+      .replace(/\n{3,}/g, "\n\n")
       .trim();
-
-    if (cleaned.length < 50) return q;
 
     return { ...q, explanation: cleaned };
   });

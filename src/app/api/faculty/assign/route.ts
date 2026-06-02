@@ -2,44 +2,23 @@ import {
   createAdminClient,
   createServerClientForRequestResponse,
 } from "@/lib/db/supabase-server";
+import { requireAuth, requireRole, apiError, apiSuccess } from "@/lib/api/helpers";
 import { type NextRequest, NextResponse } from "next/server";
 
 export async function POST(request: NextRequest) {
   try {
     const response = NextResponse.next();
-    const supabase = createServerClientForRequestResponse(request, response);
-    const {
-      data: { user },
-      error: authError,
-    } = await supabase.auth.getUser();
-
-    if (authError || !user) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
-
-    const adminClient = createAdminClient();
-    const { data: profile } = await adminClient
-      .from("profiles")
-      .select("role")
-      .eq("id", user.id)
-      .single();
-
-    if (!profile || profile.role !== "superadmin") {
-      return NextResponse.json(
-        { error: "Forbidden: Superadmin only" },
-        { status: 403 }
-      );
-    }
+    void response;
+    const authResult = await requireRole(["superadmin"]);
+    if (authResult instanceof Response) return authResult;
+    const { user, adminClient } = authResult;
 
     const body = await request.json();
     const facultyId = body?.facultyId;
     const subjectId = body?.subjectId;
 
     if (!facultyId || !subjectId) {
-      return NextResponse.json(
-        { error: "facultyId and subjectId are required" },
-        { status: 400 }
-      );
+      return apiError("facultyId and subjectId are required", 400);
     }
 
     const { data: faculty, error: facultyError } = await adminClient
@@ -118,45 +97,23 @@ export async function POST(request: NextRequest) {
   } catch (err) {
     console.error("[faculty/assign] POST error:", err);
     const message = err instanceof Error ? err.message : "Failed to assign";
-    return NextResponse.json({ error: message }, { status: 500 });
+    return apiError(message, 500);
   }
 }
 
 export async function DELETE(request: NextRequest) {
   try {
     const response = NextResponse.next();
-    const supabase = createServerClientForRequestResponse(request, response);
-    const {
-      data: { user },
-      error: authError,
-    } = await supabase.auth.getUser();
-
-    if (authError || !user) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
-
-    const adminClient = createAdminClient();
-    const { data: profile } = await adminClient
-      .from("profiles")
-      .select("role")
-      .eq("id", user.id)
-      .single();
-
-    if (!profile || profile.role !== "superadmin") {
-      return NextResponse.json(
-        { error: "Forbidden: Superadmin only" },
-        { status: 403 }
-      );
-    }
+    void response;
+    const authResult = await requireRole(["superadmin"]);
+    if (authResult instanceof Response) return authResult;
+    const { user, adminClient } = authResult;
 
     const body = await request.json();
     const assignmentId = body?.assignmentId;
 
     if (!assignmentId) {
-      return NextResponse.json(
-        { error: "assignmentId is required" },
-        { status: 400 }
-      );
+      return apiError("assignmentId is required", 400);
     }
 
     const { error: deleteError } = await adminClient
@@ -179,6 +136,6 @@ export async function DELETE(request: NextRequest) {
   } catch (err) {
     console.error("[faculty/assign] DELETE error:", err);
     const message = err instanceof Error ? err.message : "Failed to remove";
-    return NextResponse.json({ error: message }, { status: 500 });
+    return apiError(message, 500);
   }
 }

@@ -8,21 +8,18 @@ import {
   svgCodeToPngBytes,
 } from "@/lib/pdf/builder";
 import { createServerClient } from "@/lib/db/supabase-server";
+import { requireAuth, requireRole, apiError, apiSuccess } from "@/lib/api/helpers";
 
 export async function POST(request: Request) {
   try {
-    const supabase = await createServerClient();
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
-    if (!user) {
-      return Response.json({ error: "Unauthorized" }, { status: 401 });
-    }
+    const authResult = await requireAuth();
+    if (authResult instanceof Response) return authResult;
+    const { user, supabase } = authResult;
 
     const { notesContent, subjectName, topicName } = await request.json();
 
     if (!notesContent) {
-      return Response.json({ error: "No content" }, { status: 400 });
+      return apiError("No content", 400);
     }
 
     const dateStr = new Date().toLocaleDateString("en-IN", {
@@ -88,7 +85,7 @@ export async function POST(request: Request) {
     });
   } catch (err) {
     console.error("[notes/export]", err);
-    return Response.json({ error: "Export failed" }, { status: 500 });
+    return apiError("Export failed", 500);
   }
 }
 

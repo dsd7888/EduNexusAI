@@ -734,6 +734,178 @@ export interface StructuredPaperData {
   sections: StructuredPaperSection[];
 }
 
+function cleanJsonFences(raw: string): string {
+  return raw
+    .replace(/```json\s*/gi, "")
+    .replace(/```\s*/gi, "")
+    .trim();
+}
+
+function fixCommonJsonIssues(text: string): string {
+  return text
+    .replace(/,\s*}/g, "}")
+    .replace(/,\s*]/g, "]")
+    .replace(/}\s*{/g, "},{")
+    .replace(/[\u201C\u201D]/g, '"')
+    .replace(/[\u2018\u2019]/g, "'");
+}
+
+function normalizeStructuredPart(part: Record<string, unknown>): StructuredPaperPart {
+  return {
+    partLabel: part.partLabel != null ? String(part.partLabel) : undefined,
+    type: part.type != null ? String(part.type) : undefined,
+    marks: Number(part.marks) || 0,
+    question: String(part.question ?? part.text ?? ""),
+    options: Array.isArray(part.options)
+      ? part.options.map((o) => String(o))
+      : undefined,
+    correct_answer:
+      part.correct_answer != null
+        ? String(part.correct_answer)
+        : part.correctAnswer != null
+          ? String(part.correctAnswer)
+          : undefined,
+    solution: part.solution != null ? String(part.solution) : undefined,
+  };
+}
+
+function normalizeStructuredPaper(
+  parsed: Record<string, unknown>
+): StructuredPaperData | null {
+  const sectionsRaw = parsed.sections;
+  if (!Array.isArray(sectionsRaw) || sectionsRaw.length === 0) {
+    return null;
+  }
+
+  const paperTitleRaw = parsed.paperTitle ?? parsed.title;
+  const paperTitle =
+    paperTitleRaw != null ? String(paperTitleRaw).trim() : undefined;
+
+  const sections: StructuredPaperSection[] = sectionsRaw.map((sec, sIdx) => {
+    const row = sec as Record<string, unknown>;
+    const name = String(
+      row.name ?? row.label ?? row.sectionName ?? `Section ${sIdx + 1}`
+    );
+    const questionsRaw = Array.isArray(row.questions) ? row.questions : [];
+
+    const questions: StructuredPaperQuestion[] = questionsRaw.map((q, qIdx) => {
+      const qr = q as Record<string, unknown>;
+      const qNumber = Number(qr.qNumber ?? qr.questionNumber ?? qIdx + 1);
+
+      let parts: StructuredPaperPart[] = Array.isArray(qr.parts)
+        ? (qr.parts as Record<string, unknown>[]).map(normalizeStructuredPart)
+        : [];
+
+      if (parts.length === 0 && (qr.question || qr.text)) {
+        parts = [
+          normalizeStructuredPart({
+            partLabel: "a",
+            type: qr.type ?? "long",
+            marks: qr.marks ?? 0,
+            question: qr.question ?? qr.text,
+            options: qr.options,
+            correct_answer: qr.correct_answer ?? qr.correctAnswer,
+            solution: qr.solution,
+          }),
+        ];
+      }
+
+      return { qNumber, parts };
+    });
+
+    return { name, questions };
+  });
+
+  const hasContent = sections.some((s) =>
+    s.questions.some((q) => q.parts.some((p) => p.question.trim().length > 0))
+  );
+  if (!hasContent) return null;
+
+  return { paperTitle: paperTitle || undefined, sections };
+}
+
+/** Parse AI output for the structured (parts-based) qpaper route. */
+export function parseStructuredQPaperResponse(
+  rawText: string
+): StructuredPaperData | null {
+  const cleaned = fixCommonJsonIssues(cleanJsonFences(rawText));
+
+  const candidates: string[] = [cleaned];
+  const start = cleaned.indexOf("{");
+  const end = cleaned.lastIndexOf("}");
+  if (start !== -1 && end > start) {
+    const slice = cleaned.slice(start, end + 1);
+    candidates.push(slice, fixCommonJsonIssues(slice));
+  }
+
+  for (const candidate of candidates) {
+    try {
+      const parsed = JSON.parse(candidate) as Record<string, unknown>;
+      const normalized = normalizeStructuredPaper(parsed);
+      if (normalized) return normalized;
+    } catch {
+      // try next candidate
+    }
+  }
+
+  // Truncation recovery: salvage complete top-level section objects
+  try {
+    const sectionsKey = cleaned.indexOf('"sections"');
+    const arrayStart = cleaned.indexOf("[", sectionsKey);
+    if (arrayStart !== -1) {
+      const slice = cleaned.slice(arrayStart);
+      const salvaged: StructuredPaperSection[] = [];
+      let depth = 0;
+      let objStart = -1;
+      for (let i = 0; i < slice.length; i++) {
+        if (slice[i] === "{") {
+          if (depth === 0) objStart = i;
+          depth++;
+        } else if (slice[i] === "}") {
+          depth--;
+          if (depth === 0 && objStart !== -1) {
+            try {
+              const sec = JSON.parse(slice.slice(objStart, i + 1)) as Record<
+                string,
+                unknown
+              >;
+              const normalized = normalizeStructuredPaper({
+                sections: [sec],
+              });
+              if (normalized?.sections[0]) {
+                salvaged.push(normalized.sections[0]);
+              }
+            } catch {
+              // skip malformed section
+            }
+            objStart = -1;
+          }
+        }
+      }
+      if (salvaged.length > 0) {
+        const titleMatch = cleaned.match(
+          /"paperTitle"\s*:\s*"((?:\\.|[^"\\])*)"/
+        );
+        const altTitleMatch = cleaned.match(
+          /"title"\s*:\s*"((?:\\.|[^"\\])*)"/
+        );
+        const rawTitle = titleMatch?.[1] ?? altTitleMatch?.[1];
+        const paperTitle = rawTitle
+          ? rawTitle.replace(/\\"/g, '"').replace(/\\\\/g, "\\")
+          : undefined;
+        return {
+          paperTitle,
+          sections: salvaged,
+        };
+      }
+    }
+  } catch (err) {
+    console.error("[parseStructuredQPaper] Salvage error:", err);
+  }
+
+  return null;
+}
+
 export async function generateStructuredQPaperPDF(
   paper: StructuredPaperData,
   meta: {

@@ -3,18 +3,13 @@ import type { NextRequest } from "next/server";
 import { createPDFBuilder } from "@/lib/pdf/builder";
 import { createServerClient } from "@/lib/db/supabase-server";
 import { rgb } from "pdf-lib";
+import { requireAuth, requireRole, apiError, apiSuccess } from "@/lib/api/helpers";
 
 export async function POST(request: NextRequest) {
   try {
-    const supabase = await createServerClient();
-    const {
-      data: { user },
-      error: authError,
-    } = await supabase.auth.getUser();
-
-    if (authError || !user) {
-      return Response.json({ error: "Unauthorized" }, { status: 401 });
-    }
+    const authResult = await requireAuth();
+    if (authResult instanceof Response) return authResult;
+    const { user } = authResult;
 
     const {
       moduleLabel,
@@ -166,7 +161,7 @@ export async function POST(request: NextRequest) {
     });
   } catch (err) {
     console.error("[placement/practice/export] error:", err);
-    return Response.json({ error: "Export failed" }, { status: 500 });
+    return apiError("Export failed", 500);
   }
 }
 

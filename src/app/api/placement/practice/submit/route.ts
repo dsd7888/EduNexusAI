@@ -3,21 +3,14 @@ import type { NextRequest } from "next/server";
 import { createAdminClient, createServerClient } from "@/lib/db/supabase-server";
 import { scorePlacementAttempt } from "@/lib/placement/generator";
 import { PRACTICE_MODULES } from "@/lib/placement/modules";
+import { requireAuth, requireRole, apiError, apiSuccess } from "@/lib/api/helpers";
 
 export async function POST(request: NextRequest) {
   try {
     // 1) Auth check — student only
-    const supabase = await createServerClient();
-    const {
-      data: { user },
-      error: authError,
-    } = await supabase.auth.getUser();
-
-    if (authError || !user) {
-      return Response.json({ error: "Unauthorized" }, { status: 401 });
-    }
-
-    const adminClient = createAdminClient();
+    const authResult = await requireRole(["student"]);
+    if (authResult instanceof Response) return authResult;
+    const { user, adminClient } = authResult;
     const { data: profile, error: profileError } = await adminClient
       .from("profiles")
       .select("branch")
@@ -25,7 +18,7 @@ export async function POST(request: NextRequest) {
       .single();
 
     if (profileError || !profile) {
-      return Response.json({ error: "Profile not found" }, { status: 404 });
+      return apiError("Profile not found", 404);
     }
 
     // 2) Parse body
@@ -38,10 +31,10 @@ export async function POST(request: NextRequest) {
       typeof body?.timeTaken === "number" ? body.timeTaken : null;
 
     if (!moduleId) {
-      return Response.json({ error: "moduleId is required" }, { status: 400 });
+      return apiError("moduleId is required", 400);
     }
     if (!questions.length) {
-      return Response.json({ error: "questions are required" }, { status: 400 });
+      return apiError("questions are required", 400);
     }
 
     // 3) Find module from PRACTICE_MODULES
@@ -185,7 +178,7 @@ export async function POST(request: NextRequest) {
     });
   } catch (err) {
     console.error("[placement/practice/submit] error:", err);
-    return Response.json({ error: "Submit failed" }, { status: 500 });
+    return apiError("Submit failed", 500);
   }
 }
 

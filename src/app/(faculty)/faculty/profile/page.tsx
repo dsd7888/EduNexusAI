@@ -4,6 +4,11 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { Eye, EyeOff, Lock, Shield, User } from "lucide-react";
 
 import { createBrowserClient } from "@/lib/db/supabase-browser";
+import {
+  useCurrentUser,
+  useFacultySubjects,
+  type ProfileRow as HookProfileRow,
+} from "@/hooks/useSupabaseData";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -23,15 +28,6 @@ type ProfileRow = {
   email: string | null;
   department: string | null;
   role: string | null;
-};
-
-type AssignedSubject = {
-  subject_id: string;
-  subjects: {
-    name: string;
-    code: string;
-    semester: number | null;
-  } | null;
 };
 
 type FieldErrors = {
@@ -93,8 +89,19 @@ function PasswordField({
 }
 
 export default function FacultyProfilePage() {
+  const { profile: hookProfile, userId, isLoading: isLoadingUser } =
+    useCurrentUser();
+  const { subjects: facultySubjects, isLoading: isLoadingSubjects } =
+    useFacultySubjects();
   const [profile, setProfile] = useState<ProfileRow | null>(null);
-  const [subjects, setSubjects] = useState<AssignedSubject[]>([]);
+  const subjects = useMemo(
+    () =>
+      facultySubjects.map((s) => ({
+        subject_id: s.id,
+        subjects: { name: s.name, code: s.code, semester: null as number | null },
+      })),
+    [facultySubjects]
+  );
   const [isLoading, setIsLoading] = useState(true);
   const [currentPassword, setCurrentPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
@@ -116,22 +123,19 @@ export default function FacultyProfilePage() {
         const {
           data: { user },
         } = await supabase.auth.getUser();
-        if (!user) {
+
+        if (!userId || !user) {
           setProfile(null);
           return;
         }
-        const { data: profileData } = await supabase
-          .from("profiles")
-          .select("full_name, email, department, role")
-          .eq("id", user.id)
-          .single();
-        setProfile(profileData as ProfileRow);
 
-        const { data: assignmentData } = await supabase
-          .from("faculty_assignments")
-          .select("subject_id, subjects(name, code, semester)")
-          .eq("faculty_id", user.id);
-        setSubjects((assignmentData as unknown as AssignedSubject[]) ?? []);
+        const merged: ProfileRow = {
+          full_name: hookProfile?.full_name ?? null,
+          email: user.email ?? null,
+          department: hookProfile?.department ?? null,
+          role: hookProfile?.role ?? null,
+        };
+        setProfile(merged);
       } catch {
         setProfile(null);
       } finally {
@@ -139,7 +143,7 @@ export default function FacultyProfilePage() {
       }
     };
     void load();
-  }, []);
+  }, [userId, hookProfile]);
 
   useEffect(() => {
     if (!passwordSuccess) return;

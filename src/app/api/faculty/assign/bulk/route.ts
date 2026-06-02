@@ -4,32 +4,13 @@ import {
   createAdminClient,
   createServerClient,
 } from "@/lib/db/supabase-server";
+import { requireAuth, requireRole, apiError, apiSuccess } from "@/lib/api/helpers";
 
 export async function POST(request: NextRequest) {
   try {
-    const supabase = await createServerClient();
-    const {
-      data: { user },
-      error: authError,
-    } = await supabase.auth.getUser();
-
-    if (authError || !user) {
-      return Response.json({ error: "Unauthorized" }, { status: 401 });
-    }
-
-    const adminClient = createAdminClient();
-    const { data: profile, error: profileError } = await adminClient
-      .from("profiles")
-      .select("role")
-      .eq("id", user.id)
-      .single();
-
-    if (profileError || !profile || profile.role !== "superadmin") {
-      return Response.json(
-        { error: "Forbidden: Superadmin only" },
-        { status: 403 }
-      );
-    }
+    const authResult = await requireRole(["superadmin"]);
+    if (authResult instanceof Response) return authResult;
+    const { user, adminClient } = authResult;
 
     const body = await request.json().catch(() => ({} as any));
     const assignments = Array.isArray(body?.assignments)
@@ -37,10 +18,7 @@ export async function POST(request: NextRequest) {
       : [];
 
     if (assignments.length === 0) {
-      return Response.json(
-        { error: "No assignments provided" },
-        { status: 400 }
-      );
+      return apiError("No assignments provided", 400);
     }
 
     const failed: { email: string; subjectCode: string; reason: string }[] = [];
@@ -144,7 +122,7 @@ export async function POST(request: NextRequest) {
     console.error("[faculty/assign/bulk] POST error:", err);
     const msg =
       err instanceof Error ? err.message : "Failed to process bulk assignments";
-    return Response.json({ error: msg }, { status: 500 });
+    return apiError(msg, 500);
   }
 }
 

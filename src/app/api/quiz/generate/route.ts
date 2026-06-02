@@ -8,6 +8,7 @@ import {
   createServerClient,
 } from "@/lib/db/supabase-server";
 import { checkRateLimit, RATE_LIMITS } from "@/lib/utils/rate-limit";
+import { requireAuth, requireRole, apiError, apiSuccess } from "@/lib/api/helpers";
 import type { NextRequest } from "next/server";
 
 const VALID_DIFFICULTIES = ["easy", "medium", "hard", "mixed"] as const;
@@ -67,36 +68,9 @@ function parseQuizResponse(raw: string): any[] | null {
 
 export async function POST(request: NextRequest) {
   try {
-    const supabase = await createServerClient();
-    const {
-      data: { user },
-      error: authError,
-    } = await supabase.auth.getUser();
-
-    if (authError || !user) {
-      return Response.json({ error: "Unauthorized" }, { status: 401 });
-    }
-
-    const adminClient = createAdminClient();
-    const { data: profile, error: profileError } = await adminClient
-      .from("profiles")
-      .select("id, role")
-      .eq("id", user.id)
-      .single();
-
-    if (profileError || !profile) {
-      return Response.json(
-        { error: "Failed to load profile" },
-        { status: 500 }
-      );
-    }
-
-    if (profile.role !== "student") {
-      return Response.json(
-        { error: "Forbidden: Students only" },
-        { status: 403 }
-      );
-    }
+    const authResult = await requireRole(["student"]);
+    if (authResult instanceof Response) return authResult;
+    const { user, adminClient } = authResult;
 
     const rateCheck = await checkRateLimit({
       userId: user.id,
@@ -154,10 +128,7 @@ export async function POST(request: NextRequest) {
       body?.focusTopic != null ? String(body.focusTopic).trim() || undefined : undefined;
 
     if (!subjectIds.length) {
-      return Response.json(
-        { error: "subjectIds is required" },
-        { status: 400 }
-      );
+      return apiError("subjectIds is required", 400);
     }
 
     const { data: contentRows, error: contentError } = await adminClient
@@ -167,10 +138,7 @@ export async function POST(request: NextRequest) {
 
     if (contentError) {
       console.error("[quiz/generate] subject_content error:", contentError);
-      return Response.json(
-        { error: "Failed to load syllabus" },
-        { status: 500 }
-      );
+      return apiError("Failed to load syllabus", 500);
     }
 
     if (!contentRows || contentRows.length === 0) {
@@ -221,9 +189,9 @@ export async function POST(request: NextRequest) {
       : null;
 
     if (!moduleId) {
-      return Response.json(
-        { error: "Primary subject has no modules; cannot create quiz" },
-        { status: 400 }
+      return apiError(
+        "Primary subject has no modules; cannot create quiz",
+        400
       );
     }
 
@@ -245,9 +213,9 @@ export async function POST(request: NextRequest) {
     const rawItems = parseQuizResponse(rawText);
     if (rawItems === null) {
       console.error("[quiz/generate] parseQuizResponse returned null");
-      return Response.json(
-        { error: "Failed to generate quiz. Please try again." },
-        { status: 500 }
+      return apiError(
+        "Failed to generate quiz. Please try again.",
+        500
       );
     }
 
@@ -318,10 +286,7 @@ export async function POST(request: NextRequest) {
 
     if (insertError) {
       console.error("[quiz/generate] insert error:", insertError);
-      return Response.json(
-        { error: "Failed to save quiz" },
-        { status: 500 }
-      );
+      return apiError("Failed to save quiz", 500);
     }
 
     return Response.json({
@@ -334,6 +299,6 @@ export async function POST(request: NextRequest) {
     console.error("[quiz/generate] POST error:", err);
     const msg =
       err instanceof Error ? err.message : "Failed to generate quiz";
-    return Response.json({ error: msg }, { status: 500 });
+    return apiError(msg, 500);
   }
 }

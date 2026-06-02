@@ -1,4 +1,4 @@
-import { buildTutorSystemPrompt } from "@/lib/ai/prompts";
+import { buildTutorSystemPrompt, detectQueryMode } from "@/lib/ai/prompts";
 import { routeAI } from "@/lib/ai/router";
 import { getGeminiProvider } from "@/lib/ai/providers/gemini";
 import {
@@ -6,6 +6,7 @@ import {
   createServerClient,
 } from "@/lib/db/supabase-server";
 import { checkRateLimit, RATE_LIMITS } from "@/lib/utils/rate-limit";
+import { requireAuth, requireRole, apiError, apiSuccess } from "@/lib/api/helpers";
 import type { NextRequest } from "next/server";
 
 type HistoryMessage = {
@@ -13,17 +14,59 @@ type HistoryMessage = {
   content: string;
 };
 
+// ── Struggle detection: pure string processing, zero AI tokens ─────────
+const STRUGGLE_STOPWORDS = new Set([
+  "what", "is", "the", "a", "an", "how", "does", "do", "in", "of", "for",
+  "and", "or", "to", "it",
+]);
+
+// If the latest message explicitly pivots away, do not nudge.
+const STRUGGLE_OPT_OUT = ["now explain", "different topic", "move on", "next"];
+
+function tokenizeForStruggle(text: string): Set<string> {
+  return new Set(
+    text
+      .toLowerCase()
+      .split(/[^a-z0-9]+/)
+      .filter((t) => t.length > 0 && !STRUGGLE_STOPWORDS.has(t))
+  );
+}
+
+/**
+ * Returns the token (>4 chars) that appears in 3+ of the last 6 user
+ * messages, or null. Deterministic: highest frequency wins, then longest.
+ */
+function detectStruggleTopic(userMessages: string[]): string | null {
+  const recent = userMessages.slice(-6);
+  if (recent.length < 3) return null;
+
+  const counts = new Map<string, number>();
+  for (const msg of recent) {
+    for (const token of tokenizeForStruggle(msg)) {
+      counts.set(token, (counts.get(token) ?? 0) + 1);
+    }
+  }
+
+  let best: string | null = null;
+  let bestCount = 0;
+  for (const [token, count] of counts) {
+    if (count < 3 || token.length < 4) continue;
+    if (
+      count > bestCount ||
+      (count === bestCount && (best === null || token.length > best.length))
+    ) {
+      best = token;
+      bestCount = count;
+    }
+  }
+  return best;
+}
+
 export async function POST(request: NextRequest) {
   try {
-    const supabase = await createServerClient();
-    const {
-      data: { user },
-      error: authError,
-    } = await supabase.auth.getUser();
-
-    if (authError || !user) {
-      return Response.json({ error: "Unauthorized" }, { status: 401 });
-    }
+    const authResult = await requireAuth();
+    if (authResult instanceof Response) return authResult;
+    const { user, supabase } = authResult;
 
     const rateCheck = await checkRateLimit({
       userId: user.id,
@@ -51,10 +94,7 @@ export async function POST(request: NextRequest) {
       .single();
 
     if (profileError || !profile) {
-      return Response.json(
-        { error: "Failed to load profile" },
-        { status: 500 }
-      );
+      return apiError("Failed to load profile", 500);
     }
 
     const body = await request.json().catch(() => ({} as any));
@@ -65,10 +105,7 @@ export async function POST(request: NextRequest) {
       typeof body?.sessionId === "string" ? body.sessionId.trim() : null;
 
     if (!subjectId || !message) {
-      return Response.json(
-        { error: "subjectId and message are required" },
-        { status: 400 }
-      );
+      return apiError("subjectId and message are required", 400);
     }
 
     // 3. Fetch syllabus content
@@ -80,10 +117,7 @@ export async function POST(request: NextRequest) {
 
     if (contentError) {
       console.error("[chat] subject_content error:", contentError);
-      return Response.json(
-        { error: "Failed to load syllabus content" },
-        { status: 500 }
-      );
+      return apiError("Failed to load syllabus content", 500);
     }
 
     if (!contentRow) {
@@ -105,10 +139,7 @@ export async function POST(request: NextRequest) {
       .single();
 
     if (subjectError || !subject) {
-      return Response.json(
-        { error: "Subject not found" },
-        { status: 404 }
-      );
+      return apiError("Subject not found", 404);
     }
 
     // ── CACHE READ ──────────────────────────────────────────
@@ -258,6 +289,9 @@ export async function POST(request: NextRequest) {
     let aiResponse: string | null = null;
 
     if (!cachedResponse) {
+      const queryMode = detectQueryMode(userMessage);
+      console.log(`[chat] Query mode: ${queryMode}`);
+
       const systemPrompt = buildTutorSystemPrompt({
         subjectName: subject.name,
         subjectCode: subject.code,
@@ -265,6 +299,7 @@ export async function POST(request: NextRequest) {
         branch: subject.branch,
         syllabusContent: contentRow.content ?? "",
         referenceBooks: contentRow.reference_books ?? "",
+        mode: queryMode,
       });
 
       const normalizedHistory: HistoryMessage[] = (history as any[])
@@ -328,28 +363,42 @@ export async function POST(request: NextRequest) {
         console.error("[chat] chat_messages insert error:", err);
       }
 
-      // Keep only last 5 sessions per student (delete older ones)
-      // This runs async, don't await
-      adminClient
-        .from("chat_sessions")
-        .select("id, created_at")
-        .eq("student_id", profile.id)
-        .order("created_at", { ascending: false })
-        .then(({ data: allSessions }) => {
-          if (allSessions && allSessions.length > 5) {
-            const toDelete = allSessions.slice(5).map((s: any) => s.id);
-            adminClient
-              .from("chat_messages")
-              .delete()
-              .in("session_id", toDelete)
-              .then(() => {
-                adminClient
-                  .from("chat_sessions")
-                  .delete()
-                  .in("id", toDelete);
-              });
+      // Session-cap cleanup intentionally NOT done here. It is scoped per
+      // (student_id, subject_id) and runs only on new-session creation in
+      // src/app/api/chat/session/route.ts. Doing it here (per student,
+      // across all subjects, on every message) deleted other subjects'
+      // sessions and broke the 72h-window resume model.
+    }
+
+    // 7b. Struggle detection (string processing only — no AI, no tokens)
+    let struggleResult: { struggle_detected: true; topic: string } | null =
+      null;
+    if (finalSessionId) {
+      try {
+        const lower = message.toLowerCase();
+        const optedOut = STRUGGLE_OPT_OUT.some((p) => lower.includes(p));
+        if (!optedOut) {
+          const { data: recentRows } = await adminClient
+            .from("chat_messages")
+            .select("role, content, created_at")
+            .eq("session_id", finalSessionId)
+            .order("created_at", { ascending: false })
+            .limit(10);
+
+          const userMsgs = (recentRows ?? [])
+            .slice()
+            .reverse()
+            .filter((r) => r.role === "user")
+            .map((r) => String(r.content ?? ""));
+
+          const topic = detectStruggleTopic(userMsgs);
+          if (topic) {
+            struggleResult = { struggle_detected: true, topic };
           }
-        });
+        }
+      } catch (err) {
+        console.error("[chat] struggle detection error:", err);
+      }
     }
 
     // 8. Cache metadata updates
@@ -431,6 +480,7 @@ export async function POST(request: NextRequest) {
         response: cachedResponse,
         content: cachedResponse,
         cached: true,
+        ...(struggleResult ?? {}),
       });
     }
 
@@ -438,12 +488,13 @@ export async function POST(request: NextRequest) {
       response: finalResponse,
       content: finalResponse,
       cached: false,
+      ...(struggleResult ?? {}),
     });
   } catch (err) {
     console.error("[chat] POST error:", err);
     const message =
       err instanceof Error ? err.message : "Failed to process chat request";
-    return Response.json({ error: message }, { status: 500 });
+    return apiError(message, 500);
   }
 }
 

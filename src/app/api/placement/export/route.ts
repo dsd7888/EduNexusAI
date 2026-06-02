@@ -1,20 +1,16 @@
 import { createPDFBuilder } from "@/lib/pdf/builder";
 import { createServerClient } from "@/lib/db/supabase-server";
 import { rgb } from "pdf-lib";
+import { requireAuth, requireRole, apiError, apiSuccess } from "@/lib/api/helpers";
 import type { NextRequest } from "next/server";
 
 export async function POST(request: NextRequest) {
   try {
+    const authResult = await requireAuth();
+    if (authResult instanceof Response) return authResult;
+    const { user } = authResult;
+
     const supabase = await createServerClient();
-    const {
-      data: { user },
-      error: authError,
-    } = await supabase.auth.getUser();
-
-    if (authError || !user) {
-      return Response.json({ error: "Unauthorized" }, { status: 401 });
-    }
-
     const { data: profile } = await supabase
       .from("profiles")
       .select("role")
@@ -22,10 +18,7 @@ export async function POST(request: NextRequest) {
       .single();
 
     if ((profile as { role?: string } | null)?.role !== "student") {
-      return Response.json(
-        { error: "Forbidden: Students only" },
-        { status: 403 }
-      );
+      return apiError("Forbidden: Students only", 403);
     }
 
     const {
@@ -287,7 +280,7 @@ export async function POST(request: NextRequest) {
     });
   } catch (err) {
     console.error("[placement/export] error:", err);
-    return Response.json({ error: "Export failed" }, { status: 500 });
+    return apiError("Export failed", 500);
   }
 }
 

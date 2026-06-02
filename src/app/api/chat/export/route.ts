@@ -11,16 +11,13 @@ import {
   createAdminClient,
   createServerClient,
 } from "@/lib/db/supabase-server";
+import { requireAuth, requireRole, apiError, apiSuccess } from "@/lib/api/helpers";
 
 export async function POST(request: Request) {
   try {
-    const supabase = await createServerClient();
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
-    if (!user) {
-      return Response.json({ error: "Unauthorized" }, { status: 401 });
-    }
+    const authResult = await requireAuth();
+    if (authResult instanceof Response) return authResult;
+    const { user, supabase } = authResult;
 
     const { sessionId } = await request.json();
 
@@ -35,7 +32,7 @@ export async function POST(request: Request) {
       .single();
 
     if (!session) {
-      return Response.json({ error: "Not found" }, { status: 404 });
+      return apiError("Not found", 404);
     }
 
     // Fetch messages
@@ -46,7 +43,7 @@ export async function POST(request: Request) {
       .order("created_at", { ascending: true });
 
     if (!messages?.length) {
-      return Response.json({ error: "No messages" }, { status: 404 });
+      return apiError("No messages", 404);
     }
 
     const subjectName = (session.subjects as any)?.name ?? "Unknown Subject";
@@ -159,7 +156,7 @@ export async function POST(request: Request) {
     });
   } catch (err) {
     console.error("[chat/export]", err);
-    return Response.json({ error: "Export failed" }, { status: 500 });
+    return apiError("Export failed", 500);
   }
 }
 

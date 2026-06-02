@@ -2,6 +2,7 @@
    createAdminClient,
    createServerClientForRequestResponse,
  } from "@/lib/db/supabase-server";
+import { requireAuth, requireRole, apiError, apiSuccess } from "@/lib/api/helpers";
  import { type NextRequest, NextResponse } from "next/server";
  
  type ManageType = "subject" | "module";
@@ -10,33 +11,10 @@
  export async function POST(request: NextRequest) {
    try {
      const response = NextResponse.next();
-     const supabase = createServerClientForRequestResponse(request, response);
-     const {
-       data: { user },
-       error: authError,
-     } = await supabase.auth.getUser();
- 
-     if (authError || !user) {
-       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-     }
- 
-     const adminClient = createAdminClient();
-     const { data: profile, error: profileError } = await adminClient
-       .from("profiles")
-       .select("role")
-       .eq("id", user.id)
-       .single();
- 
-     if (profileError || !profile) {
-       return NextResponse.json({ error: "Profile not found" }, { status: 500 });
-     }
- 
-     if (profile.role !== "superadmin") {
-       return NextResponse.json(
-         { error: "Forbidden: Superadmin only" },
-         { status: 403 }
-       );
-     }
+    void response;
+    const authResult = await requireRole(["superadmin"]);
+    if (authResult instanceof Response) return authResult;
+    const { adminClient } = authResult;
  
      const body = await request.json();
      const type = body?.type as ManageType | undefined;
@@ -44,10 +22,7 @@
      const data = body?.data as Record<string, unknown> | undefined;
  
      if (!type || !action || !data) {
-       return NextResponse.json(
-         { error: "type, action, and data are required" },
-         { status: 400 }
-       );
+      return apiError("type, action, and data are required", 400);
      }
  
      if (type === "subject" && action === "create") {
@@ -201,6 +176,6 @@
    } catch (err) {
      console.error("[subjects/manage] POST error:", err);
      const message = err instanceof Error ? err.message : "Request failed";
-     return NextResponse.json({ error: message }, { status: 500 });
+    return apiError(message, 500);
    }
  }

@@ -5,16 +5,13 @@ import {
   createAdminClient,
   createServerClient,
 } from "@/lib/db/supabase-server";
+import { requireAuth, requireRole, apiError, apiSuccess } from "@/lib/api/helpers";
 
 export async function POST(request: Request) {
   try {
-    const supabase = await createServerClient();
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
-    if (!user) {
-      return Response.json({ error: "Unauthorized" }, { status: 401 });
-    }
+    const authResult = await requireAuth();
+    if (authResult instanceof Response) return authResult;
+    const { user } = authResult;
 
     const { attemptId } = await request.json();
     const adminClient = createAdminClient();
@@ -32,7 +29,7 @@ export async function POST(request: Request) {
       .single();
 
     if (!attempt) {
-      return Response.json({ error: "Not found" }, { status: 404 });
+      return apiError("Not found", 404);
     }
 
     const quiz = attempt.quizzes as any;
@@ -188,7 +185,7 @@ export async function POST(request: Request) {
     });
   } catch (err) {
     console.error("[quiz/export]", err);
-    return Response.json({ error: "Export failed" }, { status: 500 });
+    return apiError("Export failed", 500);
   }
 }
 

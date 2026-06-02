@@ -1,3 +1,37 @@
+export type QueryMode = "exam_prep" | "problem_solving" | "conceptual";
+
+/**
+ * Classifies raw student intent so the tutor prompt can switch behavioral
+ * mode. Pure function: deterministic, no DB/AI/imports, no side effects.
+ *
+ * Evaluation order follows the spec — exam_prep → problem_solving →
+ * conceptual (default / everything else).
+ */
+export function detectQueryMode(message: string): QueryMode {
+  const m = (message ?? "").trim();
+
+  // ── exam_prep — recall / definition / one-liner intent ───────────────
+  const examKeyword =
+    /\b(defin|list|state|enumerat|abbreviat)\w*/i.test(m) ||
+    /what is the formula|write the equation|full form of|in one line/i.test(m);
+  const hasQuestionWord =
+    /\b(what|why|how|when|where|who|whom|whose|which)\b/i.test(m);
+  const shortNoQuestion = m.length < 60 && !hasQuestionWord;
+  if (examKeyword || shortNoQuestion) return "exam_prep";
+
+  // ── problem_solving — numerical / derivation intent ──────────────────
+  const hasDigit = /\d/.test(m);
+  const computeVerb =
+    /\b(calculat|comput|solv|find|determin|deriv|given)\w*/i.test(m) ||
+    /\bif\b[\s\S]+\bthen\b/i.test(m);
+  const operatorsWithNumbers = /\d\s*[-+*/^=×÷]\s*\d/.test(m);
+  if ((hasDigit && computeVerb) || operatorsWithNumbers)
+    return "problem_solving";
+
+  // ── conceptual — default, full LearnLM behavior ──────────────────────
+  return "conceptual";
+}
+
 export function buildTutorSystemPrompt(options: {
   subjectName: string;
   subjectCode: string;
@@ -5,6 +39,8 @@ export function buildTutorSystemPrompt(options: {
   branch: string;
   syllabusContent: string;
   referenceBooks?: string;
+  /** Student-intent mode. Optional; defaults to "conceptual" (existing behavior). */
+  mode?: QueryMode;
 }): string {
   const {
     subjectName,
@@ -13,6 +49,7 @@ export function buildTutorSystemPrompt(options: {
     branch,
     syllabusContent,
     referenceBooks,
+    mode = "conceptual",
   } = options;
 
   // Adjust complexity based on semester
@@ -27,25 +64,12 @@ export function buildTutorSystemPrompt(options: {
       "Use technical language, assume foundational knowledge, focus on depth",
   };
 
-  return `<persona>
-You are EduNexus — an expert university tutor specialising in ${subjectName} (${subjectCode}).
-You teach ${complexityLevel}-level students (Semester ${semester}, ${branch} branch).
-Your teaching is modelled on the best human tutors: you simplify without dumbing down,
-connect theory to real life, and make students feel capable rather than overwhelmed.
-</persona>
+  // ── Mode-specific behavioral section ───────────────────────────────────
+  // Only the closing behavioral instructions change between modes. Persona,
+  // syllabus context, citation rules, SVG/Mermaid rules and few-shot
+  // examples below are mode-agnostic and stay identical.
 
-<context>
-<syllabus>
-${syllabusContent}
-</syllabus>
-${referenceBooks ? `<reference_books>\n${referenceBooks}\n</reference_books>` : ""}
-<student_level>
-Semester ${semester} student. Complexity: ${complexityLevel}.
-Style: ${explanation_style[complexityLevel]}.
-</student_level>
-</context>
-
-<learning_principles>
+  const CONCEPTUAL_PRINCIPLES = `<learning_principles>
 Apply these principles in every response:
 
 1. ACTIVE LEARNING — Never just give answers. For conceptual questions,
@@ -68,7 +92,84 @@ Apply these principles in every response:
 5. DEEPEN METACOGNITION — Occasionally help students understand *how* to study
    this subject, not just *what* to study. Exam strategies, common mistake patterns,
    what professors typically test — this is high-value guidance.
-</learning_principles>
+</learning_principles>`;
+
+  const EXAM_PREP_BEHAVIOR = `<exam_prep_mode>
+The student wants a fast, exam-ready recall answer. Optimise for that:
+
+1. DIRECT ANSWER FIRST — Give the definition, list, statement, formula, or
+   full form immediately. No analogy, no warm-up, no preamble.
+
+2. STRUCTURED & COMPACT — A tight definition line, then a short numbered or
+   bulleted list only if the question implies multiple points. Bold the single
+   key term. Show any formula on its own line with each symbol defined in one
+   short clause. Keep it to what an examiner expects on the answer sheet.
+
+3. NO CURIOSITY HOOK — Do NOT end with an interesting implication, "what if",
+   or application. Do NOT add study-strategy or metacognition commentary.
+   No motivational framing, no reasoning walkthrough, no filler.
+
+End your response with exactly this line, on its own line, and nothing after it:
+Want a quick quiz on this?
+</exam_prep_mode>`;
+
+  const PROBLEM_SOLVING_BEHAVIOR = `<problem_solving_mode>
+The student has a numerical or derivation problem. Optimise for a clean,
+checkable worked solution:
+
+1. NO CURIOSITY HOOK — Do NOT open with an analogy or end with an interesting
+   implication or "what if". Stay focused on solving.
+
+2. SET UP BRIEFLY — State the governing formula on its own line, then list the
+   given quantities with their units. One or two lines maximum.
+
+3. LABELLED STEPS — Present the solution as numbered steps ("Step 1:",
+   "Step 2:", ...). One operation per step. Carry units through every step.
+   Never skip algebra.
+
+4. MARK THE FINAL ANSWER — Put the result on its own line, clearly marked,
+   e.g. **Final answer: P = 12,500 Pa**. Correct units, sensible significant
+   figures.
+
+End your response with exactly this line, on its own line — generate one new
+related numerical problem of the same type and do NOT solve it:
+Try a variation: [one related numerical problem]
+</problem_solving_mode>`;
+
+  const behavioralSection =
+    mode === "exam_prep"
+      ? EXAM_PREP_BEHAVIOR
+      : mode === "problem_solving"
+        ? PROBLEM_SOLVING_BEHAVIOR
+        : CONCEPTUAL_PRINCIPLES;
+
+  const closingLine =
+    mode === "exam_prep"
+      ? `Your goal: Deliver a precise, exam-ready answer on ${subjectName}, then close with the exact line "Want a quick quiz on this?" and nothing after it.`
+      : mode === "problem_solving"
+        ? `Your goal: Deliver a fully worked, unit-consistent solution for this ${subjectName} problem with the final answer clearly marked, then close with the "Try a variation:" line and a fresh related problem of the same type.`
+        : `Your goal: Help students not just pass exams but build genuine understanding of ${subjectName}
+they will carry into their careers.`;
+
+  return `<persona>
+You are EduNexus — an expert university tutor specialising in ${subjectName} (${subjectCode}).
+You teach ${complexityLevel}-level students (Semester ${semester}, ${branch} branch).
+Your teaching is modelled on the best human tutors: you simplify without dumbing down,
+connect theory to real life, and make students feel capable rather than overwhelmed.
+</persona>
+
+<context>
+<syllabus>
+${syllabusContent}
+</syllabus>
+${referenceBooks ? `<reference_books>\n${referenceBooks}\n</reference_books>` : ""}
+<student_level>
+Semester ${semester} student. Complexity: ${complexityLevel}.
+Style: ${explanation_style[complexityLevel]}.
+</student_level>
+</context>
+
+${behavioralSection}
 
 <response_rules>
 SCOPE: Only answer questions related to ${subjectName} or general study/exam strategy.
@@ -126,10 +227,8 @@ Response pattern: Politely decline → name 2-3 specific topics from this subjec
 that you CAN help with right now.
 </few_shot_examples>
 
-Your goal: Help students not just pass exams but build genuine understanding of ${subjectName}
-they will carry into their careers.`;
+${closingLine}`;
 }
-
 export function buildSuggestedPromptsRequest(options: {
   subjectId: string;
   syllabusContent: string;
@@ -211,4 +310,278 @@ elements labeled with <text> tags, no external refs, no scripts.
 
 Be concise but complete. Use markdown formatting. Return only the markdown notes.`;
 }
+
+/**
+ * Appended inside {@link buildOutlinePrompt} in `src/lib/ppt/generator.ts`
+ * immediately after the CANONICAL DIAGRAM RULE block (before `</teaching_sequence>`).
+ * Keeps outline prompt fragments in one place for editing.
+ */
+export const OUTLINE_PROMPT_ILLUSTRATION_MANDATE = `<illustration_mandate>
+File Structures, Data Structures, Operating Systems, Database Systems, and
+other CONCEPTUAL courses require visual metaphors.
+
+For every major concept introduction, ask:
+"What familiar object or process is this like?"
+
+Generate an ILLUSTRATION slide (renderHint="illustration") showing the metaphor:
+
+Sequential Files → "Sequential Access: Like a Cassette Tape"
+  imagenPrompt: "Conveyor belt with labeled boxes moving in sequence,
+  reader at end must wait for each box"
+
+Indexed Files → "Indexed Access: Like a Library Card Catalog"
+  imagenPrompt: "Card catalog drawer with index cards pointing to shelf locations"
+
+Hashing → "Hashing: Like Post Office Mail Sorting"
+  imagenPrompt: "Post office worker reading address and placing mail into
+  numbered pigeonholes"
+
+B-trees → "B-Tree Growth: Like a Tree Branching"
+  imagenPrompt: "Tree with root trunk splitting into branches as it grows,
+  leaves at equal height"
+
+Place illustration slides BEFORE technical concept slides.
+Sequence: Illustration → Concept (bullets) → Diagram (SVG) → Example
+
+This applies to ALL courses with abstract systems concepts.
+</illustration_mandate>`;
+
+/**
+ * Dual metaphor + technical panel outline example; injected next to
+ * {@link OUTLINE_PROMPT_ILLUSTRATION_MANDATE} in `buildOutlinePrompt` (generator.ts).
+ */
+export const OUTLINE_PROMPT_DUAL_VISUAL_EXAMPLE = `<dual_visual_slide_example>
+For complex concepts requiring both metaphor AND mechanism, use type "dual_visual"
+with renderHint "dual". Include leftVisual, rightVisual, leftPrompt, and rightPrompt
+(string values only — valid JSON in the real outline).
+
+Example outline entry:
+{
+  "index": 10,
+  "type": "dual_visual",
+  "title": "Hashing: Direct Address Computation",
+  "renderHint": "dual",
+  "leftVisual": "illustration",
+  "rightVisual": "svg",
+  "leftPrompt": "Post office sorting mail into numbered pigeonholes based on address",
+  "rightPrompt": "Hash table with 7 buckets, keys mapping via h(key) = key % 7"
+}
+
+Intent:
+- Left 50%: Imagen illustration (conceptual metaphor) from leftPrompt
+- Right 50%: SVG technical diagram from rightPrompt
+- Single diagramCaption at the bottom connecting both panels
+
+<dual_visual_selection_criteria>
+Use dual_visual (split-screen metaphor + mechanism) when ALL of these apply:
+1. The concept has BOTH an intuitive metaphor AND a technical mechanism
+2. Showing them side-by-side creates immediate "aha!" connection
+3. The metaphor and mechanism are simple enough to fit 50% width each
+
+Examples of when to use:
+- Concept with hidden mechanism → show metaphor (left) + internal structure (right)
+- Two contrasting approaches → show visual comparison side-by-side
+- Process with both "what it looks like" and "how it works"
+
+Examples of when NOT to use:
+- Simple metaphor that doesn't need technical diagram (use illustration only)
+- Complex mechanism that needs full-width diagram (use separate slides)
+- Pure definition with no visual mechanism (use concept slide with bullets)
+
+Maximum 3-4 dual_visual slides per deck to avoid cognitive overload.
+</dual_visual_selection_criteria>
+
+Use for: Hashing, indexing structures, sequential vs direct comparison, and similar pairs.
+Both this rule and the canonical diagram / illustration rules may apply — some topics need
+a dual_visual slide plus separate focused diagram slides.
+</dual_visual_slide_example>`;
+
+/**
+ * INDIAN CONTEXT MANDATE — injected into {@link buildOutlinePrompt}
+ * (generator.ts) as a top-level block after </teaching_sequence>.
+ * Makes Indian context a hard requirement for every example.
+ */
+export const OUTLINE_PROMPT_INDIAN_CONTEXT = `<indian_context_mandate>
+INDIAN CONTEXT MANDATE:
+Every real-world example and every worked example MUST use Indian context.
+This is non-negotiable for engineering and science subjects.
+
+BANNED references (never use these):
+- Google Maps → use Ola Maps, Maps.me, the IRCTC route planner
+- Amazon (US) → use Flipkart, Meesho, or Amazon India
+- Netflix → use JioCinema, Hotstar, Zee5
+- "A company in X" without naming an actual Indian company
+- Generic "city A to city B" → use real Indian cities
+(JPEG, ZIP, and other technical standards are acceptable — they are not brands.)
+
+REQUIRED — worked examples and activities must draw from:
+- Indian cities for graph / route problems:
+  Mumbai-Pune-Nashik-Aurangabad; Delhi-Noida-Gurugram-Faridabad-Ghaziabad;
+  Ahmedabad-Surat-Vadodara-Rajkot-Bhavnagar; Bangalore-Mysore-Hubli-Mangalore-Hassan
+- Indian companies for business scenarios:
+  Zomato, Swiggy, Ola, Uber India, Flipkart, IRCTC, PhonePe, Paytm, NPCI,
+  Jio, Infosys, TCS, Wipro
+- Indian currency (₹), Indian sports (IPL, kabaddi),
+  Indian infrastructure (Indian Railways, NHAI highways, BSNL)
+- Indian academic context: JEE / IIT entrance prep, university exam scheduling,
+  hostel room allocation
+
+This context makes the content immediately recognizable and relatable to
+Indian engineering students.
+
+EXCEPTION: For the rare subject where an Indian framing would be forced or
+unnatural, use neutral / universal context rather than an awkward Indian
+reference. Engineering algorithms always have natural Indian contexts available
+— use them.
+</indian_context_mandate>`;
+
+/**
+ * HOOK SLIDE rule — injected into {@link buildOutlinePrompt} inside
+ * <teaching_sequence>. A section-opener that creates cognitive need.
+ * Rendered as an existing "concept" slide (renderHint null) so it needs
+ * no renderer changes; the title format makes its purpose explicit.
+ */
+export const OUTLINE_PROMPT_HOOK_SLIDE = `<hook_slide_rule>
+HOOK SLIDE — SECTION OPENER:
+At the start of every major concept section (each new algorithm or technique
+being introduced), include one HOOK slide BEFORE its definition slide.
+
+Emit the hook as type "concept" with renderHint null.
+Title: "Why does [concept name] matter?"
+
+A hook slide must contain exactly ONE scenario — not a list of reasons.
+Structure: a specific entity facing a specific constraint encounters a problem
+that seems unsolvable without the algorithm about to be taught. End with a
+single question. No bullets. No abstract benefits ('efficiency', 'scalability').
+Maximum 4 sentences. The scenario must use Indian context.
+</hook_slide_rule>`;
+
+/**
+ * ACTIVITY SLIDE mandate — injected into {@link buildOutlinePrompt} inside
+ * <teaching_sequence>. Structurally mandatory after each algorithm's worked
+ * example. Rendered as an existing "example" slide (problem / steps / answer)
+ * so it needs no renderer changes while keeping the exercise styling.
+ */
+export const OUTLINE_PROMPT_ACTIVITY_MANDATE = `<activity_slide_mandate>
+ACTIVITY SLIDE — MANDATORY PLACEMENT RULE:
+For every algorithm, optimization technique, or graph problem, the outline MUST
+include one ACTIVITY slide placed immediately AFTER the worked example slide for
+that concept. Zero exceptions. If a module contains algorithms and the outline
+has no activity slides for it, the outline is WRONG and must be corrected.
+
+Emit each activity as type "example" with renderHint null (the existing example
+renderer gives it the right exercise styling).
+Title format: "Activity: [specific scenario name]"
+
+An activity is a concrete real-world INDIAN scenario that IS the algorithm
+problem — not an analogy, the actual problem. The student DOES the work (compute,
+draw, map, decide); they do not just read.
+
+Map the activity into the example fields:
+- problem = the Indian scenario, concise (≤180 chars): who, where, the data, what to find
+- steps   = 3-4 numbered things the STUDENT DOES (verbs: Map, Calculate, Draw,
+            Identify, Decide), then one final step that is a discussion prompt
+            connecting their answer back to the algorithm just learned
+- answer  = the solution hint: how the algorithm solves exactly this scenario
+
+Scenario inspiration (generate one fitting the actual concept and subject —
+these are guidance, not a fixed bank):
+- Shortest path / Dijkstra: a Zomato partner in Bengaluru delivering across
+  Koramangala, HSR Layout, Indiranagar, Whitefield — minimise total distance.
+- TSP / Backtracking: an IRCTC tour from Delhi visiting Agra, Jaipur, Udaipur,
+  Jodhpur and back — find the cheapest tour from given road distances.
+- Fractional Knapsack: a founder at a Bengaluru incubator with ₹50 lakh and 6
+  projects (funding need + expected return) — maximise ROI.
+- Sorting: rank 8 IPL players by strike rate for fantasy-league selection.
+- MST / Prim's / Kruskal's: BSNL laying fibre across 6 Himachal villages —
+  minimise total cable from given distances.
+- Huffman Coding: build the Huffman tree from letter frequencies in a
+  Hindi-transliterated WhatsApp message.
+- 0-1 Knapsack / DP: a 15 kg bag limit for a Ladakh trek, 7 items with weight
+  and utility scores — which to pack?
+- Matrix multiplication: how Strassen's cuts the multiplications for a mobile
+  game's 3D transformation matrix.
+
+Generate appropriate Indian scenarios for any subject's algorithms.
+</activity_slide_mandate>`;
+
+/**
+ * CONTEXT RULE — injected near the opening of {@link buildBatchContentPrompt}
+ * (generator.ts), right after </output_rules>. Forces Indian context in content.
+ */
+export const BATCH_PROMPT_INDIAN_CONTEXT = `<context_rule>
+CONTEXT RULE: All worked examples, numerical data, and real-world references
+must use Indian context as defined in the outline. If the outline's activity or
+example carries Indian city names or Indian company names (Zomato, Swiggy, Ola,
+Flipkart, IRCTC, PhonePe, Jio, Infosys, TCS, ...), use exactly those in the slide
+content. Do not substitute generic or Western alternatives — no Google Maps, no
+US Amazon, no Netflix. Use ₹ for currency. Technical standards (JPEG, ZIP) are
+fine. For activity slides (type "example" titled "Activity: ..."), the scenario,
+the student-action steps, and the data must all stay in Indian context.
+</context_rule>`;
+
+/**
+ * COMPLETENESS RULE — injected into {@link buildBatchContentPrompt} inside
+ * <accuracy_mandate>. No truncation; real-world callouts must be specific.
+ */
+export const BATCH_PROMPT_COMPLETENESS = `<completeness_rule>
+COMPLETENESS RULE:
+Never truncate content with an ellipsis (... or …). Every sentence must finish.
+Every bullet point must be a complete thought. If content is too long for a
+bullet: (a) split it into two bullets, or (b) reduce it to the essential claim.
+A shorter complete sentence always beats a truncated one.
+
+Real-world callouts (💡 Real world: ...) must name a specific Indian company,
+product, or scenario. Generic phrases like "Used in large-scale systems" are not
+acceptable.
+</completeness_rule>`;
+
+/**
+ * DIAGRAM COMPLETENESS RULE — injected into {@link buildBatchContentPrompt}
+ * inside the SVG quality section. Forbids describing a diagram instead of
+ * generating it.
+ */
+export const BATCH_PROMPT_NO_PLACEHOLDER_DIAGRAMS = `<diagram_completeness_rule>
+DIAGRAM COMPLETENESS RULE:
+Never output a description of a diagram instead of the diagram. These patterns
+are FAILURES and are not allowed in any diagram field:
+- "This diagram illustrates..."
+- "The following diagram shows..."
+- "A diagram depicting..."
+- Any prose that describes what a diagram would look like instead of BEING the diagram.
+
+If you cannot generate a sophisticated SVG for an "svg" slide, generate a
+SIMPLER but COMPLETE one — a basic flowchart of labelled boxes and arrows is
+fine. A simple correct diagram beats a sophisticated description every time.
+- renderType "mermaid": output valid Mermaid syntax, never a description.
+- renderType "svg": output a complete <svg>...</svg>, never a description.
+Activity slides (type "example") carry no diagram — the scenario and the
+student-action steps are the slide.
+</diagram_completeness_rule>`;
+
+/**
+ * LAYOUT VARIETY RULE — injected into {@link buildBatchContentPrompt} after the
+ * per-slide-type content requirements. Varies structure by slide purpose, using
+ * only the existing renderable slide types (concept / example).
+ */
+export const BATCH_PROMPT_LAYOUT_VARIETY = `<layout_variety_rule>
+LAYOUT VARIETY RULE:
+Do not make every slide six identical bullets. Vary the structure by purpose:
+
+- DEFINITION slides (type "concept"): open with 1-2 sentences of formal
+  definition, then 3 short labelled key-property bullets.
+- COMPARISON slides (type "concept"): when contrasting two algorithms or
+  approaches, structure the bullets as explicit pairs — "A — ..." then "B — ..."
+  — so the two sides read side by side.
+- WORKED EXAMPLE slides (type "example"): number each step 1, 2, 3...; show the
+  intermediate state after each step; the ✓ answer bar is the clearly marked result.
+- HOOK slides (type "concept", title "Why does ... matter?"): one strong opening
+  scenario in 2-3 short bullets, ending on a question. No theory dump, no formulas.
+- ACTIVITY slides (type "example", title "Activity: ..."): the Indian scenario in
+  the problem field, then numbered STUDENT-ACTION steps (Map..., Calculate...,
+  Draw..., Identify..., Decide...). No theory — student-action language only.
+- KEY INSIGHT slides (type "concept"): use sparingly, at most one per major
+  concept. One core insight as the first bold bullet, one supporting explanation
+  bullet, one connecting Indian-context example bullet — three bullets total.
+</layout_variety_rule>`;
 

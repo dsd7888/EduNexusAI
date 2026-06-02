@@ -2,9 +2,12 @@
 
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { BookOpen, Brain, ChevronRight, MessageSquare, Target } from "lucide-react";
+import { BookOpen, Brain, ChevronRight, MessageSquare, Target, X } from "lucide-react";
 
+import { cn } from "@/lib/utils";
+import { scoreStyles } from "@/lib/ui/score";
 import { createBrowserClient } from "@/lib/db/supabase-browser";
+import { useCurrentUser, usePlacementHistory } from "@/hooks/useSupabaseData";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -15,11 +18,17 @@ import {
 } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 
-interface Profile {
-  full_name: string | null;
-  branch: string | null;
-  semester: number | null;
-}
+// Rotates daily — zero cost, deterministic, one small moment of warmth so the
+// dashboard never feels purely clinical.
+const DAILY_LINES = [
+  "Small steps beat big plans. Open one quiz today.",
+  "Ask the AI “why”, not just “what” — understanding sticks longer.",
+  "Every concept you chat about today is one less surprise in the exam.",
+  "Progress, not perfection. Showing up is the hard part, and you did.",
+  "Revise one weak topic now while it is fresh.",
+  "Consistency compounds. A little today beats a lot never.",
+  "Curiosity is your best study tool. Follow one question down the rabbit hole.",
+];
 
 interface SubjectRow {
   id: string;
@@ -34,52 +43,63 @@ interface QuizAttemptRow {
   quizzes: any;
 }
 
-interface PlacementAttemptRow {
-  score: number;
-  created_at: string;
-  placement_companies: any;
-}
-
 export default function StudentDashboard() {
-  const [profile, setProfile] = useState<Profile | null>(null);
   const [subjects, setSubjects] = useState<SubjectRow[]>([]);
   const [recentAttempts, setRecentAttempts] = useState<QuizAttemptRow[]>([]);
-  const [placementAttempts, setPlacementAttempts] = useState<PlacementAttemptRow[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [tipDismissed, setTipDismissed] = useState(true);
+
+  // Dismissible tip: remembered per-browser so it never nags after the first read.
+  useEffect(() => {
+    setTipDismissed(localStorage.getItem("dash_tip_dismissed") === "1");
+  }, []);
+  const dismissTip = () => {
+    localStorage.setItem("dash_tip_dismissed", "1");
+    setTipDismissed(true);
+  };
+
+  const dailyLine = useMemo(
+    () => DAILY_LINES[new Date().getDate() % DAILY_LINES.length],
+    []
+  );
+
+  const { profile, userId, isLoading: isLoadingUser } = useCurrentUser();
+  const { attempts: placementHistory, isLoading: isLoadingPlacementHistory } =
+    usePlacementHistory(3);
+  const [companyNameById, setCompanyNameById] = useState<Record<string, string>>(
+    {}
+  );
+
+  const placementAttempts = useMemo(
+    () =>
+      (placementHistory ?? []).map((a) => ({
+        ...a,
+        placement_companies: {
+          name: companyNameById[a.company_id] ?? "Unknown Company",
+        },
+      })),
+    [placementHistory, companyNameById]
+  );
 
   useEffect(() => {
     const run = async () => {
       try {
-        const supabase = createBrowserClient();
-        const {
-          data: { user },
-        } = await supabase.auth.getUser();
+        if (isLoadingUser || isLoadingPlacementHistory) {
+          return;
+        }
 
-        if (!user) {
+        const supabase = createBrowserClient();
+        if (!userId) {
           setIsLoading(false);
           return;
         }
 
-        // 1. Profile
-        const { data: profileRow } = await supabase
-          .from("profiles")
-          .select("full_name, branch, semester")
-          .eq("id", user.id)
-          .single();
-
-        const profileData: Profile = {
-          full_name: profileRow?.full_name ?? null,
-          branch: profileRow?.branch ?? null,
-          semester: profileRow?.semester ?? null,
-        };
-        setProfile(profileData);
-
         // 2. Subjects for full branch (all semesters)
-        if (profileData.branch) {
+        if (profile?.branch) {
           const { data: subjectRows } = await supabase
             .from("subjects")
             .select("id, name, code")
-            .eq("branch", profileData.branch)
+            .eq("branch", profile.branch)
             .limit(6);
 
           setSubjects((subjectRows ?? []) as SubjectRow[]);
@@ -89,20 +109,11 @@ export default function StudentDashboard() {
         const { data: attemptRows } = await supabase
           .from("quiz_attempts")
           .select("score, created_at, quizzes(title)")
-          .eq("student_id", user.id)
+          .eq("student_id", userId)
           .order("created_at", { ascending: false })
           .limit(3);
 
         setRecentAttempts((attemptRows ?? []) as QuizAttemptRow[]);
-
-        const { data: placementRows } = await supabase
-          .from("placement_attempts")
-          .select("score, created_at, placement_companies(name)")
-          .eq("student_id", user.id)
-          .order("created_at", { ascending: false })
-          .limit(3);
-
-        setPlacementAttempts((placementRows ?? []) as PlacementAttemptRow[]);
       } catch (err) {
         console.error("[student/dashboard] load error:", err);
       } finally {
@@ -111,7 +122,36 @@ export default function StudentDashboard() {
     };
 
     run();
-  }, []);
+  }, [isLoadingUser, isLoadingPlacementHistory, userId, profile?.branch]);
+
+  useEffect(() => {
+    const run = async () => {
+      const ids = [...new Set((placementHistory ?? []).map((a) => a.company_id))].filter(
+        Boolean
+      ) as string[];
+      if (ids.length === 0) {
+        setCompanyNameById({});
+        return;
+      }
+      try {
+        const supabase = createBrowserClient();
+        const { data } = await supabase
+          .from("placement_companies")
+          .select("id, name")
+          .in("id", ids);
+        const map: Record<string, string> = {};
+        for (const row of data ?? []) {
+          const id = String((row as any)?.id ?? "");
+          const name = String((row as any)?.name ?? "");
+          if (id) map[id] = name;
+        }
+        setCompanyNameById(map);
+      } catch {
+        setCompanyNameById({});
+      }
+    };
+    run();
+  }, [placementHistory]);
 
   const firstName = useMemo(() => {
     if (!profile?.full_name) return "Student";
@@ -137,14 +177,6 @@ export default function StudentDashboard() {
       year: "numeric",
     });
 
-  const scoreBadgeVariant = (
-    score: number
-  ): "default" | "secondary" | "destructive" => {
-    if (score >= 80) return "default";
-    if (score >= 60) return "secondary";
-    return "destructive";
-  };
-
   return (
     <div className="space-y-8">
       {/* HEADER */}
@@ -159,7 +191,27 @@ export default function StudentDashboard() {
           {" · "}
           Semester {profile?.semester ?? "—"}
         </p>
+        <p className="mt-1 text-sm text-muted-foreground/90">{dailyLine}</p>
       </div>
+
+      {/* DISMISSIBLE TIP — placed up top where it is actually seen */}
+      {!tipDismissed && (
+        <div className="flex items-start gap-3 rounded-lg border border-amber-200 bg-amber-50/60 px-4 py-3 text-sm">
+          <span className="mt-0.5">💡</span>
+          <p className="flex-1 text-amber-900">
+            Use the AI Chat to understand a concept, then take a Quiz to lock it
+            in. That loop is how scores climb fastest.
+          </p>
+          <button
+            type="button"
+            onClick={dismissTip}
+            aria-label="Dismiss tip"
+            className="-mr-1 rounded-md p-1 text-amber-700/70 transition-colors hover:bg-amber-100 hover:text-amber-900"
+          >
+            <X className="size-4" />
+          </button>
+        </div>
+      )}
 
       {/* QUICK STATS */}
       <div className="grid gap-4 md:grid-cols-4">
@@ -201,20 +253,25 @@ export default function StudentDashboard() {
           </CardContent>
         </Card>
 
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between pb-2">
-            <CardTitle className="text-xs font-medium text-muted-foreground">
-              AI Tutor
-            </CardTitle>
-            <MessageSquare className="size-5 text-sky-500" />
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-semibold">Always on</div>
-            <p className="text-xs text-muted-foreground">
-              Ask anything about your syllabus
-            </p>
-          </CardContent>
-        </Card>
+        <Link href="/student/chat" className="group">
+          <Card className="h-full border-sky-200 bg-sky-50/50 transition-colors group-hover:border-sky-300 group-hover:bg-sky-50">
+            <CardHeader className="flex flex-row items-center justify-between pb-2">
+              <CardTitle className="text-xs font-medium text-sky-700">
+                AI Tutor
+              </CardTitle>
+              <MessageSquare className="size-5 text-sky-500" />
+            </CardHeader>
+            <CardContent>
+              <div className="flex items-center gap-1 text-2xl font-semibold text-sky-900">
+                Ask anything
+                <ChevronRight className="size-5 translate-x-0 text-sky-500 transition-transform group-hover:translate-x-0.5" />
+              </div>
+              <p className="text-xs text-sky-700/80">
+                Syllabus-locked help, available now
+              </p>
+            </CardContent>
+          </Card>
+        </Link>
 
         <Card>
           <CardHeader className="flex flex-row items-center justify-between pb-2">
@@ -353,9 +410,14 @@ export default function StudentDashboard() {
                         {formatDate(attempt.created_at)}
                       </p>
                     </div>
-                    <Badge variant={scoreBadgeVariant(score)} className="ml-3 shrink-0">
+                    <span
+                      className={cn(
+                        "ml-3 shrink-0 rounded-full px-2.5 py-0.5 text-xs font-semibold tabular-nums",
+                        scoreStyles(score).badge
+                      )}
+                    >
                       {score.toFixed(1)}%
-                    </Badge>
+                    </span>
                   </div>
                 );
               })}
@@ -410,7 +472,6 @@ export default function StudentDashboard() {
                     ? quizRel[0]?.title
                     : quizRel?.title) ?? "Untitled Quiz";
                 const score = attempt.score ?? 0;
-                const variant = scoreBadgeVariant(score);
                 return (
                   <div
                     // eslint-disable-next-line react/no-array-index-key
@@ -423,9 +484,14 @@ export default function StudentDashboard() {
                         {formatDate(attempt.created_at)}
                       </p>
                     </div>
-                    <Badge variant={variant} className="ml-3 shrink-0">
+                    <span
+                      className={cn(
+                        "ml-3 shrink-0 rounded-full px-2.5 py-0.5 text-xs font-semibold tabular-nums",
+                        scoreStyles(score).badge
+                      )}
+                    >
                       {score.toFixed(1)}%
-                    </Badge>
+                    </span>
                   </div>
                 );
               })}
@@ -434,16 +500,6 @@ export default function StudentDashboard() {
         )}
       </div>
 
-      {/* QUICK TIP */}
-      <Card className="border-amber-200 bg-amber-50/60">
-        <CardContent className="flex items-start gap-3 py-4 text-sm">
-          <span className="mt-0.5">💡</span>
-          <p className="text-amber-900">
-            Tip: Use the AI Chat to understand concepts, then test yourself
-            with a Quiz to check your understanding.
-          </p>
-        </CardContent>
-      </Card>
     </div>
   );
 }

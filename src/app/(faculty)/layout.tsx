@@ -15,7 +15,6 @@ import { NavLink } from "@/components/layout/NavLink";
 import { LogoutButton } from "@/components/layout/LogoutButton";
 import { UserProfile } from "@/components/layout/UserProfile";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
-import { Badge } from "@/components/ui/badge";
 
 interface LayoutProps {
   children: ReactNode;
@@ -58,7 +57,7 @@ export default function FacultyLayout({ children }: LayoutProps) {
           </NavLink>
           <NavLink href="/faculty/request-change">
             <GitPullRequest className="size-4" />
-            <span>Request Change</span>
+            <span>Request Note Update</span>
           </NavLink>
           <NavLink href="/faculty/profile">
             <User className="size-4" />

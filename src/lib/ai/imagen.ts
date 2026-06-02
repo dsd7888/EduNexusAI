@@ -92,8 +92,10 @@ export function buildImagenPrompt(options: {
   subject: string
   topic: string
   imagenPrompt: string
+  /** From outline/batch diagram renderHint or diagramRenderType (e.g. "illustration"). */
+  renderHint?: string | null
 }): string {
-  const { slideTitle, subject, topic, imagenPrompt } = options
+  const { slideTitle, subject, topic, imagenPrompt, renderHint } = options
 
   const subjectLower = subject.toLowerCase()
   const isMedical =
@@ -115,6 +117,51 @@ export function buildImagenPrompt(options: {
       subjectLower
     )
 
+  const title = slideTitle
+  const subjectName = subject
+
+  // Detect if this is conceptual illustration vs technical diagram
+  const isConceptual =
+    renderHint === "illustration" ||
+    renderHint === "dual" ||
+    /metaphor|introduction to|visual explanation|conceptual|what is|like a/i.test(
+      title
+    )
+
+  if (isConceptual) {
+    // CONCEPTUAL ILLUSTRATION MODE
+    let prompt = `Create a conceptual educational illustration that uses a visual metaphor to explain: ${title}.
+
+The illustration should:
+- Show a familiar real-world object, process, or scenario that embodies this concept
+- Use clear visual storytelling (e.g., before/during/after sequence, or side-by-side comparison)
+- Include minimal text labels (3-5 words maximum per label)
+- Use a clean, simplified illustration style (not photorealistic, not cartoon)
+- Color-code different elements for visual clarity
+- White or very light neutral background
+
+Subject context: ${subjectName}
+
+Specific scene direction (follow closely):
+${imagenPrompt}
+
+`
+
+    // Add domain-specific metaphor guidance
+    if (isMedical) {
+      prompt += `Use medical/anatomical analogies where appropriate. `
+    } else if (isCS || isEngineering) {
+      prompt += `Use everyday technology or mechanical analogies. `
+    }
+
+    prompt += `Style: Simplified educational illustration with clean lines, flat color palette,
+minimal shading. Think textbook diagram or infographic, NOT photograph, NOT 3D render,
+NOT stock photo. Vector illustration aesthetic, white background, high clarity.`
+
+    return prompt
+  }
+
+  // TECHNICAL DIAGRAM MODE (existing code)
   const fieldAccuracyNote = isMedical
     ? `Every anatomical structure must be in its correct position, proportion,
 and spatial relationship as found in Gray's Anatomy. Labels must use correct
@@ -166,70 +213,4 @@ or warning zones. Every major component visible in the illustration must
 carry a legible label in a clean sans-serif font. Compose the image in
 widescreen 16:9 format optimised for projection. The quality standard
 is a peer-reviewed journal figure or a leading university textbook plate.`
-}
-
-export async function testImagenConnection(): Promise<{
-  working: boolean
-  method: string | null
-  error?: string
-}> {
-  const testPrompt = 
-    'A simple blue circle on a white background. Minimal geometric shape.'
-
-  // Test primary
-  try {
-    const model = genAI.getGenerativeModel({ 
-      model: 'gemini-2.5-flash-image' 
-    })
-    const result = await model.generateContent({
-      contents: [{
-        role: 'user',
-        parts: [{ text: testPrompt }]
-      }],
-      generationConfig: {
-        responseModalities: ['image', 'text'] as any,
-      },
-    } as any)
-    const parts = result.response.candidates?.[0]?.content?.parts ?? []
-    if (parts.some((p: any) => p?.inlineData?.mimeType?.startsWith('image/'))) {
-      return { working: true, method: 'gemini-2.5-flash-image' }
-    }
-    console.warn('[test-imagen] Flash image: no image in response',
-      JSON.stringify(parts).slice(0, 200))
-  } catch (err: any) {
-    console.warn('[test-imagen] Flash image error:', err?.message ?? err)
-  }
-
-  // Test fallback
-  try {
-    const res = await fetch(
-      `${BASE_URL}/imagen-4.0-fast-generate-001:predict?key=${API_KEY}`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          instances: [{ prompt: testPrompt }],
-          parameters: { sampleCount: 1 },
-        }),
-        signal: AbortSignal.timeout(20000),
-      }
-    )
-    if (res.ok) {
-      const data = await res.json()
-      if (data?.predictions?.[0]?.bytesBase64Encoded) {
-        return { working: true, method: 'imagen-4.0-fast-generate-001' }
-      }
-    }
-    const errText = await res.text().catch(() => '')
-    console.warn('[test-imagen] imagen-4.0-fast failed:', 
-      res.status, errText.slice(0, 200))
-  } catch (err: any) {
-    console.warn('[test-imagen] imagen-4.0-fast error:', err?.message ?? err)
-  }
-
-  return { 
-    working: false, 
-    method: null, 
-    error: 'Both methods failed — check terminal logs' 
-  }
 }

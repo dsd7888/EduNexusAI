@@ -54,7 +54,9 @@ import {
   XCircle,
 } from "lucide-react";
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import {
+  Suspense,
   useCallback,
   useEffect,
   useMemo,
@@ -135,11 +137,24 @@ function truncate(str: string, len: number): string {
 
 const activeQuizGenerations = new Set<string>();
 
+// Thin wrapper: Next requires a Suspense boundary around any component
+// that calls useSearchParams (StudentQuizPageInner reads ?subjectId=).
+// No fallback → renders identically; no UI or logic change.
 export default function StudentQuizPage() {
+  return (
+    <Suspense>
+      <StudentQuizPageInner />
+    </Suspense>
+  );
+}
+
+function StudentQuizPageInner() {
   // ── SETUP STATE ────────────────────────────────────────────
   const [subjects, setSubjects] = useState<SubjectRow[]>([]);
   const [modules, setModules] = useState<ModuleRow[]>([]);
   const [selectedSubjectIds, setSelectedSubjectIds] = useState<string[]>([]);
+  const searchParams = useSearchParams();
+  const subjectPresetApplied = useRef(false);
   const [loadingModules, setLoadingModules] = useState(false);
   const [questionCount, setQuestionCount] = useState(10);
   const [difficulty, setDifficulty] = useState<"easy" | "medium" | "hard" | "mixed">("mixed");
@@ -150,6 +165,10 @@ export default function StudentQuizPage() {
   const [focusTopic, setFocusTopic] = useState("");
   const [socraticMode, setSocraticMode] = useState(false);
   const [isGenerating, setIsGenerating] = useState(false);
+  // Inline (not toast) validation: show immediately under the CTA when the
+  // student hits Generate with no subject picked, instead of a toast that
+  // vanishes before they read it.
+  const [subjectError, setSubjectError] = useState(false);
   const [subjectName, setSubjectName] = useState("");
 
   // ── TAKING STATE ───────────────────────────────────────────
@@ -261,6 +280,18 @@ export default function StudentQuizPage() {
   useEffect(() => {
     fetchProfileAndSubjects();
   }, [fetchProfileAndSubjects]);
+
+  // Pre-select a subject when arriving via ?subjectId= (e.g. the chat
+  // struggle-nudge "Try quiz" link). Applied once, after subjects load,
+  // and only if the param matches one of the student's subjects.
+  useEffect(() => {
+    if (subjectPresetApplied.current) return;
+    const presetSubjectId = searchParams.get("subjectId");
+    if (!presetSubjectId || subjects.length === 0) return;
+    if (!subjects.some((s) => s.id === presetSubjectId)) return;
+    subjectPresetApplied.current = true;
+    setSelectedSubjectIds([presetSubjectId]);
+  }, [searchParams, subjects]);
 
   const computeBreakdown = useCallback(
     (qs: QuizQuestion[], ans: Record<string, string>) => {
@@ -726,6 +757,11 @@ export default function StudentQuizPage() {
         onClick={() => setView("history")}
       >
         History
+        {historyLoaded && historyAttempts.length > 0 && (
+          <span className="ml-1 text-xs opacity-70">
+            ({historyAttempts.length})
+          </span>
+        )}
       </Button>
     </div>
   );
@@ -1033,7 +1069,7 @@ export default function StudentQuizPage() {
             </div>
 
             <div className="space-y-2">
-              <Label htmlFor="focus-topic">Focus Topic</Label>
+              <Label htmlFor="focus-topic">What do you want to focus on?</Label>
               <Input
                 id="focus-topic"
                 placeholder="Narrow further, e.g. Carnot Cycle (optional)"
@@ -1058,20 +1094,36 @@ export default function StudentQuizPage() {
               />
             </div>
 
-            <Button
-              className="w-full"
-              disabled={selectedSubjectIds.length === 0 || isGenerating}
-              onClick={() => void generateQuiz()}
-            >
-              {isGenerating ? (
-                <>
-                  <Loader2 className="size-4 animate-spin" />
-                  Generating your quiz...
-                </>
-              ) : (
-                "Generate Quiz"
+            <div className="space-y-2">
+              <Button
+                size="lg"
+                className="h-12 w-full text-base font-semibold"
+                disabled={isGenerating}
+                onClick={() => {
+                  if (selectedSubjectIds.length === 0) {
+                    setSubjectError(true);
+                    return;
+                  }
+                  setSubjectError(false);
+                  void generateQuiz();
+                }}
+              >
+                {isGenerating ? (
+                  <>
+                    <Loader2 className="size-4 animate-spin" />
+                    Generating your quiz...
+                  </>
+                ) : (
+                  "Generate Quiz"
+                )}
+              </Button>
+              {subjectError && selectedSubjectIds.length === 0 && (
+                <p className="flex items-center gap-1.5 text-sm font-medium text-amber-600">
+                  <AlertTriangle className="size-4 shrink-0" />
+                  Pick at least one subject to generate a quiz.
+                </p>
               )}
-            </Button>
+            </div>
           </CardContent>
         </Card>
       </div>

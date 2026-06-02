@@ -2,41 +2,15 @@ import {
   createAdminClient,
   createServerClient,
 } from "@/lib/db/supabase-server";
+import { requireAuth, requireRole, apiError, apiSuccess } from "@/lib/api/helpers";
 import type { NextRequest } from "next/server";
 
 export async function GET(request: NextRequest) {
   try {
-    const supabase = await createServerClient();
-    const {
-      data: { user },
-      error: authError,
-    } = await supabase.auth.getUser();
-
-    if (authError || !user) {
-      return Response.json({ error: "Unauthorized" }, { status: 401 });
-    }
-
-    const adminClient = createAdminClient();
-    const { data: profile, error: profileError } = await adminClient
-      .from("profiles")
-      .select("id, role")
-      .eq("id", user.id)
-      .single();
-
-    if (profileError || !profile) {
-      return Response.json(
-        { error: "Failed to load profile" },
-        { status: 500 }
-      );
-    }
-
-    const role = (profile as { role?: string }).role;
-    if (role !== "faculty" && role !== "superadmin") {
-      return Response.json(
-        { error: "Forbidden: Faculty or Superadmin only" },
-        { status: 403 }
-      );
-    }
+    const authResult = await requireRole(["faculty", "superadmin"]);
+    if (authResult instanceof Response) return authResult;
+    const { user, adminClient, profile } = authResult;
+    const role = profile.role;
 
     const url = new URL(request.url);
     let subjectId = url.searchParams.get("subjectId")?.trim() || "";
@@ -52,10 +26,7 @@ export async function GET(request: NextRequest) {
 
       if (assignError) {
         console.error("[analytics] faculty_assignments error:", assignError);
-        return Response.json(
-          { error: "Failed to load faculty assignments" },
-          { status: 500 }
-        );
+        return apiError("Failed to load faculty assignments", 500);
       }
 
       const subjectIds = [
@@ -75,10 +46,7 @@ export async function GET(request: NextRequest) {
 
         if (subsError) {
           console.error("[analytics] subjects fetch error:", subsError);
-          return Response.json(
-            { error: "Failed to load subjects" },
-            { status: 500 }
-          );
+          return apiError("Failed to load subjects", 500);
         }
         subjects = (subs ?? []) as typeof subjects;
       }
@@ -90,10 +58,7 @@ export async function GET(request: NextRequest) {
         .order("code");
       if (subsError) {
         console.error("[analytics] subjects fetch error:", subsError);
-        return Response.json(
-          { error: "Failed to load subjects" },
-          { status: 500 }
-        );
+        return apiError("Failed to load subjects", 500);
       }
       subjects = (subs ?? []) as typeof subjects;
     }
@@ -107,10 +72,7 @@ export async function GET(request: NextRequest) {
         .eq("subject_id", subjectId)
         .maybeSingle();
       if (!assignRow) {
-        return Response.json(
-          { error: "You are not assigned to this subject" },
-          { status: 403 }
-        );
+        return apiError("You are not assigned to this subject", 403);
       }
     }
 
@@ -339,7 +301,7 @@ export async function GET(request: NextRequest) {
     console.error("[analytics] Error:", err);
     const message =
       err instanceof Error ? err.message : "Failed to load analytics";
-    return Response.json({ error: message }, { status: 500 });
+    return apiError(message, 500);
   }
 }
 

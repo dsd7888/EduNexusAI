@@ -2,33 +2,14 @@ import {
   createAdminClient,
   createServerClient,
 } from "@/lib/db/supabase-server";
+import { requireAuth, requireRole, apiError, apiSuccess } from "@/lib/api/helpers";
 import type { NextRequest } from "next/server";
 
 export async function GET(_request: NextRequest) {
   try {
-    const supabase = await createServerClient();
-    const {
-      data: { user },
-      error: authError,
-    } = await supabase.auth.getUser();
-
-    if (authError || !user) {
-      return Response.json({ error: "Unauthorized" }, { status: 401 });
-    }
-
-    const adminClient = createAdminClient();
-    const { data: profile, error: profileError } = await adminClient
-      .from("profiles")
-      .select("role")
-      .eq("id", user.id)
-      .single();
-
-    if (profileError || !profile || profile.role !== "superadmin") {
-      return Response.json(
-        { error: "Forbidden: Superadmin only" },
-        { status: 403 }
-      );
-    }
+    const authResult = await requireRole(["faculty", "superadmin"]);
+    if (authResult instanceof Response) return authResult;
+    const { adminClient } = authResult;
 
     const [
       { count: studentCount },
@@ -94,7 +75,7 @@ export async function GET(_request: NextRequest) {
     console.error("[analytics/summary] Error:", err);
     const message =
       err instanceof Error ? err.message : "Failed to load summary analytics";
-    return Response.json({ error: message }, { status: 500 });
+    return apiError(message, 500);
   }
 }
 

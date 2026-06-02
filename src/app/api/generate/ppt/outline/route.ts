@@ -4,6 +4,7 @@ import {
   createAdminClient,
   createServerClient,
 } from "@/lib/db/supabase-server";
+import { requireAuth, requireRole, apiError, apiSuccess } from "@/lib/api/helpers";
 import type { NextRequest } from "next/server";
 
 const VALID_DEPTHS = ["basic", "intermediate", "advanced"] as const;
@@ -153,37 +154,9 @@ export async function POST(request: NextRequest) {
   try {
     console.log("[ppt/outline] POST request received");
 
-    const supabase = await createServerClient();
-    const {
-      data: { user },
-      error: authError,
-    } = await supabase.auth.getUser();
-
-    if (authError || !user) {
-      return Response.json({ error: "Unauthorized" }, { status: 401 });
-    }
-
-    const adminClient = createAdminClient();
-    const { data: profile, error: profileError } = await adminClient
-      .from("profiles")
-      .select("id, role")
-      .eq("id", user.id)
-      .single();
-
-    if (profileError || !profile) {
-      return Response.json(
-        { error: "Failed to load profile" },
-        { status: 500 }
-      );
-    }
-
-    const role = (profile as { role?: string }).role;
-    if (role !== "faculty" && role !== "superadmin") {
-      return Response.json(
-        { error: "Forbidden: Faculty or Superadmin only" },
-        { status: 403 }
-      );
-    }
+    const authResult = await requireRole(["faculty", "superadmin"]);
+    if (authResult instanceof Response) return authResult;
+    const { user, adminClient } = authResult;
 
     const body = await request.json().catch(() => ({} as Record<string, unknown>));
     const subjectId = String(body?.subjectId ?? "").trim();
@@ -198,18 +171,12 @@ export async function POST(request: NextRequest) {
       : "intermediate";
 
     if (!subjectId) {
-      return Response.json(
-        { error: "subjectId is required" },
-        { status: 400 }
-      );
+      return apiError("subjectId is required", 400);
     }
     if (!customTopic && !moduleId && !moduleNameFromBody) {
-      return Response.json(
-        {
-          error:
-            "At least one of moduleId, moduleName, or customTopic is required",
-        },
-        { status: 400 }
+      return apiError(
+        "At least one of moduleId, moduleName, or customTopic is required",
+        400
       );
     }
 
@@ -221,15 +188,12 @@ export async function POST(request: NextRequest) {
 
     if (contentError) {
       console.error("[ppt/outline] subject_content error:", contentError.message);
-      return Response.json(
-        { error: "Failed to load syllabus content" },
-        { status: 500 }
-      );
+      return apiError("Failed to load syllabus content", 500);
     }
     if (!contentRow) {
-      return Response.json(
-        { error: "Syllabus content not found for this subject" },
-        { status: 404 }
+      return apiError(
+        "Syllabus content not found for this subject",
+        404
       );
     }
 
@@ -240,10 +204,7 @@ export async function POST(request: NextRequest) {
       .single();
 
     if (subjectError || !subject) {
-      return Response.json(
-        { error: "Subject not found" },
-        { status: 404 }
-      );
+      return apiError("Subject not found", 404);
     }
 
     const subjectName = (subject as { name?: string }).name ?? "";
@@ -264,10 +225,7 @@ export async function POST(request: NextRequest) {
         .single();
 
       if (modErr || !mod) {
-        return Response.json(
-          { error: "Module not found for this subject" },
-          { status: 404 }
-        );
+        return apiError("Module not found for this subject", 404);
       }
       const m = mod as { name?: string; description?: string | null };
       moduleName = m.name ?? moduleName;
@@ -299,18 +257,15 @@ export async function POST(request: NextRequest) {
         "[ppt/outline] All parse attempts failed. Raw:",
         raw.slice(0, 500)
       );
-      return Response.json(
-        { error: "Failed to parse presentation outline" },
-        { status: 500 }
-      );
+      return apiError("Failed to parse presentation outline", 500);
     }
 
     console.log(`[ppt/outline] Done. Slides planned: ${outline.outline.length}`);
-    return Response.json({ outline });
+    return Response.json({ outline, costInr: outlineAi.costInr });
   } catch (err) {
     console.error("[ppt/outline] Error:", err);
     const message =
       err instanceof Error ? err.message : "Failed to generate outline";
-    return Response.json({ error: message }, { status: 500 });
+    return apiError(message, 500);
   }
 }

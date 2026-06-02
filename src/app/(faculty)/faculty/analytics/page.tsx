@@ -28,7 +28,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Skeleton } from "@/components/ui/skeleton";
 import { PageSkeleton } from "@/components/layout/PageSkeleton";
 import {
   Table,
@@ -46,7 +45,6 @@ import {
   Presentation,
   Sparkles,
   Trophy,
-  Zap,
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { cn } from "@/lib/utils";
@@ -480,7 +478,7 @@ export default function FacultyAnalyticsPage() {
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {sortedQuizStats.map((q) => {
+                    {sortedQuizStats.map((q, index) => {
                       const avg = q.avg_score ?? 0;
                       let perfLabel = "Needs Review";
                       let perfVariant:
@@ -498,7 +496,7 @@ export default function FacultyAnalyticsPage() {
                         perfVariant = "secondary";
                       }
                       return (
-                        <TableRow key={q.title}>
+                        <TableRow key={`${q.title}-${index}`}>
                           <TableCell className="max-w-xs truncate">
                             {q.title}
                           </TableCell>

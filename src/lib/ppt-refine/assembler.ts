@@ -1,0 +1,761 @@
+import AdmZip from 'adm-zip';
+import type { RefinedDeck, RefinedSlide } from './types';
+
+/**
+ * XML-PATCHING ASSEMBLER
+ * ----------------------
+ * The original pipeline rebuilt every slide from scratch with pptxgenjs, which
+ * destroyed the source deck's theme, fonts, images, diagrams and footers.
+ *
+ * This implementation instead PATCHES the original .pptx in place:
+ *   - Existing slides: only the title + body <a:t> text runs are swapped, every
+ *     other byte (images, charts, SmartArt, grouped shapes, formatting, theme)
+ *     is preserved exactly.
+ *   - New slides (is_new === true): appended as minimal placeholder slides that
+ *     reference an existing slideLayout, so they inherit the master theme.
+ *
+ * Why surgical string editing instead of a full XML parse+rebuild:
+ *   A parse → mutate → serialise round-trip risks subtly altering unrelated XML
+ *   (entity re-encoding, self-closing tags, namespace attrs) which can make
+ *   PowerPoint refuse to open the file. By only rewriting the matched <a:t>
+ *   text spans we guarantee every other byte is identical to the original, and
+ *   any uncertainty makes us bail and keep the original slide untouched.
+ *
+ * NOTE ON SCOPE: visual (<p:pic>) injection and bottom "KEY INSIGHT" callout
+ * boxes are intentionally NOT injected into existing slides — an absolutely
+ * positioned box would cover the original footer/logo and clash with the
+ * preserved theme. Refined visual/insight content still flows through as body
+ * text. New slides are built text-only so they always open cleanly.
+ */
+
+// ─── Text helpers ───────────────────────────────────────────────────────────
+
+function stripMd(t: string): string {
+  return (t ?? '')
+    .replace(/\*\*(.*?)\*\*/g, '$1')
+    .replace(/\*(.*?)\*/g, '$1')
+    .replace(/`(.*?)`/g, '$1')
+    .trim();
+}
+
+function cleanText(t: string): string {
+  return stripMd(t).replace(/\s+/g, ' ').trim();
+}
+
+function xmlEscape(s: string): string {
+  return s
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;');
+}
+
+/** Strip any HTML tags the model emits so they never render as literal text. */
+function stripHtml(text: string): string {
+  return text
+    .replace(/<b>(.*?)<\/b>/gi, '$1')
+    .replace(/<i>(.*?)<\/i>/gi, '$1')
+    .replace(/<strong>(.*?)<\/strong>/gi, '$1')
+    .replace(/<em>(.*?)<\/em>/gi, '$1')
+    .replace(/<[^>]+>/g, '')
+    .trim();
+}
+
+/** Sanitize + XML-escape text destined for an <a:t> node. */
+function escT(s: string): string {
+  return xmlEscape(stripHtml(s));
+}
+
+function escapeRe(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+// ─── Balanced XML element scanning ──────────────────────────────────────────
+// We never fully parse the document; we just locate element boundaries so we
+// can target the exact <a:t> text spans to rewrite.
+
+interface ChildSpan {
+  name: string;
+  start: number; // index of '<' of the opening tag
+  end: number; // index just after the matching close (or self-close)
+}
+
+/**
+ * Given the index of the '<' of an opening tag named `name`, return the span
+ * [start, end) of the whole element including its matching close tag. Handles
+ * nesting of same-named elements (e.g. p:grpSp inside p:grpSp). Returns null on
+ * any malformed / unmatched input so the caller can bail safely.
+ */
+function elementRange(xml: string, openStart: number, name: string): [number, number] | null {
+  const tagRe = new RegExp(`<(/?)${escapeRe(name)}\\b[^>]*?(/?)>`, 'g');
+  tagRe.lastIndex = openStart;
+  let depth = 0;
+  let m: RegExpExecArray | null;
+  while ((m = tagRe.exec(xml))) {
+    const isClose = m[1] === '/';
+    const selfClose = m[2] === '/';
+    if (m.index === openStart) {
+      if (selfClose) return [openStart, tagRe.lastIndex];
+      depth = 1;
+      continue;
+    }
+    if (depth === 0) return null; // matched something outside our element
+    if (selfClose) continue;
+    if (isClose) {
+      depth--;
+      if (depth === 0) return [openStart, tagRe.lastIndex];
+    } else {
+      depth++;
+    }
+  }
+  return null;
+}
+
+/** Inner content range + outer span of the first element named `name`. */
+function getInnerRange(
+  xml: string,
+  name: string
+): { innerStart: number; innerEnd: number; outerStart: number; outerEnd: number } | null {
+  const openRe = new RegExp(`<${escapeRe(name)}\\b[^>]*?(/?)>`);
+  const m = openRe.exec(xml);
+  if (!m) return null;
+  if (m[1] === '/') return null; // self-closed, no inner content
+  const outerStart = m.index;
+  const innerStart = m.index + m[0].length;
+  const range = elementRange(xml, outerStart, name);
+  if (!range) return null;
+  const outerEnd = range[1];
+  const closeRe = new RegExp(`</${escapeRe(name)}\\s*>\\s*$`);
+  const cm = closeRe.exec(xml.slice(outerStart, outerEnd));
+  const innerEnd = cm ? outerStart + cm.index : outerEnd;
+  return { innerStart, innerEnd, outerStart, outerEnd };
+}
+
+/** Top-level child elements within [innerStart, innerEnd). */
+function topChildren(xml: string, innerStart: number, innerEnd: number): ChildSpan[] {
+  const res: ChildSpan[] = [];
+  const tagOpen = /<([A-Za-z_][\w:.-]*)\b/g;
+  let i = innerStart;
+  while (i < innerEnd) {
+    tagOpen.lastIndex = i;
+    const m = tagOpen.exec(xml);
+    if (!m || m.index >= innerEnd) break;
+    const name = m[1];
+    const range = elementRange(xml, m.index, name);
+    if (!range) break;
+    res.push({ name, start: range[0], end: range[1] });
+    i = range[1];
+  }
+  return res;
+}
+
+// ─── Text-run helpers ───────────────────────────────────────────────────────
+
+/** Does this fragment contain at least one non-empty <a:t> run? */
+function hasText(fragment: string): boolean {
+  const re = /<a:t\b[^>]*>([\s\S]*?)<\/a:t>/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(fragment))) {
+    if (m[1] && m[1].trim()) return true;
+  }
+  return false;
+}
+
+/**
+ * Rewrite the text of a fragment: set the FIRST <a:t> run to `value` (escaped)
+ * and empty every subsequent <a:t> run. All formatting (<a:rPr>, <a:pPr>,
+ * bullets, fonts) is untouched. Passing '' empties the whole fragment's text.
+ */
+function setFragmentText(fragment: string, value: string): string {
+  let first = true;
+  return fragment.replace(/(<a:t\b[^>]*>)([\s\S]*?)(<\/a:t>)/g, (_whole, open, _content, close) => {
+    if (first) {
+      first = false;
+      return `${open}${value ? escT(value) : ''}${close}`;
+    }
+    return `${open}${close}`;
+  });
+}
+
+interface Placeholder {
+  type?: string;
+  idx?: string;
+}
+
+function getPlaceholder(spXml: string): Placeholder | null {
+  const m = /<p:ph\b([^>]*?)\/?>/.exec(spXml);
+  if (!m) return null;
+  const attrs = m[1];
+  const type = /\btype="([^"]*)"/.exec(attrs)?.[1];
+  const idx = /\bidx="([^"]*)"/.exec(attrs)?.[1];
+  return { type, idx };
+}
+
+/**
+ * Ensure a shape's <a:bodyPr> carries <a:normAutofit/> so PowerPoint auto-shrinks
+ * text to fit the box. Leaves an existing <a:normAutofit .../> (incl. fontScale)
+ * untouched; replaces <a:spAutoFit/> / <a:noAutofit/>; adds one if absent.
+ */
+function ensureNormAutofit(spXml: string): string {
+  const tx = getInnerRange(spXml, 'p:txBody');
+  if (!tx) return spXml;
+
+  const bpOpen = /<a:bodyPr\b[^>]*?(\/?)>/.exec(spXml.slice(tx.outerStart, tx.outerEnd));
+  if (!bpOpen) {
+    // No <a:bodyPr> — insert a minimal one at the very start of <p:txBody>.
+    return spXml.slice(0, tx.innerStart) + '<a:bodyPr><a:normAutofit/></a:bodyPr>' + spXml.slice(tx.innerStart);
+  }
+
+  const bpAbsStart = tx.outerStart + bpOpen.index;
+  const selfClose = bpOpen[1] === '/';
+
+  if (selfClose) {
+    const bpAbsEnd = bpAbsStart + bpOpen[0].length;
+    const openTag = bpOpen[0].replace(/\/>$/, '>');
+    return (
+      spXml.slice(0, bpAbsStart) + openTag + '<a:normAutofit/></a:bodyPr>' + spXml.slice(bpAbsEnd)
+    );
+  }
+
+  const bpRange = elementRange(spXml, bpAbsStart, 'a:bodyPr');
+  if (!bpRange) return spXml;
+  let bpXml = spXml.slice(bpRange[0], bpRange[1]);
+  if (/<a:normAutofit\b/.test(bpXml)) return spXml; // already present — leave as-is
+
+  bpXml = bpXml.replace(/<a:spAutoFit\s*\/>/g, '').replace(/<a:noAutofit\s*\/>/g, '');
+
+  // Insert after <a:prstTxWarp> if present (schema order), else after the open tag.
+  const openTag = /^<a:bodyPr\b[^>]*?>/.exec(bpXml)?.[0] ?? '<a:bodyPr>';
+  let insertPos = openTag.length;
+  const warp = /<a:prstTxWarp\b(?:[^>]*\/>|[\s\S]*?<\/a:prstTxWarp>)/.exec(bpXml);
+  if (warp) insertPos = warp.index + warp[0].length;
+  bpXml = bpXml.slice(0, insertPos) + '<a:normAutofit/>' + bpXml.slice(insertPos);
+
+  return spXml.slice(0, bpRange[0]) + bpXml + spXml.slice(bpRange[1]);
+}
+
+/** Read a shape's own <a:xfrm> offset/extent (EMU). NaN where unspecified. */
+function getShapeXfrm(spXml: string): { y: number; cy: number } | null {
+  const xf = getInnerRange(spXml, 'a:xfrm');
+  if (!xf) return null;
+  const xfXml = spXml.slice(xf.outerStart, xf.outerEnd);
+  const offTag = /<a:off\b[^>]*\/>/.exec(xfXml)?.[0] ?? '';
+  const extTag = /<a:ext\b[^>]*\/>/.exec(xfXml)?.[0] ?? '';
+  const y = Number(/\by="(-?\d+)"/.exec(offTag)?.[1] ?? NaN);
+  const cy = Number(/\bcy="(\d+)"/.exec(extTag)?.[1] ?? NaN);
+  return { y, cy };
+}
+
+/** Set the cy (height) on a shape's own <a:xfrm> <a:ext>. */
+function setShapeCy(spXml: string, cy: number): string {
+  const xf = getInnerRange(spXml, 'a:xfrm');
+  if (!xf) return spXml;
+  const before = spXml.slice(0, xf.innerStart);
+  const inner = spXml
+    .slice(xf.innerStart, xf.innerEnd)
+    .replace(/(<a:ext\b[^>]*\bcy=")\d+(")/, `$1${cy}$2`);
+  return before + inner + spXml.slice(xf.innerEnd);
+}
+
+/**
+ * Patch a title shape's text. Replaces existing run text when present; injects a
+ * fresh run (preserving schema order) when the placeholder was originally empty,
+ * so faculty-blank titles no longer render as "Click to add title".
+ */
+function patchTitleShape(spXml: string, title: string): string {
+  const tx = getInnerRange(spXml, 'p:txBody');
+  if (!tx) return setFragmentText(spXml, title);
+
+  const txInner = spXml.slice(tx.innerStart, tx.innerEnd);
+  const hasRunText = /<a:r\b[\s\S]*?<a:t\b/.test(txInner);
+  if (hasRunText) return setFragmentText(spXml, title);
+
+  // Empty placeholder — inject a run into the first paragraph (or create one).
+  const runXml = `<a:r><a:rPr lang="en-IN" b="1" dirty="0"/><a:t>${escT(title)}</a:t></a:r>`;
+  const paras = topChildren(spXml, tx.innerStart, tx.innerEnd).filter((c) => c.name === 'a:p');
+
+  if (paras.length > 0) {
+    const p0 = paras[0];
+    const pXml = spXml.slice(p0.start, p0.end);
+    let newPXml: string;
+    const endPr = /<a:endParaRPr\b(?:[^>]*\/>|[\s\S]*?<\/a:endParaRPr>)/.exec(pXml);
+    if (endPr) {
+      // endParaRPr must remain last — insert the run before it.
+      newPXml = pXml.slice(0, endPr.index) + runXml + pXml.slice(endPr.index);
+    } else if (/<a:p\b[^>]*\/>/.test(pXml)) {
+      newPXml = pXml.replace(/<a:p\b([^>]*)\/>/, `<a:p$1>${runXml}</a:p>`);
+    } else {
+      newPXml = pXml.replace(/<\/a:p>\s*$/, `${runXml}</a:p>`);
+    }
+    return spXml.slice(0, p0.start) + newPXml + spXml.slice(p0.end);
+  }
+
+  // No paragraph at all — add one after <a:bodyPr>/<a:lstStyle> (schema order).
+  const lst = /<a:lstStyle\b(?:[^>]*\/>|[\s\S]*?<\/a:lstStyle>)/.exec(txInner);
+  const bp = /<a:bodyPr\b(?:[^>]*\/>|[\s\S]*?<\/a:bodyPr>)/.exec(txInner);
+  const rel = lst ? lst.index + lst[0].length : bp ? bp.index + bp[0].length : 0;
+  const insertAt = tx.innerStart + rel;
+  return spXml.slice(0, insertAt) + `<a:p>${runXml}</a:p>` + spXml.slice(insertAt);
+}
+
+// ─── Existing-slide body patching ───────────────────────────────────────────
+
+function patchBodyShape(spXml: string, bullets: string[]): string {
+  const tx = getInnerRange(spXml, 'p:txBody');
+  if (!tx) return spXml;
+
+  const paras = topChildren(spXml, tx.innerStart, tx.innerEnd).filter((c) => c.name === 'a:p');
+  const textParas = paras.filter((p) => hasText(spXml.slice(p.start, p.end)));
+  if (textParas.length === 0) return spXml; // nothing safe to map onto
+
+  const n = textParas.length;
+  const m = bullets.length;
+  const lastPara = textParas[n - 1];
+  const lastParaXml = spXml.slice(lastPara.start, lastPara.end);
+
+  interface Op {
+    start: number;
+    end: number;
+    text: string;
+  }
+  const ops: Op[] = [];
+
+  for (let i = 0; i < n; i++) {
+    const p = textParas[i];
+    const pxml = spXml.slice(p.start, p.end);
+    const value = i < m ? cleanText(bullets[i]) : '';
+    ops.push({ start: p.start, end: p.end, text: setFragmentText(pxml, value) });
+  }
+
+  // Extra refined bullets → clone the last text paragraph (keeps bullet style).
+  if (m > n) {
+    const extra = bullets
+      .slice(n)
+      .map((b) => setFragmentText(lastParaXml, cleanText(b)))
+      .join('');
+    ops.push({ start: lastPara.end, end: lastPara.end, text: extra });
+  }
+
+  ops.sort((a, b) => b.start - a.start); // apply right-to-left so offsets stay valid
+  let out = spXml;
+  for (const op of ops) out = out.slice(0, op.start) + op.text + out.slice(op.end);
+  return out;
+}
+
+/**
+ * Patch a single existing slide's title + body text. Never touches <p:pic>,
+ * <p:graphicFrame>, <p:grpSp>, formatting or layout. Returns the original XML
+ * unchanged on any uncertainty.
+ */
+export function patchSlideXml(originalXml: string, slide: RefinedSlide): string {
+  try {
+    const spTree = getInnerRange(originalXml, 'p:spTree');
+    if (!spTree) return originalXml;
+
+    const children = topChildren(originalXml, spTree.innerStart, spTree.innerEnd);
+    const shapes = children
+      .filter((c) => c.name === 'p:sp')
+      .map((sp) => {
+        const spXml = originalXml.slice(sp.start, sp.end);
+        return {
+          sp,
+          spXml,
+          ph: getPlaceholder(spXml),
+          hasTx: /<p:txBody\b/.test(spXml),
+          paraCount: (spXml.match(/<a:p\b/g) ?? []).length,
+        };
+      })
+      .filter((s) => s.hasTx);
+
+    if (shapes.length === 0) return originalXml;
+
+    const isTitle = (ph: Placeholder | null) =>
+      !!ph && (ph.type === 'title' || ph.type === 'ctrTitle' || ph.idx === '0');
+    const isBody = (ph: Placeholder | null) =>
+      !!ph && (ph.idx === '1' || ph.type === 'body' || ph.type === 'subTitle');
+
+    const titleShape = shapes.find((s) => isTitle(s.ph)) ?? null;
+    const bodyCandidates = shapes.filter((s) => s !== titleShape);
+    const bodyShape =
+      bodyCandidates.find((s) => isBody(s.ph)) ??
+      bodyCandidates.slice().sort((a, b) => b.paraCount - a.paraCount)[0] ??
+      null;
+
+    // Build edits (right-to-left so spans stay valid).
+    interface Edit {
+      start: number;
+      end: number;
+      text: string;
+    }
+    const edits: Edit[] = [];
+
+    const newTitle = cleanText(slide.refined_title ?? '');
+    if (titleShape && newTitle) {
+      // Bug 2: inject text even into originally-empty title placeholders.
+      // Bug 1: ensure the title box auto-shrinks long titles to fit.
+      let titleXml = patchTitleShape(titleShape.spXml, newTitle);
+      titleXml = ensureNormAutofit(titleXml);
+      edits.push({ start: titleShape.sp.start, end: titleShape.sp.end, text: titleXml });
+    }
+
+    const newBody = (slide.refined_body ?? []).map((b) => b).filter((b) => typeof b === 'string');
+    if (bodyShape && bodyShape !== titleShape && newBody.length > 0) {
+      let bodyXml = patchBodyShape(bodyShape.spXml, newBody);
+
+      // Bug 4: if an image sits inside the body text box, shrink the body height
+      // so the text stays above it instead of rendering behind it.
+      const bodyXf = getShapeXfrm(bodyShape.spXml);
+      if (bodyXf && Number.isFinite(bodyXf.y) && Number.isFinite(bodyXf.cy)) {
+        const bodyTop = bodyXf.y;
+        const bodyBottom = bodyXf.y + bodyXf.cy;
+        const pics = topChildren(originalXml, spTree.innerStart, spTree.innerEnd).filter(
+          (c) => c.name === 'p:pic'
+        );
+        let minSafe = Infinity;
+        for (const pic of pics) {
+          const xf = getShapeXfrm(originalXml.slice(pic.start, pic.end));
+          if (!xf || !Number.isFinite(xf.y)) continue;
+          if (xf.y > bodyTop && xf.y < bodyBottom) {
+            const safe = xf.y - bodyTop - 91440; // 0.1" margin
+            if (safe > 0 && safe < minSafe) minSafe = safe;
+          }
+        }
+        if (minSafe !== Infinity && minSafe < bodyXf.cy) {
+          bodyXml = setShapeCy(bodyXml, minSafe);
+        }
+      }
+
+      // Bug 5: ensure the body box auto-shrinks text that overflows its height
+      // (applied AFTER the Bug 4 cy adjustment).
+      bodyXml = ensureNormAutofit(bodyXml);
+
+      edits.push({ start: bodyShape.sp.start, end: bodyShape.sp.end, text: bodyXml });
+    }
+
+    if (edits.length === 0) return originalXml;
+
+    edits.sort((a, b) => b.start - a.start);
+    let out = originalXml;
+    for (const e of edits) out = out.slice(0, e.start) + e.text + out.slice(e.end);
+    return out;
+  } catch (err) {
+    console.warn('[ppt-refine/assembler] patchSlideXml failed, keeping original:', err);
+    return originalXml;
+  }
+}
+
+// ─── New-slide construction ─────────────────────────────────────────────────
+
+/** Regular 16pt body bullet (top level). */
+function regularBullet(text: string): string {
+  return `<a:p><a:r><a:rPr lang="en-IN" sz="1600" dirty="0"/><a:t>${escT(text)}</a:t></a:r></a:p>`;
+}
+
+/** 14pt sub-bullet (level 1). */
+function subBullet(text: string): string {
+  return (
+    `<a:p><a:pPr lvl="1"/><a:r><a:rPr lang="en-IN" sz="1400" dirty="0"/>` +
+    `<a:t>${escT(text)}</a:t></a:r></a:p>`
+  );
+}
+
+/**
+ * Build the body paragraph XML for a new slide. Practice slides get special
+ * label formatting (bold "Problem Statement:", italic muted "Hint:", 14pt
+ * "Solution Approach:" and following lines). All other types render flat 16pt.
+ */
+function buildNewSlideBody(bullets: string[], type: string): string {
+  if (bullets.length === 0) return `<a:p><a:endParaRPr lang="en-IN"/></a:p>`;
+
+  if (type !== 'practice') {
+    // Real-world / others: consistent 16pt bullets.
+    return bullets.map(regularBullet).join('');
+  }
+
+  const out: string[] = [];
+  let afterSolution = false;
+
+  for (const b of bullets) {
+    if (/^problem statement:/i.test(b)) {
+      const content = b.replace(/^problem statement:\s*/i, '');
+      out.push(
+        `<a:p>` +
+          `<a:r><a:rPr lang="en-IN" sz="1600" b="1" dirty="0"/><a:t>Problem Statement: </a:t></a:r>` +
+          `<a:r><a:rPr lang="en-IN" sz="1600" dirty="0"/><a:t>${escT(content)}</a:t></a:r>` +
+          `</a:p>`
+      );
+      afterSolution = false;
+      continue;
+    }
+    if (/^hint:/i.test(b)) {
+      out.push(
+        `<a:p><a:pPr lvl="1"/><a:r>` +
+          `<a:rPr lang="en-IN" sz="1400" i="1" dirty="0"><a:solidFill><a:srgbClr val="4B5563"/></a:solidFill></a:rPr>` +
+          `<a:t>${escT(b)}</a:t></a:r></a:p>`
+      );
+      afterSolution = false;
+      continue;
+    }
+    if (/^solution approach:/i.test(b)) {
+      afterSolution = true;
+      out.push(subBullet(b));
+      continue;
+    }
+    out.push(afterSolution ? subBullet(b) : regularBullet(b));
+  }
+
+  return out.join('');
+}
+
+export function buildNewSlideXml(slide: RefinedSlide): string {
+  let title = cleanText(slide.refined_title || slide.title || 'Slide');
+  if (slide.is_new) {
+    // One clean label, no emoji (emojis in titles break some PowerPoint builds).
+    if (slide.type === 'practice') title = `Practice: ${title}`;
+    else if (slide.type === 'example') title = `Real World: ${title}`;
+  }
+
+  const source =
+    slide.refined_body && slide.refined_body.length ? slide.refined_body : slide.body_text ?? [];
+  const bullets = source.map((b) => cleanText(b)).filter(Boolean);
+
+  const body = buildNewSlideBody(bullets, slide.type);
+
+  // Explicit positioned shapes (NOT <p:ph> placeholders) so font sizes are
+  // deterministic instead of inherited from the master. Slide is 10" × 5.625".
+  return (
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
+    `<p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" ` +
+    `xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" ` +
+    `xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main">` +
+    `<p:cSld><p:spTree>` +
+    `<p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr>` +
+    `<p:grpSpPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="0" cy="0"/>` +
+    `<a:chOff x="0" y="0"/><a:chExt cx="0" cy="0"/></a:xfrm></p:grpSpPr>` +
+    // Title — explicit position, 24pt bold, autofit at 90%
+    `<p:sp><p:nvSpPr><p:cNvPr id="2" name="Title"/>` +
+    `<p:cNvSpPr><a:spLocks noGrp="1"/></p:cNvSpPr><p:nvPr/></p:nvSpPr>` +
+    `<p:spPr><a:xfrm><a:off x="311700" y="445025"/><a:ext cx="8520575" cy="572700"/></a:xfrm>` +
+    `<a:prstGeom prst="rect"><a:avLst/></a:prstGeom><a:noFill/></p:spPr>` +
+    `<p:txBody><a:bodyPr><a:normAutofit fontScale="90000"/></a:bodyPr><a:lstStyle/>` +
+    `<a:p><a:r><a:rPr lang="en-IN" sz="2400" b="1" dirty="0"/><a:t>${escT(title)}</a:t></a:r></a:p>` +
+    `</p:txBody></p:sp>` +
+    // Body — explicit position, 16pt regular / 14pt sub-bullets, autofit
+    `<p:sp><p:nvSpPr><p:cNvPr id="3" name="Body"/>` +
+    `<p:cNvSpPr><a:spLocks noGrp="1"/></p:cNvSpPr><p:nvPr/></p:nvSpPr>` +
+    `<p:spPr><a:xfrm><a:off x="311700" y="1143000"/><a:ext cx="8520575" cy="3810600"/></a:xfrm>` +
+    `<a:prstGeom prst="rect"><a:avLst/></a:prstGeom><a:noFill/></p:spPr>` +
+    `<p:txBody><a:bodyPr><a:normAutofit/></a:bodyPr><a:lstStyle/>${body}</p:txBody></p:sp>` +
+    `</p:spTree></p:cSld>` +
+    `<p:clrMapOvr><a:masterClrMapping/></p:clrMapOvr></p:sld>`
+  );
+}
+
+function buildSlideRels(layoutTarget: string): string {
+  return (
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
+    `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">` +
+    `<Relationship Id="rId1" ` +
+    `Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideLayout" ` +
+    `Target="${layoutTarget}"/></Relationships>`
+  );
+}
+
+// ─── Presentation-part helpers ──────────────────────────────────────────────
+
+function slideFileNum(name: string): number {
+  return parseInt(name.match(/slide(\d+)\.xml/)?.[1] ?? '0', 10);
+}
+
+/** Map every presentation relationship Id → Target. */
+function parseRels(relsXml: string): Map<string, string> {
+  const map = new Map<string, string>();
+  const els = relsXml.match(/<Relationship\b[^>]*\/>/g) ?? [];
+  for (const el of els) {
+    const id = /Id="([^"]+)"/.exec(el)?.[1];
+    const target = /Target="([^"]+)"/.exec(el)?.[1];
+    if (id && target) map.set(id, target);
+  }
+  return map;
+}
+
+function maxRelId(relsXml: string): number {
+  let max = 0;
+  for (const m of relsXml.matchAll(/Id="rId(\d+)"/g)) max = Math.max(max, parseInt(m[1], 10));
+  return max;
+}
+
+function maxSldId(presXml: string): number {
+  let max = 255; // sldId values must be >= 256
+  for (const m of presXml.matchAll(/<p:sldId\b[^>]*\bid="(\d+)"/g))
+    max = Math.max(max, parseInt(m[1], 10));
+  return max;
+}
+
+function findDefaultLayoutTarget(zip: AdmZip): string {
+  const layouts = zip
+    .getEntries()
+    .map((e) => e.entryName)
+    .filter((n) => /^ppt\/slideLayouts\/slideLayout\d+\.xml$/.test(n))
+    .sort((a, b) => slideFileNum(a) - slideFileNum(b));
+  const first = layouts[0];
+  if (first) return `../slideLayouts/${first.split('/').pop()}`;
+  return '../slideLayouts/slideLayout1.xml';
+}
+
+/** Resolve the slideLayout target referenced by an existing slide file. */
+function layoutForSlide(zip: AdmZip, slideFile: number, fallback: string): string {
+  try {
+    const relsName = `ppt/slides/_rels/slide${slideFile}.xml.rels`;
+    if (!zip.getEntry(relsName)) return fallback;
+    const xml = zip.readAsText(relsName);
+    const els = xml.match(/<Relationship\b[^>]*\/>/g) ?? [];
+    for (const el of els) {
+      if (/slideLayout/.test(el)) {
+        const target = /Target="([^"]+)"/.exec(el)?.[1];
+        if (target) return target;
+      }
+    }
+  } catch {
+    /* fall through */
+  }
+  return fallback;
+}
+
+function insertSldId(
+  presXml: string,
+  anchorRid: string | null,
+  id: number,
+  rId: string
+): string {
+  const el = `<p:sldId id="${id}" r:id="${rId}"/>`;
+  if (anchorRid) {
+    const re = new RegExp(`(<p:sldId\\b[^>]*\\br:id="${escapeRe(anchorRid)}"[^>]*/>)`);
+    if (re.test(presXml)) return presXml.replace(re, `$1${el}`);
+  }
+  return presXml.replace('</p:sldIdLst>', `${el}</p:sldIdLst>`);
+}
+
+// ─── Main export ────────────────────────────────────────────────────────────
+
+const SLIDE_CONTENT_TYPE =
+  'application/vnd.openxmlformats-officedocument.presentationml.slide+xml';
+const SLIDE_REL_TYPE = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide';
+
+export async function assemblePptx(
+  deck: RefinedDeck,
+  originalBuffer: Buffer
+): Promise<Buffer> {
+  const zip = new AdmZip(originalBuffer);
+
+  // Slide files in the same suffix-sorted order the extractor used, so that a
+  // refined slide's `index` maps back to the correct original file.
+  const sortedSlideFiles = zip
+    .getEntries()
+    .map((e) => e.entryName)
+    .filter((n) => /^ppt\/slides\/slide\d+\.xml$/.test(n))
+    .sort((a, b) => slideFileNum(a) - slideFileNum(b))
+    .map((name) => ({ name, num: slideFileNum(name) }));
+
+  // ─── Patch existing slides in place ──────────────────────────────────────
+  let patched = 0;
+  for (const s of deck.slides) {
+    if (s.is_new) continue;
+    const file = sortedSlideFiles[s.index];
+    if (!file) continue;
+    try {
+      const xml = zip.readAsText(file.name);
+      const next = patchSlideXml(xml, s);
+      if (next !== xml) {
+        zip.updateFile(file.name, Buffer.from(next, 'utf-8'));
+        patched++;
+      }
+    } catch (err) {
+      console.warn(`[ppt-refine/assembler] failed to patch ${file.name}:`, err);
+    }
+  }
+
+  // ─── Append new slides ───────────────────────────────────────────────────
+  const newSlides = deck.slides.filter((s) => s.is_new);
+  let appended = 0;
+
+  if (newSlides.length > 0) {
+    let presXml = zip.readAsText('ppt/presentation.xml');
+    let relsXml = zip.readAsText('ppt/_rels/presentation.xml.rels');
+    const ctName = '[Content_Types].xml';
+    let ctXml = zip.readAsText(ctName);
+
+    const ridToTarget = parseRels(relsXml);
+    const fileNumToRid = new Map<number, string>();
+    for (const [rid, target] of ridToTarget) {
+      const num = slideFileNum(target);
+      if (num > 0 && /slide\d+\.xml/.test(target)) fileNumToRid.set(num, rid);
+    }
+
+    let maxFileNum = sortedSlideFiles.reduce((mx, f) => Math.max(mx, f.num), 0);
+    let nextRel = maxRelId(relsXml);
+    let nextSldId = maxSldId(presXml);
+    const defaultLayout = findDefaultLayoutTarget(zip);
+
+    const relAdds: string[] = [];
+    const ctAdds: string[] = [];
+
+    // Walk deck order so each new slide is anchored after its preceding slide.
+    let anchorRid: string | null = null;
+
+    for (const s of deck.slides) {
+      if (!s.is_new) {
+        const f = sortedSlideFiles[s.index];
+        if (f) anchorRid = fileNumToRid.get(f.num) ?? anchorRid;
+        continue;
+      }
+
+      const fileNum = ++maxFileNum;
+      const rId = `rId${++nextRel}`;
+      const sldId = ++nextSldId;
+
+      // Inherit the layout of the anchor slide (or a sensible default).
+      let layoutTarget = defaultLayout;
+      if (anchorRid) {
+        const anchorTarget = ridToTarget.get(anchorRid);
+        const anchorNum = anchorTarget ? slideFileNum(anchorTarget) : 0;
+        if (anchorNum > 0) layoutTarget = layoutForSlide(zip, anchorNum, defaultLayout);
+      }
+
+      zip.addFile(
+        `ppt/slides/slide${fileNum}.xml`,
+        Buffer.from(buildNewSlideXml(s), 'utf-8')
+      );
+      zip.addFile(
+        `ppt/slides/_rels/slide${fileNum}.xml.rels`,
+        Buffer.from(buildSlideRels(layoutTarget), 'utf-8')
+      );
+
+      relAdds.push(
+        `<Relationship Id="${rId}" Type="${SLIDE_REL_TYPE}" Target="slides/slide${fileNum}.xml"/>`
+      );
+      ctAdds.push(
+        `<Override PartName="/ppt/slides/slide${fileNum}.xml" ContentType="${SLIDE_CONTENT_TYPE}"/>`
+      );
+
+      presXml = insertSldId(presXml, anchorRid, sldId, rId);
+      anchorRid = rId; // chain subsequent new slides after this one
+      appended++;
+    }
+
+    relsXml = relsXml.replace('</Relationships>', `${relAdds.join('')}</Relationships>`);
+    ctXml = ctXml.replace('</Types>', `${ctAdds.join('')}</Types>`);
+
+    zip.updateFile('ppt/presentation.xml', Buffer.from(presXml, 'utf-8'));
+    zip.updateFile('ppt/_rels/presentation.xml.rels', Buffer.from(relsXml, 'utf-8'));
+    zip.updateFile(ctName, Buffer.from(ctXml, 'utf-8'));
+  }
+
+  console.log(
+    `[ppt-refine/assembler] patched=${patched} appended=${appended} ` +
+      `total=${sortedSlideFiles.length + appended}`
+  );
+
+  return zip.toBuffer();
+}

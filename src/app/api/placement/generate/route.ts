@@ -6,10 +6,10 @@ import {
   cleanQuestions,
 } from "@/lib/placement/generator";
 import {
-  checkBankHealth,
   getQuestionsFromBank,
   saveToBankAndRecord,
 } from "@/lib/placement/bankManager";
+import { requireAuth, requireRole, apiError, apiSuccess } from "@/lib/api/helpers";
 import type { NextRequest } from "next/server";
 
 function parsePlacementQuestions(raw: string): any[] | null {
@@ -150,34 +150,14 @@ async function generateWithRetry(
 export async function POST(request: NextRequest) {
   try {
     // 1. Auth check — student only
-    const supabase = await createServerClient();
-    const {
-      data: { user },
-      error: authError,
-    } = await supabase.auth.getUser();
-
-    if (authError || !user) {
-      return Response.json({ error: "Unauthorized" }, { status: 401 });
-    }
-
-    const adminClient = createAdminClient();
-    const { data: roleProfile } = await adminClient
-      .from("profiles")
-      .select("role")
-      .eq("id", user.id)
-      .single();
-
-    if ((roleProfile as { role?: string } | null)?.role !== "student") {
-      return Response.json(
-        { error: "Forbidden: Students only" },
-        { status: 403 }
-      );
-    }
+    const authResult = await requireRole(["student"]);
+    if (authResult instanceof Response) return authResult;
+    const { user, adminClient } = authResult;
 
     // 2. Parse body
     const { companyId } = await request.json();
     if (!companyId) {
-      return Response.json({ error: "companyId is required" }, { status: 400 });
+      return apiError("companyId is required", 400);
     }
 
     // 3. Fetch company
@@ -188,7 +168,7 @@ export async function POST(request: NextRequest) {
       .single();
 
     if (!company) {
-      return Response.json({ error: "Company not found" }, { status: 404 });
+      return apiError("Company not found", 404);
     }
 
     // 4. Fetch student profile
@@ -199,7 +179,7 @@ export async function POST(request: NextRequest) {
       .single();
 
     if (!profile) {
-      return Response.json({ error: "Profile not found" }, { status: 404 });
+      return apiError("Profile not found", 404);
     }
 
     // 5. Branch match check (allow mismatch)
@@ -379,10 +359,7 @@ export async function POST(request: NextRequest) {
       console.error(
         `[placement/generate] Failed: got ${questions?.length ?? 0} questions`
       );
-      return Response.json(
-        { error: "Failed to generate test. Please try again." },
-        { status: 500 }
-      );
+      return apiError("Failed to generate test. Please try again.", 500);
     }
 
     if (questions.length < 18) {
@@ -446,7 +423,7 @@ export async function POST(request: NextRequest) {
     });
   } catch (err) {
     console.error("[placement/generate] error:", err);
-    return Response.json({ error: "Failed to generate test" }, { status: 500 });
+    return apiError("Failed to generate test", 500);
   }
 }
 

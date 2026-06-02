@@ -9,6 +9,7 @@ import {
   getPracticeQuestionsFromBank,
   savePracticeToBank,
 } from "@/lib/placement/bankManager";
+import { requireAuth, requireRole, apiError, apiSuccess } from "@/lib/api/helpers";
 
 function parsePlacementQuestions(raw: string): any[] | null {
   // Attempt 1: direct parse after cleaning fences
@@ -78,17 +79,9 @@ function parsePlacementQuestions(raw: string): any[] | null {
 export async function POST(request: NextRequest) {
   try {
     // 1. Auth check — student only
-    const supabase = await createServerClient();
-    const {
-      data: { user },
-      error: authError,
-    } = await supabase.auth.getUser();
-
-    if (authError || !user) {
-      return Response.json({ error: "Unauthorized" }, { status: 401 });
-    }
-
-    const adminClient = createAdminClient();
+    const authResult = await requireRole(["student"]);
+    if (authResult instanceof Response) return authResult;
+    const { user, adminClient } = authResult;
     const { data: profile, error: profileError } = await adminClient
       .from("profiles")
       .select("role, branch, semester")
@@ -96,14 +89,14 @@ export async function POST(request: NextRequest) {
       .single();
 
     if (profileError || !profile || profile.role !== "student") {
-      return Response.json({ error: "Forbidden: Students only" }, { status: 403 });
+      return apiError("Forbidden: Students only", 403);
     }
 
     // 2. Parse body: { moduleId: string }
     const body = await request.json().catch(() => ({} as any));
     const moduleId = typeof body?.moduleId === "string" ? body.moduleId.trim() : "";
     if (!moduleId) {
-      return Response.json({ error: "moduleId is required" }, { status: 400 });
+      return apiError("moduleId is required", 400);
     }
 
     // 3. Find module (exact → fuzzy → inferred → last-resort)
@@ -220,7 +213,7 @@ export async function POST(request: NextRequest) {
     }
 
     if (!module) {
-      return Response.json({ error: "Module not found" }, { status: 404 });
+      return apiError("Module not found", 404);
     }
 
     // Try bank first
@@ -370,10 +363,7 @@ Begin with [ and end with ]. Nothing else.`;
     });
   } catch (err) {
     console.error("[placement/practice/generate] error:", err);
-    return Response.json(
-      { error: "Failed to generate practice questions" },
-      { status: 500 }
-    );
+    return apiError("Failed to generate practice questions", 500);
   }
 }
 

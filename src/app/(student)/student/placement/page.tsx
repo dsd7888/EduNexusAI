@@ -8,11 +8,14 @@ import * as LucideIcons from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Progress } from "@/components/ui/progress";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { ScoreMeter } from "@/components/ui/score-meter";
+import { cn } from "@/lib/utils";
+import { scoreStyles } from "@/lib/ui/score";
 import { createBrowserClient } from "@/lib/db/supabase-browser";
 import type { PlacementAttempt, PlacementCompany } from "@/lib/db/types";
 import { getModulesForBranch, groupModulesByCategory } from "@/lib/placement/modules";
+import { usePlacementHistory } from "@/hooks/useSupabaseData";
 
 type AttemptWithCompany = PlacementAttempt & {
   company_name: string;
@@ -20,21 +23,13 @@ type AttemptWithCompany = PlacementAttempt & {
 
 const CATEGORIES = ["quantitative", "logical", "verbal", "technical"] as const;
 
-function getScoreColor(score: number): string {
-  if (score >= 65) return "text-green-600";
-  if (score >= 50) return "text-amber-600";
-  return "text-red-600";
-}
-
 function titleCase(value: string): string {
   return value.charAt(0).toUpperCase() + value.slice(1);
 }
 
+// Practice mastery badge — semantic colours (slate / amber / emerald, no red).
 function getPracticeScoreBadgeClass(score: number): string {
-  if (score >= 80) return "bg-green-100 text-green-700";
-  if (score >= 60) return "bg-blue-100 text-blue-700";
-  if (score >= 40) return "bg-amber-100 text-amber-700";
-  return "bg-red-100 text-red-700";
+  return scoreStyles(score).badge;
 }
 
 type RecentPracticeResult = {
@@ -61,6 +56,8 @@ export default function PlacementPage() {
   const [recentPracticeResults, setRecentPracticeResults] = useState<
     RecentPracticeResult[]
   >([]);
+
+  const { attempts: placementHistory } = usePlacementHistory(5);
 
   useEffect(() => {
     const run = async () => {
@@ -133,30 +130,6 @@ export default function PlacementPage() {
 
         setInProgressTests(foundInProgress);
 
-        // 3) Fetch last 5 attempts
-        const { data: attemptsRows } = await supabase
-          .from("placement_attempts")
-          .select("*, placement_companies(name)")
-          .eq("student_id", user.id)
-          .order("created_at", { ascending: false })
-          .limit(5);
-
-        const attempts = (attemptsRows ?? []).map((row: any) => ({
-          ...(row as PlacementAttempt),
-          company_name: row.placement_companies?.name ?? "Unknown Company",
-        })) as AttemptWithCompany[];
-        setRecentAttempts(attempts);
-
-        // 4) Build skill radar
-        const radar: Record<string, number> = {};
-        for (const attempt of attempts) {
-          const scores = (attempt.category_scores ?? {}) as Record<string, number>;
-          for (const [cat, score] of Object.entries(scores)) {
-            radar[cat] = Math.max(radar[cat] ?? 0, Number(score));
-          }
-        }
-        setSkillRadar(radar);
-
         // 5) Fetch practice best scores by subcategory
         try {
           const { data: practiceData } = await supabase
@@ -184,6 +157,29 @@ export default function PlacementPage() {
     run();
   }, []);
 
+  useEffect(() => {
+    const companyNameById = new Map<string, string>(
+      (companies ?? []).map((c) => [c.id, c.name])
+    );
+
+    const attempts = (placementHistory ?? []).map((row: any) => ({
+      ...(row as PlacementAttempt),
+      company_name:
+        companyNameById.get(String((row as any)?.company_id ?? "")) ??
+        "Unknown Company",
+    })) as AttemptWithCompany[];
+    setRecentAttempts(attempts);
+
+    const radar: Record<string, number> = {};
+    for (const attempt of attempts) {
+      const scores = (attempt.category_scores ?? {}) as Record<string, number>;
+      for (const [cat, score] of Object.entries(scores)) {
+        radar[cat] = Math.max(radar[cat] ?? 0, Number(score));
+      }
+    }
+    setSkillRadar(radar);
+  }, [placementHistory, companies]);
+
   const hasAttempts = recentAttempts.length > 0;
 
   const categoryRows = useMemo(
@@ -195,6 +191,18 @@ export default function PlacementPage() {
       })),
     [skillRadar]
   );
+
+  // Best score per company, derived from already-loaded attempts (no new query).
+  // Lets each company card show "your best so far" and a Retake CTA.
+  const bestScoreByCompany = useMemo(() => {
+    const map: Record<string, number> = {};
+    for (const a of recentAttempts) {
+      const id = String((a as { company_id?: string }).company_id ?? "");
+      if (!id) continue;
+      map[id] = Math.max(map[id] ?? 0, Number(a.score ?? 0));
+    }
+    return map;
+  }, [recentAttempts]);
 
   const availableModules = useMemo(
     () => getModulesForBranch(studentBranch ?? ""),
@@ -319,22 +327,26 @@ export default function PlacementPage() {
         ) : hasAttempts ? (
           <Card>
             <CardContent className="space-y-4 p-4">
-              {categoryRows.map(({ key, label, score }) => (
-                <div key={key} className="space-y-1.5">
-                  <div className="flex items-center justify-between">
-                    <span className="text-sm font-medium">{label}</span>
-                    <span className={`text-sm font-semibold ${getScoreColor(score)}`}>
-                      {score}%
-                    </span>
-                  </div>
-                  <Progress value={score} />
-                  <p className="text-xs text-muted-foreground">Target: 65%</p>
-                </div>
-              ))}
-              <div className="border-t pt-3 text-xs text-muted-foreground">
-                <p>Tests taken: {recentAttempts.length}</p>
-                <p>Last test: {formatDate(recentAttempts[0].created_at)}</p>
+              {/* Engagement data surfaced up top, not buried in fine print */}
+              <div className="flex flex-wrap items-center gap-x-4 gap-y-1 rounded-md bg-muted/50 px-3 py-2 text-xs">
+                <span className="font-semibold text-foreground">
+                  {recentAttempts.length} test
+                  {recentAttempts.length !== 1 ? "s" : ""} taken
+                </span>
+                <span className="text-muted-foreground">
+                  Last test {formatDate(recentAttempts[0].created_at)}
+                </span>
               </div>
+              {categoryRows.map(({ key, label, score }) => (
+                // attempted=false when 0% so untried skills read as grey
+                // "not started" (an invitation), never red failure.
+                <ScoreMeter
+                  key={key}
+                  label={label}
+                  score={score}
+                  attempted={score > 0}
+                />
+              ))}
             </CardContent>
           </Card>
         ) : (
@@ -372,17 +384,7 @@ export default function PlacementPage() {
                     {result.mastery.replace(/_/g, " ")}
                   </p>
                 </div>
-                <Badge
-                  className={
-                    result.score >= 80
-                      ? "bg-green-100 text-green-800"
-                      : result.score >= 60
-                        ? "bg-blue-100 text-blue-800"
-                        : result.score >= 40
-                          ? "bg-amber-100 text-amber-800"
-                          : "bg-red-100 text-red-800"
-                  }
-                >
+                <Badge className={scoreStyles(result.score).badge}>
                   {result.score}%
                 </Badge>
               </div>
@@ -460,12 +462,41 @@ export default function PlacementPage() {
                       {pattern.verbal}% · Tech {pattern.technical}%
                     </p>
 
-                    <Button
-                      className="w-full"
-                      onClick={() => router.push(`/student/placement/test/${company.id}`)}
-                    >
-                      Start Test
-                    </Button>
+                    {(() => {
+                      const last = bestScoreByCompany[company.id];
+                      const attempted = last != null;
+                      return (
+                        <div className="space-y-2 pt-1">
+                          {attempted && (
+                            <div className="flex items-center justify-between text-xs">
+                              <span className="text-muted-foreground">
+                                Your best
+                              </span>
+                              <span
+                                className={cn(
+                                  "rounded-full px-2 py-0.5 font-semibold tabular-nums",
+                                  scoreStyles(last).badge
+                                )}
+                              >
+                                {Math.round(last)}%
+                              </span>
+                            </div>
+                          )}
+                          {/* Attempted companies fall back to a quieter outline
+                              CTA so the grid is not a wall of identical dark
+                              buttons; fresh ones stay primary to invite a try. */}
+                          <Button
+                            variant={attempted ? "outline" : "default"}
+                            className="w-full"
+                            onClick={() =>
+                              router.push(`/student/placement/test/${company.id}`)
+                            }
+                          >
+                            {attempted ? "Retake test" : "Start Test"}
+                          </Button>
+                        </div>
+                      );
+                    })()}
                   </CardContent>
                 </Card>
               );

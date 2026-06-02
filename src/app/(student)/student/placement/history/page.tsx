@@ -27,7 +27,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import { Progress } from "@/components/ui/progress";
+import { ScoreMeter } from "@/components/ui/score-meter";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
@@ -38,6 +38,7 @@ import {
 } from "@/components/ui/tabs";
 import { createBrowserClient } from "@/lib/db/supabase-browser";
 import { cn } from "@/lib/utils";
+import { scoreStyles } from "@/lib/ui/score";
 
 const CATEGORIES = ["quantitative", "logical", "verbal", "technical"] as const;
 
@@ -117,15 +118,7 @@ function categoryBadgeClass(category: string) {
 }
 
 function scoreBadgeClass(score: number) {
-  if (score >= 65) return "bg-green-100 text-green-800";
-  if (score >= 50) return "bg-amber-100 text-amber-800";
-  return "bg-red-100 text-red-800";
-}
-
-function headerScoreClass(score: number) {
-  if (score >= 65) return "text-green-600";
-  if (score >= 50) return "text-amber-600";
-  return "text-red-600";
+  return scoreStyles(score).badge;
 }
 
 export default function PlacementHistoryPage() {
@@ -398,16 +391,25 @@ export default function PlacementHistoryPage() {
                 <ScrollArea className="h-[min(70vh,720px)] pr-3">
                   <div className="space-y-4">
                     <div>
-                      <h2
-                        className={cn(
-                          "text-2xl font-bold",
-                          headerScoreClass(selectedAttempt.score)
-                        )}
-                      >
-                        {selectedAttempt.placement_companies?.name ?? "Placement"}{" "}
-                        — {selectedAttempt.score}%
+                      <h2 className="text-2xl font-bold text-foreground">
+                        {selectedAttempt.placement_companies?.name ?? "Placement"}
                       </h2>
-                      <p className="text-sm text-muted-foreground">
+                      <div className="mt-1 flex items-center gap-2">
+                        {/* Score framed as a journey toward the target, not a
+                            bare red verdict. */}
+                        <span
+                          className={cn(
+                            "rounded-full px-2.5 py-0.5 text-sm font-semibold tabular-nums",
+                            scoreStyles(selectedAttempt.score).badge
+                          )}
+                        >
+                          {selectedAttempt.score}%
+                        </span>
+                        <span className="text-xs text-muted-foreground">
+                          Target 65%
+                        </span>
+                      </div>
+                      <p className="mt-1 text-sm text-muted-foreground">
                         {formatDate(selectedAttempt.created_at)} ·{" "}
                         {Math.floor((selectedAttempt.time_taken ?? 0) / 60)}m{" "}
                         {(selectedAttempt.time_taken ?? 0) % 60}s
@@ -427,6 +429,37 @@ export default function PlacementHistoryPage() {
                       </TabsList>
 
                       <TabsContent value="overview" className="space-y-4 pt-2">
+                        {/* Strengths FIRST — open on what the student got right
+                            before showing where to improve. "Here is what you
+                            are good at, now let's grow the rest." */}
+                        <Card className="border-emerald-200 bg-emerald-50/50 dark:border-emerald-900 dark:bg-emerald-950/20">
+                          <CardHeader>
+                            <CardTitle className="text-base text-emerald-800 dark:text-emerald-300">
+                              Your strengths
+                            </CardTitle>
+                          </CardHeader>
+                          <CardContent className="space-y-2">
+                            {(selectedAttempt.top_strengths ?? []).length === 0 ? (
+                              <p className="text-sm text-muted-foreground">
+                                Keep practising — your strengths will show up here
+                                as you take more tests.
+                              </p>
+                            ) : (
+                              (selectedAttempt.top_strengths ?? []).map((t) => (
+                                <div
+                                  key={t.subcategory}
+                                  className="flex items-center justify-between rounded border border-emerald-100 bg-white/80 px-3 py-2 text-sm dark:border-emerald-900 dark:bg-emerald-950/40"
+                                >
+                                  <span>{t.label}</span>
+                                  <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-xs font-semibold text-emerald-700 tabular-nums">
+                                    {t.score}%
+                                  </span>
+                                </div>
+                              ))
+                            )}
+                          </CardContent>
+                        </Card>
+
                         <Card>
                           <CardHeader>
                             <CardTitle className="text-base">
@@ -439,52 +472,21 @@ export default function PlacementHistoryPage() {
                                 selectedAttempt.category_scores?.[cat] ?? 0
                               );
                               return (
-                                <div key={cat} className="space-y-1.5">
-                                  <div className="flex justify-between text-sm">
-                                    <span className="font-medium capitalize">
-                                      {cat}
-                                    </span>
-                                    <span>{sc}%</span>
-                                  </div>
-                                  <Progress value={sc} />
-                                  <p className="text-xs text-muted-foreground">
-                                    Target: 65%
-                                  </p>
-                                </div>
+                                <ScoreMeter
+                                  key={cat}
+                                  label={cat.charAt(0).toUpperCase() + cat.slice(1)}
+                                  score={sc}
+                                />
                               );
                             })}
                           </CardContent>
                         </Card>
 
-                        <Card className="border-green-200 bg-green-50/50 dark:border-green-900 dark:bg-green-950/20">
+                        {/* Focus areas — amber "grow these", not red "you failed". */}
+                        <Card className="border-amber-200 bg-amber-50/40 dark:border-amber-900 dark:bg-amber-950/20">
                           <CardHeader>
-                            <CardTitle className="text-base text-green-800 dark:text-green-300">
-                              Top strengths
-                            </CardTitle>
-                          </CardHeader>
-                          <CardContent className="space-y-2">
-                            {(selectedAttempt.top_strengths ?? []).length === 0 ? (
-                              <p className="text-sm text-muted-foreground">
-                                No strong areas yet
-                              </p>
-                            ) : (
-                              (selectedAttempt.top_strengths ?? []).map((t) => (
-                                <div
-                                  key={t.subcategory}
-                                  className="flex items-center justify-between rounded border border-green-100 bg-white/80 px-3 py-2 text-sm dark:border-green-900 dark:bg-green-950/40"
-                                >
-                                  <span>{t.label}</span>
-                                  <Badge variant="secondary">{t.score}%</Badge>
-                                </div>
-                              ))
-                            )}
-                          </CardContent>
-                        </Card>
-
-                        <Card className="border-red-200 bg-red-50/40 dark:border-red-900 dark:bg-red-950/20">
-                          <CardHeader>
-                            <CardTitle className="text-base text-red-800 dark:text-red-300">
-                              Focus areas
+                            <CardTitle className="text-base text-amber-800 dark:text-amber-300">
+                              Where to grow next
                             </CardTitle>
                           </CardHeader>
                           <CardContent className="space-y-3">
@@ -493,7 +495,7 @@ export default function PlacementHistoryPage() {
                               .map((gap, gapIdx) => (
                                 <div
                                   key={gap.subcategory || gap.label || `gap-${gapIdx}`}
-                                  className="flex items-center justify-between rounded-lg bg-red-50 p-2 dark:bg-red-950/20"
+                                  className="flex items-center justify-between rounded-lg bg-amber-50 p-2 dark:bg-amber-950/20"
                                 >
                                   <div>
                                     <p className="text-sm font-medium">{gap.label}</p>

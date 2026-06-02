@@ -2,44 +2,22 @@ import {
   createAdminClient,
   createServerClientForRequestResponse,
 } from "@/lib/db/supabase-server";
+import { requireAuth, requireRole, apiError, apiSuccess } from "@/lib/api/helpers";
 import { type NextRequest, NextResponse } from "next/server";
 
 export async function GET(request: NextRequest) {
   try {
     const response = NextResponse.next();
-    const supabase = createServerClientForRequestResponse(request, response);
-    const {
-      data: { user },
-      error: authError,
-    } = await supabase.auth.getUser();
-
-    if (authError || !user) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
-
+    void response;
+    const authResult = await requireAuth();
+    if (authResult instanceof Response) return authResult;
+    const { user } = authResult;
+    void user;
     const adminClient = createAdminClient();
-    const { data: profile } = await adminClient
-      .from("profiles")
-      .select("role")
-      .eq("id", user.id)
-      .single();
-
-    if (
-      !profile ||
-      !["superadmin", "faculty", "student"].includes(profile.role)
-    ) {
-      return NextResponse.json(
-        { error: "Forbidden: superadmin, faculty, or student only" },
-        { status: 403 }
-      );
-    }
 
     const subjectId = request.nextUrl.searchParams.get("subjectId");
     if (!subjectId) {
-      return NextResponse.json(
-        { error: "subjectId is required" },
-        { status: 400 }
-      );
+      return apiError("subjectId is required", 400);
     }
 
     const { data: row, error: fetchError } = await adminClient
@@ -50,10 +28,7 @@ export async function GET(request: NextRequest) {
 
     if (fetchError) {
       console.error("[subjects/content] GET error:", fetchError);
-      return NextResponse.json(
-        { error: fetchError.message },
-        { status: 500 }
-      );
+      return apiError(fetchError.message, 500);
     }
 
     if (!row) {
@@ -67,36 +42,17 @@ export async function GET(request: NextRequest) {
   } catch (err) {
     console.error("[subjects/content] GET error:", err);
     const message = err instanceof Error ? err.message : "Failed to fetch content";
-    return NextResponse.json({ error: message }, { status: 500 });
+    return apiError(message, 500);
   }
 }
 
 export async function POST(request: NextRequest) {
   try {
     const response = NextResponse.next();
-    const supabase = createServerClientForRequestResponse(request, response);
-    const {
-      data: { user },
-      error: authError,
-    } = await supabase.auth.getUser();
-
-    if (authError || !user) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
-
-    const adminClient = createAdminClient();
-    const { data: profile } = await adminClient
-      .from("profiles")
-      .select("role")
-      .eq("id", user.id)
-      .single();
-
-    if (!profile || profile.role !== "superadmin") {
-      return NextResponse.json(
-        { error: "Forbidden: Superadmin only" },
-        { status: 403 }
-      );
-    }
+    void response;
+    const authResult = await requireRole(["superadmin"]);
+    if (authResult instanceof Response) return authResult;
+    const { user, adminClient } = authResult;
 
     const body = await request.json();
     const subjectId = String(body?.subjectId ?? "").trim();
@@ -175,6 +131,6 @@ export async function POST(request: NextRequest) {
   } catch (err) {
     console.error("[subjects/content] POST error:", err);
     const message = err instanceof Error ? err.message : "Failed to save content";
-    return NextResponse.json({ error: message }, { status: 500 });
+    return apiError(message, 500);
   }
 }

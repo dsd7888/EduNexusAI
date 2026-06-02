@@ -78,10 +78,14 @@ function createGeminiProvider(): AIProvider {
         // Thinking tokens eat into maxOutputTokens on gemini-2.5-flash
         const isStructuredTask = [
           "ppt_gen",
+          "ppt_extract",
+          "ppt_refine",
           "quiz_gen",
           "qpaper_gen",
           "refine",
           "placement_gen",
+          "syllabus_extract",
+          "pyq_extract",
         ].includes(taskName);
 
         const temperature =
@@ -99,6 +103,10 @@ function createGeminiProvider(): AIProvider {
 
         if (isStructuredTask && modelName.includes("flash")) {
           generationConfig.thinkingConfig = { thinkingBudget: 0 };
+        }
+
+        if (taskName === "qpaper_gen" || taskName === "pyq_extract") {
+          generationConfig.responseMimeType = "application/json";
         }
 
         const modelParams: Parameters<typeof genAI.getGenerativeModel>[0] = {
@@ -123,7 +131,16 @@ function createGeminiProvider(): AIProvider {
         }));
 
         const chat = model.startChat({ history });
-        const result = await chat.sendMessage(lastMessage.content);
+
+        const attachments = params.attachments ?? [];
+        const result = attachments.length > 0
+          ? await chat.sendMessage([
+              { text: lastMessage.content },
+              ...attachments.map((a) => ({
+                inlineData: { mimeType: a.mediaType, data: a.data },
+              })),
+            ])
+          : await chat.sendMessage(lastMessage.content);
 
         const response = result.response;
         const content = response.text();

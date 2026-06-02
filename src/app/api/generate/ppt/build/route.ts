@@ -8,6 +8,7 @@ import {
   createAdminClient,
   createServerClient,
 } from "@/lib/db/supabase-server";
+import { requireAuth, requireRole, apiError, apiSuccess } from "@/lib/api/helpers";
 import type { NextRequest } from "next/server";
 
 export async function POST(request: NextRequest) {
@@ -20,37 +21,9 @@ export async function POST(request: NextRequest) {
       { method: "POST" }
     ).catch(() => {});
 
-    const supabase = await createServerClient();
-    const {
-      data: { user },
-      error: authError,
-    } = await supabase.auth.getUser();
-
-    if (authError || !user) {
-      return Response.json({ error: "Unauthorized" }, { status: 401 });
-    }
-
-    const adminClient = createAdminClient();
-    const { data: profile, error: profileError } = await adminClient
-      .from("profiles")
-      .select("id, role")
-      .eq("id", user.id)
-      .single();
-
-    if (profileError || !profile) {
-      return Response.json(
-        { error: "Failed to load profile" },
-        { status: 500 }
-      );
-    }
-
-    const role = (profile as { role?: string }).role;
-    if (role !== "faculty" && role !== "superadmin") {
-      return Response.json(
-        { error: "Forbidden: Faculty or Superadmin only" },
-        { status: 403 }
-      );
-    }
+    const authResult = await requireRole(["faculty", "superadmin"]);
+    if (authResult instanceof Response) return authResult;
+    const { user, adminClient } = authResult;
 
     const body = await request.json().catch(() => ({} as Record<string, unknown>));
     const subjectId = String(body?.subjectId ?? "").trim();
@@ -77,21 +50,15 @@ export async function POST(request: NextRequest) {
       : [];
 
     if (!subjectId) {
-      return Response.json(
-        { error: "subjectId is required" },
-        { status: 400 }
-      );
+      return apiError("subjectId is required", 400);
     }
     if (!presentationTitle) {
-      return Response.json(
-        { error: "presentationTitle is required" },
-        { status: 400 }
-      );
+      return apiError("presentationTitle is required", 400);
     }
     if (slides.length === 0) {
-      return Response.json(
-        { error: "slides array is required and must not be empty" },
-        { status: 400 }
+      return apiError(
+        "slides array is required and must not be empty",
+        400
       );
     }
 
@@ -101,16 +68,29 @@ export async function POST(request: NextRequest) {
       .filter(
         (
           x
-        ): x is { slide: SlideContent & { type: "diagram" }; idx: number } => {
-          const slide = x.slide as any;
-          return (
-            slide != null &&
-            typeof slide === "object" &&
-            slide.type === "diagram" &&
-            slide.diagramRenderType === "imagen" &&
-            Boolean(slide.imagenPrompt) &&
-            !slide.imageBase64
-          );
+        ): x is {
+          slide: SlideContent & { type: "diagram" | "dual_visual" };
+          idx: number;
+        } => {
+          const slide = x.slide as SlideContent;
+          if (
+            slide == null ||
+            typeof slide !== "object" ||
+            !slide.imagenPrompt ||
+            slide.imageBase64
+          ) {
+            return false;
+          }
+          if (slide.type === "diagram") {
+            return (
+              slide.diagramRenderType === "imagen" ||
+              slide.diagramRenderType === "illustration"
+            );
+          }
+          if (slide.type === "dual_visual") {
+            return true;
+          }
+          return false;
         }
       );
 
@@ -126,6 +106,10 @@ export async function POST(request: NextRequest) {
             subject: subject || presentationTitle,
             topic: topic || presentationTitle,
             imagenPrompt: slide.imagenPrompt!,
+            renderHint:
+              slide.type === "dual_visual"
+                ? "dual"
+                : slide.diagramRenderType ?? null,
           });
           const imageBase64 = await generateImagenImage(fullPrompt);
 
@@ -203,10 +187,7 @@ export async function POST(request: NextRequest) {
 
     if (uploadError) {
       console.error("[ppt/build] Upload error:", uploadError);
-      return Response.json(
-        { error: "Failed to store presentation" },
-        { status: 500 }
-      );
+      return apiError("Failed to store presentation", 500);
     }
 
     const { data: signedData, error: signedError } = await adminClient.storage
@@ -214,29 +195,39 @@ export async function POST(request: NextRequest) {
       .createSignedUrl(filePath, 86400);
 
     if (signedError || !signedData) {
-      return Response.json(
-        { error: "Failed to get download URL" },
-        { status: 500 }
-      );
+      return apiError("Failed to get download URL", 500);
     }
 
-    await adminClient.from("generated_content").insert({
-      subject_id: subjectId,
-      module_id: null,
-      type: "ppt",
-      title: pptData.presentationTitle,
-      file_path: filePath,
-      metadata: {
-        fileName,
-        slideCount: pptData.slides.length,
-        subject,
-        topic,
-        slides,
-        expires_at: expiresAt,
-      },
-      generated_by: user.id,
-      status: "ready",
-    });
+    const { data: insertedRow, error: insertError } = await adminClient
+      .from("generated_content")
+      .insert({
+        subject_id: subjectId,
+        module_id: null,
+        type: "ppt",
+        title: pptData.presentationTitle,
+        file_path: filePath,
+        metadata: {
+          fileName,
+          presentationTitle,
+          slideCount: pptData.slides.length,
+          subject,
+          topic,
+          slides,
+          expires_at: expiresAt,
+          totalFlashCostInr: totalFlashCost,
+          totalImagenCostInr: totalImagenCost,
+          totalCostInr: totalFlashCost + totalImagenCost,
+        },
+        generated_by: user.id,
+        status: "completed",
+      })
+      .select("id")
+      .single();
+
+    if (insertError || !insertedRow) {
+      console.error("[ppt/build] Insert error:", insertError);
+      return apiError("Failed to record generated content", 500);
+    }
 
     console.log("[ppt/build] Done.", fileName);
 
@@ -245,11 +236,12 @@ export async function POST(request: NextRequest) {
       title: presentationTitle,
       slideCount: slides.length,
       fileName,
+      contentId: insertedRow.id,
     });
   } catch (err) {
     console.error("[ppt/build] Error:", err);
     const message =
       err instanceof Error ? err.message : "Failed to build presentation";
-    return Response.json({ error: message }, { status: 500 });
+    return apiError(message, 500);
   }
 }

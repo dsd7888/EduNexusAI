@@ -7,41 +7,14 @@ import {
   createAdminClient,
   createServerClient,
 } from "@/lib/db/supabase-server";
+import { requireAuth, requireRole, apiError, apiSuccess } from "@/lib/api/helpers";
 import type { NextRequest } from "next/server";
 
 export async function POST(request: NextRequest) {
   try {
-    const supabase = await createServerClient();
-    const {
-      data: { user },
-      error: authError,
-    } = await supabase.auth.getUser();
-
-    if (authError || !user) {
-      return Response.json({ error: "Unauthorized" }, { status: 401 });
-    }
-
-    const adminClient = createAdminClient();
-    const { data: profile, error: profileError } = await adminClient
-      .from("profiles")
-      .select("id, role")
-      .eq("id", user.id)
-      .single();
-
-    if (profileError || !profile) {
-      return Response.json(
-        { error: "Failed to load profile" },
-        { status: 500 }
-      );
-    }
-
-    const role = (profile as { role?: string }).role;
-    if (role !== "faculty" && role !== "superadmin") {
-      return Response.json(
-        { error: "Forbidden: Faculty or Superadmin only" },
-        { status: 403 }
-      );
-    }
+    const authResult = await requireRole(["faculty", "superadmin"]);
+    if (authResult instanceof Response) return authResult;
+    const { user, adminClient } = authResult;
 
     const body = await request.json().catch(() => ({} as any));
     const subjectId = String(body?.subjectId ?? "").trim();
@@ -57,19 +30,13 @@ export async function POST(request: NextRequest) {
     const contentToRefine = rawContent.trim();
 
     if (!contentToRefine) {
-      return Response.json(
-        { error: "contentToRefine must not be empty" },
-        { status: 400 }
-      );
+      return apiError("contentToRefine must not be empty", 400);
     }
 
     if (contentToRefine.length > 15000) {
-      return Response.json(
-        {
-          error:
-            "contentToRefine is too long (max 15000 characters). Please reduce the content size.",
-        },
-        { status: 400 }
+      return apiError(
+        "contentToRefine is too long (max 15000 characters). Please reduce the content size.",
+        400
       );
     }
 
@@ -80,9 +47,9 @@ export async function POST(request: NextRequest) {
     );
 
     if (!validTypes.length) {
-      return Response.json(
-        { error: "At least one valid refinement type is required" },
-        { status: 400 }
+      return apiError(
+        "At least one valid refinement type is required",
+        400
       );
     }
 
@@ -154,7 +121,7 @@ export async function POST(request: NextRequest) {
     console.error("[refine] Error:", err);
     const message =
       err instanceof Error ? err.message : "Failed to refine content";
-    return Response.json({ error: message }, { status: 500 });
+    return apiError(message, 500);
   }
 }
 

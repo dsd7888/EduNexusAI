@@ -1,6 +1,7 @@
 "use client";
 
 import { createBrowserClient } from "@/lib/db/supabase-browser";
+import { useAllSubjects } from "@/hooks/useSupabaseData";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -56,7 +57,7 @@ interface AssignmentRow {
 
 export default function FacultyPage() {
   const [faculty, setFaculty] = useState<FacultyOption[]>([]);
-  const [subjects, setSubjects] = useState<SubjectOption[]>([]);
+  const { subjects } = useAllSubjects();
   const [assignments, setAssignments] = useState<AssignmentRow[]>([]);
   const [facultyId, setFacultyId] = useState("");
   const [subjectId, setSubjectId] = useState("");
@@ -75,15 +76,6 @@ export default function FacultyPage() {
       .eq("role", "faculty")
       .order("full_name");
     setFaculty(data ?? []);
-  }, []);
-
-  const fetchSubjects = useCallback(async () => {
-    const supabase = createBrowserClient();
-    const { data } = await supabase
-      .from("subjects")
-      .select("id, name, code")
-      .order("name");
-    setSubjects(data ?? []);
   }, []);
 
   const fetchAssignments = useCallback(async () => {
@@ -128,9 +120,8 @@ export default function FacultyPage() {
 
   useEffect(() => {
     fetchFaculty();
-    fetchSubjects();
     fetchAssignments();
-  }, [fetchFaculty, fetchSubjects, fetchAssignments]);
+  }, [fetchFaculty, fetchAssignments]);
 
   const isAlreadyAssigned = facultyId && subjectId && assignments.some(
     (a) => a.faculty_id === facultyId && a.subject_id === subjectId

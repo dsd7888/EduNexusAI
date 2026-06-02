@@ -2,6 +2,7 @@ import {
   createAdminClient,
   createServerClientForRequestResponse,
 } from "@/lib/db/supabase-server";
+import { requireAuth, requireRole, apiError, apiSuccess } from "@/lib/api/helpers";
 import { type NextRequest, NextResponse } from "next/server";
 
 export async function GET() {
@@ -11,29 +12,10 @@ export async function GET() {
 export async function POST(request: NextRequest) {
   try {
     const response = NextResponse.next();
-    const supabase = createServerClientForRequestResponse(request, response);
-    const {
-      data: { user },
-      error: authError,
-    } = await supabase.auth.getUser();
-
-    if (authError || !user) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
-
-    const adminClient = createAdminClient();
-    const { data: profile } = await adminClient
-      .from("profiles")
-      .select("role")
-      .eq("id", user.id)
-      .single();
-
-    if (!profile || profile.role !== "superadmin") {
-      return NextResponse.json(
-        { error: "Forbidden: Superadmin only" },
-        { status: 403 }
-      );
-    }
+    void response;
+    const authResult = await requireRole(["superadmin"]);
+    if (authResult instanceof Response) return authResult;
+    const { user, adminClient } = authResult;
 
     const body = await request.json();
     const requestId = body?.requestId;
@@ -41,22 +23,13 @@ export async function POST(request: NextRequest) {
     const comment = body?.comment;
 
     if (!requestId || !action) {
-      return NextResponse.json(
-        { error: "requestId and action are required" },
-        { status: 400 }
-      );
+      return apiError("requestId and action are required", 400);
     }
     if (action !== "approve" && action !== "reject") {
-      return NextResponse.json(
-        { error: "action must be 'approve' or 'reject'" },
-        { status: 400 }
-      );
+      return apiError("action must be 'approve' or 'reject'", 400);
     }
     if (action === "reject" && !comment?.trim()) {
-      return NextResponse.json(
-        { error: "comment is required when rejecting" },
-        { status: 400 }
-      );
+      return apiError("comment is required when rejecting", 400);
     }
 
     const { data: changeRequest, error: fetchError } = await adminClient
@@ -195,10 +168,10 @@ export async function POST(request: NextRequest) {
       });
     }
 
-    return NextResponse.json({ error: "Invalid action" }, { status: 400 });
+    return apiError("Invalid action", 400);
   } catch (err) {
     console.error("[approvals] POST error:", err);
     const message = err instanceof Error ? err.message : "Failed to update";
-    return NextResponse.json({ error: message }, { status: 500 });
+    return apiError(message, 500);
   }
 }

@@ -5,9 +5,15 @@ const TASK_TO_MODEL: Record<string, "flash" | "pro"> = {
   chat: "flash",
   quiz_gen: "flash",
   ppt_gen: "flash",
-  qpaper_gen: "flash",
+  ppt_diagram: "pro", // diagram-only PPT batches — Pro produces better SVG/diagram code
+  ppt_extract: "flash",
+  ppt_refine: "flash",
+  qpaper_gen: "pro",
+  answer_key_mcq: "flash",
   refine: "flash",
   placement_gen: "pro",
+  syllabus_extract: "flash",
+  pyq_extract: "flash",
 };
 
 const DEFAULT_MODEL: "flash" | "pro" = "flash";
@@ -28,17 +34,27 @@ export async function routeAI(
       params.maxTokens ??
       (task === "ppt_gen"
         ? 32768
-        : task === "placement_gen"
+        : task === "ppt_diagram"
           ? 32768
-          : task === "quiz_gen"
-            ? 8192
-            : task === "qpaper_gen"
-              ? 16384
-              : task === "refine"
+          : task === "ppt_refine"
+            ? 16384
+            : task === "placement_gen"
+            ? 32768
+            : task === "quiz_gen"
+              ? 8192
+              : task === "qpaper_gen"
                 ? 8192
-                : task === "chat"
-                  ? 12288
-                  : 4096),
+                : task === "answer_key_mcq"
+                  ? 2048
+                  : task === "refine"
+                    ? 8192
+                    : task === "chat"
+                      ? 16384
+                      : task === "syllabus_extract"
+                        ? 8192
+                        : task === "pyq_extract"
+                          ? 4096
+                          : 4096),
   };
 
   const providerName =

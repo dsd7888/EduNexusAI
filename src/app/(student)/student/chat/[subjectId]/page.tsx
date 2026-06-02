@@ -8,7 +8,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Skeleton } from "@/components/ui/skeleton";
 import MarkdownRenderer from "@/components/chat/MarkdownRenderer";
 import { createBrowserClient } from "@/lib/db/supabase-browser";
-import { HelpCircle, Lightbulb, Zap } from "lucide-react";
+import { Download, HelpCircle, Lightbulb, Loader2, Sparkles, X, Zap } from "lucide-react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -28,6 +28,119 @@ type SubjectRow = {
   branch: string;
 };
 
+type InteractivePayload = {
+  html: string;
+  markdown: string;
+} | null;
+
+function parseInteractiveHtml(content: string): InteractivePayload {
+  const re = /```interactive-html\s*([\s\S]*?)```/i;
+  const match = content.match(re);
+  if (!match) return null;
+  const html = match[1]?.trim() ?? "";
+  if (!html) return null;
+  return {
+    html,
+    markdown: content.replace(re, "").trim(),
+  };
+}
+
+function InteractiveHtmlViewer({ htmlContent }: { htmlContent: string }) {
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  const [isLoading, setIsLoading] = useState(true);
+  const [iframeHeight, setIframeHeight] = useState("520px");
+
+  useEffect(() => {
+    const update = () => setIframeHeight(window.innerWidth < 640 ? "400px" : "520px");
+    update();
+    window.addEventListener("resize", update);
+    return () => window.removeEventListener("resize", update);
+  }, []);
+
+  return (
+    <div className="my-6 rounded-xl overflow-hidden border border-blue-200 bg-gradient-to-br from-blue-50 to-indigo-50 shadow-sm">
+      {/* Header bar */}
+      <div className="bg-white border-b border-blue-200 px-4 py-2.5 flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse" />
+          <span className="text-sm font-medium text-gray-700">Interactive Visualization</span>
+        </div>
+        <div className="flex gap-2 flex-wrap sm:flex-nowrap">
+          <button
+            onClick={() => setIsFullscreen(true)}
+            className="px-3 py-1.5 text-xs font-medium bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors flex items-center gap-1.5"
+          >
+            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4" />
+            </svg>
+            <span className="hidden sm:inline">Expand</span>
+          </button>
+          <button
+            onClick={() => {
+              const blob = new Blob([htmlContent], { type: "text/html" });
+              const url = URL.createObjectURL(blob);
+              const a = document.createElement("a");
+              a.href = url;
+              a.download = "visualization.html";
+              a.click();
+              URL.revokeObjectURL(url);
+            }}
+            className="px-3 py-1.5 text-xs font-medium bg-gray-600 text-white rounded-lg hover:bg-gray-700 transition-colors flex items-center gap-1.5"
+          >
+            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+            </svg>
+            <span className="hidden sm:inline">Download</span>
+          </button>
+        </div>
+      </div>
+
+      {/* Visualization container */}
+      <div className="relative bg-white">
+        {isLoading && (
+          <div className="absolute inset-0 flex items-center justify-center bg-white bg-opacity-90 z-10">
+            <div className="flex flex-col items-center gap-3">
+              <div className="w-8 h-8 border-2 border-blue-600 border-t-transparent rounded-full animate-spin" />
+              <p className="text-sm text-gray-600">Loading visualization...</p>
+            </div>
+          </div>
+        )}
+        <iframe
+          srcDoc={htmlContent}
+          title="Interactive visualization"
+          className="w-full border-0"
+          style={{ height: iframeHeight }}
+          sandbox="allow-scripts allow-same-origin"
+          onLoad={() => setIsLoading(false)}
+        />
+      </div>
+
+      {/* Fullscreen modal */}
+      {isFullscreen && (
+        <div className="fixed inset-0 z-50 bg-black bg-opacity-75 backdrop-blur-sm flex items-center justify-center sm:p-4 p-0">
+          <div className="bg-white sm:rounded-2xl rounded-none w-full h-full max-w-7xl sm:max-h-[95vh] max-h-full flex flex-col shadow-2xl">
+            <div className="px-4 sm:px-6 py-3 sm:py-4 border-b flex justify-between items-center bg-gradient-to-r from-blue-50 to-indigo-50">
+              <h3 className="text-lg font-semibold text-gray-800">Interactive Visualization</h3>
+              <button
+                onClick={() => setIsFullscreen(false)}
+                className="px-4 py-2 text-sm font-medium bg-gray-700 text-white rounded-lg hover:bg-gray-800 transition-colors"
+              >
+                Close
+              </button>
+            </div>
+            <iframe
+              srcDoc={htmlContent}
+              title="Interactive visualization fullscreen"
+              className="flex-1 w-full border-0"
+              sandbox="allow-scripts allow-same-origin"
+            />
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function StudentSubjectChatPage() {
   const params = useParams<{ subjectId: string }>();
   const subjectId = params?.subjectId;
@@ -39,9 +152,15 @@ export default function StudentSubjectChatPage() {
 
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [sessionId, setSessionId] = useState<string | null>(null);
+  const [showResumeBanner, setShowResumeBanner] = useState(false);
+  const [resumedCount, setResumedCount] = useState(0);
+  const [hoveredMessageId, setHoveredMessageId] = useState<number | null>(null);
+  const [struggleTopic, setStruggleTopic] = useState<string | null>(null);
+  const [hasShownStruggleBanner, setHasShownStruggleBanner] = useState(false);
   const [inputValue, setInputValue] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [isRateLimited, setIsRateLimited] = useState(false);
+  const [isExporting, setIsExporting] = useState(false);
 
   const [loadingSubject, setLoadingSubject] = useState(true);
   const [loadingSyllabus, setLoadingSyllabus] = useState(true);
@@ -118,17 +237,45 @@ export default function StudentSubjectChatPage() {
     if (!subjectId) return;
     if (!hasSyllabus) return;
 
+    let cancelled = false;
+
     const run = async () => {
       try {
-        // Create new session for this visit
+        // Resume the last open session for this subject, or start fresh.
         const sessionRes = await fetch("/api/chat/session", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ subjectId }),
         });
         if (sessionRes.ok) {
-          const { sessionId } = await sessionRes.json();
-          setSessionId(sessionId);
+          const { sessionId: sid, isResumed, messageCount } =
+            await sessionRes.json();
+          if (cancelled) return;
+          setSessionId(sid);
+
+          if (isResumed && messageCount > 0) {
+            // Load the last 20 messages of the resumed session on mount.
+            const supabase = createBrowserClient();
+            const { data: rows } = await supabase
+              .from("chat_messages")
+              .select("role, content, created_at")
+              .eq("session_id", sid)
+              .order("created_at", { ascending: false })
+              .limit(20);
+            if (cancelled) return;
+            const ordered = (rows ?? [])
+              .slice()
+              .reverse()
+              .map((r: { role: Role; content: string }) => ({
+                role: r.role,
+                content: r.content,
+              }));
+            if (ordered.length > 0) {
+              setMessages(ordered);
+              setResumedCount(messageCount);
+              setShowResumeBanner(true);
+            }
+          }
         }
 
         const res = await fetch("/api/chat/suggestions", {
@@ -137,7 +284,7 @@ export default function StudentSubjectChatPage() {
           body: JSON.stringify({ subjectId, syllabusContent }),
         });
         const json = await res.json().catch(() => ({}));
-        if (!res.ok) return;
+        if (!res.ok || cancelled) return;
         const prompts = Array.isArray(json?.suggestions)
           ? json.suggestions
           : [];
@@ -148,6 +295,10 @@ export default function StudentSubjectChatPage() {
     };
 
     run();
+
+    return () => {
+      cancelled = true;
+    };
   }, [subjectId, hasSyllabus, syllabusContent]);
 
   const sendMessage = useCallback(
@@ -158,6 +309,8 @@ export default function StudentSubjectChatPage() {
       setMessages((prev) => [...prev, { role: "user", content: trimmed }]);
       setInputValue("");
       setIsLoading(true);
+      // Dismiss the struggle nudge once the student sends their next message.
+      setStruggleTopic(null);
 
       try {
         const res = await fetch("/api/chat", {
@@ -216,6 +369,17 @@ export default function StudentSubjectChatPage() {
           data?.content ?? data?.response ?? data?.message ?? ""
         );
         setMessages((prev) => [...prev, { role: "assistant", content: reply }]);
+
+        // Struggle nudge — at most once per session.
+        if (
+          data?.struggle_detected === true &&
+          typeof data?.topic === "string" &&
+          data.topic &&
+          !hasShownStruggleBanner
+        ) {
+          setStruggleTopic(data.topic);
+          setHasShownStruggleBanner(true);
+        }
       } catch {
         setMessages((prev) => [
           ...prev,
@@ -229,12 +393,66 @@ export default function StudentSubjectChatPage() {
         requestAnimationFrame(() => inputRef.current?.focus());
       }
     },
-    [subjectId, sessionId, isRateLimited, inputValue, messages]
+    [
+      subjectId,
+      sessionId,
+      isRateLimited,
+      inputValue,
+      messages,
+      hasShownStruggleBanner,
+    ]
   );
 
   const handleSubmit = async () => {
     await sendMessage(inputValue);
   };
+
+  const handleStartFresh = useCallback(async () => {
+    if (!subjectId) return;
+    try {
+      const res = await fetch("/api/chat/session", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ subjectId, force_new: true }),
+      });
+      if (!res.ok) return;
+      const { sessionId: sid } = await res.json();
+      setSessionId(sid);
+      setMessages([]);
+      setResumedCount(0);
+      setShowResumeBanner(false);
+    } catch {
+      // ignore — keep the current resumed session if the call fails
+    }
+  }, [subjectId]);
+
+  async function handleExportChat() {
+    if (!sessionId || messages.length === 0) return;
+    setIsExporting(true);
+    try {
+      const res = await fetch("/api/chat/export", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sessionId }),
+      });
+      if (!res.ok) throw new Error("Export failed");
+
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `chat-${subject?.name ?? "notes"}-${new Date()
+        .toISOString()
+        .slice(0, 10)}.pdf`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch {
+      // Silent fail — export is a convenience feature, don't interrupt chat
+      console.error("[chat/export] failed");
+    } finally {
+      setIsExporting(false);
+    }
+  }
 
   const handleKeyDown: React.KeyboardEventHandler<HTMLInputElement> = (e) => {
     if (e.key === "Enter" && !e.shiftKey) {
@@ -335,12 +553,56 @@ export default function StudentSubjectChatPage() {
             Semester {subject.semester} • {subject.branch}
           </div>
         </div>
-        <div className="hidden items-center gap-2 sm:flex">
-          <Badge className="shrink-0 bg-emerald-600 text-white hover:bg-emerald-600">
+        <div className="flex shrink-0 items-center gap-2">
+          {messages.length > 0 && sessionId && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleExportChat}
+              disabled={isExporting}
+              className="gap-1.5 text-xs"
+            >
+              {isExporting ? (
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+              ) : (
+                <Download className="w-3.5 h-3.5" />
+              )}
+              {isExporting ? "Exporting..." : "Export PDF"}
+            </Button>
+          )}
+          <Badge className="hidden shrink-0 bg-emerald-600 text-white hover:bg-emerald-600 sm:inline-flex">
             Syllabus-locked ✓
           </Badge>
         </div>
       </div>
+
+      {showResumeBanner && (
+        <div className="flex items-center justify-between gap-2 border-b bg-muted/50 px-3 py-2 text-xs text-muted-foreground">
+          <span className="min-w-0 truncate">
+            Continuing your last session — {resumedCount}{" "}
+            {resumedCount === 1 ? "message" : "messages"}
+          </span>
+          <div className="flex shrink-0 items-center gap-1">
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={handleStartFresh}
+              className="h-6 px-2 text-xs"
+            >
+              Start fresh
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={() => setShowResumeBanner(false)}
+              className="h-6 w-6"
+              aria-label="Dismiss"
+            >
+              <X className="h-3.5 w-3.5" />
+            </Button>
+          </div>
+        </div>
+      )}
 
       <ScrollArea className="flex-1 px-2 py-4 sm:px-3">
         {messages.length === 0 ? (
@@ -378,10 +640,48 @@ export default function StudentSubjectChatPage() {
                   </div>
                 </div>
               ) : (
-                <div key={idx} className="flex justify-start">
+                <div
+                  key={idx}
+                  className="flex justify-start"
+                  onMouseEnter={() => setHoveredMessageId(idx)}
+                  onMouseLeave={() => setHoveredMessageId(null)}
+                >
                   <Card className="max-w-[90%] border bg-card">
                     <CardContent className="px-4 py-3">
-                      <MarkdownRenderer content={m.content} />
+                      {(() => {
+                        const interactive = parseInteractiveHtml(m.content);
+                        if (!interactive) return <MarkdownRenderer content={m.content} />;
+                        return (
+                          <>
+                            {interactive.markdown ? (
+                              <MarkdownRenderer content={interactive.markdown} />
+                            ) : null}
+                            <InteractiveHtmlViewer htmlContent={interactive.html} />
+                          </>
+                        );
+                      })()}
+                      {hoveredMessageId === idx &&
+                        !m.content.includes("interactive-html") &&
+                        !isLoading && (
+                          <div className="mt-2 flex justify-end">
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => {
+                                const vizPrompt =
+                                  "Create an interactive visualization for the concept explained in your last response. Use the interactive-html format.";
+                                setInputValue(vizPrompt);
+                                sendMessage(vizPrompt);
+                              }}
+                              className="h-7 gap-1 rounded-md border border-border/60 px-2 text-xs text-muted-foreground hover:bg-accent hover:text-accent-foreground"
+                              aria-label="Visualize this concept"
+                            >
+                              <Sparkles className="h-3.5 w-3.5" />
+                              Visualize
+                            </Button>
+                          </div>
+                        )}
                     </CardContent>
                   </Card>
                 </div>
@@ -408,6 +708,43 @@ export default function StudentSubjectChatPage() {
       </ScrollArea>
 
       <div className="sticky bottom-0 z-10 border-t bg-background/80 px-1 py-3 backdrop-blur">
+        {struggleTopic && (
+          <div className="mb-2 flex items-center justify-between gap-2 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-200">
+            <span className="min-w-0 truncate">
+              Looks like{" "}
+              <span className="font-semibold">{struggleTopic}</span> is tricky —
+              want a quick quiz?
+            </span>
+            <div className="flex shrink-0 items-center gap-1">
+              <Button
+                asChild
+                variant="ghost"
+                size="sm"
+                className="h-7 px-2 text-xs font-medium text-amber-900 hover:bg-amber-100 dark:text-amber-200 dark:hover:bg-amber-900/40"
+              >
+                <Link
+                  href={
+                    subjectId
+                      ? `/student/quiz?subjectId=${subjectId}`
+                      : "/student/quiz"
+                  }
+                >
+                  Try quiz →
+                </Link>
+              </Button>
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                onClick={() => setStruggleTopic(null)}
+                className="h-7 w-7 text-amber-900 hover:bg-amber-100 dark:text-amber-200 dark:hover:bg-amber-900/40"
+                aria-label="Dismiss"
+              >
+                <X className="h-3.5 w-3.5" />
+              </Button>
+            </div>
+          </div>
+        )}
         <div className="flex items-center gap-2">
           <Input
             ref={inputRef}

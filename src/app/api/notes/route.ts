@@ -7,18 +7,13 @@ import {
   createAdminClient,
   createServerClient,
 } from "@/lib/db/supabase-server";
+import { requireAuth, requireRole, apiError, apiSuccess } from "@/lib/api/helpers";
 
 export async function GET(request: NextRequest) {
   try {
-    const supabase = await createServerClient();
-    const {
-      data: { user },
-      error: authError,
-    } = await supabase.auth.getUser();
-
-    if (authError || !user) {
-      return Response.json({ error: "Unauthorized" }, { status: 401 });
-    }
+    const authResult = await requireAuth();
+    if (authResult instanceof Response) return authResult;
+    const { user } = authResult;
 
     const adminClient = createAdminClient();
     const { data: profile, error: profileError } = await adminClient
@@ -28,10 +23,7 @@ export async function GET(request: NextRequest) {
       .single();
 
     if (profileError || !profile || profile.role !== "student") {
-      return Response.json(
-        { error: "Forbidden: Students only" },
-        { status: 403 }
-      );
+      return apiError("Forbidden: Students only", 403);
     }
 
     const url = new URL(request.url);
@@ -39,10 +31,7 @@ export async function GET(request: NextRequest) {
     const moduleId = url.searchParams.get("moduleId") ?? "";
 
     if (!subjectId) {
-      return Response.json(
-        { error: "subjectId is required" },
-        { status: 400 }
-      );
+      return apiError("subjectId is required", 400);
     }
 
     const queryText = moduleId
@@ -96,7 +85,7 @@ export async function GET(request: NextRequest) {
       .single();
 
     if (subjectError || !subjectRow) {
-      return Response.json({ error: "Subject not found" }, { status: 404 });
+      return apiError("Subject not found", 404);
     }
 
     let moduleName: string | null = null;
@@ -161,7 +150,7 @@ export async function GET(request: NextRequest) {
     console.error("[notes] GET error:", err);
     const msg =
       err instanceof Error ? err.message : "Failed to generate notes";
-    return Response.json({ error: msg }, { status: 500 });
+    return apiError(msg, 500);
   }
 }
 

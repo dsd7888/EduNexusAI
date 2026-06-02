@@ -1,5 +1,17 @@
 import path from "path";
 import PptxGenJS from "pptxgenjs";
+import {
+  BATCH_PROMPT_COMPLETENESS,
+  BATCH_PROMPT_INDIAN_CONTEXT,
+  BATCH_PROMPT_LAYOUT_VARIETY,
+  BATCH_PROMPT_NO_PLACEHOLDER_DIAGRAMS,
+  OUTLINE_PROMPT_ACTIVITY_MANDATE,
+  OUTLINE_PROMPT_DUAL_VISUAL_EXAMPLE,
+  OUTLINE_PROMPT_HOOK_SLIDE,
+  OUTLINE_PROMPT_ILLUSTRATION_MANDATE,
+  OUTLINE_PROMPT_INDIAN_CONTEXT,
+} from "@/lib/ai/prompts";
+import { buildImagenPrompt, generateImagenImage } from "@/lib/ai/imagen";
 
 // ── TYPES ──────────────────────────────────────────────────
 
@@ -8,21 +20,21 @@ export type SlideType =
   | "overview"
   | "concept"
   | "diagram"
+  | "dual_visual"
   | "example"
   | "practice"
   | "summary";
 
 function sanitizeMermaidCode(code: string): string {
-  if (!code || code.trim().length === 0) return code;
+  if (!code?.trim()) return code;
 
-  const lines = code.split("\n");
-
-  const sanitizedLines = lines.map((line) => {
+  const lines = code.split("\n").map((rawLine) => {
+    let line = rawLine;
     const trimmed = line.trim();
+    if (!trimmed) return line;
 
-    // Skip empty lines and directive lines (graph TD, flowchart LR, etc.)
+    // Skip diagram type declarations
     if (
-      !trimmed ||
       /^(graph|flowchart|sequenceDiagram|stateDiagram|classDiagram|gitGraph|pie|gantt|erDiagram|journey|mindmap|timeline)\b/i.test(
         trimmed
       )
@@ -30,65 +42,70 @@ function sanitizeMermaidCode(code: string): string {
       return line;
     }
 
-    // Fix edge labels: content inside |...| pipes
-    let result = line.replace(/\|([^|]*)\|/g, (_, label) => {
-      const cleaned = label
-        .replace(/[(){}]/g, "")
-        .replace(/_/g, " ")
-        .replace(/:/g, "-")
-        .replace(/[<>&%#"]/g, "")
-        .replace(/\s{2,}/g, " ")
+    // Rename reserved words used as node IDs (not in labels)
+    // Only rename when used as a standalone node ID before --> or a bracket
+    line = line.replace(
+      /\bend\b(?=\s*(?:-->|---|$|\[|\(|\{))/g,
+      "endNode"
+    );
+    line = line.replace(
+      /\bstart\b(?=\s*(?:-->|---|$|\[|\(|\{))/g,
+      "startNode"
+    );
+
+    // Clean content inside node labels [...], {...}, ((...))
+    // Strip everything except alphanumeric, spaces, basic punctuation
+    line = line.replace(/\[([^\]]*)\]/g, (_, inner) => {
+      const clean = inner
+        .replace(/[[\]{}()<>=!]/g, "")
+        .replace(/\s+/g, " ")
         .trim();
-      return `|${cleaned}|`;
+      return `[${clean}]`;
+    });
+    line = line.replace(/\{([^}]*)\}/g, (_, inner) => {
+      const clean = inner
+        .replace(/[[\]{}()<>=!]/g, "")
+        .replace(/\s+/g, " ")
+        .trim();
+      return `{${clean}}`;
     });
 
-    // Fix node labels: content inside [...] that contain special chars
-    result = result.replace(/(\w+)\[([^\]]*)\]/g, (match, id, label) => {
-      const needsQuoting = /[:&<>%#]/.test(label);
-      if (needsQuoting) {
-        const cleaned = label
-          .replace(/:/g, " -")
-          .replace(/[&<>%#]/g, "")
-          .replace(/"/g, "'")
-          .trim();
-        return `${id}["${cleaned}"]`;
-      }
-      return match;
+    // Clean edge label pipes |...|
+    line = line.replace(/\|([^|]*)\|/g, (_, inner) => {
+      const clean = inner
+        .replace(/[|{}[\]()<>=!:]/g, "")
+        .replace(/\s+/g, " ")
+        .trim();
+      return `|${clean}|`;
     });
 
-    // Fix node IDs that start with a number (invalid in Mermaid)
-    result = result.replace(
-      /(?:^|\s)(\d[\w]*)\s*(?:\[|\(|\{|-->|---)/g,
-      (match) => match.replace(/(\d[\w]*)/, "n$1")
+    // Fix node IDs starting with digits.
+    // (Rewritten without negative lookbehind for ES2017 compat — captures the
+    // boundary char (start-of-line or any non-word/non-quote) and prepends `n`.)
+    line = line.replace(
+      /(^|[^"\w])(\d[\w]*)(?=\s*(?:[[({]|-->|---))/g,
+      "$1n$2"
     );
 
-    // Fix subgraph labels with colons
-    result = result.replace(
-      /^(\s*subgraph\s+)(.+)$/,
-      (_, prefix, label) =>
-        prefix + label.replace(/:/g, " -").replace(/[&<>%#]/g, "")
-    );
-
-    return result;
+    return line;
   });
 
-  const sanitized = sanitizedLines.join("\n");
-
-  // Final pass: if the diagram has >15 nodes, truncate to prevent render timeouts
+  // Truncate if too many nodes (prevents render timeout)
+  const sanitized = lines.join("\n");
   const nodeCount = (sanitized.match(/\w+\s*[\[({]/g) || []).length;
   if (nodeCount > 15) {
     const header =
-      sanitizedLines.find((l) =>
+      lines.find((l) =>
         /^(graph|flowchart|sequenceDiagram|stateDiagram)\b/i.test(l.trim())
       ) || "graph TD";
-    const nodeLines = sanitizedLines
+    const rest = lines
       .filter(
         (l) =>
           l.trim() &&
           !/^(graph|flowchart|sequenceDiagram|stateDiagram)\b/i.test(l.trim())
       )
       .slice(0, 15);
-    return [header, ...nodeLines].join("\n");
+    return [header, ...rest].join("\n");
   }
 
   return sanitized;
@@ -101,13 +118,21 @@ export interface SlideContent {
   svgCode?: string;
   diagramCaption?: string;
   /** Render strategy for diagram slides */
-  diagramRenderType?: "svg" | "mermaid" | "imagen";
+  diagramRenderType?: "svg" | "mermaid" | "imagen" | "illustration" | "dual";
   /** For imagen slides: detailed generation prompt */
   imagenPrompt?: string;
   /** For mermaid slides: valid mermaid code */
   mermaidCode?: string;
   /** Filled post-generation: base64 PNG from Imagen API */
   imageBase64?: string;
+  /** dual_visual: optional echo from outline (left = metaphor mode hint). */
+  leftVisual?: string;
+  /** dual_visual: optional echo — usually `"svg"`; diagram pixels come from svgCode. */
+  rightVisual?: string;
+  /** dual_visual: short metaphor brief if imagenPrompt not used. */
+  leftPrompt?: string;
+  /** dual_visual: fallback text if svgCode missing or invalid. */
+  rightPrompt?: string;
   /** Rare alternate path for example steps (prefer example.steps). */
   steps?: string[];
   example?: {
@@ -141,7 +166,15 @@ export interface SlideOutline {
     index: number;
     type: SlideType;
     title: string;
-    renderHint?: "svg" | "mermaid" | "imagen" | null;
+    renderHint?: "svg" | "mermaid" | "imagen" | "illustration" | "dual" | null;
+    /** dual_visual only: metaphor side (e.g. illustration) */
+    leftVisual?: string;
+    /** dual_visual only: technical side (e.g. svg) */
+    rightVisual?: string;
+    /** dual_visual only: short metaphor scene brief → batch expands to imagenPrompt */
+    leftPrompt?: string;
+    /** dual_visual only: technical diagram brief → batch expands to svgCode */
+    rightPrompt?: string;
   }[];
 }
 
@@ -238,6 +271,27 @@ For every significant concept in the syllabus, follow this sequence:
 3. DIAGRAM slide — visual that makes the concept tangible (assign renderHint below)
 4. EXAMPLE slide — domain-appropriate worked example with real parameters
 
+<slide_budget_guidance>
+Target: 30-40 slides for 60-90 minute lecture (adjust for module length)
+
+Visual allocation strategy:
+- Reserve illustration slides for concepts where students ask "what does this mean?"
+- Reserve diagram slides for concepts where students ask "how does this work?"
+- Reserve dual_visual for concepts where both questions arise simultaneously
+
+Indicators a concept needs illustration:
+- Abstract process (not physically observable)
+- Counterintuitive mechanism (contradicts common assumptions)
+- Comparison between approaches (A vs B, before/after)
+
+Indicators a concept does NOT need illustration:
+- Self-explanatory from bullet points
+- Already has a diagram showing the mechanism
+- Minor detail or edge case
+
+Quality over quantity: 5-8 well-chosen illustrations > 20 generic ones.
+</slide_budget_guidance>
+
 CANONICAL DIAGRAM RULE:
 For any named theoretical model, cycle, framework, mechanism, or structure
 that appears in the syllabus — if searching "[name] diagram" returns the same
@@ -247,7 +301,14 @@ Examples of the principle (not exhaustive): a named thermodynamic cycle needs it
 P-V or T-S diagram; a named anatomical structure needs its labeled cross-section;
 a named algorithm needs its step-by-step state diagram; a named economic framework
 needs its standard visual; a named biological pathway needs its arrow diagram.
+
+${OUTLINE_PROMPT_ILLUSTRATION_MANDATE}
+${OUTLINE_PROMPT_DUAL_VISUAL_EXAMPLE}
+${OUTLINE_PROMPT_HOOK_SLIDE}
+${OUTLINE_PROMPT_ACTIVITY_MANDATE}
 </teaching_sequence>
+
+${OUTLINE_PROMPT_INDIAN_CONTEXT}
 
 <renderhint_rules>
 For every diagram slide, assign exactly one renderHint based on what the diagram IS:
@@ -276,8 +337,17 @@ For every diagram slide, assign exactly one renderHint based on what the diagram
 - Real laboratory/clinical setups (operating theatre, lab bench, construction site)
 - Computer hardware physical components (CPU die, RAM module, PCB layer stack)
 
+"illustration" — didactic visual metaphor for abstract systems (File Structures, DS, OS, DBMS, networks):
+- Familiar real-world analogy made into a clear labeled scene (see <illustration_mandate>)
+- Same slide type as other visuals: type "diagram" with renderHint "illustration" and a detailed imagenPrompt describing the metaphor scene
+- Use BEFORE the technical concept bullets for that topic when the mandate applies
+
 RULE: Default to "svg" for anything a textbook would draw in 2D.
 Only use "imagen" when 3D spatial understanding is genuinely necessary.
+Use "illustration" for mandated metaphor primers per <illustration_mandate> — not for technical precision diagrams.
+
+"dual" — ONLY for type "dual_visual": use together with leftVisual, rightVisual, leftPrompt, rightPrompt in the outline.
+Batch content will produce imagenPrompt (left/metaphor) + svgCode (right/technical) + one diagramCaption. Do not use renderHint "dual" on type "diagram".
 </renderhint_rules>
 
 <practice_distribution>
@@ -302,7 +372,8 @@ taught earlier in this deck — never introduce untaught terms in options.
 title    — opening slide, 1 total
 overview — full-deck agenda, 1 total
 concept  — theory, derivations, mechanisms, classifications, comparisons
-diagram  — visual (assign renderHint)
+diagram  — visual (assign renderHint: svg | mermaid | imagen | illustration)
+dual_visual — split screen: left = metaphor (Imagen), right = technical SVG; renderHint MUST be "dual"; include leftVisual, rightVisual, leftPrompt, rightPrompt
 example  — worked problem with full domain-appropriate solution
 practice — student question with answer
 summary  — final takeaways, 1 total
@@ -321,13 +392,16 @@ Start your response with { and end with }
     { "index": 1, "type": "overview", "title": "string", "renderHint": null },
     { "index": 3, "type": "diagram", "title": "ECG: P-QRS-T Waveform", "renderHint": "svg" },
     { "index": 7, "type": "diagram", "title": "Heart: 3D Chamber Anatomy", "renderHint": "imagen" },
-    { "index": 12, "type": "diagram", "title": "Diagnostic Algorithm: Chest Pain", "renderHint": "mermaid" }
+    { "index": 12, "type": "diagram", "title": "Diagnostic Algorithm: Chest Pain", "renderHint": "mermaid" },
+    { "index": 14, "type": "diagram", "title": "Sequential Access: Like a Cassette Tape", "renderHint": "illustration" },
+    { "index": 16, "type": "dual_visual", "title": "Hashing: Metaphor and Mechanism", "renderHint": "dual", "leftVisual": "illustration", "rightVisual": "svg", "leftPrompt": "Post office sorting mail into numbered pigeonholes", "rightPrompt": "Hash table with buckets showing h(key) mapping" }
   ]
 }
 
 Rules:
-- renderHint is null for non-diagram slides
-- renderHint is required for all diagram slides
+- renderHint is null for slides that do not use it (title, overview, concept, example, practice, summary)
+- renderHint is required for type "diagram" (svg | mermaid | imagen | illustration)
+- For type "dual_visual": renderHint MUST be "dual" and leftVisual, rightVisual, leftPrompt, rightPrompt MUST be present
 - Indexes start at 0 and increment sequentially with no gaps
 </output_format>`;
 }
@@ -341,7 +415,11 @@ export function buildBatchContentPrompt(options: {
     index: number;
     type: SlideType;
     title: string;
-    renderHint?: "svg" | "mermaid" | "imagen" | null;
+    renderHint?: "svg" | "mermaid" | "imagen" | "illustration" | "dual" | null;
+    leftVisual?: string;
+    rightVisual?: string;
+    leftPrompt?: string;
+    rightPrompt?: string;
   }[];
   moduleName?: string;
   customTopic?: string;
@@ -373,12 +451,24 @@ Follow the pedagogical sequence and notation conventions from these books.
       : "";
 
   const slidesJson = JSON.stringify(
-    slides.map((s) => ({
-      index: s.index,
-      type: s.type,
-      title: s.title,
-      renderType: s.renderHint ?? (s.type === "diagram" ? "svg" : null),
-    })),
+    slides.map((s) => {
+      const row: Record<string, unknown> = {
+        index: s.index,
+        type: s.type,
+        title: s.title,
+        renderType:
+          s.type === "dual_visual"
+            ? "dual"
+            : s.renderHint ?? (s.type === "diagram" ? "svg" : null),
+      };
+      if (s.type === "dual_visual") {
+        if (s.leftVisual != null) row.leftVisual = s.leftVisual;
+        if (s.rightVisual != null) row.rightVisual = s.rightVisual;
+        if (s.leftPrompt != null) row.leftPrompt = s.leftPrompt;
+        if (s.rightPrompt != null) row.rightPrompt = s.rightPrompt;
+      }
+      return row;
+    }),
     null,
     2
   );
@@ -398,6 +488,8 @@ THESE RULES ARE ABSOLUTE. VIOLATION CAUSES SYSTEM FAILURE.
     possible — correct labels, arrows, annotations.
 </output_rules>
 
+${BATCH_PROMPT_INDIAN_CONTEXT}
+
 <accuracy_mandate>
 ACCURACY IS NON-NEGOTIABLE.
 Every fact, formula, value, mechanism, clinical parameter, and example
@@ -412,6 +504,8 @@ A correct final answer with wrong intermediate steps is invalid —
 students follow the steps, not just the answer.
 This content goes directly to university classrooms — errors
 damage student understanding and institutional trust.
+
+${BATCH_PROMPT_COMPLETENESS}
 </accuracy_mandate>
 
 You are an expert university lecturer creating detailed slide content for ${subjectName}.
@@ -433,6 +527,7 @@ SLIDE TYPES:
 - \"overview\": Agenda/overview of all concepts.
 - \"concept\": Explanatory slide with key points and real-world relevance.
 - \"diagram\": Visual SVG diagram that helps understanding.
+- \"dual_visual\": Split screen — left panel Imagen (metaphor), right panel SVG (technical). One shared diagramCaption at bottom.
 - \"example\": Worked example with full step-by-step solution.
 - \"practice\": Practice question (with answer and explanation).
 - \"summary\": Key takeaways.
@@ -490,6 +585,42 @@ CONTENT REQUIREMENTS BY SLIDE TYPE:
   </note_field_rules>
 - \"diagram\" slides — CRITICAL: check the renderType field in the input slide.
 
+<illustration_slide_output>
+CRITICAL: Illustration slides are PURE VISUAL. No bullets, no text content.
+
+For EACH slide where renderType === "illustration":
+
+REQUIRED OUTPUT FIELDS:
+{
+  "index": <number>,
+  "type": "illustration",
+  "title": "<exact title from input>",
+  "imagenPrompt": "<string, 3-5 sentences>",
+  "diagramCaption": "<string, 1 sentence>"
+}
+
+imagenPrompt CONSTRUCTION RULES:
+1. Extract the metaphor from the title (anything after "Like a" / "Like" / "As a")
+2. Describe that EXACT object/scenario in concrete visual terms
+3. Specify 2-3 text labels that should appear in the image
+4. End with: "Educational illustration style, simplified, white background"
+
+Template structure:
+"[Describe the main object/scene]. [Show the key action/relationship]. 
+[Specify 2-3 labels: 'Label 1', 'Label 2']. Educational illustration style, 
+simplified, white background."
+
+diagramCaption RULE:
+One sentence connecting the metaphor to the technical concept.
+Pattern: "Just like [metaphor behavior], [technical concept] [technical behavior]."
+
+VALIDATION CHECKS:
+- imagenPrompt is NOT empty or null
+- imagenPrompt describes visual elements (objects, actions, relationships)
+- imagenPrompt does NOT contain bullets, numbered lists, or abstract concepts
+- diagramCaption connects metaphor → concept explicitly
+</illustration_slide_output>
+
   If renderType is "svg":
     Generate complete valid SVG in "svgCode" field.
     viewBox="0 0 800 400". Clean technical diagram.
@@ -510,6 +641,9 @@ CONTENT REQUIREMENTS BY SLIDE TYPE:
     - Arrows use <defs><marker> arrowheads
     - Colors: #2563EB blue, #1E40AF dark blue, #16A34A green, #D97706 amber, #DC2626 red
 
+    Keep SVG under 150 elements total. Prioritize clarity over detail.
+    A well-labelled simple diagram teaches better than an overcrowded one.
+
     For algorithm / data structure SVGs:
     Show step-by-step state, not a snapshot. Sorting: show array at each
     significant pass as horizontal labelled boxes stacked vertically,
@@ -517,7 +651,18 @@ CONTENT REQUIREMENTS BY SLIDE TYPE:
     Tree traversal: colour-code visited nodes by order.
     Linked list: show before and after pointer states with arrows.
     The diagram must teach the algorithm without any text alongside it.
+
+    SVG JSON ESCAPING (CRITICAL):
+    - The svg field value must be a valid JSON string
+    - Escape all double quotes inside SVG attributes: \\" not "
+    - Escape all backslashes: \\\\ not \\
+    - No literal newlines inside the svg string value — use \\n or just omit newlines
+    - The SVG must be on a single logical JSON string line
+    - Test: if your SVG contains href=\\"...\\" that is correct; href='...' is also acceptable
     </svg_quality_rules>
+
+    ${BATCH_PROMPT_NO_PLACEHOLDER_DIAGRAMS}
+
     Set diagramCaption to 1-2 sentence explanation.
     Leave imagenPrompt and mermaidCode as undefined.
 
@@ -605,6 +750,15 @@ CONTENT REQUIREMENTS BY SLIDE TYPE:
 
     Leave svgCode and mermaidCode as undefined.
     Set diagramCaption to 1-2 sentence explanation.
+
+- \"dual_visual\" slides — input includes renderType \"dual\" plus leftPrompt, rightPrompt, leftVisual, rightVisual.
+  Output type MUST remain \"dual_visual\" with the SAME title and order in the array.
+  - imagenPrompt: expand leftPrompt into a full narrative paragraph for a clean conceptual illustration (metaphor side).
+    Style: educational textbook / vector-like, minimal labels (3–5 words each), light background — NOT photorealistic product shot.
+  - svgCode: expand rightPrompt into complete valid SVG (viewBox=\"0 0 800 400\", white #F8FAFC background, labeled technical diagram).
+    Follow the same svg_quality_rules as renderType \"svg\".
+  - diagramCaption: ONE caption that connects metaphor (left) to mechanism (right) for the bottom bar.
+  - Leave mermaidCode undefined. Set imageBase64 to null (filled later by the server for the left panel only).
 - \"example\" slides:
   - example.problem: max 180 characters. State ONLY the given values and what to find.
     Format: "Given: [values]. Find: [what to calculate]."
@@ -662,6 +816,8 @@ a new term in an answer option without it having been taught.
   Each bullet: max 100 characters. One key takeaway per bullet.
   Format: "Key concept: [one-line takeaway]."
 
+${BATCH_PROMPT_LAYOUT_VARIETY}
+
 INPUT SLIDES (DO NOT CHANGE index OR type, only fill content based on title and syllabus):
 ${slidesJson}
 
@@ -669,7 +825,7 @@ OUTPUT:
 Return ONLY a JSON array of SlideContent objects (no wrapper object, no markdown, no backticks).
 Each SlideContent must match this TypeScript shape:
 {
-  "type": "title" | "overview" | "concept" | "diagram" | "example" | "practice" | "summary",
+  "type": "title" | "overview" | "concept" | "diagram" | "dual_visual" | "example" | "practice" | "summary",
   "title": "string",
   "bullets"?: string[],
   "svgCode"?: string,
@@ -681,7 +837,8 @@ Each SlideContent must match this TypeScript shape:
   "question"?: { "text": string, "options"?: string[], "answer": string, "explanation": string },
   "note"?: string
 }
-For diagram slides: only populate the field matching the slide's renderType (svgCode, mermaidCode, or imagenPrompt). Always set imageBase64 to null.
+For diagram slides: only populate the field matching the slide's renderType (svgCode, mermaidCode, or imagenPrompt for both "imagen" and "illustration"). Always set imageBase64 to null.
+For dual_visual slides: populate BOTH imagenPrompt and svgCode plus diagramCaption; leave mermaidCode undefined; imageBase64 null.
 
 VERY IMPORTANT:
 - The returned array length must equal the number of input slides.
@@ -690,119 +847,6 @@ VERY IMPORTANT:
 
 Remember: Your entire response must be parseable by JSON.parse().
 Start with [ and end with ]. Nothing else.`;
-}
-
-// Existing full JSON prompt (may be used in other flows)
-// ── FULL PPT PROMPT (LEGACY) ──────────────────────────────
-
-export function buildPPTPrompt(options: {
-  subjectName: string;
-  subjectCode: string;
-  syllabusContent: string;
-  moduleName?: string;
-  customTopic?: string;
-  depth: "basic" | "intermediate" | "advanced";
-}): string {
-  const {
-    subjectName,
-    subjectCode,
-    syllabusContent,
-    moduleName,
-    customTopic,
-    depth,
-  } = options;
-
-  const topic = moduleName ?? customTopic ?? "the module";
-
-  const depthRules = {
-    basic:
-      "Use simple language, basic examples, and avoid heavy math. Focus on intuition.",
-    intermediate:
-      "Use standard university level. Include complete derivations where applicable.",
-    advanced:
-      "Use rigorous treatment. Include edge cases and industry applications where relevant.",
-  };
-
-  const svgGuidance = `
-For SVG diagram slides:
-- Generate complete, valid SVG code with viewBox="0 0 800 500".
-- Use clean colors: #2563EB (blue), #1E40AF (dark blue), #16A34A (green), #D97706 (amber), #DC2626 (red), #6B7280 (gray), white backgrounds.
-- Include clear text labels inside the SVG using <text> elements.
-- Add arrows using <defs><marker> for arrowheads.
-- For Mechanical engineering: P-V diagrams, T-S diagrams, cycle diagrams, free body diagrams, cross-sections, system schematics.
-- For Chemical engineering: molecular bond diagrams, reaction pathway arrows, energy level diagrams, apparatus schematics, structural formulas.
-- SVG must be self-contained, no external references.
-- Set diagramCaption to a 1-2 sentence explanation of what the diagram shows.
-`;
-
-  return `You are an expert educational content creator. Generate a comprehensive presentation in JSON format for ${subjectName} (${subjectCode}).
-
-SYLLABUS CONTENT:
-${syllabusContent}
-
-TASK:
-Create a presentation on: ${topic}
-Depth level: ${depth}. ${depthRules[depth]}
-
-Generate as many slides as the content genuinely requires.
-The rule is: every major concept gets its own concept slide +
-a worked example slide. Complex concepts that benefit from a
-visual get a diagram slide. Do not add filler slides to hit
-a number — but do not skip concepts either.
-
-For a topic with 3 concepts: expect ~12-15 slides total.
-For a module with 8 concepts: expect ~28-35 slides total.
-Let the syllabus content determine the count.
-
-Always include:
-- 1 title slide
-- 1 overview slide
-- Concept + example slides for each major topic
-- Diagram slide where a visual genuinely helps understanding
-- 2-3 practice question slides
-- 1 summary slide
-
-SLIDE STRUCTURE (follow this order):
-1. Title slide (1 slide) — type: "title", title: presentation title
-2. Overview/Agenda slide (1 slide) — type: "overview", list all concepts covered in bullets
-3. For EACH major concept in the topic:
-   a. Concept slide (type: "concept") — definition, key points, real-world relevance
-   b. Deep-dive slide (type: "concept") — detailed explanation, formula derivations if applicable
-   c. SVG diagram slide (type: "diagram") — visual representation; include svgCode and diagramCaption
-   d. Worked example slide (type: "example") — complete step-by-step numerical/theoretical solution with example: { problem, steps[], answer }
-   e. Another worked example if the concept has multiple applications
-4. Concept comparison slide where applicable (type: "concept") — comparing 2+ related concepts
-5. Practice questions (3-5 slides, type: "practice") — one question per slide with question: { text, options?, answer, explanation }
-6. Summary slide (1 slide, type: "summary") — key takeaways in bullets
-
-CONTENT RULES:
-- Every worked example must show COMPLETE step-by-step solution (steps array with each step as a full sentence).
-- Practice questions must vary: numerical, conceptual, application-based. Use options for MCQ.
-- Use real-world applications relevant to ${subjectName}.
-- Bullet points should be complete sentences, not just keywords.
-- For "concept" slides you may include an optional "note" field for a short callout.
-${svgGuidance}
-
-OUTPUT:
-Return ONLY a valid JSON object. No markdown, no backticks, no text outside the JSON.
-The JSON must match this TypeScript interface exactly:
-{
-  "presentationTitle": "string",
-  "subject": "string",
-  "topic": "string",
-  "slides": [
-    {
-      "type": "title" | "overview" | "concept" | "diagram" | "example" | "practice" | "summary",
-      "title": "string",
-      "bullets": ["optional array of strings"],
-      "svgCode": "optional full SVG string for diagram slides",
-      "diagramCaption": "optional for diagram slides",
-      "example": { "problem": "", "steps": [], "answer": "" },
-      "question": { "text": "", "options": [], "answer": "", "explanation": "" },
-      "note": "optional string"
-    }
-  ]
-}`;
 }
 
 // ── PPTX GENERATOR ─────────────────────────────────────────
@@ -891,7 +935,6 @@ const FONT = {
   tiny: { size: 10, bold: false },
 } as const;
 
-const MAX_BULLETS_PER_SLIDE = 7;
 const MAX_BULLET_CHARS = 160;
 
 function cap(text: string, _max = MAX_BULLET_CHARS): string {
@@ -931,10 +974,16 @@ function capExplanation(text: string): string {
   return cleaned.length > 160 ? `${cleaned.slice(0, 157)}…` : cleaned;
 }
 
+// 💡 callout text. Fixed-length reservation: cap at 120 chars, truncating at a
+// word boundary with NO ellipsis (a clean cut beats a "…"). The emoji prefix is
+// added by the caller and sits on top of this as fixed overhead.
 function capNote(text: string): string {
   if (!text) return "";
   const cleaned = stripMd(text);
-  return cleaned.length > 80 ? `${cleaned.slice(0, 77)}…` : cleaned;
+  if (cleaned.length <= 120) return cleaned;
+  const slice = cleaned.slice(0, 120);
+  const lastSpace = slice.lastIndexOf(" ");
+  return (lastSpace > 0 ? slice.slice(0, lastSpace) : slice).trimEnd();
 }
 
 function capProblem(text: string): string {
@@ -1081,6 +1130,38 @@ function addPageNumber(
     align: "right",
     fontFace: "Calibri",
   });
+}
+
+/**
+ * Left panel of dual_visual: metaphor illustration via Imagen when build route
+ * did not already attach imageBase64.
+ */
+async function generateImagenForSlide(
+  leftVisual: string | undefined | null,
+  leftPrompt: string | undefined | null,
+  ctx: {
+    subject: string;
+    topic: string;
+    slideTitle: string;
+    imagenPrompt?: string | undefined | null;
+  }
+): Promise<string | null> {
+  const scene =
+    (ctx.imagenPrompt && ctx.imagenPrompt.trim()) ||
+    (leftPrompt && String(leftPrompt).trim()) ||
+    "";
+  if (!scene) return null;
+
+  const fullPrompt = buildImagenPrompt({
+    slideTitle: ctx.slideTitle,
+    subject: ctx.subject,
+    topic: ctx.topic,
+    imagenPrompt: scene,
+    renderHint:
+      leftVisual === "illustration" ? "illustration" : "dual",
+  });
+
+  return generateImagenImage(fullPrompt);
 }
 
 export async function generatePPTXBuffer(
@@ -1441,8 +1522,14 @@ export async function generatePPTXBuffer(
           ? captionBarY - ZONE.body.y - 0.05
           : SLIDE_H - ZONE.body.y - 0.12;
 
-        // PRIORITY 1: Imagen-generated image (base64 PNG)
-        if (slideData.imageBase64) {
+        // PRIORITY 1: Imagen-generated image (base64 PNG).
+        // Guard: a blob under 5KB is a broken/empty render — stretched to
+        // 9.3"×4.1" it shows as a broken icon. Skip embedding entirely (no
+        // fallback image) and fall through to a text-only slide.
+        const imagenBytes = slideData.imageBase64
+          ? Math.floor((slideData.imageBase64.length * 3) / 4)
+          : 0;
+        if (slideData.imageBase64 && imagenBytes >= 5 * 1024) {
           slide.addImage({
             data: `data:image/png;base64,${slideData.imageBase64}`,
             x: ZONE.body.x,
@@ -1561,6 +1648,156 @@ export async function generatePPTXBuffer(
             line: { color: "0E7490" },
           });
           slide.addText(`📊 ${cap(slideData.diagramCaption, 130)}`, {
+            x: 0.3,
+            y: SLIDE_H - 0.52,
+            w: 9.4,
+            h: 0.52,
+            fontSize: 11,
+            italic: true,
+            color: C.white,
+            fontFace: "Calibri",
+            valign: "middle",
+            wrap: true,
+            autoFit: true,
+          });
+        }
+
+        addPageNumber(slide, slideNum, totalSlides);
+        slideNum += 1;
+        break;
+      }
+
+      case "dual_visual": {
+        const slide = pptx.addSlide();
+        addHeader(pptx, slide, slideData.title, "0F766E");
+
+        slide.addShape("rect", {
+          x: 0,
+          y: ZONE.header.h,
+          w: SLIDE_W,
+          h: SLIDE_H - ZONE.header.h,
+          fill: { color: C.lightGray },
+          line: { color: C.lightGray },
+        });
+
+        const captionText = slideData.diagramCaption ?? "";
+        const hasCaption = Boolean(captionText);
+        const captionBarY = SLIDE_H - 0.52;
+        const imgAreaH = hasCaption
+          ? captionBarY - ZONE.body.y - 0.05
+          : SLIDE_H - ZONE.body.y - 0.12;
+
+        // ~50/50 split within body zone (16:9 slide)
+        const gap = 0.12;
+        const panelW = (ZONE.body.w - gap) / 2;
+        const leftX = ZONE.body.x;
+        const rightX = ZONE.body.x + panelW + gap;
+        const imgY = ZONE.body.y;
+
+        let leftB64 = slideData.imageBase64?.trim() || null;
+        if (!leftB64) {
+          const generated = await generateImagenForSlide(
+            slideData.leftVisual ?? null,
+            slideData.leftPrompt ?? null,
+            {
+              subject: data.subject,
+              topic: data.topic,
+              slideTitle: slideData.title,
+              imagenPrompt: slideData.imagenPrompt,
+            }
+          );
+          if (generated) {
+            leftB64 = generated;
+            totalCostInr += 0.04 * 83.33;
+          }
+        }
+
+        if (leftB64) {
+          slide.addImage({
+            data: `data:image/png;base64,${leftB64}`,
+            x: leftX,
+            y: imgY,
+            w: panelW,
+            h: imgAreaH,
+            sizing: { type: "contain", w: panelW, h: imgAreaH },
+          });
+        } else {
+          slide.addShape("rect", {
+            x: leftX,
+            y: imgY,
+            w: panelW,
+            h: imgAreaH,
+            fill: { color: "E0F2FE" },
+            line: { color: "7DD3FC", width: 1 },
+          });
+          slide.addText("Concept (metaphor)", {
+            x: leftX + 0.15,
+            y: imgY + 0.2,
+            w: panelW - 0.3,
+            h: imgAreaH - 0.4,
+            fontSize: 12,
+            color: "075985",
+            fontFace: "Calibri",
+            align: "center",
+            valign: "middle",
+            wrap: true,
+            autoFit: true,
+          });
+        }
+
+        // Right: technical side — SVG from batch (rightVisual is a hint, not markup)
+        const svgSource = slideData.svgCode ?? "";
+        if (isValidSVG(svgSource)) {
+          slide.addImage({
+            data: svgToBase64(svgSource),
+            x: rightX,
+            y: imgY,
+            w: panelW,
+            h: imgAreaH,
+            sizing: { type: "contain", w: panelW, h: imgAreaH },
+          });
+        } else {
+          slide.addShape("rect", {
+            x: rightX,
+            y: imgY,
+            w: panelW,
+            h: imgAreaH,
+            fill: { color: "F1F5F9" },
+            line: { color: "CBD5E1", width: 1 },
+          });
+          const rightFallback =
+            slideData.rightPrompt?.trim() ||
+            (slideData.rightVisual &&
+            !/^(svg|mermaid|imagen)$/i.test(slideData.rightVisual)
+              ? slideData.rightVisual
+              : "") ||
+            (captionText ? `📐 ${cap(captionText, 220)}` : "") ||
+            "[ Technical diagram ]";
+          slide.addText(rightFallback, {
+            x: rightX + 0.15,
+            y: imgY + 0.2,
+            w: panelW - 0.3,
+            h: imgAreaH - 0.4,
+            fontSize: 12,
+            color: "64748B",
+            fontFace: "Calibri",
+            align: "center",
+            valign: "middle",
+            wrap: true,
+            autoFit: true,
+          });
+        }
+
+        if (hasCaption) {
+          slide.addShape("rect", {
+            x: 0,
+            y: SLIDE_H - 0.52,
+            w: SLIDE_W,
+            h: 0.52,
+            fill: { color: "0E7490" },
+            line: { color: "0E7490" },
+          });
+          slide.addText(`📊 ${cap(captionText, 130)}`, {
             x: 0.3,
             y: SLIDE_H - 0.52,
             w: 9.4,
@@ -1920,63 +2157,41 @@ export async function generatePPTXBuffer(
 
 // ── PARSE ──────────────────────────────────────────────────
 
-export function parsePPTJSON(rawText: string): PPTSlideJSON | null {
+// SVG escape recovery — fixes unescaped quotes/newlines inside svg field.
+// Strategy: extract every "svg": "...</svg>" block, swap it for a placeholder
+// (so the rest of the JSON can parse cleanly), then reinsert the raw SVG.
+function recoverSVGJSON(raw: string): SlideContent[] | null {
   try {
-    let cleaned = rawText.trim();
+    const svgMatches: string[] = [];
+    let svgIdx = 0;
 
-    // Strip markdown fences (various formats)
-    cleaned = cleaned.replace(/^```json\s*/i, "");
-    cleaned = cleaned.replace(/^```\s*/i, "");
-    cleaned = cleaned.replace(/\s*```$/i, "");
-    cleaned = cleaned.trim();
-
-    // Find the first { and last } to extract just the JSON object
-    const firstBrace = cleaned.indexOf("{");
-    const lastBrace = cleaned.lastIndexOf("}");
-
-    if (firstBrace === -1 || lastBrace === -1) {
-      console.error("[parsePPTJSON] No JSON object found in response");
-      return null;
-    }
-
-    cleaned = cleaned.slice(firstBrace, lastBrace + 1);
-
-    const parsed = JSON.parse(cleaned) as unknown as PPTSlideJSON;
-
-    if (!parsed.slides || !Array.isArray(parsed.slides) || parsed.slides.length < 3) {
-      console.error(
-        "[parsePPTJSON] Invalid structure, slides count:",
-        (parsed as any).slides?.length
-      );
-      return null;
-    }
-
-    console.log("[ppt] Successfully parsed", parsed.slides.length, "slides");
-    return parsed;
-  } catch (err) {
-    console.error(
-      "[parsePPTJSON] Parse error:",
-      err instanceof Error ? err.message : err
+    const placeholder = raw.replace(
+      /"svg"\s*:\s*"((?:[^"\\]|\\.|<[^>]*>)*(?:<\/svg>))"/g,
+      (_match, svgContent: string) => {
+        svgMatches.push(svgContent);
+        return `"svg": "__SVG_${svgIdx++}__"`;
+      }
     );
-    return null;
-  }
-}
 
-export function parseOutlineResponse(rawText: string): SlideOutline | null {
-  try {
-    let cleaned = rawText.trim();
-    cleaned = cleaned
-      .replace(/^```json\s*/i, "")
-      .replace(/^```\s*/i, "")
-      .replace(/\s*```$/i, "")
-      .trim();
-    const first = cleaned.indexOf("{");
-    const last = cleaned.lastIndexOf("}");
-    if (first === -1 || last === -1) return null;
-    cleaned = cleaned.slice(first, last + 1);
-    const parsed = JSON.parse(cleaned) as SlideOutline;
-    if (!parsed.outline || !Array.isArray(parsed.outline)) return null;
-    return parsed;
+    if (svgMatches.length === 0) return null;
+
+    const parsed = JSON.parse(placeholder);
+    const slides = Array.isArray(parsed) ? parsed : [parsed];
+
+    slides.forEach((slide: { svg?: unknown }) => {
+      if (
+        typeof slide.svg === "string" &&
+        slide.svg.startsWith("__SVG_")
+      ) {
+        const idx = parseInt(
+          slide.svg.replace("__SVG_", "").replace("__", ""),
+          10
+        );
+        if (svgMatches[idx]) slide.svg = svgMatches[idx];
+      }
+    });
+
+    return slides as SlideContent[];
   } catch {
     return null;
   }
@@ -2075,6 +2290,17 @@ export function parseBatchContent(rawText: string): SlideContent[] | null {
         }
       }
     } catch {}
+
+    // Attempt 4: SVG escape recovery — pull SVG blocks out, parse, reinsert
+    const svgRecovered = recoverSVGJSON(cleaned);
+    if (svgRecovered && svgRecovered.length > 0) {
+      console.log(
+        "[parseBatchContent] Recovered",
+        svgRecovered.length,
+        "slides via SVG escape recovery"
+      );
+      return svgRecovered;
+    }
 
     console.error("[parseBatchContent] All recovery attempts failed");
     return null;

@@ -21,7 +21,6 @@ import { NavLink } from "@/components/layout/NavLink";
 import { LogoutButton } from "@/components/layout/LogoutButton";
 import { UserProfile } from "@/components/layout/UserProfile";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
-import { Badge } from "@/components/ui/badge";
 
 interface LayoutProps {
   children: ReactNode;

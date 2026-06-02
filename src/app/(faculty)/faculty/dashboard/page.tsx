@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import {
   BarChart2,
@@ -13,7 +13,7 @@ import {
 } from "lucide-react";
 
 import { createBrowserClient } from "@/lib/db/supabase-browser";
-import { Button } from "@/components/ui/button";
+import { useCurrentUser, useFacultySubjects } from "@/hooks/useSupabaseData";
 import {
   Card,
   CardContent,
@@ -21,17 +21,6 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-
-interface Profile {
-  full_name: string | null;
-  department: string | null;
-}
-
-interface SubjectRow {
-  id: string;
-  name: string;
-  code: string;
-}
 
 interface GeneratedContentRow {
   type: string;
@@ -47,8 +36,8 @@ interface Stats {
 }
 
 export default function FacultyDashboard() {
-  const [profile, setProfile] = useState<Profile | null>(null);
-  const [assignedSubjects, setAssignedSubjects] = useState<SubjectRow[]>([]);
+  const { profile, userId } = useCurrentUser();
+  const { subjects: assignedSubjects } = useFacultySubjects();
   const [recentContent, setRecentContent] = useState<GeneratedContentRow[]>([]);
   const [stats, setStats] = useState<Stats>({
     quizAttempts: 0,
@@ -61,47 +50,18 @@ export default function FacultyDashboard() {
     const run = async () => {
       try {
         const supabase = createBrowserClient();
-        const {
-          data: { user },
-        } = await supabase.auth.getUser();
-
-        if (!user) {
+        if (!userId) {
           setIsLoading(false);
           return;
         }
 
-        // 1. Profile
-        const { data: profileRow } = await supabase
-          .from("profiles")
-          .select("full_name, department")
-          .eq("id", user.id)
-          .single();
-
-        const profileData: Profile = {
-          full_name: profileRow?.full_name ?? null,
-          department: profileRow?.department ?? null,
-        };
-        setProfile(profileData);
-
-        // 2. Assigned subjects
-        const { data: subjectRows } = await supabase
-          .from("faculty_assignments")
-          .select("subjects(id, name, code)")
-          .eq("faculty_id", user.id);
-
-        const subjects: SubjectRow[] =
-          (subjectRows ?? [])
-            .map((row: any) => row.subjects)
-            .filter(Boolean) ?? [];
-        setAssignedSubjects(subjects);
-
-        const assignedIds = subjects.map((s) => s.id);
+        const assignedIds = assignedSubjects.map((s) => s.id);
 
         // 3. Recent generated content
         const { data: contentRows } = await supabase
           .from("generated_content")
           .select("type, title, created_at, metadata")
-          .eq("generated_by", user.id)
+          .eq("generated_by", userId)
           .eq("status", "ready")
           .order("created_at", { ascending: false })
           .limit(5);
@@ -114,12 +74,12 @@ export default function FacultyDashboard() {
             supabase
               .from("generated_content")
               .select("id", { count: "exact", head: true })
-              .eq("generated_by", user.id)
+              .eq("generated_by", userId)
               .eq("type", "ppt"),
             supabase
               .from("generated_content")
               .select("id", { count: "exact", head: true })
-              .eq("generated_by", user.id)
+              .eq("generated_by", userId)
               .eq("type", "qpaper"),
           ]);
 
@@ -151,7 +111,7 @@ export default function FacultyDashboard() {
     };
 
     run();
-  }, []);
+  }, [userId, assignedSubjects]);
 
   const fullName = profile?.full_name || "Faculty";
   const assignedCount = assignedSubjects.length;

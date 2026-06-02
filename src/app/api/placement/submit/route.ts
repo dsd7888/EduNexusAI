@@ -1,39 +1,20 @@
 import { createAdminClient, createServerClient } from "@/lib/db/supabase-server";
 import { scorePlacementAttempt } from "@/lib/placement/generator";
 import type { NextRequest } from "next/server";
+import { requireAuth, requireRole, apiError, apiSuccess } from "@/lib/api/helpers";
 
 export async function POST(request: NextRequest) {
   try {
-    const supabase = await createServerClient();
-    const {
-      data: { user },
-      error: authError,
-    } = await supabase.auth.getUser();
-
-    if (authError || !user) {
-      return Response.json({ error: "Unauthorized" }, { status: 401 });
-    }
-
-    const adminClient = createAdminClient();
-    const { data: profile } = await adminClient
-      .from("profiles")
-      .select("role")
-      .eq("id", user.id)
-      .single();
-
-    if ((profile as { role?: string } | null)?.role !== "student") {
-      return Response.json(
-        { error: "Forbidden: Students only" },
-        { status: 403 }
-      );
-    }
+    const authResult = await requireRole(["student"]);
+    if (authResult instanceof Response) return authResult;
+    const { user, adminClient } = authResult;
 
     const { companyId, questions, answers, timeTaken } = await request.json();
 
     if (!companyId || !Array.isArray(questions) || !answers) {
-      return Response.json(
-        { error: "companyId, questions, and answers are required" },
-        { status: 400 }
+      return apiError(
+        "companyId, questions, and answers are required",
+        400
       );
     }
 
@@ -49,7 +30,7 @@ export async function POST(request: NextRequest) {
       .single();
 
     if (!company) {
-      return Response.json({ error: "Company not found" }, { status: 404 });
+      return apiError("Company not found", 404);
     }
 
     const categoryGaps = Object.entries(categoryScores).map(([cat, catScore]) => {
@@ -137,10 +118,7 @@ export async function POST(request: NextRequest) {
 
     if (insertError) {
       console.error("[placement/submit] insert error:", insertError);
-      return Response.json(
-        { error: "Failed to save attempt" },
-        { status: 500 }
-      );
+      return apiError("Failed to save attempt", 500);
     }
 
     void (async () => {
@@ -181,6 +159,6 @@ export async function POST(request: NextRequest) {
     });
   } catch (err) {
     console.error("[placement/submit] error:", err);
-    return Response.json({ error: "Failed to submit test" }, { status: 500 });
+    return apiError("Failed to submit test", 500);
   }
 }

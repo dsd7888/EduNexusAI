@@ -1,6 +1,12 @@
 "use client";
 
 import { createBrowserClient } from "@/lib/db/supabase-browser";
+import {
+  useAllSubjects,
+  useSubjectModules,
+  type SubjectRow,
+  type ModuleRow,
+} from "@/hooks/useSupabaseData";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -23,19 +29,10 @@ import { Loader2, Upload } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 
-type DocumentType = "syllabus" | "notes" | "pyq";
+type DocumentType = "notes" | "pyq";
 
-interface Subject {
-  id: string;
-  name: string;
-  code: string;
-}
-
-interface Module {
-  id: string;
-  name: string;
-  module_number: number;
-}
+type Subject = SubjectRow;
+type Module = ModuleRow;
 
 function clearFileInput(input: HTMLInputElement | null) {
   if (input) {
@@ -44,64 +41,24 @@ function clearFileInput(input: HTMLInputElement | null) {
 }
 
 export default function UploadPage() {
-  const fileInputRefSyllabus = useRef<HTMLInputElement>(null);
   const fileInputRefNotes = useRef<HTMLInputElement>(null);
   const fileInputRefPyq = useRef<HTMLInputElement>(null);
-  const [subjects, setSubjects] = useState<Subject[]>([]);
-  const [modules, setModules] = useState<Module[]>([]);
   const [subjectId, setSubjectId] = useState("");
   const [moduleId, setModuleId] = useState("");
   const [year, setYear] = useState("");
   const [file, setFile] = useState<File | null>(null);
   const [loading, setLoading] = useState(false);
-  const [activeTab, setActiveTab] = useState<DocumentType>("syllabus");
-
-  const fetchSubjects = useCallback(async () => {
-    const supabase = createBrowserClient();
-    const { data, error } = await supabase
-      .from("subjects")
-      .select("id, name, code")
-      .order("name");
-    if (error) {
-      toast.error("Failed to load subjects");
-      return;
-    }
-    setSubjects(data ?? []);
-  }, []);
-
-  const fetchModules = useCallback(async (sid: string) => {
-    if (!sid) {
-      setModules([]);
-      setModuleId("");
-      return;
-    }
-    const supabase = createBrowserClient();
-    const { data, error } = await supabase
-      .from("modules")
-      .select("id, name, module_number")
-      .eq("subject_id", sid)
-      .order("module_number");
-    if (error) {
-      toast.error("Failed to load modules");
-      setModules([]);
-      return;
-    }
-    setModules(data ?? []);
-    setModuleId("");
-  }, []);
-
-  useEffect(() => {
-    fetchSubjects();
-  }, [fetchSubjects]);
+  const [activeTab, setActiveTab] = useState<DocumentType>("notes");
+  const { subjects } = useAllSubjects();
+  const { modules } = useSubjectModules(subjectId ? subjectId : null);
 
   useEffect(() => {
     if (subjectId) {
-      fetchModules(subjectId);
+      setModuleId("");
     } else {
-      setModules([]);
       setModuleId("");
     }
-  }, [subjectId, fetchModules]);
+  }, [subjectId]);
 
   const validate = useCallback(
     (type: DocumentType): string | null => {
@@ -124,7 +81,6 @@ export default function UploadPage() {
     setModuleId("");
     setYear("");
     setFile(null);
-    clearFileInput(fileInputRefSyllabus.current);
     clearFileInput(fileInputRefNotes.current);
     clearFileInput(fileInputRefPyq.current);
   }, []);
@@ -180,8 +136,8 @@ export default function UploadPage() {
         <CardHeader>
           <CardTitle>Upload Document</CardTitle>
           <CardDescription>
-            Select the type, subject, and file. Module and year are required for
-            Notes and PYQs.
+            Notes and previous year questions only. Syllabus is managed per
+            subject via Manage Syllabus.
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -190,55 +146,9 @@ export default function UploadPage() {
             onValueChange={(v) => setActiveTab(v as DocumentType)}
           >
             <TabsList>
-              <TabsTrigger value="syllabus">Syllabus</TabsTrigger>
               <TabsTrigger value="notes">Notes</TabsTrigger>
               <TabsTrigger value="pyq">Previous Year Questions</TabsTrigger>
             </TabsList>
-
-            <TabsContent value="syllabus" className="mt-6 space-y-4">
-              <div className="space-y-2">
-                <Label htmlFor="subject-syllabus">Subject</Label>
-                <Select
-                  value={subjectId}
-                  onValueChange={setSubjectId}
-                  disabled={loading}
-                >
-                  <SelectTrigger id="subject-syllabus" className="w-full">
-                    <SelectValue placeholder="Select subject" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {subjects.map((s) => (
-                      <SelectItem key={s.id} value={s.id}>
-                        {s.name} ({s.code})
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="file-syllabus">PDF File</Label>
-                <Input
-                  id="file-syllabus"
-                  ref={fileInputRefSyllabus}
-                  type="file"
-                  accept=".pdf"
-                  disabled={loading}
-                  onChange={(e) => setFile(e.target.files?.[0] ?? null)}
-                />
-              </div>
-              <Button
-                onClick={() => handleSubmit("syllabus")}
-                disabled={loading}
-                className="gap-2"
-              >
-                {loading ? (
-                  <Loader2 className="size-4 animate-spin" />
-                ) : (
-                  <Upload className="size-4" />
-                )}
-                Upload
-              </Button>
-            </TabsContent>
 
             <TabsContent value="notes" className="mt-6 space-y-4">
               <div className="space-y-2">

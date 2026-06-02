@@ -3,16 +3,15 @@
 import { useEffect, useRef, useState } from "react";
 
 function sanitizeMermaidCode(code: string): string {
-  if (!code || code.trim().length === 0) return code;
+  if (!code?.trim()) return code;
 
-  const lines = code.split("\n");
-
-  const sanitizedLines = lines.map((line) => {
+  const lines = code.split("\n").map((rawLine) => {
+    let line = rawLine;
     const trimmed = line.trim();
+    if (!trimmed) return line;
 
-    // Skip empty lines and directive lines (graph TD, flowchart LR, etc.)
+    // Skip diagram type declarations
     if (
-      !trimmed ||
       /^(graph|flowchart|sequenceDiagram|stateDiagram|classDiagram|gitGraph|pie|gantt|erDiagram|journey|mindmap|timeline)\b/i.test(
         trimmed
       )
@@ -20,65 +19,70 @@ function sanitizeMermaidCode(code: string): string {
       return line;
     }
 
-    // Fix edge labels: content inside |...| pipes
-    let result = line.replace(/\|([^|]*)\|/g, (_, label) => {
-      const cleaned = label
-        .replace(/[(){}]/g, "")
-        .replace(/_/g, " ")
-        .replace(/:/g, "-")
-        .replace(/[<>&%#"]/g, "")
-        .replace(/\s{2,}/g, " ")
+    // Rename reserved words used as node IDs (not in labels)
+    // Only rename when used as a standalone node ID before --> or a bracket
+    line = line.replace(
+      /\bend\b(?=\s*(?:-->|---|$|\[|\(|\{))/g,
+      "endNode"
+    );
+    line = line.replace(
+      /\bstart\b(?=\s*(?:-->|---|$|\[|\(|\{))/g,
+      "startNode"
+    );
+
+    // Clean content inside node labels [...], {...}, ((...))
+    // Strip everything except alphanumeric, spaces, basic punctuation
+    line = line.replace(/\[([^\]]*)\]/g, (_, inner) => {
+      const clean = inner
+        .replace(/[[\]{}()<>=!]/g, "")
+        .replace(/\s+/g, " ")
         .trim();
-      return `|${cleaned}|`;
+      return `[${clean}]`;
+    });
+    line = line.replace(/\{([^}]*)\}/g, (_, inner) => {
+      const clean = inner
+        .replace(/[[\]{}()<>=!]/g, "")
+        .replace(/\s+/g, " ")
+        .trim();
+      return `{${clean}}`;
     });
 
-    // Fix node labels: content inside [...] that contain special chars
-    result = result.replace(/(\w+)\[([^\]]*)\]/g, (match, id, label) => {
-      const needsQuoting = /[:&<>%#]/.test(label);
-      if (needsQuoting) {
-        const cleaned = label
-          .replace(/:/g, " -")
-          .replace(/[&<>%#]/g, "")
-          .replace(/"/g, "'")
-          .trim();
-        return `${id}["${cleaned}"]`;
-      }
-      return match;
+    // Clean edge label pipes |...|
+    line = line.replace(/\|([^|]*)\|/g, (_, inner) => {
+      const clean = inner
+        .replace(/[|{}[\]()<>=!:]/g, "")
+        .replace(/\s+/g, " ")
+        .trim();
+      return `|${clean}|`;
     });
 
-    // Fix node IDs that start with a number (invalid in Mermaid)
-    result = result.replace(
-      /(?:^|\s)(\d[\w]*)\s*(?:\[|\(|\{|-->|---)/g,
-      (match) => match.replace(/(\d[\w]*)/, "n$1")
+    // Fix node IDs starting with digits.
+    // (Rewritten without negative lookbehind for ES2017 compat — captures the
+    // boundary char (start-of-line or any non-word/non-quote) and prepends `n`.)
+    line = line.replace(
+      /(^|[^"\w])(\d[\w]*)(?=\s*(?:[[({]|-->|---))/g,
+      "$1n$2"
     );
 
-    // Fix subgraph labels with colons
-    result = result.replace(
-      /^(\s*subgraph\s+)(.+)$/,
-      (_, prefix, label) =>
-        prefix + label.replace(/:/g, " -").replace(/[&<>%#]/g, "")
-    );
-
-    return result;
+    return line;
   });
 
-  const sanitized = sanitizedLines.join("\n");
-
-  // Final pass: if the diagram has >15 nodes, truncate to prevent render timeouts
+  // Truncate if too many nodes (prevents render timeout)
+  const sanitized = lines.join("\n");
   const nodeCount = (sanitized.match(/\w+\s*[\[({]/g) || []).length;
   if (nodeCount > 15) {
     const header =
-      sanitizedLines.find((l) =>
+      lines.find((l) =>
         /^(graph|flowchart|sequenceDiagram|stateDiagram)\b/i.test(l.trim())
       ) || "graph TD";
-    const nodeLines = sanitizedLines
+    const rest = lines
       .filter(
         (l) =>
           l.trim() &&
           !/^(graph|flowchart|sequenceDiagram|stateDiagram)\b/i.test(l.trim())
       )
       .slice(0, 15);
-    return [header, ...nodeLines].join("\n");
+    return [header, ...rest].join("\n");
   }
 
   return sanitized;

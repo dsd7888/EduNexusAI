@@ -9,6 +9,7 @@ import {
   createAdminClient,
   createServerClient,
 } from "@/lib/db/supabase-server";
+import { requireAuth, requireRole, apiError, apiSuccess } from "@/lib/api/helpers";
 import type { NextRequest } from "next/server";
 
 const VALID_DEPTHS = ["basic", "intermediate", "advanced"] as const;
@@ -18,37 +19,9 @@ export async function POST(request: NextRequest) {
   try {
     console.log("[ppt/batch] POST request received");
 
-    const supabase = await createServerClient();
-    const {
-      data: { user },
-      error: authError,
-    } = await supabase.auth.getUser();
-
-    if (authError || !user) {
-      return Response.json({ error: "Unauthorized" }, { status: 401 });
-    }
-
-    const adminClient = createAdminClient();
-    const { data: profile, error: profileError } = await adminClient
-      .from("profiles")
-      .select("id, role")
-      .eq("id", user.id)
-      .single();
-
-    if (profileError || !profile) {
-      return Response.json(
-        { error: "Failed to load profile" },
-        { status: 500 }
-      );
-    }
-
-    const role = (profile as { role?: string }).role;
-    if (role !== "faculty" && role !== "superadmin") {
-      return Response.json(
-        { error: "Forbidden: Faculty or Superadmin only" },
-        { status: 403 }
-      );
-    }
+    const authResult = await requireRole(["faculty", "superadmin"]);
+    if (authResult instanceof Response) return authResult;
+    const { user, adminClient } = authResult;
 
     const body = await request.json().catch(() => ({} as Record<string, unknown>));
     const subjectId = String(body?.subjectId ?? "").trim();
@@ -59,15 +32,32 @@ export async function POST(request: NextRequest) {
         : undefined;
     const slidesRaw = body?.slides;
     const validTypes: SlideType[] = [
-      "title", "overview", "concept", "diagram", "example", "practice", "summary",
+      "title",
+      "overview",
+      "concept",
+      "diagram",
+      "dual_visual",
+      "example",
+      "practice",
+      "summary",
     ];
-    const validRenderHints = ["svg", "mermaid", "imagen"] as const;
+    const validRenderHints = [
+      "svg",
+      "mermaid",
+      "imagen",
+      "illustration",
+      "dual",
+    ] as const;
     type RenderHint = (typeof validRenderHints)[number];
     const slides: {
       index: number;
       type: SlideType;
       title: string;
       renderHint?: RenderHint | null;
+      leftVisual?: string;
+      rightVisual?: string;
+      leftPrompt?: string;
+      rightPrompt?: string;
     }[] = Array.isArray(slidesRaw)
       ? slidesRaw.map((s: unknown) => {
           const o = s as Record<string, unknown>;
@@ -76,15 +66,38 @@ export async function POST(request: NextRequest) {
             ? (rawType as SlideType)
             : "concept";
           const rawHint = o?.renderHint as string | null | undefined;
-          const renderHint: RenderHint | null =
+          let renderHint: RenderHint | null =
             rawHint && validRenderHints.includes(rawHint as RenderHint)
               ? (rawHint as RenderHint)
               : null;
-          return {
+          if (type === "dual_visual") {
+            renderHint = "dual";
+          }
+          const base = {
             index: Number(o?.index ?? 0),
             type,
             title: String(o?.title ?? ""),
             renderHint,
+          };
+          if (type !== "dual_visual") return base;
+          return {
+            ...base,
+            leftVisual:
+              o?.leftVisual != null
+                ? String(o.leftVisual).trim() || undefined
+                : undefined,
+            rightVisual:
+              o?.rightVisual != null
+                ? String(o.rightVisual).trim() || undefined
+                : undefined,
+            leftPrompt:
+              o?.leftPrompt != null
+                ? String(o.leftPrompt).trim() || undefined
+                : undefined,
+            rightPrompt:
+              o?.rightPrompt != null
+                ? String(o.rightPrompt).trim() || undefined
+                : undefined,
           };
         })
       : [];
@@ -94,19 +107,18 @@ export async function POST(request: NextRequest) {
       : "intermediate";
 
     if (!subjectId) {
-      return Response.json(
-        { error: "subjectId is required" },
-        { status: 400 }
-      );
+      return apiError("subjectId is required", 400);
     }
     if (slides.length === 0) {
-      return Response.json(
-        { error: "slides array is required and must not be empty" },
-        { status: 400 }
+      return apiError(
+        "slides array is required and must not be empty",
+        400
       );
     }
 
-    const diagramCount = slides.filter((s) => s.type === "diagram").length;
+    const diagramCount = slides.filter(
+      (s) => s.type === "diagram" || s.type === "dual_visual"
+    ).length;
     if (diagramCount >= 2) {
       console.warn(
         "[ppt/batch] High diagram count:",
@@ -123,15 +135,12 @@ export async function POST(request: NextRequest) {
 
     if (contentError) {
       console.error("[ppt/batch] subject_content error:", contentError.message);
-      return Response.json(
-        { error: "Failed to load syllabus content" },
-        { status: 500 }
-      );
+      return apiError("Failed to load syllabus content", 500);
     }
     if (!contentRow) {
-      return Response.json(
-        { error: "Syllabus content not found for this subject" },
-        { status: 404 }
+      return apiError(
+        "Syllabus content not found for this subject",
+        404
       );
     }
 
@@ -142,10 +151,7 @@ export async function POST(request: NextRequest) {
       .single();
 
     if (subjectError || !subject) {
-      return Response.json(
-        { error: "Subject not found" },
-        { status: 404 }
-      );
+      return apiError("Subject not found", 404);
     }
 
     const subjectName = (subject as { name?: string }).name ?? "";
@@ -181,6 +187,7 @@ export async function POST(request: NextRequest) {
       customTopic,
       moduleDescription,
     });
+    let batchCostInr = 0;
     async function generateBatchWithRetry(
       prompt: string,
       maxRetries: number = 2
@@ -188,12 +195,17 @@ export async function POST(request: NextRequest) {
       for (let attempt = 1; attempt <= maxRetries; attempt++) {
         console.log(`[ppt/batch] Attempt ${attempt}/${maxRetries}`);
         try {
-          const isDiagramBatch = slides.every(s => s.type === "diagram");
-          const maxTokens = isDiagramBatch ? 16384 : 32768;
-          const ai = await routeAI("ppt_gen", {
+          const isDiagramBatch = slides.every(
+            (s) => s.type === "diagram" || s.type === "dual_visual"
+          );
+          const maxTokens = isDiagramBatch ? 8192 : 32768;
+          // Diagram-only batches go to Pro (better SVG/diagram code); mixed
+          // content batches stay on Flash.
+          const ai = await routeAI(isDiagramBatch ? "ppt_diagram" : "ppt_gen", {
             messages: [{ role: "user", content: prompt }],
             maxTokens,
           });
+          batchCostInr += ai.costInr;
 
           const text = String(ai.content ?? "");
 
@@ -244,6 +256,20 @@ export async function POST(request: NextRequest) {
                         "Refer to course materials for practice problems on this topic.",
                     }
                   : undefined,
+              ...(s.type === "dual_visual"
+                ? {
+                    diagramRenderType: "dual" as const,
+                    imagenPrompt: [
+                      s.leftPrompt,
+                      `Conceptual metaphor for: ${s.title}`,
+                    ]
+                      .filter(Boolean)
+                      .join(" "),
+                    svgCode: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 400"><rect width="800" height="400" fill="#F8FAFC"/><text x="400" y="200" text-anchor="middle" font-size="16" fill="#64748B">Technical diagram — see course notes</text></svg>`,
+                    diagramCaption:
+                      "Left: metaphor; right: structure — refer to course materials.",
+                  }
+                : {}),
             }));
 
             return fallbackSlides;
@@ -273,11 +299,17 @@ export async function POST(request: NextRequest) {
     const batchContent = await generateBatchWithRetry(batchPrompt);
 
     if (!batchContent) {
-      console.error("[ppt/batch] All retries exhausted");
-      return Response.json(
-        { error: "Failed to generate batch after retries" },
-        { status: 500 }
+      console.error(
+        "[ppt/batch] All retries exhausted — returning placeholders"
       );
+      const placeholders = slides.map((s) => ({
+        type: s.type ?? "concept",
+        title: s.title ?? "Slide",
+        bullets: ["Content generation failed for this slide."],
+        note: "⚠️ Regenerate this slide using the Refine page.",
+        _failed: true,
+      }));
+      return Response.json({ slides: placeholders, partial: true, costInr: batchCostInr });
     }
 
     // Annotate diagramRenderType from input renderHint so build route can identify imagen slides
@@ -289,15 +321,33 @@ export async function POST(request: NextRequest) {
           diagramRenderType: inputSlide.renderHint as SlideContent["diagramRenderType"],
         };
       }
+      if (slide.type === "dual_visual") {
+        return {
+          ...slide,
+          diagramRenderType: "dual" as const,
+          ...(inputSlide?.leftVisual != null
+            ? { leftVisual: inputSlide.leftVisual }
+            : {}),
+          ...(inputSlide?.rightVisual != null
+            ? { rightVisual: inputSlide.rightVisual }
+            : {}),
+          ...(inputSlide?.leftPrompt != null
+            ? { leftPrompt: inputSlide.leftPrompt }
+            : {}),
+          ...(inputSlide?.rightPrompt != null
+            ? { rightPrompt: inputSlide.rightPrompt }
+            : {}),
+        };
+      }
       return slide;
     });
 
     console.log(`[ppt/batch] Done. Generated ${annotated.length} slides`);
-    return Response.json({ slides: annotated });
+    return Response.json({ slides: annotated, costInr: batchCostInr });
   } catch (err) {
     console.error("[ppt/batch] Error:", err);
     const message =
       err instanceof Error ? err.message : "Failed to generate batch content";
-    return Response.json({ error: message }, { status: 500 });
+    return apiError(message, 500);
   }
 }

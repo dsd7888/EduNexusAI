@@ -1,6 +1,7 @@
 import { buildSuggestedPromptsRequest } from "@/lib/ai/prompts";
 import { routeAI } from "@/lib/ai/router";
 import { createServerClient } from "@/lib/db/supabase-server";
+import { requireAuth, requireRole, apiError, apiSuccess } from "@/lib/api/helpers";
 import type { NextRequest } from "next/server";
 
 const DEFAULT_SUGGESTIONS = [
@@ -19,11 +20,8 @@ export async function POST(request: NextRequest) {
   try {
     // Auth check - user must be authenticated, but we never error; we just fall back to defaults if not.
     try {
-      const supabase = await createServerClient();
-      const {
-        data: { user },
-      } = await supabase.auth.getUser();
-      if (!user) {
+      const authResult = await requireAuth();
+      if (authResult instanceof Response) {
         return safeReturn();
       }
     } catch {
