@@ -21,7 +21,7 @@ export async function POST(request: NextRequest) {
       { method: "POST" }
     ).catch(() => {});
 
-    const authResult = await requireRole(["faculty", "superadmin"]);
+    const authResult = await requireRole(["faculty", "superadmin", "dean", "hod"]);
     if (authResult instanceof Response) return authResult;
     const { user, adminClient } = authResult;
 

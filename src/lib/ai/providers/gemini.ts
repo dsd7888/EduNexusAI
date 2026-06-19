@@ -81,11 +81,15 @@ function createGeminiProvider(): AIProvider {
           "ppt_extract",
           "ppt_refine",
           "quiz_gen",
+          "placement_prep",
           "qpaper_gen",
           "refine",
           "placement_gen",
           "syllabus_extract",
           "pyq_extract",
+          "qbank_generate",
+          "qbank_tag",
+          "explainer_extract",
         ].includes(taskName);
 
         const temperature =
@@ -101,12 +105,26 @@ function createGeminiProvider(): AIProvider {
           maxOutputTokens,
         };
 
-        if (isStructuredTask && modelName.includes("flash")) {
+        if (params.thinkingBudget !== undefined) {
+          // Explicit per-call budget takes priority
+          generationConfig.thinkingConfig = {
+            thinkingBudget: params.thinkingBudget,
+          };
+        } else if (isStructuredTask && modelName.includes("flash")) {
+          // Structured JSON tasks: disable thinking entirely
           generationConfig.thinkingConfig = { thinkingBudget: 0 };
         }
+        // Otherwise: thinking is uncapped (default Flash behavior)
 
         if (taskName === "qpaper_gen" || taskName === "pyq_extract") {
           generationConfig.responseMimeType = "application/json";
+        }
+
+        // A caller-supplied responseSchema constrains output to schema-conformant
+        // JSON — Gemini guarantees the shape, so no parse-retry loop is needed.
+        if (params.responseSchema) {
+          generationConfig.responseMimeType = "application/json";
+          generationConfig.responseSchema = params.responseSchema;
         }
 
         const modelParams: Parameters<typeof genAI.getGenerativeModel>[0] = {

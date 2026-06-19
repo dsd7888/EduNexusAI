@@ -9,7 +9,7 @@ Respond ONLY with valid JSON for a SINGLE question object. First char {, last ch
 
 export async function POST(request: NextRequest) {
   try {
-    const authResult = await requireRole(["faculty", "superadmin"]);
+    const authResult = await requireRole(["faculty", "superadmin", "dean", "hod"]);
     if (authResult instanceof Response) return authResult;
 
     const body = (await request.json()) as Record<string, unknown>;

@@ -16,7 +16,13 @@ export function apiSuccess<T>(data: T, status = 200): Response {
 
 // ─── Auth helpers ─────────────────────────────────────────────────────────────
 
-export type AllowedRole = "student" | "faculty" | "superadmin" | "dept_admin";
+export type AllowedRole =
+  | "student"
+  | "faculty"
+  | "superadmin"
+  | "dept_admin"
+  | "dean"
+  | "hod";
 
 interface AuthResult {
   user: { id: string; email?: string };

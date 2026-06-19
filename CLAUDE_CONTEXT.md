@@ -1,6 +1,6 @@
 # EduNexus AI — Complete Project Context
 
-*Last updated: May 31, 2026 | Solo developer: Dhruv | Stack: Next.js 16 + Supabase + Gemini*
+*Last updated: June 7, 2026 | Solo developer: Dhruv | Stack: Next.js 16 + Supabase + Gemini*
 *This document is the single source of truth for any Claude instance working on EduNexus AI.*
 
 ---
@@ -14,13 +14,13 @@ EduNexus AI is a **syllabus-locked, role-aware institutional intelligence platfo
 **Current deployment:** `edu-nexus-ai-two.vercel.app`
 **Repo:** `https://github.com/dsd7888/EduNexusAI`
 
-**Deployment scope:** P. P. Savani University (PPSU) — Engineering branches (Chemical + Mechanical), 12 subjects, 4 faculty. Student accounts are manually provisioned by Dhruv (Supabase self-signup disabled).
+**Deployment scope:** P. P. Savani University (PPSU) — Engineering (CSE fully seeded Sem 1–7, Chemical + Mechanical active). Student accounts are manually provisioned by Dhruv (Supabase self-signup disabled).
 
-**Content state (May 2026):** The platform is now populated with the **real CSE (Computer Science and Engineering) syllabus for Semesters 1–4** — 22 subjects with full module content, course outcomes, CO-PO/PSO mappings, BTL levels, exam schemes, and practicals/tutorials. Seeded via `supabase/seed_cse_sem1_4.sql` (branch `Computer Science and Engineering`, department `Engineering`). This makes CSE the first branch with complete structured-syllabus coverage feeding chat, quiz, PPT, and Q-paper generation.
+**Content state (June 2026):** CSE syllabus fully seeded for Semesters 1–7: 52 subjects, 285 modules, 228 COs, full CO-PO/PSO mappings, BTL levels, exam schemes. Seeded via two SQL scripts (`seed_cse_sem1_4.sql` + `seed_cse_sem5_7.sql`). CSE is the first branch with complete structured-syllabus coverage.
 
 **The three institutional lock-in factors:**
 1. Syllabus lock — content is their RAG; can't replicate without their PDFs
-2. Faculty workflow — PPTs, Q papers, refinement all live here; moving = losing content library
+2. Faculty workflow — PPTs, Q papers, Q bank, refinement all live here; moving = losing content library
 3. Accreditation data — once generating NAAC reports, embedded in regulatory process
 
 **Key people:**
@@ -36,15 +36,16 @@ EduNexus AI is a **syllabus-locked, role-aware institutional intelligence platfo
 | Frontend | Next.js 16 (App Router), TypeScript, Tailwind CSS, shadcn/ui |
 | Backend | Next.js API Routes (serverless) |
 | Database | Supabase (PostgreSQL + pgvector + Auth + Storage) |
-| AI Primary | Gemini 2.5 Flash (chat, quiz, PPT batches, refine, extraction) |
-| AI Heavy | Gemini 2.5 Pro (Q paper gen, answer key, placement gen) |
+| AI Primary | Gemini 2.5 Flash (chat, quiz, PPT batches, refine, extraction, qbank) |
+| AI Heavy | Gemini 2.5 Pro (Q paper gen, answer key, placement gen, explainer extraction) |
 | AI Images | gemini-2.5-flash-image (primary) + imagen-4.0-fast-generate-001 (fallback) |
 | AI Embeddings | gemini-embedding-001 (3072 dimensions) |
-| PPT Generation | pptxgenjs |
+| PPT Generation | pptxgenjs (new slides) + adm-zip + fast-xml-parser (PPT refinement XML patching) |
 | Diagrams | SVG (inline generation) + Mermaid (via mermaid.ink API for PDF, MermaidDiagram.tsx for chat) + Imagen |
 | Interactive Viz | D3.js, P5.js, Chart.js, Plotly via CDN in sandboxed iframes (srcDoc approach) |
-| Drag-and-drop | @dnd-kit/core (Q paper builder) |
+| Drag-and-drop | @dnd-kit/core (Q paper builder + Q bank staging) |
 | PDF Export | Custom PDFBuilder class in /lib/pdf/builder.ts |
+| Word Export | docx v9 (Q paper .docx export) |
 | PDF Parsing | LlamaParse (notes/syllabus), Gemini Flash (PYQ structured extraction) |
 | Deployment | Vercel (with vercel.json timeout configs) |
 | Dev tools | Cursor Pro chat (targeted single-file changes), Claude Code (multi-file architectural work) |
@@ -55,81 +56,113 @@ EduNexus AI is a **syllabus-locked, role-aware institutional intelligence platfo
 
 ```typescript
 const TASK_TO_MODEL = {
-  chat: "flash",           // maxTokens: 16384 (raised for SVG + interactive viz)
-  quiz_gen: "flash",       // maxTokens: 8192
-  ppt_gen: "flash",        // maxTokens: 32768
-  qpaper_gen: "pro",       // maxTokens: 8192 per section — Pro for CO/BTL accuracy
-  answer_key_mcq: "flash", // maxTokens: 2048 — MCQ-only answer key block
-  refine: "flash",         // maxTokens: 8192
-  placement_gen: "pro",    // maxTokens: 32768
-  syllabus_extract: "flash", // maxTokens: 8192 — PDF → structured syllabus JSON
-  pyq_extract: "flash",    // maxTokens: 4096 — PYQ PDF → per-question structured data
+  chat: "flash",              // maxTokens: 16384
+  quiz_gen: "flash",          // maxTokens: 8192
+  ppt_gen: "flash",           // maxTokens: 32768
+  ppt_diagram: "pro",         // maxTokens: 16384 — diagram-only batches
+  ppt_extract: "flash",       // maxTokens: 512 — topic/level detection
+  ppt_refine: "flash",        // maxTokens: 16384 — PPT content refinement batches
+  qpaper_gen: "pro",          // maxTokens: 8192 per section
+  answer_key_mcq: "flash",    // maxTokens: 2048
+  refine: "flash",            // maxTokens: 8192
+  placement_gen: "pro",       // maxTokens: 32768
+  syllabus_extract: "flash",  // maxTokens: 8192
+  pyq_extract: "flash",       // maxTokens: 4096
+  qbank_generate: "flash",    // maxTokens: 8192
+  qbank_tag: "flash",         // maxTokens: 2048
+  explainer_ideate: "flash",  // maxTokens: 8192, thinking ON (thinkingBudget: 2048 via ChatParams)
+  explainer_extract: "pro",   // maxTokens: 16384, thinkingBudget: 0 (structured JSON + responseSchema)
 }
 ```
 
-**CRITICAL:** `thinkingBudget: 0` is set for ALL structured JSON tasks (`ppt_gen`, `quiz_gen`, `qpaper_gen`, `refine`, `placement_gen`). Gemini 2.5 Flash's thinking tokens consume `maxOutputTokens`, causing JSON truncation. This was a hard-won discovery and the root fix for most generation failures.
+**CRITICAL:** `thinkingBudget: 0` for ALL structured JSON tasks. Gemini 2.5 Flash's thinking tokens consume `maxOutputTokens`, causing JSON truncation. Hard-won discovery.
 
-**Answer key generation uses 3 parallel calls per section:**
-- MCQ block → `answer_key_mcq` (Flash, maxTokens: 2048)
-- Main questions block (Q2 + Q3 main) → `qpaper_gen` (Pro, maxTokens: 12288)
-- Alternatives block (Q3 OR + Q4) → `qpaper_gen` (Pro, maxTokens: 12288)
+**`ChatParams` extended fields (added June 2026):**
+- `responseSchema?: object` — forces `responseMimeType: application/json` + schema-constrained output. Guarantees valid JSON on first call, no parse retry needed.
+- `thinkingBudget?: number` — caps (not disables) thinking for tasks that need reasoning but must leave output headroom. Takes priority over the `isStructuredTask` default.
 
-Both sections run in parallel → 6 total concurrent calls per answer key generation.
+**Thinking budget rules:**
+- `explainer_ideate`: thinking ON, capped at 2048 via `thinkingBudget: 2048` in ChatParams
+- All other non-structured tasks: thinking uncapped (Flash default)
+- All structured JSON tasks (in `isStructuredTask` list): `thinkingBudget: 0`
 
-**Fallback:** If 429 rate limit on primary provider, tries next in fallback chain.
+**Answer key generation:** 6 parallel calls per paper (2× Flash MCQ, 4× Pro main+alternatives).
+
+**Fallback:** 429 rate limit → tries next in fallback chain.
 
 ---
 
 ## 4. Role Hierarchy & Permissions
 
+### Current roles in DB: superadmin, dean, hod, faculty, student
+
 ### SUPERADMIN (Dhruv)
 - Created manually in Supabase — never via registration
-- Full platform access: upload content, manage faculty accounts, assign subjects, approve/reject note-change requests, view all analytics, manage syllabus
-- Can do everything faculty can
+- Full platform access across all schools/departments
 
-### DEPT_ADMIN (future)
-- Same as superadmin but scoped to their department
+### DEAN
+- Scoped to one or more schools via `role_scope` table
+- Routes to faculty dashboard, has cross-user visibility (all content for their school)
 
-### FACULTY (assigned to subjects by superadmin)
-- Assigned to specific subjects by superadmin
-- Cannot upload directly to RAG (must go through approval workflow)
-- Can generate: PPT, Visual Notes, Refined Notes, Question Papers, Answer Keys
-- Can view analytics for assigned subjects only
-- Can submit note-change requests (pending superadmin approval)
+### HOD
+- Scoped to one or more departments within a school via `role_scope` table
+- Routes to faculty dashboard, has cross-user visibility within their department
 
-### STUDENT (manually provisioned)
-- Chat with AI tutor (syllabus-locked, approved content only)
-- Self-generate quizzes for knowledge check
-- Placement readiness prep (company-specific aptitude + technical)
-- View own quiz history, scores, placement readiness
-- Rate limited: 50 chat queries/day, 20 quiz gens/day, 30 hints/day
+### FACULTY
+- Access follows `faculty_assignments` ONLY — not school/branch hierarchy
+- Can be assigned to subjects in any school/branch
+- Can generate: PPT, PPT Refinement, Q paper, Q bank, Answer Keys, Animated Explainers, Refined Notes
+
+### STUDENT
+- Chat with AI tutor (syllabus-locked)
+- Self-generate quizzes, placement prep
+- Rate limited: 50 chat/day, 20 quiz/day, 30 hints/day
+
+### role_scope table
+```sql
+role_scope: id, user_id, school, department (null = entire school), created_at
+```
+
+### Dean/HOD access pattern
+- Dean/HOD route to `/faculty/*` via `FACULTY_TIER_ROLES` in proxy.ts
+- They see cross-user data (all PPT content, full Q-bank list, institution-wide analytics) because ownership checks test `=== "faculty"` literally — dean/hod fall into the superadmin-like else branch intentionally
+- All 30 faculty-tier API route arrays include `["faculty","superadmin","dean","hod"]`
+- Superadmin-only routes (upload, approvals, syllabus, subjects, faculty/assign) remain unchanged
 
 ---
 
 ## 5. Database Schema
 
 ### Core Tables
-- `profiles`: id, email, full_name, role, department, branch, semester
-- `subjects`: id, name, code, department, branch, semester
-- `modules`: id, subject_id, name, module_number, description, **hours**, **weightage_percent**, **section_number**, **btl_levels text[]**
+- `profiles`: id, email, full_name, role (superadmin/dean/hod/faculty/student), department, branch, semester
+- `subjects`: id, name, code, department, branch, semester, **school**
+- `modules`: id, subject_id, name, module_number, description, hours, weightage_percent, section_number, btl_levels text[]
 - `exam_structures`: id, subject_id, total_marks, total_questions, time_limit_minutes, sections (jsonb)
 - `faculty_assignments`: id, faculty_id, subject_id, assigned_by, assigned_at
+- `role_scope`: id, user_id, school, department, created_at
 
 ### Content Tables
-- `subject_content`: id, subject_id (UNIQUE), content TEXT, reference_books TEXT, created_by, **practicals jsonb** — syllabus text for AI context
-- `documents`: id, module_id, subject_id, type ('syllabus'/'notes'/'pyq'), title, file_path, year, uploaded_by, status ('processing'/'ready'/'failed'/'archived')
+- `subject_content`: id, subject_id (UNIQUE), content TEXT, reference_books TEXT, created_by (nullable), practicals jsonb
+- `documents`: id, module_id, subject_id, type, title, file_path, year, uploaded_by, status
 - `document_chunks`: id, document_id, content, page_number, chunk_index, embedding vector(3072), metadata jsonb
-- `note_change_requests`: id, subject_id, module_id, requested_by, reviewed_by, current_doc_id, new_file_path, reason, status ('pending'/'approved'/'rejected'), admin_comment, reviewed_at
+- `note_change_requests`: id, subject_id, module_id, requested_by, reviewed_by, current_doc_id, new_file_path, reason, status, admin_comment, reviewed_at
 
-### Syllabus Structure Tables (added May 2026)
-- `course_outcomes`: id, subject_id, co_code, description — e.g. "CO1: Illustrate various concepts"
+### Syllabus Structure Tables
+- `course_outcomes`: id, subject_id, co_code, description
 - `co_po_mapping`: id, subject_id, co_code, po_code, strength (1/2/3)
 - `co_pso_mapping`: id, subject_id, co_code, pso_code, strength (1/2/3)
 - `exam_scheme`: id, subject_id (UNIQUE), theory_ce, theory_ese, practical_ce, practical_ese, tutorial_marks, total_marks, credits
 
-### Q Paper Tables (added May 2026)
+### Q Paper Tables
 - `qpaper_templates`: id, subject_id, created_by, name, is_default, university_name, exam_title, duration_minutes, total_marks, instructions text[], structure jsonb
-- `pyq_questions`: id, document_id, subject_id, section_name, q_number, question_text, question_type, marks, co, btl, po, options jsonb, year — extracted from PYQ PDFs via Gemini Flash
+- `pyq_questions`: id, document_id, subject_id, section_name, q_number, question_text, question_type, marks, co, btl, po, options jsonb, year
+
+### Q Bank Table
+- `faculty_question_bank`: id, subject_id, faculty_id, module_id, question_text, question_type (mcq/short_answer/long_answer/numerical/fill_blank), marks, model_answer, options jsonb, co_code, btl_level (1–6), po_codes text[], difficulty (easy/medium/hard), source (ai_generated/faculty_imported/pyq_inspired), is_verified bool, usage_count, last_used_at, created_at, updated_at
+
+### Explainers Table
+- `explainers`: id, short_code (unique, 8-char), subject_id, module_id, topic, script (jsonb — ExtractedContent), storage_path, has_audio, duration_seconds, created_by, created_at
+- Private `explainers` Storage bucket — HTML served via `/e/[code]` public route
 
 ### Chat Tables
 - `chat_sessions`: id, student_id, subject_id, module_id
@@ -140,24 +173,21 @@ Both sections run in parallel → 6 total concurrent calls per answer key genera
 - `quiz_attempts`: id, quiz_id, student_id, answers (jsonb), score, time_taken
 
 ### Generation Tables
-- `generated_content`: id, subject_id, module_id, type, title, file_path, metadata (jsonb), generated_by, tokens_used, cost_inr, status, **answer_key_path**, **answer_key_generated_at**
+- `generated_content`: id, subject_id, module_id, type, title, file_path, metadata (jsonb), generated_by, tokens_used, cost_inr, status, answer_key_path, answer_key_generated_at
 
 ### Placement Tables
-- `placement_companies`: id, name, branches (TEXT[]), aptitude_pattern (jsonb), difficulty, avg_package_lpa
-- `placement_question_bank`: id, company_id, branch, category, subcategory, question (jsonb), times_used, created_at
-- `practice_question_bank`: id, module_id, branch, category, subcategory, question (jsonb), times_used
-- `student_question_history`: student_id, question_bank_id — 7-day deduplication window
-- `placement_attempts`: id, student_id, company_id, score, category_scores (jsonb), time_taken, created_at
+- `placement_companies`, `placement_question_bank`, `practice_question_bank`, `student_question_history`, `placement_attempts`
 
 ### System Tables
 - `semantic_cache`: id, subject_id, module_id, query_text, query_embedding vector(3072), response, hit_count, last_used_at
 - `usage_analytics`: id, date, user_id, subject_id, event_type, event_count, tokens_used, cost_inr
 
-### DB Consistency Rule
+### DB Consistency Rules
 - `department = "Engineering"` for ALL rows (current deployment)
-- `branch` values match whatever case was set at signup — do not alter
+- `school = "School of Engineering"` for all seeded CSE subjects
 - Filter queries use `branch` only, never `department`
-- Multi-department expansion: repurpose `department` column when needed
+- `subject_content.created_by` is nullable
+- RLS enabled on all tables. `get_my_role()` SECURITY DEFINER function breaks recursion in profiles policies
 
 ---
 
@@ -168,166 +198,84 @@ edunexus-ai/
 ├── src/
 │   ├── proxy.ts                                    ← Auth middleware (Next.js 16, NOT middleware.ts)
 │   ├── app/
-│   │   ├── (auth)/
-│   │   │   ├── login/page.tsx                      ✅
-│   │   │   └── register/page.tsx                   ✅
-│   │   ├── (superadmin)/
-│   │   │   ├── layout.tsx                          ← Pure UI sidebar, NO auth checks
-│   │   │   └── superadmin/
-│   │   │       ├── dashboard/page.tsx              ✅
-│   │   │       ├── upload/page.tsx                 ✅ PDF upload (notes + PYQs only — syllabus moved)
-│   │   │       ├── approvals/page.tsx              ✅
-│   │   │       ├── faculty/page.tsx                ✅
-│   │   │       ├── subjects/page.tsx               ✅ Subject management + "Manage Syllabus" per subject
-│   │   │       ├── subjects/[subjectId]/syllabus/  ✅ Unified syllabus management (PDF → extract → edit → save)
-│   │   │       └── analytics/page.tsx              ✅
-│   │   ├── (faculty)/
-│   │   │   ├── layout.tsx                          ← Pure UI sidebar, NO auth checks
-│   │   │   └── faculty/
-│   │   │       ├── dashboard/page.tsx              ✅
-│   │   │       ├── generate/page.tsx               ✅ PPT generation
-│   │   │       ├── generate/refine/[contentId]/page.tsx ✅ Per-slide PPT refinement UI
-│   │   │       ├── qpaper/page.tsx                 ✅ Q paper builder (drag-drop + templates + answer key)
-│   │   │       ├── request-change/page.tsx         ✅
-│   │   │       ├── refine/page.tsx                 ✅
-│   │   │       ├── analytics/page.tsx              ✅
-│   │   │       └── profile/page.tsx                ✅
-│   │   ├── (student)/
-│   │   │   ├── layout.tsx                          ✅
-│   │   │   └── student/
-│   │   │       ├── dashboard/page.tsx              ✅
-│   │   │       ├── subjects/page.tsx               ✅
-│   │   │       ├── chat/page.tsx                   ✅ Subject picker / chat entry
-│   │   │       ├── chat/[subjectId]/page.tsx        ✅ + Visualize button per message + struggle detection banner
-│   │   │       ├── quiz/page.tsx                   ✅ + subjectId query param pre-selection
-│   │   │       ├── history/page.tsx                ✅
-│   │   │       ├── profile/page.tsx                ✅
-│   │   │       └── placement/
-│   │   │           ├── page.tsx                    ✅
-│   │   │           ├── test/[companyId]/page.tsx   ✅
-│   │   │           ├── history/page.tsx            ✅
-│   │   │           └── practice/[moduleId]/page.tsx ✅
-│   │   ├── api/
-│   │   │   ├── auth/callback/route.ts              ✅
-│   │   │   ├── admin/cleanup/route.ts              ✅ Maintenance cleanup
-│   │   │   ├── analytics/route.ts                  ✅ Event logging
-│   │   │   ├── analytics/summary/route.ts          ✅ Aggregated analytics
-│   │   │   ├── subjects/content/route.ts           ✅
-│   │   │   ├── subjects/manage/route.ts            ✅ Subject create/update
-│   │   │   ├── upload/route.ts                     ✅ Notes + PYQ only; notes → LlamaParse, PYQ → Gemini Flash (inline)
-│   │   │   ├── faculty/assign/route.ts             ✅
-│   │   │   ├── faculty/assign/bulk/route.ts        ✅ Bulk faculty assignment
-│   │   │   ├── approvals/route.ts                  ✅
-│   │   │   ├── approvals/download/route.ts         ✅ Download note-change file
-│   │   │   ├── syllabus/extract/route.ts           ✅ POST PDF → Gemini → ExtractedSyllabus JSON
-│   │   │   ├── syllabus/save/route.ts              ✅ POST ExtractedSyllabus → all DB tables
-│   │   │   ├── syllabus/load/route.ts              ✅ GET reassemble saved state for editor
-│   │   │   ├── chat/route.ts                       ✅ Inline semantic cache + query mode + struggle detection
-│   │   │   ├── chat/session/route.ts               ✅ Resume per subject (72h window) or force_new
-│   │   │   ├── chat/suggestions/route.ts           ✅
-│   │   │   ├── chat/export/route.ts                ✅
-│   │   │   ├── quiz/generate/route.ts              ✅
-│   │   │   ├── quiz/submit/route.ts                ✅
-│   │   │   ├── quiz/hint/route.ts                  ✅
-│   │   │   ├── quiz/export/route.ts                ✅ Quiz result PDF
-│   │   │   ├── notes/route.ts                      ✅
-│   │   │   ├── notes/export/route.ts               ✅
-│   │   │   ├── generate/ppt/outline/route.ts       ✅
-│   │   │   ├── generate/ppt/batch/route.ts         ✅ Diagram-only batches → ppt_diagram (Pro)
-│   │   │   ├── generate/ppt/build/route.ts         ✅
-│   │   │   ├── generate/ppt/content/[contentId]/route.ts            ✅ Load stored slide JSON
-│   │   │   ├── generate/ppt/image/[contentId]/[slideIndex]/route.ts ✅ Per-slide image regen
-│   │   │   ├── generate/ppt/rebuild/route.ts       ✅ Rebuild PPTX from edited slide JSON
-│   │   │   ├── generate/ppt/refine/route.ts        ✅ Per-slide JSON patch (continuous refinement)
-│   │   │   ├── generate/qpaper/route.ts            ✅ Section-by-section, Pro, CO/PO/BTL, PYQ RAG
-│   │   │   ├── generate/qpaper/answer-key/route.ts ✅ 6 parallel Pro/Flash calls, CONFIDENTIAL PDF
-│   │   │   ├── generate/qpaper/regenerate-question/route.ts ✅ Single question regen
-│   │   │   ├── generate/qpaper/export/route.ts     ✅ Re-render edited paper to PDF
-│   │   │   ├── qpaper/templates/route.ts           ✅ GET (auto-seeds 3 presets) + POST
-│   │   │   ├── qpaper/templates/[id]/route.ts      ✅ DELETE
-│   │   │   ├── refine/route.ts                     ✅
-│   │   │   ├── placement/generate/route.ts         ✅
-│   │   │   ├── placement/submit/route.ts           ✅
-│   │   │   ├── placement/export/route.ts           ✅ Placement result PDF
-│   │   │   └── placement/practice/
-│   │   │       ├── generate/route.ts               ✅
-│   │   │       ├── submit/route.ts                 ✅
-│   │   │       └── export/route.ts                 ✅ Practice result PDF
-│   │   ├── auth/loading/page.tsx                   ✅
-│   │   ├── layout.tsx                              ✅
-│   │   └── page.tsx                               ✅
-│   ├── components/
-│   │   ├── ui/                                     ✅ shadcn components
-│   │   │   └── score-meter.tsx                     ✅ Semantic score meter (X% → target bar), dep-free
-│   │   ├── layout/
-│   │   │   ├── NavLink.tsx                         ✅
-│   │   │   ├── LogoutButton.tsx                    ✅
-│   │   │   ├── UserProfile.tsx                     ✅
-│   │   │   └── PageSkeleton.tsx                    ✅
-│   │   ├── chat/
-│   │   │   ├── MarkdownRenderer.tsx                ✅ Dispatches svg/mermaid/interactive-html fences
-│   │   │   ├── MermaidDiagram.tsx                  ✅
-│   │   │   └── SVGDiagram.tsx                      ✅ Sanitizes + renders inline SVG
-│   │   ├── ppt/
-│   │   │   └── SlidePreview.tsx                    ✅
-│   │   └── ErrorBoundary.tsx                       ✅
-│   ├── hooks/
-│   │   └── useSupabaseData.ts                      ✅ Client-side data-fetching hook
+│   │   ├── (auth)/login/ + register/               ✅
+│   │   ├── (superadmin)/superadmin/
+│   │   │   ├── dashboard/ + upload/ + approvals/   ✅
+│   │   │   ├── faculty/ + subjects/ + analytics/   ✅
+│   │   │   └── subjects/[subjectId]/syllabus/       ✅
+│   │   ├── (faculty)/faculty/
+│   │   │   ├── dashboard/                          ✅
+│   │   │   ├── generate/                           ✅ PPT generation
+│   │   │   ├── generate/refine/[contentId]/        ✅ Per-slide PPT refinement
+│   │   │   ├── qpaper/                             ✅ Q paper builder
+│   │   │   ├── qbank/                              ✅ Q bank
+│   │   │   ├── explainer/                          ⚠️  UNDER DEVELOPMENT (UI shows placeholder)
+│   │   │   ├── refine/                             ✅ PPT + text refinement tabs
+│   │   │   ├── request-change/ + analytics/ + profile/ ✅
+│   │   ├── (student)/student/
+│   │   │   ├── dashboard/ + subjects/ + chat/[subjectId]/ ✅
+│   │   │   ├── quiz/ + history/ + profile/         ✅
+│   │   │   └── placement/ (page, test, history, practice) ✅
+│   │   ├── e/[code]/                               ✅ Public explainer permalink
+│   │   └── api/
+│   │       ├── auth/callback/                      ✅
+│   │       ├── admin/cleanup/                      ✅
+│   │       ├── analytics/ + analytics/summary/     ✅
+│   │       ├── subjects/content/ + subjects/manage/ ✅
+│   │       ├── upload/                             ✅
+│   │       ├── faculty/assign/ + faculty/assign/bulk/ ✅
+│   │       ├── approvals/ + approvals/download/    ✅
+│   │       ├── syllabus/extract/ + save/ + load/   ✅
+│   │       ├── chat/ + chat/session/ + suggestions/ + export/ ✅
+│   │       ├── quiz/generate/ + submit/ + hint/ + export/ ✅
+│   │       ├── notes/ + notes/export/              ✅
+│   │       ├── generate/ppt/outline/ + batch/ + build/ + content/[id]/ + image/[id]/[idx]/ + rebuild/ + refine/ ✅
+│   │       ├── generate/qpaper/ + answer-key/ + regenerate-question/ + export/ + export-docx/ ✅
+│   │       ├── qpaper/templates/ + templates/[id]/ ✅
+│   │       ├── qbank/generate/ + import/ + list/ + [id]/ + questions/ + sample-csv/ ✅
+│   │       ├── ppt-refine/extract/ + refine/       ✅
+│   │       ├── refine/                             ✅
+│   │       ├── explainer/generate/ + list/ + [id]/ ✅ (routes exist, UI under development)
+│   │       ├── placement/generate/ + submit/ + export/ ✅
+│   │       └── placement/practice/generate/ + submit/ + export/ ✅
+│   ├── components/ui/ + layout/ + chat/ + ppt/ + ErrorBoundary.tsx ✅
+│   ├── hooks/useSupabaseData.ts                    ✅
 │   └── lib/
-│       ├── ai/
-│       │   ├── providers/
-│       │   │   ├── types.ts                        ✅ AIProvider, ChatParams, ChatResponse interfaces
-│       │   │   └── gemini.ts                       ✅ Flash/Pro/Embedding/Imagen implementation
-│       │   ├── router.ts                           ✅ routeAI(task, params) with thinkingBudget:0
-│       │   ├── prompts.ts                          ✅ Tutor/notes/suggestion builders + detectQueryMode + PPT prompt constants
-│       │   └── imagen.ts                           ✅ buildImagenPrompt + generateImagenImage (domain detection)
-│       ├── api/
-│       │   └── helpers.ts                          ✅ requireAuth / requireRole / apiError / apiSuccess
-│       ├── db/
-│       │   ├── supabase-browser.ts                 ✅ createBrowserClient() — client components ONLY
-│       │   ├── supabase-server.ts                  ✅ createServerClient(), createAdminClient()
-│       │   └── types.ts                            ✅ All DB TypeScript types
-│       ├── pdf/
-│       │   └── builder.ts                          ✅ PDFBuilder class — all PDF exports (markdown-aware)
-│       ├── ppt/
-│       │   └── generator.ts                        ✅ buildOutlinePrompt + buildBatchContentPrompt + generatePPTXBuffer (fixed dims)
-│       ├── qpaper/
-│       │   ├── generator.ts                        ✅ Q paper types + generation orchestration
-│       │   ├── sectionGen.ts                       ✅ Section prompt builder, Pro generation, validation, retry
-│       │   ├── moduleAssignment.ts                 ✅ Weightage-based module-to-slot assignment (pure TS)
-│       │   ├── answerKeyGen.ts                     ✅ Answer key prompt builder + 3-block parallel generation + PDF
-│       │   ├── templates.ts                        ✅ PPSU_ESE, CE_QUIZ, CUSTOM preset templates
-│       │   └── builder.ts                          ✅ Q paper PDF builder (PPSU format with CO/BTL/PO columns)
-│       ├── syllabus/
-│       │   ├── types.ts                            ✅ ExtractedSyllabus shape
-│       │   ├── prompts.ts                          ✅ Extraction system + user prompts
-│       │   ├── parser.ts                           ✅ 5-attempt JSON parser with progressive cleaning
-│       │   └── reconstruct.ts                      ✅ Rebuild plain-text syllabus for subject_content.content
-│       ├── quiz/
-│       │   └── generator.ts                        ✅ Match-as-MCQ, multi-type
-│       ├── placement/
-│       │   ├── generator.ts                        ✅ Bank-first + weighted random + Flash-first
-│       │   ├── bankManager.ts                      ✅ Question bank fetch/save + 7-day dedup
-│       │   ├── fallbackSyllabus.ts                 ✅ Per-branch fallback syllabus text
-│       │   └── modules.ts                          ✅ PRACTICE_MODULES catalog
-│       ├── refine/
-│       │   └── generator.ts                        ✅ Content refinement (RefinementType goals)
-│       ├── student/
-│       │   └── subjectGroups.ts                    ✅ Subject grouping helper (semester / code / none)
-│       ├── ui/
-│       │   └── score.ts                            ✅ Semantic score system (not-started/in-progress/on-track, no red)
-│       ├── utils.ts                                ✅ cn() + shared client helpers
-│       └── utils/
-│           └── rate-limit.ts                       ✅ 50 chat / 20 quiz / 30 hints per day
+│       ├── ai/providers/types.ts + gemini.ts       ✅ (responseSchema + thinkingBudget added to ChatParams)
+│       ├── ai/router.ts + prompts.ts + imagen.ts   ✅
+│       ├── api/helpers.ts                          ✅
+│       ├── db/supabase-browser.ts + server.ts + types.ts ✅
+│       ├── pdf/builder.ts                          ✅
+│       ├── ppt/generator.ts                        ✅
+│       ├── ppt-refine/types.ts + extractor.ts + refiner.ts + assembler.ts ✅
+│       ├── qbank/types.ts + tagger.ts + generator.ts + parser.ts + row.ts ✅
+│       ├── explainer/                              ⚠️ PARTIALLY BUILT — see §16 for status
+│       │   ├── types.ts                            ← ExtractedContent + 14 PatternData types
+│       │   ├── scriptGenerator.ts                  ← two-call: ideate (Flash+thinking) → extract (Pro+responseSchema)
+│       │   ├── renderer.ts                         ← pattern-based renderers (8 patterns, UNDER DEVELOPMENT)
+│       │   ├── tts.ts                              ← Google Cloud TTS (optional)
+│       │   └── storage.ts                          ← short-code alloc + HTML upload/stream
+│       ├── qpaper/generator.ts + sectionGen.ts + moduleAssignment.ts + answerKeyGen.ts + templates.ts + builder.ts + bankFill.ts + docxBuilder.ts ✅
+│       ├── syllabus/types.ts + prompts.ts + parser.ts + reconstruct.ts ✅
+│       ├── quiz/generator.ts                       ✅
+│       ├── placement/generator.ts + bankManager.ts + fallbackSyllabus.ts + modules.ts ✅
+│       ├── refine/generator.ts                     ✅
+│       ├── student/subjectGroups.ts                ✅
+│       ├── ui/score.ts                             ✅
+│       ├── utils.ts + utils/rate-limit.ts          ✅
 ├── supabase/migrations/
 │   ├── 20260218100000_subject_content.sql          ✅ applied
 │   ├── 20260218100001_subject_content_created_by.sql ✅ applied
 │   ├── 20260328120000_placement_attempts_detail_columns.sql ✅ applied
-│   ├── 20260521000000_structured_syllabus.sql      ✅ applied — modules columns + CO/PO tables + exam_scheme
+│   ├── 20260521000000_structured_syllabus.sql      ✅ applied
 │   ├── 20260523000000_qpaper_templates.sql         ✅ applied
 │   ├── 20260524000000_pyq_questions.sql            ✅ applied
-│   └── 20260525000000_answer_key.sql               ✅ applied — answer_key_path + answer_key_generated_at
-├── supabase/seed_cse_sem1_4.sql                    ✅ Real CSE Sem 1–4 syllabus seed (22 subjects, one DO block each)
+│   ├── 20260525000000_answer_key.sql               ✅ applied
+│   ├── 20260603000000_faculty_question_bank.sql    ✅ applied
+│   ├── 20260604000000_explainers.sql               ✅ applied
+│   └── 20260604000001_dean_hod_roles.sql           ✅ applied
+├── supabase/seed_cse_sem1_4.sql                    ✅ 22 subjects Sem 1–4
+├── supabase/seed_cse_sem5_7.sql                    ✅ 30 subjects Sem 5–7
 ├── vercel.json                                     ✅ maxDuration per route
 ├── CLAUDE_CONTEXT.md                               ← This file
 ├── .env.local
@@ -339,328 +287,371 @@ edunexus-ai/
 ## 7. Completed Features
 
 ### Auth & Navigation
-- proxy.ts auth middleware (Next.js 16)
-- Login, register, auth callback, role-based redirect
-- Three role layouts with pure UI sidebars (no auth checks)
-- Mobile responsive with hamburger menu
-- Error boundaries, loading skeletons, role-based route protection
+- proxy.ts auth middleware (Next.js 16), login/register/callback, role-based redirect
+- Three role layouts with pure UI sidebars (no auth checks), mobile responsive
 
 ### Superadmin Features
-- Upload: notes PDFs, PYQ PDFs (syllabus upload moved to dedicated page)
-- **Unified Syllabus Management** — PDF upload → Gemini Flash extracts structured data → admin reviews + edits in accordion UI → saves to DB (course_outcomes, co_po_mapping, exam_scheme, modules enriched with weightage/BTL/section)
-- Faculty assignment (many-to-many)
-- Note-change approval workflow
-- Analytics dashboard
+- PDF upload (notes + PYQs), unified syllabus management
+- Faculty assignment (many-to-many, search-all UI)
+- Note-change approval workflow, analytics dashboard
 
 ### Student Features
-- **Subjects page** — filtered by branch + semester, Quick Notes modal
-- **AI Chat:**
-  - Query mode detection (`detectQueryMode`) — exam_prep / problem_solving / conceptual → different AI behavior per mode
-  - Session continuity — resume per subject (72h window), force_new option, resume banner
-  - Semantic cache: threshold 0.90, strict (subject_id + module_id) scoping
-  - **Visualize button** — on every AI message, sends follow-up prompt for interactive visualization
-  - **Struggle detection** — pure string tokenization, flags repeated concept across 3+ messages in session → shows quiz nudge banner
-  - SVG, Mermaid, interactive HTML visualizations
-  - PDF export, suggested prompts
-- **Quiz** — MCQ, True/False, Short Answer, Match-as-MCQ, subjectId query param pre-selection, Socratic hints, persistence, resume
-- **Placement Prep** — company tests, practice drills, history
-- **Rate limiting** — 50 chat/day, 20 quiz/day, 30 hints/day
+- AI Chat: query mode detection, semantic cache (0.90 threshold), session resume (72h), visualize button, struggle detection
+- Quiz: multi-type, Socratic hints, persistence, resume
+- Placement prep: company tests, practice drills, history
+- Semantic score system: slate/amber/emerald (no red), strengths-first, target-framing
 
 ### Faculty Features
-- **PPT generation** — full 3-route pipeline with activity slides, Indian context, hook slides, layout variety
-- **Question Paper Generation:**
-  - Drag-drop builder with @dnd-kit/core
-  - 3 preset templates (PPSU ESE 60M, CE Quiz 10M, Custom)
-  - Templates are editable — prefill drag-drop builder
-  - Paper metadata form (semester, date, time, instructions, university name)
-  - CO/PO/BTL mapping per question — sourced from syllabus DB
-  - Module-weighted question distribution (code-computed, not AI-decided)
-  - Section I / Section II strict module segregation
-  - PYQ structured RAG (pyq_questions table, always fed to generation regardless of mode)
-  - Two parallel Pro calls for generation (one per section)
-  - Per-question regeneration, inline edit, Update PDF
-  - Save as template
-- **Answer Key Generation:**
-  - CONFIDENTIAL PDF for evaluators only (faculty-only access, signed URL)
-  - 6 parallel calls: 2× Flash (MCQ), 4× Pro (main + OR alternatives)
-  - Full model answers + marking scheme breakdown per question
-  - Partial credit guidance, alternative approach notes
-  - Both OR alternatives and both Q4 options always shown
-- **Content refinement** — paste text, AI refines
-- **Note change request** — upload new version → superadmin queue
+
+#### PPT Generation
+- 3-route pipeline (outline → batch → build), activity slides, Indian context, hook slides
+- Per-slide continuous refinement UI
+
+#### PPT Refinement
+- Faculty uploads existing .pptx → AI refines content (Flash batches of 5)
+- XML-patching assembler preserves 100% original appearance
+- New slides appended using original slide master, explicit font sizes (sz="2400" title, sz="1600" body)
+- 4-stage UI: upload → configure → processing → results
+
+#### Q Paper Generation
+- Drag-drop builder, 3 presets, CO/PO/BTL mapping, module-weighted distribution (code-computed)
+- 4 source options: All Fresh | PYQ + Fresh Mix | PYQ Style Only | From Q Bank
+- PYQ structured RAG always fed regardless of mode
+- Per-question regeneration, inline edit, inline save-to-bank
+- Answer key generation (CONFIDENTIAL PDF, 6 parallel calls)
+- Word (.docx) export — exact structure match to PDF
+
+#### Q Bank
+- Per-subject persistent question library
+- Generate: slot-based bulk generation (≤60 questions), Fresh + PYQ-Inspired styles
+- Import: CSV/TXT with AI tagging for missing CO/BTL (sample CSV downloadable)
+- My Bank: infinite scroll, full filters, inline edit, delete, staging area
+- Q paper integration: From Q Bank source, 📚 badge, usage tracking
+
+#### Animated Explainers (UNDER DEVELOPMENT — UI shows placeholder)
+The infrastructure is built but the visual output quality is not acceptable yet. Shelved for a dedicated session. Do not attempt to use or fix incrementally.
+
+**What's built:**
+- Two-call pipeline architecture: `ideateExplainer()` (Flash + thinking, pedagogical narrative) → `extractStructuredContent()` (Pro + responseSchema, pattern classification + data extraction)
+- 14 pattern types defined in types.ts: array_sort, array_search, graph_algorithm, tree_traversal, stack_queue_ops, dp_table, formula_derivation, concept_analogy, comparison_table, process_flow, cause_effect_chain, definition_with_example, hierarchy_structure, state_machine
+- Pattern-based renderer architecture in renderer.ts (8 patterns partially implemented)
+- Storage, TTS (optional Google Cloud TTS), public `/e/[code]` route all working
+- DB table and Storage bucket exist
+
+**What's wrong (root cause identified):**
+- The renderer produces pattern-specific HTML but the visual execution is broken -- boxes don't show colors correctly, elements overlap, animations fire incorrectly
+- The pattern library approach is correct architecturally; the CSS/JS implementation in each pattern renderer needs a complete rewrite with proper design
+- This requires a dedicated session with a clear visual spec for each pattern
+
+**Plan for next session:**
+- Start from renderer.ts only -- the pipeline (types, scriptGenerator, storage, routes) is all correct
+- Rewrite each pattern renderer as proper self-contained HTML with dark theme, colored boxes, smooth CSS animations
+- Test one pattern (array_sort) completely before building others
+- Use the 26-pattern taxonomy (array_sort through state_machine) already defined
+
+#### Content Refinement
+- Text refinement (paste text → AI refines)
+- PPT refinement (upload .pptx → AI refines preserving appearance)
 
 ---
 
 ## 8. Content Architecture
 
 ### Current Approach (TEXT-BASED)
-- Superadmin uses unified syllabus page: uploads PDF → Gemini Flash extracts → structured data saved to DB (modules, course_outcomes, co_po_mapping, exam_scheme)
-- `subject_content.content` (plain text) is auto-reconstructed from structured data and used in AI prompts
+- Syllabus PDF → Gemini Flash extracts → structured DB tables
+- `subject_content.content` auto-reconstructed from structured data, used in all AI prompts
 - No chunking/pgvector for chat — full syllabus fits in context
 - Semantic cache prevents repeated API calls
 
-### Seeded Real Content — CSE Sem 1–4 (`supabase/seed_cse_sem1_4.sql`)
-- 22 subjects extracted from the official PPSU CSE syllabus PDF into the structured tables (`subjects`, `subject_content`, `modules`, `course_outcomes`, `co_po_mapping`, `co_pso_mapping`, `exam_scheme`); one `DO $$` block per subject so one failure can't corrupt the rest.
-- 127 modules, 96 COs; Sem 1: 4 / Sem 2: 6 / Sem 3: 7 / Sem 4: 5 subjects. All branch `Computer Science and Engineering`, department `Engineering`.
-- Tutorial-only subjects store their tutorial list in `subject_content.practicals` (no separate tutorial field). Lab/workshop/exposure subjects have no module rows.
-- **Caveat to verify before accreditation use:** CO-PO / CO-PSO strengths were assigned to consecutive PO/PSO columns starting at PO1/PSO1 because the source matrix column alignment was lost in PDF→text extraction. A few subjects had BTL tables that didn't align 1:1 with their module list (mapped by name, some left empty). All flagged inline + in the file's EXTRACTION SUMMARY.
-- Mirrors what the unified syllabus page produces, so chat/quiz/PPT/Q-paper for CSE run on real structured data.
-
-### Full PDF RAG (planned)
-- LlamaParse for notes (already active for notes uploads)
-- Flow: PDF upload → LlamaParse → clean markdown → chunked → embedded → pgvector
-- Currently: notes are LlamaParse-parsed but chunking/embedding pipeline exists
-
-### PYQ Processing
-- PYQ PDFs bypass LlamaParse entirely
-- Gemini Flash extracts structured questions directly: `{question_text, type, marks, co, btl, po, section_name, year}`
-- Stored in `pyq_questions` table, not `document_chunks`
-- Always fed to Q paper generation as style reference regardless of PYQ mode selected
+### Seeded Content
+- CSE Sem 1–4: 22 subjects, 127 modules, 96 COs
+- CSE Sem 5–7: 30 subjects, 158 modules, 132 COs
+- Total: 52 subjects, 285 modules, 228 COs across 7 semesters
+- Caveat: CO-PO/PSO strengths for Sem 1–4 have column alignment issue. Sem 5–7 electives missing CO-PO/PSO mappings. Fix via superadmin UI before accreditation use.
 
 ---
 
 ## 9. Semantic Cache Architecture
 
-**Table:** `semantic_cache`
-**Embedding model:** gemini-embedding-001 (3072 dimensions)
-**Similarity:** cosine similarity computed in JS loop — **NEVER use `.rpc()` for this** (PostgREST silently truncates 3072-dim vectors)
-**Threshold:** 0.90 (lowered from 0.97 — root cause of low hit rate was cross-subject contamination, not threshold)
-**Scoping:** SQL filter on `subject_id` AND `module_id` FIRST, then cosine similarity in JS loop
-
-**Cache bypass function** (`shouldBypassCache` in chat API route):
-```typescript
-function shouldBypassCache(message: string): boolean {
-  if (/[\[{][\d\s,.-]+[\]}]/.test(m)) return true          // numerical arrays
-  if (/\b\d+\.?\d*\s*(K|°C|°F|cm|mm|...)/.test(m)) return true // units+numbers
-  if (/\b\d+\s*[+\-*/^=]\s*\d+/.test(m)) return true       // inline math
-  if (/\b(calculate|compute|solve...).*\d+/i.test(m)) return true
-  if (/\b(given|where|assume|let).*[=:]\s*\d+/i.test(m)) return true
-  if (/\b(my|mine|our|i got|i have...)\b/i.test(m)) return true
-  if (/\b(this code|this equation|the following...)\b/i.test(m)) return true
-  if (/```[\s\S]{20,}```/.test(m)) return true              // code blocks
-  if (/\b(mr\.|case study|case of)\s+[A-Z]/i.test(m)) return true
-  if (/\b(analyse|analyze|critique)...[A-Z]/.test(m)) return true
-  if (m.length > 400) return true
-  return false
-}
-```
+- Cosine similarity in JS loop, NEVER `.rpc()` (PostgREST truncates 3072-dim vectors)
+- Threshold: 0.90, scoped by subject_id + module_id
+- `shouldBypassCache()` handles numerical/personal/pasted queries
 
 ---
 
 ## 10. PPT Generation Pipeline
 
 ### Architecture (3-route split for Vercel 60s timeout)
+outline → batch (5 slides/batch, 1 for diagrams) → build
+
+### PPT Refinement Pipeline
 ```
-Faculty → POST /api/generate/ppt/outline → slide structure JSON
-        → POST /api/generate/ppt/batch × N → content in batches of 5
-        → POST /api/generate/ppt/build → PPTX assembly + Imagen + upload → signed URL
-```
-
-### Parallel Processing
-```typescript
-const CONCURRENCY = { content: 3, diagram: 2 }
-```
-
-### Batch Sizes
-- Content batches: 5 slides per batch
-- Diagram batches: 1 slide per batch (prevents SVG token truncation)
-- Diagram-only batch maxTokens: 16,384
-
-### Slide Dimensions
-`SLIDE_W = 10"`, `SLIDE_H = 5.625"` (16:9) — **NEVER CHANGE**
-
-### Diagram Routing (renderHint in outline)
-- `"svg"` — precise 2D: algorithm diagrams, state diagrams, data structures, graphs, chemical formulas
-- `"mermaid"` — sequential/logical flow: processes, decision trees, timelines, hierarchies
-- `"imagen"` — 3D/photorealistic: anatomy, equipment internals, 3D assemblies, lab setups
-- `"activity"` — no diagram; scenario + numbered student tasks (see below)
-- Default to "svg". Use "imagen" only when 3D spatial understanding is genuinely necessary.
-
-### New Slide Types (from prompts.ts constants)
-- **Hook slide** — one scenario creating felt need for the algorithm. Single question at end. No bullets. Indian context. Placed before concept definition.
-- **Activity slide** — real Indian scenario IS the algorithm problem. 3-4 numbered student tasks (compute, draw, map, identify). Discussion prompt. Solution hint. Placed after worked example.
-- **Key Insight slide** — one core insight, one explanation sentence, one example. Used sparingly.
-
-### PPT Prompt Constants (prompts.ts exports, wired into generator.ts)
-- `OUTLINE_PROMPT_ACTIVITY_MANDATE` — mandatory activity slide per algorithm concept
-- `OUTLINE_PROMPT_INDIAN_CONTEXT` — Indian examples required (cities, companies, cricket, IRCTC etc.)
-- `OUTLINE_PROMPT_HOOK_SLIDE` — structural hook rule (scenario → constraint → question, no bullets)
-- `BATCH_PROMPT_INDIAN_CONTEXT` — Indian context in batch content generation
-- `BATCH_PROMPT_NO_PLACEHOLDER_DIAGRAMS` — never output description of a diagram instead of the diagram
-- `BATCH_PROMPT_COMPLETENESS` — no truncation with ellipsis; cap `💡` callouts at 120 chars
-- `BATCH_PROMPT_LAYOUT_VARIETY` — definition/comparison/worked-example/hook/activity slide formats
-
-### Image Generation
-- Primary: `gemini-2.5-flash-image`
-- Fallback: `imagen-4.0-fast-generate-001`
-- Guard: if returned blob < 5KB, skip embedding (treat as failed render, omit image shape)
-- Domain detection: isMedical, isEngineering, isMechanical, isArchitecture, isBiology, isCS
-
-### `cap()` and `capTitle()`
-- `cap(text)` — strips markdown, never truncates
-- `capTitle(text, max=90)` — titles only, truncates at 90 chars
-
----
-
-## 11. Placement Readiness Module
-
-### Question Bank Architecture
-- Bank-first serving: check bank → AI only if insufficient (30x faster)
-- Weighted random: 70% fresh / 25% seasoned / 5% classic
-- Flash threshold: 14/20 (Pro fallback below)
-- Module-level Set locks prevent double API calls
-
-### Company Test: 20 questions, 20 minutes
-- Quantitative (40%), Logical (30%), Verbal (20%), Technical (10%)
-- Technical questions grounded in `subject_content`
-
-### Test Resilience
-- localStorage persistence, resume dialogs, tab visibility detection, beforeunload warning
-
----
-
-## 12. Interactive Chat Visualizations
-
-### How It Works
-Student asks to "visualize" / "show me" / "animate" → AI generates `interactive-html` fence → rendered in sandboxed srcDoc iframe.
-
-**Visualize button:** Every AI message has a hover button that sends a follow-up prompt to generate a visualization for that specific message's concept. Discoverable without magic words.
-
-### Key Files
-- `chat/[subjectId]/page.tsx` — `InteractiveHtmlViewer` (extracts the `interactive-html` fence → srcDoc iframe), the per-message visualize button, and the struggle-detection banner all live here. The visualize trigger is an inline follow-up prompt string in this page — there is no separate `INTERACTIVE_VISUALIZATION_RULES` export or `validators.ts` module.
-
-### srcDoc (hard-won — do not change back to blob URLs)
-Blob URLs fail due to React re-render lifecycle. srcDoc is simpler and has no lifecycle dependencies.
-
-### CDN Libraries
-D3.js v7, Chart.js v4, Plotly.js, P5.js — all via cdn.jsdelivr.net
-
----
-
-## 13. SVG/Mermaid Rendering in Chat
-
-### Frontend Renderer (MarkdownRenderer.tsx)
-Catches: mermaid/svg/xml/html fences, raw `<svg>` blocks
-
-### sanitizeMermaidCode()
-- Node labels with colons → wrap in quotes
-- Edge labels: strip `(){}:<>_&%#"`
-- Node IDs starting with numbers → prefix `n`
-- >15 nodes → truncate
-- Parse error → fallback to readable code block
-
-### SVGDiagram.tsx
-- Removes `<script>`, `on*` handlers, external hrefs, `<foreignObject>`
-- Returns null if SVG < 50 chars
-
-### SVG Prompt Rules
-- Always wrap in ` ```svg ``` ` fence
-- viewBox: always `"0 0 800 400"`
-- Colors: #2563EB blue, #1E40AF dark blue, #16A34A green, #D97706 amber, #DC2626 red
-
----
-
-## 14. Prompt Engineering Architecture
-
-All prompts follow PTCF (Persona → Task → Context → Format) with XML tag structure.
-
-### buildTutorSystemPrompt (Chat)
-Uses `detectQueryMode(message)` to select behavioral branch before building prompt:
-
-```typescript
-type QueryMode = "exam_prep" | "problem_solving" | "conceptual"
-
-function detectQueryMode(message: string): QueryMode {
-  // exam_prep: "define", "list", "state", "what is the formula", short queries
-  // problem_solving: numbers + "calculate"/"solve"/"find"
-  // conceptual: everything else (default)
-}
+Faculty uploads .pptx
+  → POST /api/ppt-refine/extract (maxDuration: 60)
+    → adm-zip unzips, fast-xml-parser reads slides
+    → Gemini Flash detects topic + level (ppt_extract task)
+    → Returns ExtractedDeck + stores original .pptx in Supabase Storage
+  → POST /api/ppt-refine/refine (maxDuration: 300)
+    → refineDeck(): Flash batches of 5 slides in parallel (ppt_refine task)
+    → assemblePptx(): XML-patch approach
+      - Existing slides: surgical <a:t> text node replacement ONLY
+      - NEVER touches <p:pic>, <p:graphicFrame>, <p:grpSp>, <a:rPr>
+      - Empty title placeholders: INSERT text instead of replacing
+      - <a:normAutofit/> on all body/title txBody
+      - New slides: explicit font sizes (no inherited sizing)
+    → Upload refined .pptx to Supabase Storage, return signed URL
 ```
 
-- **exam_prep** — drops curiosity hook and metacognition. Direct structured answer. Ends with "Want a quick quiz on this?"
-- **problem_solving** — step-by-step solution with labeled steps. Ends with "Try a variation: [one related numerical]"
-- **conceptual** — full LearnLM prompt (active learning, cognitive load management, curiosity, metacognition)
-
-Complexity adjusts by semester (1-2: beginner, 3-4: intermediate, 5+: advanced).
-
-### buildOutlinePrompt (PPT Outline)
-Key rules: canonical diagram mandate, CONCEPT→DIAGRAM→EXAMPLE teaching sequence, renderHint rules, activity slide mandate, Indian context mandate, hook slide structural rule.
-
-### buildBatchContentPrompt (PPT Content)
-Key rules: JSON-only output, accuracy mandate, no placeholder diagrams, no truncation, Indian context in examples, layout variety by slide type.
-
-### Q Paper Generation Prompt (sectionGen.ts — buildUserPrompt)
-7-part prompt structure: examination context → module-question assignment (code-computed) → syllabus content → CO/PO/BTL rules → PYQ style reference (always) → quality standards (21 rules) → output schema.
-
-Key: module assignment is computed in `moduleAssignment.ts` (pure TS, weightage-based greedy algorithm) and injected as explicit slot→module mapping. AI never decides which module goes to which slot.
-
-### Answer Key Prompt (answerKeyGen.ts)
-System: Senior Professor and Chief Examiner persona.
-Per question: model answer + marking scheme breakdown (marks per component) + partial credit guidance + alternative approach note.
-MCQ block: Flash, one-sentence justification + one-sentence distractor note per MCQ.
-Q2-Q4 blocks: Pro, full step-by-step solutions with intermediate values.
+**Known issues (pending fix):**
+- HTML tags (<b>, <i>) from Gemini appearing as literal text in new slides
+- Body text overflow on image-heavy slides
+- Empty title placeholder handling on slides with no original title
 
 ---
 
-## 15. PDF Export Architecture
+## 11. Q Bank Architecture
 
-### PDFBuilder Class (`/lib/pdf/builder.ts`)
-Shared across all PDF exports. Handles markdown (headings, bold, bullets, numbered lists, tables, code blocks).
+### Generation
+- Slots: {question_type, marks, count, module_id?, co_code?, btl_level?, difficulty?, style}
+- Concurrency window of 5 Flash calls
+- PYQ-inspired: same concept, different values/context/framing (NOT identical)
+- Max 60 questions per request
 
-### Answer Key PDF (answerKeyGen.ts — buildAnswerKeyPDF)
-- "CONFIDENTIAL — FOR EVALUATORS ONLY" in header
-- Same style as Q paper (plain text, no markdown tables, no backtick blocks)
-- Partial credit notes as plain "Note:" prefix
-- OR alternatives and both Q4 options always shown
+### Import
+- CSV: RFC-4180 compliant (papaparse not installed — hand-rolled parser)
+- Required columns: question_text, marks, question_type
+- Optional: model_answer, option_a–d, correct_option, co_code, btl_level, module_name, difficulty
+- is_verified=true only when faculty provided BOTH co_code AND btl_level
 
----
-
-## 16. Question Paper Generation System
-
-### UI (faculty/qpaper/page.tsx)
-**Three sections:**
-1. Paper metadata form: university name, exam title, semester, date, time, instructions (editable list)
-2. Template selector: [PPSU ESE — 60M] [CE Quiz — 10M] [Custom] — clicking prefills drag-drop builder
-3. Drag-drop builder (@dnd-kit/core): sections → questions, per-question type/marks/OR toggle/attempt-any
-
-**After generation:**
-- Paper preview with CO/BTL/PO badges per question
-- Per-question regenerate button (single Pro call, maxTokens 2048)
-- Inline edit textarea
-- "Update PDF" re-export
-- "Save as template" with name input
-- "Generate Answer Key" button → CONFIDENTIAL PDF download
-
-### API Architecture (generate/qpaper/route.ts)
-1. Load: subject_content, modules (with section_number/weightage_percent/btl_levels), course_outcomes, co_po_mapping, exam_scheme, pyq_questions (up to 40, always loaded)
-2. Compute module-to-slot assignment: `assignModulesToSlots()` in moduleAssignment.ts
-3. Generate: two parallel Pro calls (Section I, Section II), each 8192 maxTokens
-4. Validate: `validateGeneratedSection()` — BTL must be within module's allowed range; auto-retry once on failure
-5. Build PDF via builder.ts (PPSU format: CO BTL PO columns, OR separator, Bloom's legend footer)
-6. Upload to Supabase Storage, return signed URL
-
-### Template System
-Three presets auto-seeded on first load:
-- `PPSU_ESE`: 2 sections × 30M, Q1(MCQ×6), Q2(6M), Q3(a+b with OR, 6M each), Q4(attempt any one, 6M)
-- `CE_QUIZ`: 1 section, Q1(MCQ×10, 1M each)
-- `CUSTOM`: starts empty, faculty builds from scratch
-
-Saved templates stored in `qpaper_templates` table per subject.
-
-### Slot Key Convention
-Section-relative: Q1–Q4 regardless of section number (Section II also uses Q1–Q4).
-`attempt_any_one` uses parent key "Q4" with nested `options[]` — NOT Q4_i/Q4_ii as separate top-level keys.
-CO normalization: "CO1", "CO 1", "01", "co1" all normalize to "01" before validation.
-
-### Q Paper PDF Format (PPSU standard)
-- University header → exam title → course code → date/time/marks row → instructions → sections
-- CO BTL PO columns at fixed x-positions right-aligned per question
-- OR separator centered between main and alternative Q3
-- Bloom's legend + Course Outcomes footer on last page
+### Q Paper Integration
+- "From Q Bank": type+marks match (exact then ±0.5 tolerance)
+- Order: is_verified DESC, usage_count ASC, RANDOM()
+- Dedup via shared used_ids set, fallback to AI for unfilled slots
 
 ---
 
-## 17. Architectural Decisions (DO NOT CHANGE)
+## 12. Question Paper Generation System
+
+### Question Sources
+1. All Fresh — pure AI from syllabus
+2. PYQ + Fresh Mix — AI with PYQ style reference
+3. PYQ Style Only — similar to PYQs (same concept, different values — NOT identical)
+4. From Q Bank — draws from faculty_question_bank, AI fills gaps
+
+### Key rules
+- Module assignment computed in code (moduleAssignment.ts) — AI never picks modules
+- Section-relative slot keys Q1–Q4 per section
+- PYQ RAG always fed regardless of source mode
+- CO normalization: "CO1", "CO 1", "01", "co1" all → "01"
+
+---
+
+## 13. RLS Architecture
+
+RLS enabled on all tables. `get_my_role()` SECURITY DEFINER function prevents recursion.
+
+```sql
+CREATE OR REPLACE FUNCTION get_my_role()
+RETURNS text LANGUAGE sql STABLE SECURITY DEFINER AS $$
+  SELECT role FROM profiles WHERE id = auth.uid()
+$$;
+```
+
+All API routes use `createAdminClient()` (service role, bypasses RLS). RLS only affects browser client calls.
+
+---
+
+## 14. Animated Explainer Architecture (For Next Session)
+
+### Pipeline (correct, do not change)
+```
+generateExplainerContent(request, subjectContext)
+  ├── ideateExplainer()
+  │   → routeAI('explainer_ideate') — Flash, maxTokens 8192, thinkingBudget: 2048
+  │   → Output: pedagogical narrative (natural language, professor-style)
+  │   → "Stand at the whiteboard and explain this to confused students"
+  │
+  └── extractStructuredContent(narrative)
+      → routeAI('explainer_extract') — Pro, maxTokens 16384, responseSchema, thinkingBudget: 0
+      → Output: ExtractedContent JSON (pattern classification + full pattern data)
+      → Direct JSON.parse() — responseSchema guarantees valid JSON
+```
+
+### Content type taxonomy (26 patterns, 8 built first)
+**Priority 8 (build first):** array_sort, graph_algorithm, formula_derivation, concept_analogy, comparison_table, process_flow, tree_traversal, cause_effect_chain
+
+**Remaining 18 (add later):** array_search, stack_queue_ops, dp_table, definition_with_example, hierarchy_structure, state_machine, mathematical_proof, statistical_distribution, matrix_operation, chemical_reaction, circuit_diagram, force_diagram, signal_waveform, financial_flow, market_mechanism, business_process, lifecycle_cycle, system_architecture
+
+### Renderer approach (what to build next session)
+Each pattern = self-contained HTML/CSS/JS module. Dark theme (#0F172A bg). No external deps.
+
+For array_sort specifically (the quality signal test):
+- Large colored boxes (72×72px, rounded, bold number centered)
+- Boxes physically swap positions (CSS left transition with bounce easing)
+- Color semantics: blue=default, yellow=comparing, green=sorted, purple=merged
+- The swap animation must feel satisfying — this is the "aha moment"
+
+### Design system (all patterns use this)
+```
+--bg: #0F172A          canvas background
+--surface: #1E293B     element background  
+--text: #F1F5F9        primary text
+--color-default: #3B82F6
+--color-active: #F59E0B
+--color-success: #10B981
+--color-error: #EF4444
+--color-merged: #8B5CF6
+Font: Inter from Google Fonts
+Canvas: 960px wide, 16:9, dark bg, caption bar below
+```
+
+---
+
+## 15. Placement Module (Agentic Rebuild — COMPLETE)
+
+### What's built (June 2026 session)
+
+Full placement operating system. All routes live, all pages deployed. Tested end-to-end at PPSU on Test Student account.
+
+### DB Tables (all with RLS)
+- `schools` — discipline_type enum (engineering/commerce/science/architecture/management/pharmacy/law), PPSU SoE seeded
+- `student_placement_profiles` — spine of entire module. Stores readiness scores (5 dimensions + overall), resume_data (JSONB), resume_completeness, setup_complete, primary_target, dream_companies, cgpa, backlogs, prep_streak_days, last_active_date
+- `placement_company_profiles` — 8 mass recruiters seeded with full OA pattern JSONB, rounds, eligibility, difficulty_band
+- `placement_drives` — upcoming drives with date, eligibility
+- `placement_question_bank` — AI-generated MCQs, tracks times_served, times_correct, quality_score. 30-day per-student exclusion via placement_question_attempts
+- `placement_question_attempts` — per-student per-question history
+- `placement_topic_mastery` — per-student per-topic accuracy, sessions_count, current_difficulty (adaptive: easy→medium→hard)
+
+### Key architectural decisions
+- Bank-first question serving: check bank for ≥6 unseen questions first, generate via Gemini only on miss. Generated questions saved to bank immediately.
+- 30-day question exclusion per student (placement_question_attempts lookup before bank query)
+- Adaptive difficulty: promote after ≥70% accuracy AND ≥10 attempts AND ≥2 sessions. Demote after <40% AND ≥5 attempts.
+- Readiness scores recomputed after every submit session via weighted average of topic mastery across all topics in that track
+- No "selection probability" language anywhere — use readiness, preparedness, fit level
+- No red color for performance indicators — use amber
+- responseSchema on all Gemini calls, never duplicate schema in prompt text (Google official constraint)
+- Task: placement_prep (Flash, maxTokens 4000, thinkingBudget 0)
+
+### Routes
+
+Student pages:
+- /student/placement → readiness dashboard (ring, breakdown bars, company fit cards, focus zones, today's focus, upcoming drives)
+- /student/placement/setup → 3-step onboarding
+- /student/placement/companies → company intelligence browse
+- /student/placement/companies/[slug] → company deep-dive
+- /student/placement/prep/[track] → track hub with mastery display
+  tracks: aptitude | verbal | domain | communication
+- /student/placement/prep/[track]/practice → drill page
+  Full UX: bidirectional nav, skip, per-Q timer, early exit, session persistence (sessionStorage), tab detection, end-of-session review, answer reveal, adaptive difficulty
+- /student/placement/jd-analyzer → JD analysis with syllabus mapping, sessionStorage persistence, recommended next steps linking to specific practice topics, ?from=jd-analyzer back-link
+- /student/placement/resume → resume builder with ATS scoring, bullet rewriter (inline ghost text, 3 variants), PDF + Word export
+- /student/placement/projects → mini-project guides (static)
+- /student/placement/projects/[id] → project detail with step guide
+- /student/placement/interview → interview prep bank
+
+Faculty/TPO pages:
+- /faculty/placement-dashboard → TPO dashboard with batch readiness, dimension breakdown, student table (sortable), CSV export, upcoming drives, weakest area callout
+
+API routes:
+- GET+POST /api/placement/profile
+- GET /api/placement/companies
+- GET /api/placement/companies/[slug]
+- POST /api/placement/prep/generate (bank-first, Gemini fallback, client-side retry on 500/503)
+- POST /api/placement/prep/submit (hardened: allSettled, non-fatal inserts, mastery upsert, readiness recompute)
+- GET /api/placement/prep/mastery
+- POST /api/placement/jd-analyze
+- GET+POST /api/placement/resume
+- POST /api/placement/resume/ats
+- POST /api/placement/resume/rewrite-bullet
+- POST /api/placement/resume/export/pdf (@react-pdf/renderer)
+- POST /api/placement/resume/export/docx (docx library)
+- POST /api/placement/interview/evaluate
+- GET /api/placement/tpo/dashboard
+
+### Lib files
+- src/types/placement.ts — all placement types
+- src/lib/placement/readiness.ts — computeCompanyFit, recomputeOverall, readinessLabel, readinessColorClass, readinessBgClass, isDriveEligible
+- src/lib/placement/mini-projects.ts — static MiniProject[] catalog, 4 CSE projects seeded
+- src/lib/placement/interview-prep.ts — static InterviewQuestion[] bank, 11 questions seeded across HR + Technical rounds
+
+### Mass recruiter focus (CRITICAL)
+70-80% of Indian campus placements are TCS/Infosys/Wipro/Cognizant/Capgemini/Accenture. The system is optimized for: aptitude intensity, verbal intensity, OA patterns, elimination logic, speed, pseudo-coding, communication, consistency. NOT elite DSA. Product company track is opt-in, not default.
+
+### New dependencies added this session
+- @react-pdf/renderer (resume PDF export)
+
+### Known remaining items
+- Resume builder PDF export needs visual QA (not tested end-to-end)
+- Resume Word export needs visual QA
+- Mini-project guides: only 4 CSE projects. Commerce/Architecture projects not yet authored.
+- Interview prep bank: 11 questions. Expand to 30+ in a future session.
+- TPO dashboard: tested with Test Student only. Needs real batch data.
+- Placement Agent (Gemini function-calling) — Tier 4, not built yet
+- Company Arrival Mode (drive countdown auto-shift) — partially implemented via upcoming drives section, not full arrival mode yet
+
+---
+
+## 16. Active Feature Roadmap
+
+### Recently Shipped (June 2026)
+- CSE Sem 1–7 fully seeded (52 subjects, 285 modules, 228 COs)
+- RLS fully enabled, 5-tier role hierarchy (superadmin/dean/hod/faculty/student)
+- Dean/HOD as first-class roles — all 30 faculty-tier API routes updated
+- PPT Refinement — full pipeline with XML patching
+- Q Bank — bulk generation, CSV/TXT import, Q paper integration, Word export
+- Q paper Word (.docx) export
+- Animated Explainers infrastructure (pipeline + storage + routes built; UI under development)
+
+### Priority Order (current)
+
+**Tier 1 — Fix before showing anyone (quick wins):**
+1. PPT refinement: HTML tags in new slides (strip <b>/<i> in refiner)
+2. PPT refinement: empty title placeholder INSERT logic
+3. PPT refinement: body overflow on image-heavy slides
+4. Q paper answer key Q3 main/OR swap (splitQuestionsForBlocks)
+5. Q bank sessionStorage handoff to Q paper page
+6. Resume builder PDF/Word export QA
+7. Expand interview prep bank to 30+ questions
+8. Test TPO dashboard with real student batch
+
+**Tier 2 — Depth at PPSU:**
+9. Q bank UX simplification (too many steps for daily faculty use)
+
+**Tier 3 — High institutional value:**
+10. NAAC auto-report generator (Criterion 2 from existing data — changes Dean's buying decision)
+11. Animated explainer renderer rewrite (dedicated session, start with array_sort pattern)
+
+**Tier 4 — Agentic placement (after foundation):**
+12. Placement Agent (Gemini function-calling, multi-turn)
+13. Company Arrival Mode (full drive countdown auto-shift)
+14. Commerce/Architecture mini-project guides
+
+**Tier 5 — Growth:**
+15. Dean/HOD provisioning UI, JD Gap Analysis, Credential Passport, Mock Interview, Multi-tenant
+
+---
+
+## 17. Known Issues
+
+| Issue | Status | Fix |
+|---|---|---|
+| Flash cost shows ₹0.0000 in PPT log | Active | Wire totalFlashCost from routeAI in build route |
+| Supabase India ISP DNS block | Ongoing | Cloudflare DNS or WARP VPN |
+| Supabase free tier pauses after 1 week | Ongoing | Keep active before demos |
+| Email confirmation disabled | Active | Re-enable before go-live |
+| Q paper answer key Q3 main/OR swap | Active | splitQuestionsForBlocks fix pending |
+| PPT refinement: HTML tags in new slides | Active | Strip <b>/<i> in refiner.ts parseRefineBatchResponse |
+| PPT refinement: body overflow on image slides | Active | Image-aware body height + normAutofit |
+| PPT refinement: empty title = "Click to add title" | Active | INSERT text logic for empty placeholders |
+| Q bank UX too complex | Active | Simplification needed |
+| Q bank sessionStorage handoff | Active | qpaper page not wired to consume staged questions |
+| CO-PO/PSO column alignment Sem 1–4 | Active | Fix via superadmin UI before accreditation |
+| CO-PO/PSO missing Sem 5–7 electives | Active | Add via superadmin UI before accreditation |
+| Animated explainer visuals broken | Shelved | Full renderer rewrite in dedicated session |
+
+---
+
+## 18. Architectural Decisions (DO NOT CHANGE)
 
 | Decision | Reason |
 |---|---|
@@ -669,24 +660,28 @@ CO normalization: "CO1", "CO 1", "01", "co1" all normalize to "01" before valida
 | `supabase-browser.ts` → client components ONLY | Server import crashes client |
 | `supabase-server.ts` → server + API routes ONLY | Client import crashes server |
 | Cosine similarity in JS loop, NEVER `.rpc()` | PostgREST silently truncates 3072-dim vectors |
-| Embeddings: 3072 dimensions, string format for insert | `[${embedding.join(',')}]` format |
 | `thinkingBudget: 0` for all JSON tasks | Thinking tokens consume maxOutputTokens on Flash |
-| PPT dimensions: 10" × 5.625" | Anything else causes overflow/scaling bugs |
+| PPT dims: 10" × 5.625" | Anything else causes overflow/scaling bugs |
 | PPT split into 3 routes | Vercel 60s timeout |
 | Diagram batches: 1 slide per request | Prevents SVG token truncation |
 | Content batches: 5 slides per request | Prevents Flash truncation |
-| Chat session: resume per subject (72h window) | Per-subject resume prevents stateless tutor. force_new=true param for explicit fresh start. |
-| Cache hits must save messages to DB | Was a bug — cache hits skipped saving |
-| srcDoc for interactive viz, not blob URLs | Blob URLs break due to React re-render revoking them |
-| PYQ via Gemini Flash direct (not LlamaParse) | LlamaParse returns raw text; Flash extracts structured {q_text, co, btl, po} directly |
-| Section-relative slot keys (Q1–Q4 per section) | Prevents Section II slot naming mismatch (Q5-Q8 never shown to AI) |
-| Module assignment computed in code, not by AI | AI decides content quality, not structural distribution; guarantees weightage compliance |
-| Answer key Pro calls: maxTokens 12288 | Full section answers exceed 8192 — truncation caused Section II failures |
-| Supabase India ISP DNS block | Fix: Cloudflare DNS (1.1.1.1) or WARP VPN |
+| srcDoc for interactive viz | Blob URLs break due to React re-render |
+| PYQ via Gemini Flash direct | LlamaParse returns raw text; Flash extracts structured data |
+| Section-relative slot keys Q1–Q4 | Prevents Section II naming mismatch |
+| Module assignment computed in code | Guarantees weightage compliance, AI never picks modules |
+| Answer key Pro: maxTokens 12288 | Full answers exceed 8192 |
+| adm-zip NOT unzipper | Turbopack build failure with unzipper |
+| XML patching for PPT refinement | Round-trip parse/rebuild re-encodes nodes, breaks PowerPoint |
+| get_my_role() SECURITY DEFINER for RLS | Breaks profiles→profiles recursion |
+| Faculty access via faculty_assignments only | Cross-school teaching support |
+| subject_content.created_by nullable | Seeded data has no creating user |
+| responseSchema on structured AI calls | Guarantees valid JSON, eliminates parse retry loops |
+| thinkingBudget: 2048 for explainer_ideate | Caps thinking, reserves ~6k tokens for narrative output |
+| Explainer renderer = pattern library | AI classifies content type, code renders it -- not AI specifying pixel coords |
 
 ---
 
-## 18. Environment Variables
+## 19. Environment Variables
 
 ```bash
 NEXT_PUBLIC_SUPABASE_URL=
@@ -694,102 +689,39 @@ NEXT_PUBLIC_SUPABASE_ANON_KEY=
 SUPABASE_SERVICE_ROLE_KEY=
 GOOGLE_GENERATIVE_AI_API_KEY=
 PRIMARY_AI_PROVIDER=gemini
-LLAMA_CLOUD_API_KEY=          # For LlamaParse (notes upload)
+LLAMA_CLOUD_API_KEY=
+GOOGLE_CLOUD_TTS_KEY=          # Optional — for animated explainer voiceover
 ```
 
 ---
 
-## 19. Known Issues
+## 20. External / Non-Technical Context
 
-| Issue | Status | Fix |
-|---|---|---|
-| Flash cost shows ₹0.0000 in PPT log | Active | Wire `totalFlashCost` from routeAI responses in build route |
-| Supabase India ISP DNS block (since Feb 2026) | Ongoing | Cloudflare DNS or WARP VPN |
-| Supabase free tier pauses after 1 week inactivity | Ongoing | Keep active before demos |
-| RLS temporarily disabled on profiles + documents | Active | Re-enable before go-live |
-| Email confirmation disabled | Active | Re-enable before go-live |
-| Gemini Flash free tier: 15 RPM | Constraint | Stagger batch calls with 800ms delay |
-| Vercel free: 60s timeout | Managed | PPT split routes each stay under 60s |
-| PPT diagram slides: all 5 showing broken image (red ✗) | Fixed (May 30) | Diagram batches routed to Pro (`ppt_diagram` task) + `<5KB` image blob guard in generator.ts — verify on next generation |
-| Q paper answer key Q3 main/OR answers swapped | Active | splitQuestionsForBlocks fix pending |
-| PPT `💡 Real world` callouts still truncating (14/45 slides) | Fixed (May 30) | `capNote` now caps at 120 chars on a word boundary with no ellipsis; `BATCH_PROMPT_COMPLETENESS` added — verify on next generation |
-| Hook slides generating bullet lists instead of scenario | Mitigated (May 30) | `OUTLINE_PROMPT_HOOK_SLIDE` rewritten to a single-scenario structural rule — verify on next generation |
+**Competitive positioning:** Not ChatGPT for students (no syllabus lock). Not Redrob or Connect AI (generic aptitude, no syllabus context). EduNexus is the institutional layer — Dean buys for accreditation, placement outcomes, faculty time savings.
+
+**What closes university deals:**
+1. NAAC report generation from platform data — regulatory infrastructure, not productivity tool
+2. Placement outcome data showing measurable improvement
+3. Faculty time savings on PPT + Q paper generation
+4. Peer reference from enthusiastic PPSU faculty/HOD
 
 ---
 
-## 20. Active Feature Roadmap
+## 21. How Dhruv Works (Development Patterns)
 
-### Recently Shipped (May 31)
-- **Real CSE Sem 1–4 syllabus seeded** — `supabase/seed_cse_sem1_4.sql` (22 subjects, 127 modules, 96 COs). See Section 8.
-- **Student-side UI retention overhaul** — retired "red for any low score" in favour of a semantic score system (`lib/ui/score.ts`: not-started = slate, in-progress = amber, on-track = emerald, target-aware; `components/ui/score-meter.tsx` for the "X% → target 65%" framing). Applied across dashboard (score badges, AI-Tutor reframed as an action card, dismissible tip moved up, daily warmth line), subjects (dropped redundant "Engineering" tag, Chat as primary action), quiz (prominent Generate CTA, inline-not-toast validation, "What do you want to focus on?" label, History count), placement (grey not-started vs amber skill bars, last-score + Retake on company cards, tests-taken surfaced), and placement history (strengths-first ordering, target-framed header). Pure CSS + small pure functions; no new deps, queries, or generation cost.
-- Faculty quick wins — depth-radio + refine-card selected-state fills; sidebar "Request Change" → "Request Note Update".
-
-### Recently Shipped (May 30)
-- PPT diagram batches routed to Pro (`ppt_diagram` task) + `<5KB` image blob guard in generator.ts
-- `💡` callout truncation fix — `capNote` 120-char word-boundary cap, no ellipsis
-- Hook slide structural rewrite (single scenario, not a bullet list)
-- Mandatory activity slides + Indian-context mandate + layout-variety constants wired into the PPT prompts
-
-### In Progress
-- **PPT Continuous Refinement** — routes (`generate/ppt/{content,image,rebuild,refine}`) and the `faculty/generate/refine/[contentId]` page exist; faculty loads slide JSON via `contentId`, AI patches only that slide's JSON, rebuilds PPTX → new signed URL. Slide JSON stored in `generated_content.metadata`.
-- Q paper answer key Q3 main/OR swap fix
-
-### PPT Pipeline Improvements
-1. Parallel batch processing (full Promise.all on content batches)
-2. JSON schema enforcement via Gemini `responseSchema` parameter
-
-### Practical Coding Feature (student)
-Scenario-based coding exercises with pre-filled programs and blanks. `/student/lab/page.tsx`. Flash for generation, Pro fallback. Semantic evaluation (no code execution).
-
-### Lecture → PPT Pipeline (faculty)
-Part 1 (UI): MediaRecorder in-browser, no streaming during recording — built
-Part 2 (API): `/api/lecture/transcribe` — Gemini audio → structured segments
-Part 3 (wiring): segments → existing PPT outline pipeline
-
-### Additional Features
-- NAAC auto-report generator (Criteria 2 + 6)
-- LlamaParse full RAG for notes (chunking + embedding pipeline)
-- Analytics — real data (struggle detection signals, most-asked questions, cache hit rate)
-- Multi-department expansion (repurpose `department` column)
-- Multi-tenant architecture (`tenant_id` on all tables)
-- Camera Ask (Vision) — photograph textbook problem
-- WhatsApp bot via Twilio/WATI
+1. Cursor-primary workflow — runs prompts, shares logs/screenshots, Claude verifies, iterates
+2. Simplicity over complexity — rejects solutions that add layers without solving root problem
+3. Generic over hardcoded — fixes must be domain-agnostic
+4. Surgical changes preferred — targeted single-file edits
+5. Cost-consciousness — API cost is an active architecture concern
+6. No pilot/phase distinctions — everything is production-ready from the start
+7. Verification loop — exact logs and screenshots after each change
+8. Honest assessments — not confirmation
+9. Communication style — terse and directive
 
 ---
 
-## 21. External / Non-Technical Context
-
-> ⚠️ This section contains business and strategic context that may be outdated. Included for background only. Do not use for technical decisions.
-
-**Competitive positioning:** Not ChatGPT for students (no syllabus lock, no governance). Not OpenMAIC (consumer, no governance). EduNexus is the institutional layer — the Dean buys it, not the student.
-
-**Domain context injection for multi-department PPTs:**
-When a new department is onboarded, add 3-4 lines of exam conventions to the subject's metadata. This is the only thing that varies between departments — all structural quality rules are universal.
-
-Example conventions:
-- CS/IT: Graph problems use Indian city networks. Sorting uses IPL/cricket statistics. DP uses startup/investment scenarios.
-- Mechanical: Optimization uses manufacturing/assembly line scenarios. Graph problems use supply chain logistics.
-- Chemical: Optimization uses reaction yield/cost trade-offs. Graph problems use pipeline network routing.
-- Commerce: Knapsack uses portfolio optimization with ₹ budgets. Scheduling uses bank teller allocation.
-
----
-
-## 22. How Dhruv Works (Development Patterns)
-
-1. **Cursor-primary workflow:** Runs Cursor prompts → shares terminal logs/screenshots → Claude verifies → iterates.
-2. **Simplicity over complexity:** Rejects solutions that add layers without solving the root problem.
-3. **Generic over hardcoded:** Fixes must be domain-agnostic. Will flag narrow solutions immediately.
-4. **Surgical changes preferred:** Targeted single-file edits over full rewrites. Cursor for single-file, Claude Code for multi-file.
-5. **Cost-consciousness:** Architecture decisions actively optimize API costs.
-6. **Edge cases matter:** Real-world scenarios (tab switching, accidental navigation) get explicit handling.
-7. **Verification loop:** Shares exact logs and screenshots after each change; expects verification before proceeding.
-8. **Honest assessments:** Wants honest comparative assessments, not confirmation.
-9. **Communication style:** Terse and directive.
-10. **Writing preferences:** No AI-generated tone, no em dashes, bullet points, simple direct language.
-
----
-
-## 23. How to Start Working
+## 22. How to Start Working
 
 ```
 I am building EduNexus AI, a university AI tutor + institutional intelligence platform.
@@ -804,13 +736,18 @@ logs/screenshots, you verify before proceeding.
 ```
 
 **Key rules when working:**
-- Always read `CLAUDE_CONTEXT.md` before responding to any development task
-- Check Section 17 (architectural decisions) before suggesting changes
+- Always read CLAUDE_CONTEXT.md before responding
+- Check Section 18 (architectural decisions) before suggesting changes
 - Provide targeted Cursor prompts, not full file rewrites
-- Follow PTCF + XML tag structure for prompt engineering changes
-- Set `thinkingBudget: 0` for any structured JSON generation task
+- `thinkingBudget: 0` for any structured JSON task
 - Never use `.rpc()` for cosine similarity — always JS loop
 - PPT dimensions are 10" × 5.625" — never change
 - `department = "Engineering"` for all rows — filter by `branch` only
-- Section-relative slot keys for Q paper — Q1–Q4 per section, not Q5–Q8
-- Module assignment for Q paper is code-computed — never ask AI to pick modules
+- Section-relative slot keys Q1–Q4 per section
+- Module assignment for Q paper is code-computed — never AI
+- adm-zip not unzipper for PPTX parsing
+- XML patching not round-trip parse/rebuild for PPT refinement
+- `get_my_role()` must exist in DB before any RLS work
+- Faculty access follows `faculty_assignments`, not school hierarchy
+- `responseSchema` on all structured AI calls — eliminates parse retry loops
+- Explainer renderer = pattern library, not AI-specified coordinates

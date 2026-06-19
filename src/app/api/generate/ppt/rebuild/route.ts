@@ -60,7 +60,7 @@ export async function POST(req: NextRequest) {
 
     if (
       !profile ||
-      !["faculty", "superadmin"].includes((profile as { role: string }).role)
+      !["faculty", "superadmin", "dean", "hod"].includes((profile as { role: string }).role)
     ) {
       return Response.json({ error: "Forbidden" }, { status: 403 });
     }

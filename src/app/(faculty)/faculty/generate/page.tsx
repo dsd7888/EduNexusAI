@@ -43,6 +43,10 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { SlideContent } from "@/lib/ppt/generator";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
+import {
+  ConceptExplainers,
+  type ConceptSlide,
+} from "./_components/ConceptExplainers";
 
 type View = "form" | "generating" | "done";
 type InputMode = "module" | "topic";
@@ -108,6 +112,9 @@ export default function FacultyGeneratePage() {
   const [progress, setProgress] = useState(0);
   const [addLogo, setAddLogo] = useState(false);
   const [logoUrl, setLogoUrl] = useState<string | null>(null);
+  // Concept/diagram slides captured from the outline, for the on-page
+  // "Concept Explainers" section after a successful generation.
+  const [conceptSlides, setConceptSlides] = useState<ConceptSlide[]>([]);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const progressRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -375,6 +382,28 @@ export default function FacultyGeneratePage() {
         progressRef.current = null;
       }
 
+      // Capture concept/diagram slides so faculty can spin up explainers from
+      // the result page. context_hint is a short summary of the slide's bullets.
+      const conceptOutline = (outline.outline as OutlineItem[]).filter(
+        (s) => s.type === "concept" || s.type === "diagram"
+      );
+      setConceptSlides(
+        conceptOutline.map((s) => {
+          const built = allSlides[s.index] as
+            | (SlideContent & { bullets?: string[] })
+            | null;
+          const bullets =
+            built && Array.isArray(built.bullets)
+              ? built.bullets.join(". ")
+              : "";
+          return {
+            index: s.index,
+            title: s.title,
+            contentHint: bullets.slice(0, 200),
+          };
+        })
+      );
+
       setResult(buildResult);
       setView("done");
 
@@ -413,6 +442,7 @@ export default function FacultyGeneratePage() {
     setProgress(0);
     setSelectedModuleId("");
     setCustomTopic("");
+    setConceptSlides([]);
   };
 
   const canGenerate =
@@ -655,8 +685,8 @@ export default function FacultyGeneratePage() {
   // ──── VIEW: done ──────────────────────────────────────────
   if (view === "done" && result) {
     return (
-      <div className="flex min-h-[60vh] items-center justify-center">
-        <Card className="w-full max-w-lg">
+      <div className="mx-auto w-full max-w-2xl space-y-6 py-6">
+        <Card className="w-full">
           <CardContent className="flex flex-col items-center gap-6 pt-8 pb-8">
             <CheckCircle className="size-16 text-green-600" />
             <h2 className="text-xl font-bold text-center">{result.title}</h2>
@@ -721,6 +751,14 @@ export default function FacultyGeneratePage() {
             </div>
           </CardContent>
         </Card>
+
+        <ConceptExplainers
+          slides={conceptSlides}
+          subjectId={selectedSubjectId}
+          moduleId={
+            inputMode === "module" ? selectedModuleId || undefined : undefined
+          }
+        />
       </div>
     );
   }

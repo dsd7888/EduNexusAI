@@ -1,614 +1,683 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { BookOpen, Clock, History, Info, Target } from "lucide-react";
-import * as LucideIcons from "lucide-react";
+import Link from "next/link";
+import { ArrowRight, CheckCircle2, Circle } from "lucide-react";
+import { toast } from "sonner";
 
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { ScoreMeter } from "@/components/ui/score-meter";
+import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
-import { scoreStyles } from "@/lib/ui/score";
-import { createBrowserClient } from "@/lib/db/supabase-browser";
-import type { PlacementAttempt, PlacementCompany } from "@/lib/db/types";
-import { getModulesForBranch, groupModulesByCategory } from "@/lib/placement/modules";
-import { usePlacementHistory } from "@/hooks/useSupabaseData";
+import { useCurrentUser } from "@/hooks/useSupabaseData";
+import {
+  computeCompanyFit,
+  readinessLabel,
+} from "@/lib/placement/readiness";
+import {
+  TARGET_LABELS,
+  type StudentPlacementProfile,
+  type PlacementCompanyProfile,
+  type PlacementDrive,
+  type PlacementTarget,
+  type CompanyFit,
+  type PlacementTopicMastery,
+} from "@/types/placement";
 
-type AttemptWithCompany = PlacementAttempt & {
-  company_name: string;
-};
+// ─── Helpers ──────────────────────────────────────────────────────────────────
 
-const CATEGORIES = ["quantitative", "logical", "verbal", "technical"] as const;
-
-function titleCase(value: string): string {
-  return value.charAt(0).toUpperCase() + value.slice(1);
+function daysUntil(dateStr: string): number {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const t = new Date(dateStr);
+  t.setHours(0, 0, 0, 0);
+  return Math.ceil((t.getTime() - today.getTime()) / 86_400_000);
 }
 
-// Practice mastery badge — semantic colours (slate / amber / emerald, no red).
-function getPracticeScoreBadgeClass(score: number): string {
-  return scoreStyles(score).badge;
+function barColorClass(score: number): string {
+  if (score >= 75) return "bg-emerald-500";
+  if (score >= 50) return "bg-amber-500";
+  return "bg-amber-400";
 }
 
-type RecentPracticeResult = {
-  moduleId: string;
-  moduleLabel: string;
-  score: number;
-  mastery: string;
-  completedAt: number;
-};
+function ringStroke(score: number): string {
+  if (score >= 75) return "#10b981";
+  if (score >= 50) return "#f59e0b";
+  return "#9ca3af";
+}
 
-export default function PlacementPage() {
+function fitScoreColorClass(score: number): string {
+  if (score >= 75) return "text-emerald-600";
+  if (score >= 50) return "text-amber-600";
+  return "text-gray-400";
+}
+
+// ─── Today's Queue config ─────────────────────────────────────────────────────
+
+interface QueueTask {
+  id: string;
+  title: string;
+  subtitle: string;
+  href: string;
+}
+
+function getTodaysTasks(target: PlacementTarget): QueueTask[] {
+  const aptitude: QueueTask = {
+    id: "apt",
+    title: "Aptitude Drill",
+    subtitle: "20 questions · Quant & Logical",
+    href: "/student/placement/prep/aptitude",
+  };
+  const verbal: QueueTask = {
+    id: "verb",
+    title: "Verbal Practice",
+    subtitle: "15 questions · RC & Grammar",
+    href: "/student/placement/prep/verbal",
+  };
+  if (target === "service_it") {
+    return [
+      aptitude,
+      verbal,
+      {
+        id: "oa",
+        title: "OA Pattern Review",
+        subtitle: "TCS NQT pattern analysis",
+        href: "/student/placement/companies/tcs",
+      },
+    ];
+  }
+  if (target === "product") {
+    return [
+      aptitude,
+      verbal,
+      {
+        id: "dsa",
+        title: "DSA Concepts",
+        subtitle: "Data structures & algorithms",
+        href: "/student/placement/prep/coding",
+      },
+    ];
+  }
+  return [
+    aptitude,
+    verbal,
+    {
+      id: "domain",
+      title: "Core Domain Review",
+      subtitle: "Technical subject concepts",
+      href: "/student/placement/prep/domain",
+    },
+  ];
+}
+
+// ─── Dimension keys ───────────────────────────────────────────────────────────
+
+const DIMENSIONS: Array<{
+  key: keyof Pick<
+    StudentPlacementProfile,
+    | "readiness_aptitude"
+    | "readiness_verbal"
+    | "readiness_domain"
+    | "readiness_coding"
+    | "readiness_communication"
+  >;
+  label: string;
+}> = [
+  { key: "readiness_aptitude", label: "Aptitude" },
+  { key: "readiness_verbal", label: "Verbal" },
+  { key: "readiness_domain", label: "Core Domain" },
+  { key: "readiness_coding", label: "Coding" },
+  { key: "readiness_communication", label: "Communication" },
+];
+
+// ─── Page ─────────────────────────────────────────────────────────────────────
+
+export default function PlacementDashboardPage() {
   const router = useRouter();
-  const [companies, setCompanies] = useState<PlacementCompany[]>([]);
-  const [recentAttempts, setRecentAttempts] = useState<AttemptWithCompany[]>([]);
-  const [skillRadar, setSkillRadar] = useState<Record<string, number>>({});
-  const [studentBranch, setStudentBranch] = useState<string | null>(null);
-  const [practiceScores, setPracticeScores] = useState<Record<string, number>>(
-    {}
-  );
-  const [isLoading, setIsLoading] = useState(true);
-  const [inProgressTests, setInProgressTests] = useState<
-    Array<{ companyId: string; companyName: string; answeredCount: number }>
-  >([]);
-  const [recentPracticeResults, setRecentPracticeResults] = useState<
-    RecentPracticeResult[]
-  >([]);
+  const { profile: userProfile, isLoading: userLoading } = useCurrentUser();
 
-  const { attempts: placementHistory } = usePlacementHistory(5);
+  const [placementProfile, setPlacementProfile] =
+    useState<StudentPlacementProfile | null>(null);
+  const [companies, setCompanies] = useState<PlacementCompanyProfile[]>([]);
+  const [drives, setDrives] = useState<PlacementDrive[]>([]);
+  const [loadingProfile, setLoadingProfile] = useState(true);
+  const [loadingCompanies, setLoadingCompanies] = useState(true);
+  const [completedTasks, setCompletedTasks] = useState<Set<string>>(new Set());
+  const [allMastery, setAllMastery] = useState<PlacementTopicMastery[]>([]);
+  const lastFetchedAt = useRef<number>(0);
 
   useEffect(() => {
-    const run = async () => {
-      setIsLoading(true);
-      try {
-        const supabase = createBrowserClient();
-        const {
-          data: { user },
-        } = await supabase.auth.getUser();
-
-        if (!user) {
-          setCompanies([]);
-          setRecentAttempts([]);
-          setSkillRadar({});
-          setInProgressTests([]);
+    lastFetchedAt.current = Date.now();
+    fetch("/api/placement/profile")
+      .then((r) => r.json())
+      .then((d) => {
+        if (!d.profile || !d.profile.setup_complete) {
+          router.replace("/student/placement/setup");
           return;
         }
+        setPlacementProfile(d.profile as StudentPlacementProfile);
+        lastFetchedAt.current = Date.now();
+      })
+      .catch(() => toast.error("Failed to load placement profile"))
+      .finally(() => setLoadingProfile(false));
+  }, [router]);
 
-        // 1) Fetch student profile (branch)
-        const { data: profile } = await supabase
-          .from("profiles")
-          .select("branch")
-          .eq("id", user.id)
-          .single();
-        const studentBranch =
-          (profile as { branch?: string } | null)?.branch ?? null;
-        setStudentBranch(studentBranch);
-
-        // 2) Fetch all companies
-        const { data: companyRows } = await supabase
-          .from("placement_companies")
-          .select("id, name, branches, aptitude_pattern, difficulty, avg_package_lpa")
-          .order("name");
-
-        const allCompanies = (companyRows ?? []) as PlacementCompany[];
-        const filteredCompanies = studentBranch
-          ? allCompanies.filter(
-              (c) =>
-                Array.isArray(c.branches) &&
-                c.branches.includes(studentBranch)
-            )
-          : allCompanies;
-        setCompanies(filteredCompanies);
-
-        // Check for in-progress tests
-        const foundInProgress: Array<{
-          companyId: string;
-          companyName: string;
-          answeredCount: number;
-        }> = [];
-
-        for (const company of allCompanies) {
-          try {
-            const saved = localStorage.getItem(
-              `placement_test_${company.id}`
-            );
-            if (saved) {
-              const parsed = JSON.parse(saved);
-              const ageMinutes = (Date.now() - parsed.savedAt) / 60000;
-              if (ageMinutes < 60 && parsed.questions?.length > 0) {
-                foundInProgress.push({
-                  companyId: company.id,
-                  companyName: company.name,
-                  answeredCount: Object.keys(parsed.answers ?? {}).length,
-                });
-              }
-            }
-          } catch {}
+  // Refresh profile when the tab regains focus, if data is older than 60s.
+  // After a drill, scores update in the DB — this picks them up without a reload.
+  useEffect(() => {
+    const onFocus = async () => {
+      if (Date.now() - lastFetchedAt.current <= 60_000) return;
+      try {
+        const res = await fetch("/api/placement/profile");
+        if (!res.ok) return;
+        const data = await res.json();
+        if (data.profile) {
+          setPlacementProfile(data.profile as StudentPlacementProfile);
+          lastFetchedAt.current = Date.now();
         }
-
-        setInProgressTests(foundInProgress);
-
-        // 5) Fetch practice best scores by subcategory
-        try {
-          const { data: practiceData } = await supabase
-            .from("practice_attempts")
-            .select("subcategory, score")
-            .eq("student_id", user.id);
-
-          const next: Record<string, number> = {};
-          for (const row of practiceData ?? []) {
-            const subcategory = String((row as any)?.subcategory ?? "");
-            const score = Number((row as any)?.score ?? 0);
-            if (!subcategory) continue;
-            next[subcategory] = Math.max(next[subcategory] ?? 0, score);
-          }
-          setPracticeScores(next);
-        } catch (err) {
-          console.warn("[placement] practice_attempts fetch failed:", err);
-          setPracticeScores({});
-        }
-      } finally {
-        setIsLoading(false);
+      } catch {
+        /* ignore refresh failure */
       }
     };
-
-    run();
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
   }, []);
 
   useEffect(() => {
-    const companyNameById = new Map<string, string>(
-      (companies ?? []).map((c) => [c.id, c.name])
-    );
+    fetch("/api/placement/companies")
+      .then((r) => r.json())
+      .then((d) => {
+        setCompanies((d.companies ?? []) as PlacementCompanyProfile[]);
+        setDrives((d.drives ?? []) as PlacementDrive[]);
+      })
+      .catch(() => toast.error("Failed to load companies"))
+      .finally(() => setLoadingCompanies(false));
+  }, []);
 
-    const attempts = (placementHistory ?? []).map((row: any) => ({
-      ...(row as PlacementAttempt),
-      company_name:
-        companyNameById.get(String((row as any)?.company_id ?? "")) ??
-        "Unknown Company",
-    })) as AttemptWithCompany[];
-    setRecentAttempts(attempts);
-
-    const radar: Record<string, number> = {};
-    for (const attempt of attempts) {
-      const scores = (attempt.category_scores ?? {}) as Record<string, number>;
-      for (const [cat, score] of Object.entries(scores)) {
-        radar[cat] = Math.max(radar[cat] ?? 0, Number(score));
-      }
-    }
-    setSkillRadar(radar);
-  }, [placementHistory, companies]);
-
-  const hasAttempts = recentAttempts.length > 0;
-
-  const categoryRows = useMemo(
-    () =>
-      CATEGORIES.map((category) => ({
-        key: category,
-        label: titleCase(category),
-        score: skillRadar[category] ?? 0,
-      })),
-    [skillRadar]
-  );
-
-  // Best score per company, derived from already-loaded attempts (no new query).
-  // Lets each company card show "your best so far" and a Retake CTA.
-  const bestScoreByCompany = useMemo(() => {
-    const map: Record<string, number> = {};
-    for (const a of recentAttempts) {
-      const id = String((a as { company_id?: string }).company_id ?? "");
-      if (!id) continue;
-      map[id] = Math.max(map[id] ?? 0, Number(a.score ?? 0));
-    }
-    return map;
-  }, [recentAttempts]);
-
-  const availableModules = useMemo(
-    () => getModulesForBranch(studentBranch ?? ""),
-    [studentBranch]
-  );
-
+  // Mastery across all tracks — powers Focus Zones. Non-fatal (empty fallback).
   useEffect(() => {
-    if (isLoading) return;
+    fetch("/api/placement/prep/mastery")
+      .then((r) => (r.ok ? r.json() : { mastery: [] }))
+      .then((d) => setAllMastery((d.mastery ?? []) as PlacementTopicMastery[]))
+      .catch(() => setAllMastery([]));
+  }, []);
 
-    const recent: RecentPracticeResult[] = [];
-    for (const mod of availableModules) {
-      try {
-        const saved = localStorage.getItem(`practice_result_${mod.id}`);
-        if (saved) {
-          const parsed = JSON.parse(saved) as {
-            completedAt?: number;
-            score?: number;
-            mastery?: string;
-          };
-          const ageHours = (Date.now() - (parsed.completedAt ?? 0)) / 3600000;
-          if (ageHours < 24) {
-            recent.push({
-              moduleId: mod.id,
-              moduleLabel: mod.label,
-              score: Number(parsed.score ?? 0),
-              mastery: String(parsed.mastery ?? ""),
-              completedAt: Number(parsed.completedAt ?? 0),
-            });
-          }
-        }
-      } catch {}
-    }
+  const companyFits = useMemo((): CompanyFit[] => {
+    if (!placementProfile || companies.length === 0) return [];
+    return (placementProfile.dream_companies ?? [])
+      .map((slug) => companies.find((c) => c.slug === slug))
+      .filter((c): c is PlacementCompanyProfile => Boolean(c))
+      .map((c) => computeCompanyFit(placementProfile, c));
+  }, [placementProfile, companies]);
 
-    setRecentPracticeResults(
-      recent.sort((a, b) => b.completedAt - a.completedAt)
-    );
-  }, [isLoading, availableModules]);
-
-  const grouped = useMemo(
-    () => groupModulesByCategory(availableModules),
-    [availableModules]
+  const todaysTasks = useMemo(
+    () => getTodaysTasks(placementProfile?.primary_target ?? "service_it"),
+    [placementProfile?.primary_target]
   );
 
-  const formatDate = (iso: string) =>
-    new Date(iso).toLocaleDateString("en-IN", {
-      day: "2-digit",
-      month: "short",
-      year: "numeric",
+  const focusZones = useMemo(
+    () =>
+      allMastery
+        .filter((m) => m.attempts_count >= 5 && m.recent_accuracy < 50)
+        .sort((a, b) => a.recent_accuracy - b.recent_accuracy)
+        .slice(0, 3),
+    [allMastery]
+  );
+
+  const activeDrives = useMemo(() => {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    return drives.filter((d) => new Date(d.drive_date) >= today);
+  }, [drives]);
+
+  function toggleTask(id: string) {
+    setCompletedTasks((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
     });
+  }
+
+  const firstName = userProfile?.full_name?.split(" ")[0] ?? "Student";
+  const branch = userProfile?.branch ?? "—";
+  const semester = userProfile?.semester ?? "—";
+  const overall = placementProfile?.readiness_overall ?? 0;
+  const loading = loadingProfile || userLoading;
+  const profile = placementProfile;
 
   return (
-    <div className="space-y-6">
-      <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-        <div className="flex items-start gap-3">
-          <Target className="size-6 shrink-0 text-primary" />
-          <div>
-            <h1 className="text-2xl font-semibold tracking-tight">
-              Placement Readiness
-            </h1>
-            <p className="text-sm text-muted-foreground">
-              Prepare for campus placements with company-specific tests
-            </p>
-            <p className="mt-1 flex items-center gap-1 text-xs text-muted-foreground">
-              <Info className="size-3" />
-              Questions are modelled on real campus placement papers (TCS NQT,
-              Infosys InfyTQ, and similar) with company-specific topic weightage
-              and difficulty.
-            </p>
-          </div>
+    <div className="space-y-6 max-w-6xl">
+      {/* ── Header ── */}
+      <div className="flex items-center gap-5 p-5 bg-white border border-gray-100 rounded-2xl shadow-sm mb-5">
+        {/* Ring — 72×72 */}
+        <div className="shrink-0">
+          {loading ? (
+            <Skeleton className="w-[72px] h-[72px] rounded-full" />
+          ) : (
+            <div className="flex flex-col items-center gap-1">
+              <svg width="72" height="72" viewBox="0 0 72 72">
+                <circle cx="36" cy="36" r="30" fill="none" stroke="#e5e7eb" strokeWidth="6" />
+                <circle
+                  cx="36" cy="36" r="30" fill="none"
+                  stroke={overall >= 75 ? "#10b981" : overall >= 50 ? "#f59e0b" : "#9ca3af"}
+                  strokeWidth="6"
+                  strokeDasharray={`${(overall / 100) * 188.5} 188.5`}
+                  strokeLinecap="round"
+                  transform="rotate(-90 36 36)"
+                />
+                <text x="36" y="34" textAnchor="middle" fontSize="16" fontWeight="700" fill="#111827">{overall}</text>
+                <text x="36" y="46" textAnchor="middle" fontSize="8" fill="#6b7280">/100</text>
+              </svg>
+              <span className="text-xs text-gray-500">{readinessLabel(overall)}</span>
+            </div>
+          )}
         </div>
-        <Button
-          variant="outline"
-          size="sm"
-          className="shrink-0 self-start"
-          onClick={() => router.push("/student/placement/history")}
-        >
-          <History className="mr-2 size-4" />
-          View History
-        </Button>
+        {/* Title block */}
+        <div>
+          {loading ? (
+            <>
+              <Skeleton className="h-8 w-48 mb-2" />
+              <Skeleton className="h-4 w-64" />
+            </>
+          ) : (
+            <>
+              <h1 className="text-2xl font-bold text-gray-900">Welcome back, {firstName}</h1>
+              <p className="text-sm text-gray-500 mt-1">
+                {branch} · Semester {semester} · Targeting {TARGET_LABELS[profile?.primary_target ?? 'service_it']}
+              </p>
+              <div>
+                <Link
+                  href="/student/placement/prep"
+                  className="mt-3 inline-flex items-center gap-1.5 px-4 py-1.5 bg-blue-600 text-white text-sm font-medium rounded-lg"
+                >
+                  Start practicing →
+                </Link>
+                <Link
+                  href="/student/placement/setup?edit=true"
+                  className="mt-3 ml-2 inline-flex items-center gap-1.5 px-4 py-1.5 border border-gray-200 text-gray-600 text-sm rounded-lg"
+                >
+                  Update profile
+                </Link>
+              </div>
+            </>
+          )}
+        </div>
       </div>
 
-      {inProgressTests.length > 0 && (
-        <div className="rounded-lg border border-amber-200 bg-amber-50 p-4 dark:border-amber-800 dark:bg-amber-950/30">
-          <div className="mb-2 flex items-center gap-2">
-            <Clock className="size-4 text-amber-600" />
-            <span className="text-sm font-semibold text-amber-800 dark:text-amber-200">
-              Test in progress
-            </span>
+      {/* ── Main Grid ── */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        {/* Left col */}
+        <div className="lg:col-span-2 space-y-6">
+          {/* Readiness Breakdown */}
+          <div className="bg-white border border-gray-100 rounded-2xl p-5 shadow-sm">
+            <p className="text-base font-semibold text-gray-900 mb-4">
+              Readiness Breakdown
+            </p>
+            <div className="space-y-4">
+              {loadingProfile ? (
+                Array.from({ length: 5 }).map((_, i) => (
+                  <Skeleton key={i} className="h-6 w-full bg-gray-100" />
+                ))
+              ) : overall === 0 ? (
+                <p className="text-sm text-gray-500 py-6 text-center">
+                  Start practicing to build your score
+                </p>
+              ) : (
+                DIMENSIONS.map(({ key, label }) => {
+                  const score = placementProfile?.[key] ?? 0;
+                  return (
+                    <div key={key} className="space-y-1.5">
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                          <span className="text-sm text-gray-700 w-28">{label}</span>
+                          {score < 40 && (
+                            <span className="flex items-center gap-1 text-xs text-amber-600">
+                              <span className="inline-block size-1.5 rounded-full bg-amber-500" />
+                              Focus area
+                            </span>
+                          )}
+                        </div>
+                        <span className="text-sm text-gray-500 tabular-nums">
+                          {score}/100
+                        </span>
+                      </div>
+                      <div className="h-2 bg-gray-100 rounded-full overflow-hidden">
+                        <div
+                          className={`h-full rounded-full transition-all duration-500 ${barColorClass(score)}`}
+                          style={{ width: `${score}%` }}
+                        />
+                      </div>
+                    </div>
+                  );
+                })
+              )}
+            </div>
           </div>
 
-          {inProgressTests.map((test) => (
-            <div
-              key={test.companyId}
-              className="flex items-center justify-between"
-            >
-              <span className="text-sm text-amber-700 dark:text-amber-300">
-                {test.companyName} — {test.answeredCount} questions answered
-              </span>
-              <Button
-                size="sm"
-                variant="outline"
-                className="h-7 border-amber-400 text-xs text-amber-700"
-                onClick={() =>
-                  router.push(`/student/placement/test/${test.companyId}`)
-                }
-              >
-                Resume →
-              </Button>
+          {/* Company Fit */}
+          <div className="bg-white border border-gray-100 rounded-2xl p-5 shadow-sm space-y-3">
+            <div>
+              <h2 className="text-base font-semibold text-gray-900">
+                Your Company Fit
+              </h2>
+              <p className="text-sm text-gray-500">
+                Based on your readiness scores and eligibility
+              </p>
             </div>
-          ))}
-        </div>
-      )}
 
-      <section className="space-y-3">
-        <h2 className="text-base font-semibold">Your Skill Profile</h2>
-        {isLoading ? (
-          <Card>
-            <CardContent className="p-4 text-sm text-muted-foreground">
-              Loading your skill profile...
-            </CardContent>
-          </Card>
-        ) : hasAttempts ? (
-          <Card>
-            <CardContent className="space-y-4 p-4">
-              {/* Engagement data surfaced up top, not buried in fine print */}
-              <div className="flex flex-wrap items-center gap-x-4 gap-y-1 rounded-md bg-muted/50 px-3 py-2 text-xs">
-                <span className="font-semibold text-foreground">
-                  {recentAttempts.length} test
-                  {recentAttempts.length !== 1 ? "s" : ""} taken
-                </span>
-                <span className="text-muted-foreground">
-                  Last test {formatDate(recentAttempts[0].created_at)}
-                </span>
+            {loadingProfile || loadingCompanies ? (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {Array.from({ length: 3 }).map((_, i) => (
+                  <Skeleton key={i} className="h-44 rounded-xl bg-gray-100" />
+                ))}
               </div>
-              {categoryRows.map(({ key, label, score }) => (
-                // attempted=false when 0% so untried skills read as grey
-                // "not started" (an invitation), never red failure.
-                <ScoreMeter
-                  key={key}
-                  label={label}
-                  score={score}
-                  attempted={score > 0}
-                />
-              ))}
-            </CardContent>
-          </Card>
-        ) : (
-          <Card>
-            <CardContent className="p-4 text-sm text-muted-foreground">
-              Take your first test to see your skill profile
-            </CardContent>
-          </Card>
-        )}
-      </section>
+            ) : companyFits.length === 0 ? (
+              <Card className="border-dashed">
+                <CardContent className="py-10 text-center space-y-2">
+                  <p className="text-sm text-gray-500">No companies selected.</p>
+                  <Link
+                    href="/student/placement/setup"
+                    className="text-sm text-blue-600 hover:underline"
+                  >
+                    Update your profile
+                  </Link>
+                </CardContent>
+              </Card>
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {companyFits.map((fit) => (
+                  <CompanyFitCard key={fit.company.id} fit={fit} overall={overall} />
+                ))}
+              </div>
+            )}
+          </div>
 
-      {recentPracticeResults.length > 0 && (
-        <div className="space-y-2">
-          <h3 className="text-sm font-semibold">Recent Practice Sessions</h3>
-          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
-            {recentPracticeResults.slice(0, 6).map((result) => (
-              <div
-                key={result.moduleId}
-                role="button"
-                tabIndex={0}
-                className="flex cursor-pointer items-center justify-between rounded-lg border p-3 transition-colors hover:border-primary"
-                onClick={() =>
-                  router.push(`/student/placement/practice/${result.moduleId}`)
-                }
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" || e.key === " ") {
-                    e.preventDefault();
-                    router.push(`/student/placement/practice/${result.moduleId}`);
-                  }
-                }}
-              >
+          {/* Focus Zones */}
+          {focusZones.length > 0 && (
+            <div className="bg-white border border-gray-100 rounded-2xl p-5 shadow-sm space-y-3">
+              <div className="flex items-center justify-between mb-3">
                 <div>
-                  <p className="text-sm font-medium">{result.moduleLabel}</p>
-                  <p className="text-xs capitalize text-muted-foreground">
-                    {result.mastery.replace(/_/g, " ")}
+                  <h2 className="text-base font-semibold text-gray-900">
+                    Focus Zones
+                  </h2>
+                  <p className="text-sm text-gray-500">
+                    Topics needing attention based on your practice history
                   </p>
                 </div>
-                <Badge className={scoreStyles(result.score).badge}>
-                  {result.score}%
-                </Badge>
               </div>
-            ))}
-          </div>
-        </div>
-      )}
 
-      <section className="space-y-3">
-        <h2 className="text-base font-semibold">Choose a Company to Practice</h2>
-        {isLoading ? (
-          <Card>
-            <CardContent className="p-4 text-sm text-muted-foreground">
-              Loading companies...
-            </CardContent>
-          </Card>
-        ) : companies.length === 0 ? (
-          <Card>
-            <CardContent className="p-4 text-sm text-muted-foreground">
-              No companies available right now.
-            </CardContent>
-          </Card>
-        ) : (
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-            {companies.map((company) => {
-              const branches = Array.isArray(company.branches) ? company.branches : [];
-              const visibleBranches = branches.slice(0, 3);
-              const extraCount = Math.max(0, branches.length - 3);
-              const pattern = company.aptitude_pattern ?? {
-                quantitative: 0,
-                logical: 0,
-                verbal: 0,
-                technical: 0,
-              };
-
-              const difficultyClass =
-                company.difficulty === "easy"
-                  ? "bg-green-100 text-green-700"
-                  : company.difficulty === "medium"
-                    ? "bg-amber-100 text-amber-700"
-                    : "bg-red-100 text-red-700";
-
-              return (
-                <Card key={company.id} className="h-full">
-                  <CardHeader className="space-y-2">
-                    <CardTitle className="text-lg font-bold">{company.name}</CardTitle>
-                    <div>
-                      <Badge className={difficultyClass}>
-                        {titleCase(company.difficulty)}
-                      </Badge>
+              {focusZones.map((zone) => (
+                <div
+                  key={`${zone.track}-${zone.topic}`}
+                  className="flex items-center justify-between p-3 bg-amber-50/40 border border-amber-100 rounded-xl mb-2"
+                >
+                  <div>
+                    <div className="flex items-center gap-2 mb-1">
+                      <span className="text-sm font-medium text-gray-900">
+                        {zone.topic}
+                      </span>
+                      <span className="text-xs px-2 py-0.5 rounded-full bg-amber-100 text-amber-700">
+                        {zone.recent_accuracy.toFixed(0)}% accuracy
+                      </span>
                     </div>
-                  </CardHeader>
-                  <CardContent className="space-y-3">
-                    {company.avg_package_lpa !== null && (
-                      <p className="text-sm text-muted-foreground">
-                        Avg: Rs {company.avg_package_lpa}L
-                      </p>
-                    )}
+                    <p className="text-xs text-gray-500">
+                      {zone.sessions_count}
+                      {zone.sessions_count === 1 ? " session" : " sessions"} ·{" "}
+                      {zone.attempts_count} questions attempted ·{" "}
+                      {zone.track.charAt(0).toUpperCase() + zone.track.slice(1)}
+                    </p>
+                  </div>
 
-                    <div className="flex flex-wrap gap-1.5">
-                      {visibleBranches.map((branch) => (
-                        <Badge key={branch} variant="outline" className="text-xs">
-                          {branch}
-                        </Badge>
-                      ))}
-                      {extraCount > 0 && (
-                        <Badge variant="outline" className="text-xs">
-                          +{extraCount} more
-                        </Badge>
+                  <Link
+                    href={`/student/placement/prep/${zone.track}/practice?topic=${encodeURIComponent(zone.topic)}`}
+                    className="text-sm font-medium text-blue-600 hover:text-blue-700 whitespace-nowrap ml-4"
+                  >
+                    Practice now →
+                  </Link>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* Right col */}
+        <div className="space-y-4">
+          {/* Quick Stats */}
+          {loadingProfile ? (
+            <Skeleton className="h-20 rounded-xl bg-gray-100" />
+          ) : (
+            <QuickStats profile={placementProfile} />
+          )}
+
+          {/* Today's Focus */}
+          <div className="bg-white border border-gray-100 rounded-2xl p-4 shadow-sm">
+            <p className="text-sm font-medium text-gray-800 mb-3">
+              Today&apos;s Focus
+            </p>
+            <div>
+              {loadingProfile ? (
+                Array.from({ length: 3 }).map((_, i) => (
+                  <Skeleton key={i} className="h-10 w-full bg-gray-100" />
+                ))
+              ) : (
+                todaysTasks.map((task, idx) => {
+                  const done = completedTasks.has(task.id);
+                  return (
+                    <div key={task.id} className={cn("flex items-center gap-3 py-2.5", idx < todaysTasks.length - 1 && "border-b border-gray-50")}>
+                      <button
+                        type="button"
+                        onClick={() => toggleTask(task.id)}
+                        className="shrink-0 text-gray-400 hover:text-emerald-500 transition-colors"
+                        aria-label={done ? "Mark incomplete" : "Mark complete"}
+                      >
+                        {done ? (
+                          <CheckCircle2 className="size-5 text-emerald-500" />
+                        ) : (
+                          <Circle className="size-5" />
+                        )}
+                      </button>
+                      <div className="flex-1 min-w-0">
+                        <p
+                          className={`text-sm font-medium truncate ${
+                            done
+                              ? "line-through text-gray-400"
+                              : "text-gray-800"
+                          }`}
+                        >
+                          {task.title}
+                        </p>
+                        <p className="text-xs text-gray-500 truncate">
+                          {task.subtitle}
+                        </p>
+                      </div>
+                      <Link href={task.href} aria-label={`Open ${task.title}`}>
+                        <ArrowRight className="size-4 text-gray-400 hover:text-gray-600 transition-colors shrink-0" />
+                      </Link>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          </div>
+
+          {/* Upcoming Drives */}
+          <Card>
+            <CardHeader className="pb-3">
+              <CardTitle className="text-base font-semibold text-gray-900">
+                Upcoming Drives
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              {loadingCompanies ? (
+                Array.from({ length: 2 }).map((_, i) => (
+                  <Skeleton key={i} className="h-14 rounded-lg bg-gray-100" />
+                ))
+              ) : activeDrives.length === 0 ? (
+                <p className="text-sm text-gray-400 py-2">
+                  No upcoming drives scheduled
+                </p>
+              ) : (
+                activeDrives.slice(0, 4).map((drive) => {
+                  const days = daysUntil(drive.drive_date);
+                  const company = companies.find((c) => c.id === drive.company_id);
+                  const slug = company?.slug ?? "";
+                  const companyName =
+                    (drive as PlacementDrive & { company?: PlacementCompanyProfile })
+                      .company?.name ??
+                    company?.name ??
+                    "Company";
+                  const daysLabel =
+                    days <= 7
+                      ? `${days} days left`
+                      : days <= 14
+                      ? `${days} days left`
+                      : `${days} days away`;
+                  const daysClass =
+                    days <= 7
+                      ? "text-amber-600 font-bold"
+                      : days <= 14
+                      ? "text-amber-600"
+                      : "text-gray-600";
+                  return (
+                    <div
+                      key={drive.id}
+                      className="flex items-center justify-between gap-2"
+                    >
+                      <div className="min-w-0">
+                        <p className="text-sm font-medium text-gray-800 truncate">
+                          {companyName}
+                        </p>
+                        <p className={`text-xs ${daysClass}`}>{daysLabel}</p>
+                      </div>
+                      {slug && (
+                        <Link href={`/student/placement/companies/${slug}`}>
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="shrink-0 text-xs"
+                          >
+                            Prepare Now
+                          </Button>
+                        </Link>
                       )}
                     </div>
-
-                    <p className="text-xs text-muted-foreground">
-                      Quant {pattern.quantitative}% · Logic {pattern.logical}% · Verbal{" "}
-                      {pattern.verbal}% · Tech {pattern.technical}%
-                    </p>
-
-                    {(() => {
-                      const last = bestScoreByCompany[company.id];
-                      const attempted = last != null;
-                      return (
-                        <div className="space-y-2 pt-1">
-                          {attempted && (
-                            <div className="flex items-center justify-between text-xs">
-                              <span className="text-muted-foreground">
-                                Your best
-                              </span>
-                              <span
-                                className={cn(
-                                  "rounded-full px-2 py-0.5 font-semibold tabular-nums",
-                                  scoreStyles(last).badge
-                                )}
-                              >
-                                {Math.round(last)}%
-                              </span>
-                            </div>
-                          )}
-                          {/* Attempted companies fall back to a quieter outline
-                              CTA so the grid is not a wall of identical dark
-                              buttons; fresh ones stay primary to invite a try. */}
-                          <Button
-                            variant={attempted ? "outline" : "default"}
-                            className="w-full"
-                            onClick={() =>
-                              router.push(`/student/placement/test/${company.id}`)
-                            }
-                          >
-                            {attempted ? "Retake test" : "Start Test"}
-                          </Button>
-                        </div>
-                      );
-                    })()}
-                  </CardContent>
-                </Card>
-              );
-            })}
-          </div>
-        )}
-      </section>
-
-      <section className="space-y-3">
-        <h2 className="text-base font-semibold">Practice by Skill</h2>
-        <p className="text-sm text-muted-foreground">
-          Targeted practice to improve weak areas
-        </p>
-
-        {isLoading ? (
-          <Card>
-            <CardContent className="p-4 text-sm text-muted-foreground">
-              Loading practice modules...
+                  );
+                })
+              )}
             </CardContent>
           </Card>
-        ) : (
-          <Tabs defaultValue="quantitative">
-            <TabsList className="flex flex-wrap gap-2">
-              <TabsTrigger value="quantitative">Quantitative</TabsTrigger>
-              <TabsTrigger value="logical">Logical</TabsTrigger>
-              <TabsTrigger value="verbal">Verbal</TabsTrigger>
-              <TabsTrigger value="technical">Technical</TabsTrigger>
-            </TabsList>
-
-            {(
-              [
-                "quantitative",
-                "logical",
-                "verbal",
-                "technical",
-              ] as const
-            ).map((cat) => {
-              const modules = grouped[cat] ?? [];
-              const emptyState =
-                modules.length === 0 ? (
-                  <Card>
-                    <CardContent className="p-4 text-sm text-muted-foreground">
-                      No practice modules available.
-                    </CardContent>
-                  </Card>
-                ) : null;
-
-              return (
-                <TabsContent key={cat} value={cat} className="space-y-4">
-                  {emptyState ?? (
-                    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-                      {modules.map((mod) => {
-                        const hasAttempt = Object.prototype.hasOwnProperty.call(
-                          practiceScores,
-                          mod.id
-                        );
-                        const bestScore = practiceScores[mod.id] ?? 0;
-                        const Icon =
-                          (LucideIcons as any)[mod.icon] ?? BookOpen;
-
-                        return (
-                          <Card key={mod.id} className="h-full">
-                            <CardContent className="space-y-3 p-4">
-                              <div className="flex items-start gap-2">
-                                <Icon className="size-4 text-primary" />
-                                <div className="min-w-0">
-                                  <div className="text-sm font-semibold">
-                                    {mod.label}
-                                  </div>
-                                  <p className="text-xs text-muted-foreground">
-                                    {mod.description}
-                                  </p>
-                                </div>
-                              </div>
-
-                              {hasAttempt && (
-                                <div className="space-y-1">
-                                  <Badge
-                                    variant="secondary"
-                                    className={getPracticeScoreBadgeClass(bestScore)}
-                                  >
-                                    {bestScore}%
-                                  </Badge>
-                                  <p className="text-xs text-muted-foreground">
-                                    Best: {bestScore}%
-                                  </p>
-                                </div>
-                              )}
-
-                              <Button
-                                className="w-full"
-                                onClick={() =>
-                                  router.push(
-                                    `/student/placement/practice/${mod.id}`
-                                  )
-                                }
-                              >
-                                Practice
-                              </Button>
-                            </CardContent>
-                          </Card>
-                        );
-                      })}
-                    </div>
-                  )}
-                </TabsContent>
-              );
-            })}
-          </Tabs>
-        )}
-      </section>
+        </div>
+      </div>
     </div>
   );
 }
 
+// ─── Company Fit Card ─────────────────────────────────────────────────────────
+
+function CompanyFitCard({ fit, overall }: { fit: CompanyFit; overall: number }) {
+  return (
+    <div className="bg-gray-50 rounded-xl p-3.5 border border-gray-100 flex flex-col gap-3">
+      <div className="flex items-start justify-between gap-2">
+        <p className="text-sm font-semibold text-gray-900 leading-tight">
+          {fit.company.name}
+        </p>
+        <div className="text-right shrink-0">
+          <span className="text-2xl font-medium text-gray-400">
+            {fit.fit_score}
+          </span>
+          <span className="text-xs text-gray-400">/100</span>
+        </div>
+      </div>
+
+      <p className="text-xs text-gray-500 -mt-1">
+        {readinessLabel(fit.fit_score)}
+      </p>
+
+      {!fit.is_eligible ? (
+        <div className="rounded-md bg-amber-50 px-2.5 py-1.5 text-xs text-amber-700">
+          Not eligible — {fit.ineligibility_reason}
+        </div>
+      ) : fit.fit_level !== "ready" ? (
+        <div className="flex flex-wrap gap-1.5">
+          {overall === 0 ? (
+            <span className="rounded bg-gray-100 px-2 py-0.5 text-xs text-gray-500">
+              Complete practice to see gaps
+            </span>
+          ) : (
+            fit.top_gaps.map((gap) => (
+              <span
+                key={gap}
+                className="text-xs bg-amber-50 text-amber-600 px-2 py-0.5 rounded"
+              >
+                {gap
+                  .replace("Aptitude", "Apt")
+                  .replace("Verbal Ability", "Verbal")
+                  .replace("Core Domain", "Domain")
+                  .replace("Communication", "Comm")
+                  .replace("/100", "")}
+              </span>
+            ))
+          )}
+        </div>
+      ) : null}
+
+      <div className="mt-auto pt-2">
+        <Link
+          href={`/student/placement/prep?company=${fit.company.slug}`}
+        >
+          <Button variant="outline" size="sm" className="w-full text-xs">
+            Prep for {fit.company.name}
+          </Button>
+        </Link>
+      </div>
+    </div>
+  );
+}
+
+// ─── Quick Stats ──────────────────────────────────────────────────────────────
+
+function QuickStats({ profile }: { profile: StudentPlacementProfile | null }) {
+  const stats: Array<{ label: string; value: string; href: string | null }> = [
+    {
+      label: "Prep Streak",
+      value: `${profile?.prep_streak_days ?? 0} days`,
+      href: null,
+    },
+    {
+      label: "Tests Taken",
+      value: "0",
+      href: null,
+    },
+    {
+      label: "Resume",
+      value: `${profile?.resume_completeness ?? 0}%`,
+      href: "/student/placement/resume",
+    },
+  ];
+
+  return (
+    <div className="grid grid-cols-3 gap-2">
+      {stats.map((stat) => {
+        const card = (
+          <div className="bg-gray-50 rounded-xl p-3 text-center">
+            <p className="text-xl font-medium text-gray-800">
+              {stat.value}
+            </p>
+            <p className="text-xs text-gray-400 mt-0.5">
+              {stat.label}
+            </p>
+          </div>
+        );
+        return stat.href ? (
+          <Link key={stat.label} href={stat.href}>
+            {card}
+          </Link>
+        ) : (
+          <div key={stat.label}>{card}</div>
+        );
+      })}
+    </div>
+  );
+}

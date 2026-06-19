@@ -37,7 +37,7 @@ export async function GET(_request: Request, { params }: RouteContext) {
 
     if (
       !profileRow ||
-      !["faculty", "superadmin"].includes(profileRow.role)
+      !["faculty", "superadmin", "dean", "hod"].includes(profileRow.role)
     ) {
       return Response.json({ error: "Forbidden" }, { status: 403 });
     }

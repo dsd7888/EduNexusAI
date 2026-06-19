@@ -18,6 +18,14 @@ import {
   type CoPoMappingInfo,
   type PyqExample,
 } from "@/lib/qpaper/sectionGen";
+import {
+  allocateBankForSection,
+  assembleSectionFromBank,
+  overlayBankOntoSection,
+  usedBankIds,
+} from "@/lib/qpaper/bankFill";
+import { rowToBankQuestion, type FqbRow } from "@/lib/qbank/row";
+import type { BankQuestion } from "@/lib/qbank/types";
 import type { NextRequest } from "next/server";
 
 interface ModuleRow {
@@ -66,7 +74,7 @@ export async function POST(request: NextRequest) {
   try {
     console.log("[qpaper] POST request received");
 
-    const authResult = await requireRole(["faculty", "superadmin"]);
+    const authResult = await requireRole(["faculty", "superadmin", "dean", "hod"]);
     if (authResult instanceof Response) return authResult;
     const { user, adminClient } = authResult;
 
@@ -81,6 +89,8 @@ export async function POST(request: NextRequest) {
     if (!subjectId) return apiError("subjectId is required", 400);
     const templateId =
       typeof body.templateId === "string" ? body.templateId.trim() : "";
+    const fromBank =
+      body.fromBank === true || body.questionSource === "from_bank";
 
     // ── Step 1a: subject ──────────────────────────────────────────────────
     const { data: subject, error: subjectError } = await adminClient
@@ -215,67 +225,148 @@ export async function POST(request: NextRequest) {
       }`
     );
 
-    // ── Step 2: per-section generation (parallel Pro calls) ─────────────
-    // Sections are fully independent — no data flows between them — so the
-    // Pro calls run via Promise.all. Order is preserved by Promise.all's
-    // index alignment, and a per-section failure surfaces as a warning
-    // without aborting the other section's result.
+    // ── Step 1h: faculty question bank (only for "From Q Bank" mode) ─────
+    let bank: BankQuestion[] = [];
+    if (fromBank) {
+      const { data: bankRows } = await adminClient
+        .from("faculty_question_bank")
+        .select("*")
+        .eq("subject_id", subjectId)
+        .eq("faculty_id", user.id);
+      bank = ((bankRows ?? []) as FqbRow[]).map(rowToBankQuestion);
+      console.log(`[qpaper] From Q Bank: ${bank.length} bank question(s) available`);
+    }
+
+    // ── Step 2: per-section generation ──────────────────────────────────
+    // Sections are independent. In normal mode each is a parallel Pro call.
+    // In "From Q Bank" mode we first allocate bank questions to every slot
+    // (sequentially, sharing one `used` set so no question repeats across the
+    // paper); sections fully covered by the bank skip AI entirely, the rest
+    // fall back to an AI section with the matched bank questions overlaid.
     console.log(
-      `[qpaper] Generating ${structure.sections.length} section(s) via Pro — parallel AI calls`
+      `[qpaper] Generating ${structure.sections.length} section(s)` +
+        (fromBank ? " — From Q Bank (AI fallback per uncovered section)" : " via Pro — parallel AI calls")
     );
-    const sectionSettled = await Promise.all(
-      structure.sections.map(async (section) => {
-        const sectionModules = modulesForSection(modules, section);
-        try {
-          const { questions, warnings } = await generateSection({
-            sectionName: section.section_name,
-            sectionTemplate: section,
-            modulesInSection: sectionModules,
-            courseOutcomes,
-            coPoMapping,
-            pyqExamples,
-            pyqContext,
-            subjectName,
-            subjectCode,
-          });
-          return { section, questions, warnings, error: null as string | null };
-        } catch (err) {
-          const message =
-            err instanceof Error ? err.message : "Unknown error";
-          console.error(
-            `[qpaper] ${section.section_name} generation failed:`,
-            message
-          );
-          return {
-            section,
-            questions: [],
-            warnings: [] as string[],
-            error: message,
-          };
-        }
+
+    const used = new Set<string>();
+    const allocations = fromBank
+      ? structure.sections.map((section) =>
+          allocateBankForSection(section, bank, used)
+        )
+      : structure.sections.map(() => null);
+
+    const runAi = async (section: TemplateSection) => {
+      const sectionModules = modulesForSection(modules, section);
+      try {
+        const { questions, warnings } = await generateSection({
+          sectionName: section.section_name,
+          sectionTemplate: section,
+          modulesInSection: sectionModules,
+          courseOutcomes,
+          coPoMapping,
+          pyqExamples,
+          pyqContext,
+          subjectName,
+          subjectCode,
+        });
+        return { questions, warnings, error: null as string | null };
+      } catch (err) {
+        const message = err instanceof Error ? err.message : "Unknown error";
+        console.error(
+          `[qpaper] ${section.section_name} generation failed:`,
+          message
+        );
+        return { questions: [], warnings: [] as string[], error: message };
+      }
+    };
+
+    // AI runs for every normal-mode section, and for bank-mode sections that
+    // are not fully covered. Parallelised across sections.
+    const aiSettled = await Promise.all(
+      structure.sections.map(async (section, i) => {
+        const alloc = allocations[i];
+        if (fromBank && alloc && alloc.fullyCovered) return null;
+        return runAi(section);
       })
     );
 
     const generatedSections: GeneratedSection[] = [];
     const allWarnings: string[] = [];
-    for (const r of sectionSettled) {
-      if (r.error) {
-        allWarnings.push(`${r.section.section_name}: ${r.error}`);
+    const usedIds: string[] = [];
+
+    structure.sections.forEach((section, i) => {
+      const alloc = allocations[i];
+
+      if (fromBank && alloc && alloc.fullyCovered) {
+        generatedSections.push(assembleSectionFromBank(section, alloc));
+        usedIds.push(...usedBankIds(alloc));
+        console.log(
+          `[qpaper] ${section.section_name}: fully sourced from Q Bank (no AI)`
+        );
+        return;
       }
-      if (r.warnings.length > 0) {
+
+      const ai = aiSettled[i] ?? {
+        questions: [],
+        warnings: [] as string[],
+        error: "no AI result",
+      };
+      if (ai.error) allWarnings.push(`${section.section_name}: ${ai.error}`);
+      if (ai.warnings.length > 0) {
         console.warn(
-          `[qpaper] ${r.section.section_name} warnings:\n  ${r.warnings.join("\n  ")}`
+          `[qpaper] ${section.section_name} warnings:\n  ${ai.warnings.join("\n  ")}`
         );
         allWarnings.push(
-          ...r.warnings.map((w) => `${r.section.section_name}: ${w}`)
+          ...ai.warnings.map((w) => `${section.section_name}: ${w}`)
         );
       }
-      generatedSections.push({
-        section_name: r.section.section_name,
-        module_range: r.section.module_range,
-        total_marks: r.section.total_marks,
-        questions: r.questions,
-      });
+
+      let built: GeneratedSection = {
+        section_name: section.section_name,
+        module_range: section.module_range,
+        total_marks: section.total_marks,
+        questions: ai.questions,
+      };
+
+      if (fromBank && alloc) {
+        const overlay = overlayBankOntoSection(built, section, alloc);
+        built = overlay.section;
+        // Only count bank questions that were actually placed (an AI-failed
+        // empty section overlays nothing, so don't bump usage for it).
+        if (overlay.replaced > 0) usedIds.push(...usedBankIds(alloc));
+        if (alloc.unmatched.length > 0) {
+          console.log(
+            `[qpaper] ${section.section_name}: ${overlay.replaced} from bank, ` +
+              `${alloc.unmatched.length} slot(s) fell back to AI:\n  ` +
+              alloc.unmatched.join("\n  ")
+          );
+          allWarnings.push(
+            `${section.section_name}: ${alloc.unmatched.length} slot(s) not in bank — AI-generated`
+          );
+        }
+      }
+
+      generatedSections.push(built);
+    });
+
+    // ── Step 2b: bump usage_count / last_used_at for used bank questions ─
+    if (fromBank && usedIds.length > 0) {
+      const uniqueUsed = Array.from(new Set(usedIds));
+      const nowIso = new Date().toISOString();
+      const byId = new Map(bank.map((b) => [b.id, b]));
+      await Promise.all(
+        uniqueUsed.map((id) => {
+          const current = byId.get(id);
+          return adminClient
+            .from("faculty_question_bank")
+            .update({
+              usage_count: (current?.usage_count ?? 0) + 1,
+              last_used_at: nowIso,
+            })
+            .eq("id", id);
+        })
+      );
+      console.log(`[qpaper] Bumped usage on ${uniqueUsed.length} bank question(s)`);
     }
 
     // ── Step 3: assemble paper ───────────────────────────────────────────

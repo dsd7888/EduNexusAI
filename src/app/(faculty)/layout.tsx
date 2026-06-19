@@ -6,6 +6,8 @@ import {
   GitPullRequest,
   GraduationCap,
   LayoutDashboard,
+  Library,
+  PlayCircle,
   Presentation,
   Sparkles,
   User,
@@ -43,9 +45,17 @@ export default function FacultyLayout({ children }: LayoutProps) {
             <Presentation className="size-4" />
             <span>Generate PPT</span>
           </NavLink>
+          <NavLink href="/faculty/explainer">
+            <PlayCircle className="size-4" />
+            <span>Explainer</span>
+          </NavLink>
           <NavLink href="/faculty/qpaper">
             <FileText className="size-4" />
             <span>Question Paper</span>
+          </NavLink>
+          <NavLink href="/faculty/qbank">
+            <Library className="size-4" />
+            <span>Q Bank</span>
           </NavLink>
           <NavLink href="/faculty/refine">
             <Sparkles className="size-4" />
@@ -54,6 +64,10 @@ export default function FacultyLayout({ children }: LayoutProps) {
           <NavLink href="/faculty/analytics">
             <BarChart2 className="size-4" />
             <span>Analytics</span>
+          </NavLink>
+          <NavLink href="/faculty/placement-dashboard">
+            <BarChart2 className="size-4" />
+            <span>Placement Dashboard</span>
           </NavLink>
           <NavLink href="/faculty/request-change">
             <GitPullRequest className="size-4" />
@@ -65,7 +79,7 @@ export default function FacultyLayout({ children }: LayoutProps) {
           </NavLink>
         </nav>
 
-        <div className="flex-shrink-0 px-4 py-4">
+        <div className="shrink-0 px-4 py-4">
           <div className="mb-3">
             <UserProfile />
           </div>

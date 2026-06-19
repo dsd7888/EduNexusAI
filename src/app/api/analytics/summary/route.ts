@@ -7,7 +7,7 @@ import type { NextRequest } from "next/server";
 
 export async function GET(_request: NextRequest) {
   try {
-    const authResult = await requireRole(["faculty", "superadmin"]);
+    const authResult = await requireRole(["faculty", "superadmin", "dean", "hod"]);
     if (authResult instanceof Response) return authResult;
     const { adminClient } = authResult;
 

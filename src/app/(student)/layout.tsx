@@ -26,10 +26,8 @@ interface LayoutProps {
   children: ReactNode;
 }
 
-export default function StudentLayout({ children }: LayoutProps) {
-  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
-
-  const SidebarContent = () => (
+function SidebarContent({ onNavigate }: { onNavigate: () => void }) {
+  return (
     <>
       <div className="flex items-center justify-between gap-2 border-b px-4 py-4">
         <div className="flex items-center gap-2">
@@ -44,7 +42,7 @@ export default function StudentLayout({ children }: LayoutProps) {
         <button
           type="button"
           className="inline-flex size-8 items-center justify-center rounded-md border bg-background text-muted-foreground hover:bg-muted lg:hidden"
-          onClick={() => setMobileMenuOpen(false)}
+          onClick={onNavigate}
           aria-label="Close menu"
         >
           <X className="size-4" />
@@ -70,7 +68,7 @@ export default function StudentLayout({ children }: LayoutProps) {
         </NavLink>
         <NavLink href="/student/placement">
           <Target className="size-4" />
-          <span>Placement Prep</span>
+          <span>Placement</span>
         </NavLink>
         <NavLink href="/student/placement/history">
           <History className="size-4" />
@@ -94,6 +92,10 @@ export default function StudentLayout({ children }: LayoutProps) {
       </div>
     </>
   );
+}
+
+export default function StudentLayout({ children }: LayoutProps) {
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
   return (
     <div className="flex min-h-screen bg-background">
@@ -122,7 +124,7 @@ export default function StudentLayout({ children }: LayoutProps) {
 
       {/* Desktop sidebar */}
       <aside className="hidden lg:fixed lg:inset-y-0 lg:left-0 lg:flex lg:w-64 lg:flex-col lg:border-r lg:bg-card">
-        <SidebarContent />
+        <SidebarContent onNavigate={() => setMobileMenuOpen(false)} />
       </aside>
 
       {/* Mobile sidebar overlay */}
@@ -135,7 +137,7 @@ export default function StudentLayout({ children }: LayoutProps) {
             aria-label="Close menu overlay"
           />
           <aside className="relative h-full w-72 max-w-full bg-card shadow-lg flex flex-col border-r">
-            <SidebarContent />
+            <SidebarContent onNavigate={() => setMobileMenuOpen(false)} />
           </aside>
         </div>
       )}

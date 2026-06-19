@@ -25,6 +25,7 @@ import {
   Download,
   FileText,
   GripVertical,
+  Library,
   Loader2,
   Lock,
   Pencil,
@@ -32,6 +33,7 @@ import {
   RefreshCw,
   Save,
   Trash2,
+  X,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -113,6 +115,14 @@ interface PaperMetadata {
 
 type PyqMode = "fresh" | "pyq_mix" | "pyq_pattern";
 
+/** Draft state for the inline question editor. */
+interface EditDraft {
+  question: string;
+  options?: Record<string, string>; // keys a,b,c,d
+  correct_option?: string;
+  model_answer: string;
+}
+
 interface ModuleRow {
   id: string;
   name: string;
@@ -131,6 +141,9 @@ interface SubQuestion {
   co?: string | null;
   btl?: number | null;
   po?: string | null;
+  from_bank?: boolean;
+  bank_id?: string;
+  model_answer?: string | null;
 }
 
 interface QuestionPart {
@@ -141,6 +154,9 @@ interface QuestionPart {
   btl?: number | null;
   po?: string | null;
   is_or_alternative?: boolean;
+  from_bank?: boolean;
+  bank_id?: string;
+  model_answer?: string | null;
 }
 
 interface GeneratedQuestion {
@@ -152,6 +168,7 @@ interface GeneratedQuestion {
   attempt_logic?: string | null;
   sub_parts?: SubQuestion[];
   parts?: QuestionPart[];
+  from_bank?: boolean;
 }
 
 interface GeneratedSection {
@@ -925,6 +942,52 @@ function CourseHeaderRow({
   );
 }
 
+// ─── Inline-edit action buttons (Save / Save to Bank / Cancel) ──────────────
+
+function EditActions({
+  onSave,
+  onCancel,
+  onSaveToBank,
+  savingBank,
+}: {
+  onSave: () => void;
+  onCancel: () => void;
+  onSaveToBank: () => void;
+  savingBank: boolean;
+}) {
+  return (
+    <div className="flex items-center gap-2">
+      <Button size="sm" className="h-7 text-xs" onClick={onSave}>
+        <Save className="size-3 mr-1" />
+        Save
+      </Button>
+      <Button
+        size="sm"
+        variant="outline"
+        className="h-7 text-xs"
+        onClick={onSaveToBank}
+        disabled={savingBank}
+      >
+        {savingBank ? (
+          <Loader2 className="size-3 mr-1 animate-spin" />
+        ) : (
+          <Library className="size-3 mr-1" />
+        )}
+        Save to Bank
+      </Button>
+      <Button
+        size="sm"
+        variant="ghost"
+        className="h-7 text-xs"
+        onClick={onCancel}
+      >
+        <X className="size-3 mr-1" />
+        Cancel
+      </Button>
+    </div>
+  );
+}
+
 // ─── Main page ──────────────────────────────────────────────────────────────
 
 export default function QpaperPage() {
@@ -943,6 +1006,9 @@ export default function QpaperPage() {
   const [targetMarks, setTargetMarks] = useState<number>(60);
   const [pyqMode, setPyqMode] = useState<PyqMode>("fresh");
   const [pyqPercent, setPyqPercent] = useState(50);
+  const [fromBank, setFromBank] = useState(false);
+  // null = unknown/checking; number = count of bank questions for the subject
+  const [bankCount, setBankCount] = useState<number | null>(null);
 
   const [paper, setPaper] = useState<AssembledPaper | null>(null);
   const [downloadUrl, setDownloadUrl] = useState<string | null>(null);
@@ -950,9 +1016,11 @@ export default function QpaperPage() {
   const [isGeneratingAnswerKey, setIsGeneratingAnswerKey] = useState(false);
   const [isGenerating, setIsGenerating] = useState(false);
   const [isReExporting, setIsReExporting] = useState(false);
+  const [isExportingDocx, setIsExportingDocx] = useState(false);
   const [regenKey, setRegenKey] = useState<string | null>(null);
   const [editingKey, setEditingKey] = useState<string | null>(null);
-  const [editValue, setEditValue] = useState("");
+  const [editDraft, setEditDraft] = useState<EditDraft | null>(null);
+  const [savingBankKey, setSavingBankKey] = useState<string | null>(null);
   const [progressMsg, setProgressMsg] = useState("");
 
   const [saveOpen, setSaveOpen] = useState(false);
@@ -1004,6 +1072,32 @@ export default function QpaperPage() {
         setSelectedModuleIds(rows.map((m) => m.id));
       });
   }, [selectedSubjectId]);
+
+  // ─── Q Bank availability for the selected subject ───────────────────────
+  useEffect(() => {
+    if (!selectedSubjectId) {
+      setBankCount(null);
+      return;
+    }
+    let cancelled = false;
+    setBankCount(null);
+    fetch(`/api/qbank/list?subject_id=${selectedSubjectId}&per_page=1`)
+      .then((r) => (r.ok ? r.json() : Promise.reject(r)))
+      .then((data: { total?: number }) => {
+        if (!cancelled) setBankCount(data.total ?? 0);
+      })
+      .catch(() => {
+        if (!cancelled) setBankCount(0);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedSubjectId]);
+
+  // If the chosen subject has no bank, fall off the "From Q Bank" source.
+  useEffect(() => {
+    if (bankCount === 0 && fromBank) setFromBank(false);
+  }, [bankCount, fromBank]);
 
   // ─── Beforeunload during generation ─────────────────────────────────────
   useEffect(() => {
@@ -1300,6 +1394,7 @@ export default function QpaperPage() {
         body: JSON.stringify({
           subjectId: selectedSubjectId,
           templateId,
+          fromBank,
           pyqMode,
           pyqPercent: pyqMode === "pyq_mix" ? pyqPercent : null,
         }),
@@ -1391,12 +1486,29 @@ export default function QpaperPage() {
   ) => {
     const q = paper?.sections[sIdx]?.questions[qIdx];
     if (!q) return;
-    const text =
-      kind === "sub"
-        ? q.sub_parts?.[innerIdx]?.question ?? ""
-        : q.parts?.[innerIdx]?.question ?? "";
+    if (kind === "sub") {
+      const sub = q.sub_parts?.[innerIdx];
+      setEditDraft({
+        question: sub?.question ?? "",
+        options: sub?.options
+          ? { ...sub.options }
+          : { a: "", b: "", c: "", d: "" },
+        correct_option: sub?.correct_option,
+        model_answer: sub?.model_answer ?? "",
+      });
+    } else {
+      const part = q.parts?.[innerIdx];
+      setEditDraft({
+        question: part?.question ?? "",
+        model_answer: part?.model_answer ?? "",
+      });
+    }
     setEditingKey(`${sIdx}-${qIdx}-${kind}-${innerIdx}`);
-    setEditValue(text);
+  };
+
+  const cancelEdit = () => {
+    setEditingKey(null);
+    setEditDraft(null);
   };
 
   const saveEdit = (
@@ -1405,17 +1517,33 @@ export default function QpaperPage() {
     kind: "sub" | "part",
     innerIdx: number
   ) => {
+    const draft = editDraft;
+    if (!draft) return cancelEdit();
     setPaper((prev) => {
       if (!prev) return prev;
       const next = { ...prev, sections: prev.sections.map((s) => ({ ...s })) };
       const q = { ...next.sections[sIdx].questions[qIdx] };
       if (kind === "sub" && q.sub_parts) {
         q.sub_parts = q.sub_parts.map((s, i) =>
-          i === innerIdx ? { ...s, question: editValue } : s
+          i === innerIdx
+            ? {
+                ...s,
+                question: draft.question,
+                options: draft.options ? { ...draft.options } : s.options,
+                correct_option: draft.correct_option ?? s.correct_option,
+                model_answer: draft.model_answer || null,
+              }
+            : s
         );
       } else if (kind === "part" && q.parts) {
         q.parts = q.parts.map((p, i) =>
-          i === innerIdx ? { ...p, question: editValue } : p
+          i === innerIdx
+            ? {
+                ...p,
+                question: draft.question,
+                model_answer: draft.model_answer || null,
+              }
+            : p
         );
       }
       next.sections[sIdx].questions = next.sections[sIdx].questions.map(
@@ -1423,8 +1551,82 @@ export default function QpaperPage() {
       );
       return next;
     });
-    setEditingKey(null);
-    setEditValue("");
+    cancelEdit();
+  };
+
+  // ─── Save an (edited) question into the faculty Q Bank ──────────────────
+  const saveQuestionToBank = async (
+    sIdx: number,
+    qIdx: number,
+    kind: "sub" | "part",
+    innerIdx: number
+  ) => {
+    if (!selectedSubjectId) {
+      toast.error("Select a subject first");
+      return;
+    }
+    const q = paper?.sections[sIdx]?.questions[qIdx];
+    if (!q) return;
+    const key = `${sIdx}-${qIdx}-${kind}-${innerIdx}`;
+    // Prefer the live draft when this unit is being edited.
+    const editing = editingKey === key && editDraft ? editDraft : null;
+
+    let payload: Record<string, unknown>;
+    if (kind === "sub") {
+      const sub = q.sub_parts?.[innerIdx];
+      if (!sub) return;
+      const opts = editing?.options ?? sub.options ?? {};
+      const correct = (editing?.correct_option ?? sub.correct_option ?? "")
+        .toString()
+        .toUpperCase();
+      const options = (["a", "b", "c", "d"] as const)
+        .filter((k) => opts[k]?.trim())
+        .map((k) => ({
+          label: k.toUpperCase(),
+          text: opts[k],
+          is_correct: k.toUpperCase() === correct,
+        }));
+      payload = {
+        subject_id: selectedSubjectId,
+        question_text: editing?.question ?? sub.question,
+        question_type: "mcq",
+        marks: 1,
+        options,
+        model_answer: editing?.model_answer ?? sub.model_answer ?? "",
+        co_code: sub.co ?? undefined,
+        btl_level: sub.btl ?? undefined,
+      };
+    } else {
+      const part = q.parts?.[innerIdx];
+      if (!part) return;
+      payload = {
+        subject_id: selectedSubjectId,
+        question_text: editing?.question ?? part.question,
+        question_type: q.type,
+        marks: part.marks,
+        model_answer: editing?.model_answer ?? part.model_answer ?? "",
+        co_code: part.co ?? undefined,
+        btl_level: part.btl ?? undefined,
+      };
+    }
+
+    setSavingBankKey(key);
+    try {
+      const res = await fetch("/api/qbank/questions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      if (!res.ok) throw new Error(await res.text());
+      toast.success("Saved to your Question Bank");
+      // Reflect that the bank now has at least one question for this subject.
+      setBankCount((c) => (c == null ? 1 : c + 1));
+    } catch (err) {
+      console.error(err);
+      toast.error("Failed to save to bank");
+    } finally {
+      setSavingBankKey(null);
+    }
   };
 
   // ─── Generate answer key ───────────────────────────────────────────────
@@ -1461,6 +1663,28 @@ export default function QpaperPage() {
       toast.error("Failed to generate answer key");
     } finally {
       setIsGeneratingAnswerKey(false);
+    }
+  };
+
+  // ─── Export Word (.docx) ───────────────────────────────────────────────
+  const exportDocx = async () => {
+    if (!paper) return;
+    setIsExportingDocx(true);
+    try {
+      const res = await fetch("/api/generate/qpaper/export-docx", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ qpaper_content: paper }),
+      });
+      if (!res.ok) throw new Error(await res.text());
+      const data = (await res.json()) as { downloadUrl: string };
+      window.open(data.downloadUrl, "_blank");
+      toast.success("Word document ready");
+    } catch (err) {
+      console.error(err);
+      toast.error("Failed to export Word document");
+    } finally {
+      setIsExportingDocx(false);
     }
   };
 
@@ -1652,10 +1876,13 @@ export default function QpaperPage() {
                 <button
                   key={val}
                   type="button"
-                  onClick={() => setPyqMode(val)}
+                  onClick={() => {
+                    setFromBank(false);
+                    setPyqMode(val);
+                  }}
                   className={cn(
                     "px-3 py-1.5 transition-colors",
-                    pyqMode === val
+                    !fromBank && pyqMode === val
                       ? "bg-primary text-primary-foreground"
                       : "hover:bg-muted text-muted-foreground"
                   )}
@@ -1663,8 +1890,30 @@ export default function QpaperPage() {
                   {label}
                 </button>
               ))}
+              <button
+                type="button"
+                onClick={() => bankCount && bankCount > 0 && setFromBank(true)}
+                disabled={!bankCount || bankCount === 0}
+                title={
+                  bankCount === 0
+                    ? "No questions in bank for this subject. Generate or import first."
+                    : bankCount == null
+                      ? "Checking your question bank…"
+                      : `${bankCount} question${bankCount === 1 ? "" : "s"} in your bank`
+                }
+                className={cn(
+                  "px-3 py-1.5 transition-colors border-l",
+                  fromBank
+                    ? "bg-primary text-primary-foreground"
+                    : !bankCount || bankCount === 0
+                      ? "text-muted-foreground/40 cursor-not-allowed"
+                      : "hover:bg-muted text-muted-foreground"
+                )}
+              >
+                📚 From Q Bank
+              </button>
             </div>
-            {pyqMode === "pyq_mix" && (
+            {!fromBank && pyqMode === "pyq_mix" && (
               <div className="flex items-center gap-2 flex-1 min-w-48">
                 <input
                   type="range"
@@ -1684,8 +1933,9 @@ export default function QpaperPage() {
             )}
           </div>
           <p className="text-[10px] text-muted-foreground">
-            PYQ content is always used as a style reference. This controls
-            whether actual PYQs can be reused verbatim.
+            {fromBank
+              ? "Questions are pulled from your verified Q Bank first; any slot the bank can't fill is AI-generated and marked with a 📚 badge."
+              : "PYQ content is always used as a style reference. This controls whether actual PYQs can be reused verbatim."}
           </p>
         </div>
       </Card>
@@ -2012,6 +2262,22 @@ export default function QpaperPage() {
             Update PDF
           </Button>
         )}
+
+        {paper && (
+          <Button
+            variant="outline"
+            size="lg"
+            onClick={exportDocx}
+            disabled={isExportingDocx}
+          >
+            {isExportingDocx ? (
+              <Loader2 className="mr-2 size-4 animate-spin" />
+            ) : (
+              <FileText className="mr-2 size-4" />
+            )}
+            Download Word (.docx)
+          </Button>
+        )}
       </div>
 
       {paper && (
@@ -2070,6 +2336,15 @@ export default function QpaperPage() {
                       ) : null}
                     </div>
                     <div className="flex items-center gap-2 shrink-0">
+                      {q.from_bank && (
+                        <Badge
+                          variant="outline"
+                          className="text-[10px] border-emerald-300 bg-emerald-50 text-emerald-700"
+                          title="Sourced from your Question Bank"
+                        >
+                          📚 From Bank
+                        </Badge>
+                      )}
                       <Badge variant="secondary" className="text-[10px]">
                         [{String(q.total_marks).padStart(2, "0")}]
                       </Badge>
@@ -2091,48 +2366,139 @@ export default function QpaperPage() {
 
                   {q.sub_parts?.map((sub, si) => {
                     const k = `${sIdx}-${qIdx}-sub-${si}`;
+                    const isEditing = editingKey === k && editDraft;
                     return (
                       <div key={si} className="ml-3 space-y-1">
-                        <div className="flex items-start justify-between gap-3">
-                          {editingKey === k ? (
+                        {isEditing ? (
+                          <div className="space-y-2 border rounded p-2 bg-muted/30">
                             <Textarea
-                              value={editValue}
-                              onChange={(e) => setEditValue(e.target.value)}
-                              className="text-xs flex-1"
+                              value={editDraft.question}
+                              onChange={(e) =>
+                                setEditDraft({
+                                  ...editDraft,
+                                  question: e.target.value,
+                                })
+                              }
+                              className="text-xs"
                               rows={2}
+                              placeholder="Question text"
                             />
-                          ) : (
-                            <div className="flex-1">
-                              <span className="font-mono mr-1">
-                                {sub.label}
-                              </span>
-                              {sub.question}
+                            <div className="space-y-1">
+                              {(["a", "b", "c", "d"] as const).map((kk) => (
+                                <div
+                                  key={kk}
+                                  className="flex items-center gap-2"
+                                >
+                                  <button
+                                    type="button"
+                                    title="Mark correct option"
+                                    onClick={() =>
+                                      setEditDraft({
+                                        ...editDraft,
+                                        correct_option: kk,
+                                      })
+                                    }
+                                    className={cn(
+                                      "size-5 shrink-0 rounded-full border text-[10px] font-bold",
+                                      (editDraft.correct_option ?? "")
+                                        .toString()
+                                        .toLowerCase() === kk
+                                        ? "bg-emerald-500 text-white border-emerald-500"
+                                        : "text-muted-foreground"
+                                    )}
+                                  >
+                                    {kk.toUpperCase()}
+                                  </button>
+                                  <Input
+                                    value={editDraft.options?.[kk] ?? ""}
+                                    onChange={(e) =>
+                                      setEditDraft({
+                                        ...editDraft,
+                                        options: {
+                                          ...(editDraft.options ?? {}),
+                                          [kk]: e.target.value,
+                                        },
+                                      })
+                                    }
+                                    className="h-7 text-xs"
+                                    placeholder={`Option ${kk.toUpperCase()}`}
+                                  />
+                                </div>
+                              ))}
                             </div>
-                          )}
-                          <Button
-                            size="icon"
-                            variant="ghost"
-                            className="size-6"
-                            onClick={() =>
-                              editingKey === k
-                                ? saveEdit(sIdx, qIdx, "sub", si)
-                                : beginEdit(sIdx, qIdx, "sub", si)
-                            }
-                          >
-                            <Pencil className="size-3" />
-                          </Button>
-                        </div>
-                        {sub.options && (
-                          <div className="ml-4 grid grid-cols-2 gap-x-4 text-xs text-muted-foreground">
-                            {(["a", "b", "c", "d"] as const).map(
-                              (kk) =>
-                                sub.options?.[kk] && (
-                                  <div key={kk}>
-                                    {kk}) {sub.options[kk]}
-                                  </div>
-                                )
-                            )}
+                            <Textarea
+                              value={editDraft.model_answer}
+                              onChange={(e) =>
+                                setEditDraft({
+                                  ...editDraft,
+                                  model_answer: e.target.value,
+                                })
+                              }
+                              className="text-xs"
+                              rows={2}
+                              placeholder="Model answer (optional, used in answer key)"
+                            />
+                            <EditActions
+                              onSave={() => saveEdit(sIdx, qIdx, "sub", si)}
+                              onCancel={cancelEdit}
+                              onSaveToBank={() =>
+                                saveQuestionToBank(sIdx, qIdx, "sub", si)
+                              }
+                              savingBank={savingBankKey === k}
+                            />
                           </div>
+                        ) : (
+                          <>
+                            <div className="flex items-start justify-between gap-3">
+                              <div className="flex-1">
+                                <span className="font-mono mr-1">
+                                  {sub.label}
+                                </span>
+                                {sub.question}
+                              </div>
+                              <div className="flex items-center gap-1 shrink-0">
+                                <Button
+                                  size="icon"
+                                  variant="ghost"
+                                  className="size-6"
+                                  title="Edit"
+                                  onClick={() =>
+                                    beginEdit(sIdx, qIdx, "sub", si)
+                                  }
+                                >
+                                  <Pencil className="size-3" />
+                                </Button>
+                                <Button
+                                  size="icon"
+                                  variant="ghost"
+                                  className="size-6"
+                                  title="Save to Q Bank"
+                                  disabled={savingBankKey === k}
+                                  onClick={() =>
+                                    saveQuestionToBank(sIdx, qIdx, "sub", si)
+                                  }
+                                >
+                                  {savingBankKey === k ? (
+                                    <Loader2 className="size-3 animate-spin" />
+                                  ) : (
+                                    <Library className="size-3" />
+                                  )}
+                                </Button>
+                              </div>
+                            </div>
+                            {sub.options && (
+                              <div className="ml-4 grid grid-cols-2 gap-x-4 text-xs text-muted-foreground">
+                                {(["a", "b", "c", "d"] as const).map(
+                                  (kk) =>
+                                    sub.options?.[kk] && (
+                                      <div key={kk}>
+                                        {kk}) {sub.options[kk]}
+                                      </div>
+                                    )
+                                )}
+                              </div>
+                            )}
+                          </>
                         )}
                       </div>
                     );
@@ -2150,6 +2516,7 @@ export default function QpaperPage() {
                           .replace(/^\(/, "")
                           .replace(/\)$/, "")
                       : null;
+                    const isEditing = editingKey === k && editDraft;
                     return (
                       <div key={pi}>
                         {showOrSeparator && (
@@ -2157,15 +2524,43 @@ export default function QpaperPage() {
                             OR
                           </div>
                         )}
-                        <div className="ml-3 flex items-start justify-between gap-3">
-                          {editingKey === k ? (
+                        {isEditing ? (
+                          <div className="ml-3 space-y-2 border rounded p-2 bg-muted/30">
                             <Textarea
-                              value={editValue}
-                              onChange={(e) => setEditValue(e.target.value)}
-                              className="text-xs flex-1"
+                              value={editDraft.question}
+                              onChange={(e) =>
+                                setEditDraft({
+                                  ...editDraft,
+                                  question: e.target.value,
+                                })
+                              }
+                              className="text-xs"
                               rows={3}
+                              placeholder="Question text"
                             />
-                          ) : (
+                            <Textarea
+                              value={editDraft.model_answer}
+                              onChange={(e) =>
+                                setEditDraft({
+                                  ...editDraft,
+                                  model_answer: e.target.value,
+                                })
+                              }
+                              className="text-xs"
+                              rows={2}
+                              placeholder="Model answer (optional, used in answer key)"
+                            />
+                            <EditActions
+                              onSave={() => saveEdit(sIdx, qIdx, "part", pi)}
+                              onCancel={cancelEdit}
+                              onSaveToBank={() =>
+                                saveQuestionToBank(sIdx, qIdx, "part", pi)
+                              }
+                              savingBank={savingBankKey === k}
+                            />
+                          </div>
+                        ) : (
+                          <div className="ml-3 flex items-start justify-between gap-3">
                             <div className="flex-1">
                               {labelClean && (
                                 <span className="font-semibold mr-1">
@@ -2174,26 +2569,43 @@ export default function QpaperPage() {
                               )}
                               {part.question}
                             </div>
-                          )}
-                          <Badge
-                            variant="outline"
-                            className="text-[10px] shrink-0"
-                          >
-                            [{String(part.marks).padStart(2, "0")}]
-                          </Badge>
-                          <Button
-                            size="icon"
-                            variant="ghost"
-                            className="size-6"
-                            onClick={() =>
-                              editingKey === k
-                                ? saveEdit(sIdx, qIdx, "part", pi)
-                                : beginEdit(sIdx, qIdx, "part", pi)
-                            }
-                          >
-                            <Pencil className="size-3" />
-                          </Button>
-                        </div>
+                            <Badge
+                              variant="outline"
+                              className="text-[10px] shrink-0"
+                            >
+                              [{String(part.marks).padStart(2, "0")}]
+                            </Badge>
+                            <div className="flex items-center gap-1 shrink-0">
+                              <Button
+                                size="icon"
+                                variant="ghost"
+                                className="size-6"
+                                title="Edit"
+                                onClick={() =>
+                                  beginEdit(sIdx, qIdx, "part", pi)
+                                }
+                              >
+                                <Pencil className="size-3" />
+                              </Button>
+                              <Button
+                                size="icon"
+                                variant="ghost"
+                                className="size-6"
+                                title="Save to Q Bank"
+                                disabled={savingBankKey === k}
+                                onClick={() =>
+                                  saveQuestionToBank(sIdx, qIdx, "part", pi)
+                                }
+                              >
+                                {savingBankKey === k ? (
+                                  <Loader2 className="size-3 animate-spin" />
+                                ) : (
+                                  <Library className="size-3" />
+                                )}
+                              </Button>
+                            </div>
+                          </div>
+                        )}
                       </div>
                     );
                   })}

@@ -13,7 +13,7 @@ export async function POST(request: NextRequest) {
   try {
     console.log('[ppt-refine/refine] POST received');
 
-    const authResult = await requireRole(['faculty', 'superadmin', 'dept_admin']);
+    const authResult = await requireRole(['faculty', 'superadmin', 'dept_admin', 'dean', 'hod']);
     if (authResult instanceof Response) return authResult;
     const { user, adminClient } = authResult;
 

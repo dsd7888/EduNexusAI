@@ -4,7 +4,17 @@ import {
 } from "@/lib/db/supabase-server";
 import { type NextRequest, NextResponse } from "next/server";
 
-type UserRole = "superadmin" | "dept_admin" | "faculty" | "student";
+type UserRole =
+  | "superadmin"
+  | "dept_admin"
+  | "faculty"
+  | "student"
+  | "dean"
+  | "hod";
+
+// dean/hod are faculty-tier roles: they reach /faculty/* and faculty-tier APIs
+// (e.g. the explainer feature) but not the superadmin tier.
+const FACULTY_TIER_ROLES: UserRole[] = ["faculty", "dean", "hod"];
 
 const PUBLIC_PATHS = ["/", "/login", "/register", "/auth/callback", "/api/auth/callback"] as const;
 const SUPERADMIN_PREFIX = "/superadmin";
@@ -26,7 +36,7 @@ function isProtectedPath(pathname: string): boolean {
 
 function getDashboardForRole(role: UserRole): string {
   if (role === "superadmin" || role === "dept_admin") return "/superadmin/dashboard";
-  if (role === "faculty") return "/faculty/dashboard";
+  if (FACULTY_TIER_ROLES.includes(role)) return "/faculty/dashboard";
   if (role === "student") return "/student/dashboard";
   return "/";
 }
@@ -55,7 +65,12 @@ async function getProfileRole(userId: string): Promise<UserRole | null> {
     }
 
     const role = data?.role as UserRole | undefined;
-    if (!role || !["superadmin", "dept_admin", "faculty", "student"].includes(role)) {
+    if (
+      !role ||
+      !["superadmin", "dept_admin", "faculty", "student", "dean", "hod"].includes(
+        role
+      )
+    ) {
       return null;
     }
 
@@ -99,7 +114,8 @@ export async function proxy(request: NextRequest) {
       path.startsWith("/api/qpaper") ||
       path.startsWith("/api/refine") ||
       path.startsWith("/api/approvals") ||
-      path.startsWith("/api/faculty");
+      path.startsWith("/api/faculty") ||
+      path.startsWith("/api/explainer");
     const isSuperadminTierApi =
       path.startsWith("/api/upload") || path.startsWith("/api/admin");
 
@@ -156,8 +172,9 @@ export async function proxy(request: NextRequest) {
 
     if (isSuperadminRoute) {
       if (role !== "superadmin" && role !== "dept_admin") {
-        const dest =
-          role === "faculty" ? "/faculty/dashboard" : "/student/dashboard";
+        const dest = FACULTY_TIER_ROLES.includes(role)
+          ? "/faculty/dashboard"
+          : "/student/dashboard";
         return redirectWithCookies(
           response,
           new URL(dest, request.url).toString()
@@ -167,7 +184,7 @@ export async function proxy(request: NextRequest) {
 
     if (isFacultyRoute) {
       if (
-        role !== "faculty" &&
+        !FACULTY_TIER_ROLES.includes(role) &&
         role !== "superadmin" &&
         role !== "dept_admin"
       ) {
@@ -179,7 +196,7 @@ export async function proxy(request: NextRequest) {
     }
 
     if (isStudentRoute) {
-      if (role === "faculty") {
+      if (FACULTY_TIER_ROLES.includes(role)) {
         return redirectWithCookies(
           response,
           new URL("/faculty/dashboard", request.url).toString()

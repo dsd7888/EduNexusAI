@@ -12,6 +12,12 @@ export interface SubQuestion {
   co?: string | null;
   btl?: number | null;
   po?: string | null;
+  /** Set when this sub-part was sourced from the faculty Q Bank (vs AI). */
+  from_bank?: boolean;
+  /** Source bank question id, when from_bank. */
+  bank_id?: string;
+  /** Model answer (bank-sourced or faculty-edited); shown in answer-key exports. */
+  model_answer?: string | null;
 }
 
 export interface QuestionPart {
@@ -22,6 +28,12 @@ export interface QuestionPart {
   btl?: number | null;
   po?: string | null;
   is_or_alternative?: boolean;
+  /** Set when this part was sourced from the faculty Q Bank (vs AI). */
+  from_bank?: boolean;
+  /** Source bank question id, when from_bank. */
+  bank_id?: string;
+  /** Model answer (bank-sourced or faculty-edited); shown in answer-key exports. */
+  model_answer?: string | null;
 }
 
 export interface GeneratedQuestion {
@@ -38,6 +50,8 @@ export interface GeneratedQuestion {
   attempt_logic?: string | null;
   sub_parts?: SubQuestion[];
   parts?: QuestionPart[];
+  /** True when at least one atomic unit of this question came from the Q Bank. */
+  from_bank?: boolean;
 }
 
 export interface GeneratedSection {

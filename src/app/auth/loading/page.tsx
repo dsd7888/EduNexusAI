@@ -5,11 +5,19 @@ import { Loader2 } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useEffect } from "react";
 
-type UserRole = "superadmin" | "dept_admin" | "faculty" | "student";
+type UserRole =
+  | "superadmin"
+  | "dept_admin"
+  | "faculty"
+  | "student"
+  | "dean"
+  | "hod";
 
 function getDashboardForRole(role: UserRole): string {
   if (role === "superadmin" || role === "dept_admin") return "/superadmin/dashboard";
-  if (role === "faculty") return "/faculty/dashboard";
+  // dean/hod are faculty-tier
+  if (role === "faculty" || role === "dean" || role === "hod")
+    return "/faculty/dashboard";
   if (role === "student") return "/student/dashboard";
   return "/";
 }

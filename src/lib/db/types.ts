@@ -2,7 +2,13 @@
 // Enum-like types matching database CHECK constraints
 // ============================================================================
 
-export type UserRole = "superadmin" | "dept_admin" | "faculty" | "student";
+export type UserRole =
+  | "superadmin"
+  | "dept_admin"
+  | "faculty"
+  | "student"
+  | "dean"
+  | "hod";
 
 export type DocumentType = "syllabus" | "notes" | "pyq";
 
@@ -289,3 +295,99 @@ export type PracticeModule = {
   icon: string; // lucide icon name
   description: string;
 };
+
+// ============================================================================
+// Supabase Database interface
+// ============================================================================
+
+export interface Database {
+  public: {
+    Tables: {
+      schools: {
+        Row: {
+          id: string
+          name: string
+          short_name: string | null
+          discipline_type: 'engineering' | 'commerce' | 'science' | 'architecture' | 'management' | 'pharmacy' | 'law'
+          is_active: boolean
+          created_at: string
+          updated_at: string
+        }
+        Insert: Omit<Database['public']['Tables']['schools']['Row'], 'id' | 'created_at' | 'updated_at'>
+        Update: Partial<Database['public']['Tables']['schools']['Insert']>
+      }
+
+      student_placement_profiles: {
+        Row: {
+          id: string
+          student_id: string
+          cgpa: number | null
+          active_backlogs: number
+          history_backlogs: number
+          primary_target: 'service_it' | 'product' | 'core_engineering' | 'bfsi' | 'consulting' | 'startup'
+          dream_companies: string[]
+          open_to_relocation: boolean
+          readiness_aptitude: number
+          readiness_verbal: number
+          readiness_domain: number
+          readiness_coding: number
+          readiness_communication: number
+          readiness_overall: number
+          resume_data: import('../../types/placement').ResumeData
+          resume_completeness: number
+          prep_streak_days: number
+          last_active_date: string | null
+          setup_complete: boolean
+          created_at: string
+          updated_at: string
+        }
+        Insert: Omit<Database['public']['Tables']['student_placement_profiles']['Row'], 'id' | 'created_at' | 'updated_at'>
+        Update: Partial<Database['public']['Tables']['student_placement_profiles']['Insert']>
+      }
+
+      placement_company_profiles: {
+        Row: {
+          id: string
+          slug: string
+          name: string
+          logo_url: string | null
+          company_type: 'service_it' | 'product' | 'core_engineering' | 'bfsi' | 'consulting' | 'startup'
+          is_mass_recruiter: boolean
+          min_cgpa: number | null
+          backlogs_allowed: boolean
+          allowed_branches: string[] | null
+          oa_pattern: import('../../types/placement').OAPattern | null
+          rounds: import('../../types/placement').CompanyRound[] | null
+          avg_prep_weeks: number | null
+          difficulty_band: 'easy' | 'medium' | 'hard' | null
+          syllabus_relevance: import('../../types/placement').SyllabusRelevanceItem[] | null
+          campus_notes: string | null
+          is_active: boolean
+          display_order: number
+          created_at: string
+          updated_at: string
+        }
+        Insert: Omit<Database['public']['Tables']['placement_company_profiles']['Row'], 'id' | 'created_at' | 'updated_at'>
+        Update: Partial<Database['public']['Tables']['placement_company_profiles']['Insert']>
+      }
+
+      placement_drives: {
+        Row: {
+          id: string
+          company_id: string
+          school: string
+          drive_date: string
+          registration_deadline: string | null
+          eligible_branches: string[] | null
+          eligible_min_cgpa: number | null
+          notes: string | null
+          is_active: boolean
+          created_by: string | null
+          created_at: string
+        }
+        Insert: Omit<Database['public']['Tables']['placement_drives']['Row'], 'id' | 'created_at'>
+        Update: Partial<Database['public']['Tables']['placement_drives']['Insert']>
+      }
+    }
+  }
+}

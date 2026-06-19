@@ -4,6 +4,7 @@ import type { ChatParams, ChatResponse } from "./providers/types";
 const TASK_TO_MODEL: Record<string, "flash" | "pro"> = {
   chat: "flash",
   quiz_gen: "flash",
+  placement_prep: "flash",
   ppt_gen: "flash",
   ppt_diagram: "pro", // diagram-only PPT batches — Pro produces better SVG/diagram code
   ppt_extract: "flash",
@@ -14,6 +15,10 @@ const TASK_TO_MODEL: Record<string, "flash" | "pro"> = {
   placement_gen: "pro",
   syllabus_extract: "flash",
   pyq_extract: "flash",
+  qbank_generate: "flash",
+  qbank_tag: "flash",
+  explainer_ideate: "flash",
+  explainer_extract: "pro",
 };
 
 const DEFAULT_MODEL: "flash" | "pro" = "flash";
@@ -42,7 +47,9 @@ export async function routeAI(
             ? 32768
             : task === "quiz_gen"
               ? 8192
-              : task === "qpaper_gen"
+              : task === "placement_prep"
+                ? 6000
+                : task === "qpaper_gen"
                 ? 8192
                 : task === "answer_key_mcq"
                   ? 2048
@@ -54,7 +61,15 @@ export async function routeAI(
                         ? 8192
                         : task === "pyq_extract"
                           ? 4096
-                          : 4096),
+                          : task === "qbank_generate"
+                            ? 8192
+                            : task === "qbank_tag"
+                              ? 2048
+                              : task === "explainer_extract"
+                                ? 16384
+                                : task === "explainer_ideate"
+                                  ? 8192
+                                  : 4096),
   };
 
   const providerName =

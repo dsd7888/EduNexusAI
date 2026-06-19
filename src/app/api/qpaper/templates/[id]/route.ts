@@ -6,7 +6,7 @@ export async function DELETE(
   ctx: { params: Promise<{ id: string }> }
 ) {
   try {
-    const authResult = await requireRole(["faculty", "superadmin", "dept_admin"]);
+    const authResult = await requireRole(["faculty", "superadmin", "dept_admin", "dean", "hod"]);
     if (authResult instanceof Response) return authResult;
     const { adminClient } = authResult;
 

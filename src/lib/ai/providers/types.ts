@@ -20,6 +20,18 @@ export interface ChatParams {
   task?: string;
   /** Optional inline data parts (PDFs, images) attached to the final user message. */
   attachments?: ChatAttachment[];
+  /**
+   * Optional Gemini responseSchema (OpenAPI-subset). When set, the provider
+   * forces responseMimeType=application/json and constrains output to the
+   * schema, guaranteeing schema-conformant JSON (no parse-retry loop needed).
+   */
+  responseSchema?: object;
+  /**
+   * Optional thinking-token cap (gemini-2.5-flash). When set, overrides the
+   * isStructuredTask thinkingBudget:0 default. Use to cap (not disable) thinking
+   * for tasks that need reasoning but must leave headroom for content output.
+   */
+  thinkingBudget?: number;
 }
 
 export interface ChatResponse {

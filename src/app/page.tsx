@@ -27,6 +27,8 @@ export default async function HomePage() {
     case "dept_admin":
       redirect("/superadmin/dashboard");
     case "faculty":
+    case "dean":
+    case "hod":
       redirect("/faculty/dashboard");
     case "student":
       redirect("/student/subjects");
