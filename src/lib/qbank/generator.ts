@@ -8,6 +8,7 @@
  */
 
 import { routeAI } from "@/lib/ai/router";
+import { estimateMaxOutputTokens } from "@/lib/ai/tokenBudget";
 import type {
   Difficulty,
   GenerationSlot,
@@ -218,6 +219,10 @@ async function generateSlot(
       messages: [{ role: "user", content: prompt }],
       systemPrompt: SYSTEM_PROMPT,
       temperature: 0.6,
+      maxTokens: estimateMaxOutputTokens(
+        [{ type: slot.question_type, count: slot.count }],
+        "generation"
+      ),
     });
     const arr = parseJsonArray(String(result.content ?? ""));
     if (!arr) {

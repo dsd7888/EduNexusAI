@@ -14,7 +14,16 @@
  */
 
 import { routeAI } from "@/lib/ai/router";
-import type { TemplateSection, TemplateQuestion } from "./templates";
+import { estimateMaxOutputTokens } from "@/lib/ai/tokenBudget";
+import type { TemplateSection, TemplateQuestionBlock, TemplatePoolQuestion, PoolItem } from "./templates";
+import {
+  isPoolItemMcqLike,
+  poolItemPromptDirective,
+  poolItemSchemaFragment,
+  poolItemTokenBudgetType,
+  poolItemTypeAtIndex,
+  poolTotalItems,
+} from "./templates";
 import type {
   GeneratedQuestion,
   QuestionPart,
@@ -26,10 +35,14 @@ import {
   mcqSubSlotKey,
   orAlternativeSlotKey,
   orPrimarySlotKey,
+  type CustomBtlWeights,
+  type DifficultyPreset,
   type ModuleData,
   type QuestionSlot,
   type SlotAssignmentContext,
 } from "./moduleAssignment";
+
+export type { CustomBtlWeights, DifficultyPreset };
 
 // ─── Public input/output types (kept stable for callers) ───────────────────
 
@@ -78,6 +91,16 @@ export interface SectionGenInput {
   pyqContext?: string;
   subjectName: string;
   subjectCode: string;
+  /**
+   * Per-slot AI sourcing style, keyed by slotKey (the section-relative key that
+   * assignModulesToSlots produces). Populated from allocateSlotSources. Slots
+   * with no entry get no per-slot style directive (legacy behaviour).
+   */
+  slotStyles?: Map<string, "fresh" | "pyq_style">;
+  /** When set, biases per-slot BTL targets toward the preset's tier weights. */
+  difficultyPreset?: DifficultyPreset;
+  /** Tier weights to use when difficultyPreset === "custom". */
+  customBtlWeights?: CustomBtlWeights | null;
 }
 
 export interface SectionGenResult {
@@ -130,17 +153,18 @@ function summariseCoPoTable(mapping: CoPoMappingInfo[]): string {
 
 function buildSlotsBlock(
   slots: QuestionSlot[],
-  templates: TemplateQuestion[]
+  templates: TemplateQuestionBlock[]
 ): string {
   if (slots.length === 0) return "(empty section — no slots)";
 
-  // Per-type instruction shown right under the display label. Slots inherit
-  // their parent question's type — derive it by parsing the section-relative
-  // q-number out of the slot key and indexing into `templates`. Q2 and Q4
-  // both look like `Q\d+` so key pattern alone can't distinguish descriptive
-  // from attempt_any_one; the templates lookup is the source of truth.
-  const formatLineFor = (slotKey: string): string => {
-    const match = /^Q(\d+)/.exec(slotKey);
+  // Per-type instruction shown right under the display label. Pool sub-slots
+  // carry an explicit poolItemType from module assignment; other slots inherit
+  // their parent question's type via the section-relative q-number index.
+  const formatLineFor = (slot: QuestionSlot): string => {
+    if (slot.poolItemType) {
+      return `  Pool item type (mandatory): "${slot.poolItemType}" — ${poolItemPromptDirective(slot.poolItemType)}`;
+    }
+    const match = /^Q(\d+)/.exec(slot.slotKey);
     if (!match) return "";
     const idx = Number(match[1]) - 1;
     const tpl = templates[idx];
@@ -154,14 +178,24 @@ function buildSlotsBlock(
         return "  Question format: descriptive_with_or — generate the main (a)+(b) pair AND a complete OR alternative (a)+(b) pair";
       case "attempt_any_one":
         return "  Question format: attempt_any_one — output exactly TWO independent standalone questions as options (i) and (ii). Print 'Attempt any one.' as the instruction. Use the attempt_any_one schema from Part G. A single question with internal sub-parts is WRONG for this format.";
+      case "pool":
+        return "  Question format: pool — contributes to the parent pool block's items[] array (see pool_composition and Part G).";
       default:
         return "";
     }
   };
 
+  const styleLineFor = (s: QuestionSlot): string => {
+    if (!s.style) return "";
+    return s.style === "pyq_style"
+      ? "  Sourcing style: PYQ-style — mirror the phrasing, framing, and structure of the PYQ reference questions (new data/values, never verbatim)"
+      : "  Sourcing style: Fresh — original framing; no need to echo PYQ phrasing";
+  };
+
   return slots
     .map((s) => {
-      const formatLine = formatLineFor(s.slotKey);
+      const formatLine = formatLineFor(s);
+      const styleLine = styleLineFor(s);
       return `
 Slot: ${s.slotKey}
   Display label: ${s.display}
@@ -172,9 +206,82 @@ ${formatLine}
   Target BTL range for this question type: ${s.targetBtlRange[0]}–${s.targetBtlRange[1]}
   Relevant Course Outcomes: ${s.cos.length > 0 ? s.cos.join(", ") : "(any)"}
   Relevant Program Outcomes: ${s.pos.length > 0 ? s.pos.join(", ") : "(any)"}
-`;
+${styleLine}`;
     })
     .join("");
+}
+
+/** Explicit per-block pool composition plan injected into the prompt. */
+function buildPoolCompositionBlock(
+  templates: TemplateQuestionBlock[]
+): string {
+  const lines: string[] = [];
+  templates.forEach((t, qIdx) => {
+    if (t.type !== "pool") return;
+    const sectionQNum = qIdx + 1;
+    const n = poolTotalItems(t.composition);
+    const instruction =
+      t.instruction?.trim() ||
+      `Attempt any ${t.attemptCount} of the following ${n} questions.`;
+    lines.push(
+      `Block Q${sectionQNum} (${t.display_label}): POOL — ${instruction}`,
+      `  Marks: ${t.marksPerItem} per item × attempt ${t.attemptCount} = ${t.total_marks} total`,
+      `  Emit ONE JSON object with "slotKey": "Q${sectionQNum}", "type": "pool", and exactly ${n} entries in items[].`,
+      `  Each items[] entry MUST match its slotKey and itemType exactly:`
+    );
+    let idx = 0;
+    for (const row of t.composition) {
+      for (let c = 0; c < row.count; c++) {
+        const slotKey = mcqSubSlotKey(sectionQNum, idx);
+        const label = `(${ROMAN[idx] ?? idx + 1})`;
+        lines.push(
+          `    ${slotKey} ${label}: itemType="${row.itemType}" — ${poolItemPromptDirective(row.itemType)}`
+        );
+        idx++;
+      }
+    }
+  });
+  if (lines.length === 0) return "";
+  return `<pool_composition>
+${lines.join("\n")}
+</pool_composition>`;
+}
+
+function buildPoolSchemaForQuestion(
+  tpl: TemplatePoolQuestion,
+  sectionQNum: number
+): string {
+  const n = poolTotalItems(tpl.composition);
+  const instruction =
+    tpl.instruction?.trim() ||
+    `Attempt any ${tpl.attemptCount} of the following ${n} questions.`;
+  const itemFragments: string[] = [];
+  let idx = 0;
+  for (const row of tpl.composition) {
+    for (let c = 0; c < row.count; c++) {
+      itemFragments.push(
+        poolItemSchemaFragment(
+          row.itemType,
+          mcqSubSlotKey(sectionQNum, idx),
+          `(${ROMAN[idx] ?? idx + 1})`,
+          tpl.marksPerItem
+        )
+      );
+      idx++;
+    }
+  }
+  return `For pool block Q${sectionQNum} (${tpl.display_label}) — attempt any ${tpl.attemptCount} of ${n}:
+{
+  "slotKey": "Q${sectionQNum}",
+  "type": "pool",
+  "display_label": ${JSON.stringify(tpl.display_label)},
+  "instruction": ${JSON.stringify(instruction)},
+  "total_marks": ${tpl.total_marks},
+  "items": [
+    ${itemFragments.join(",\n    ")}
+  ]
+}
+CRITICAL: Each items[] entry MUST use the exact itemType and slotKey shown. Descriptive pool items (short, long, numerical, fill_blank) must NOT include options or correct_option.`;
 }
 
 function buildModuleBlock(modules: ModuleInfo[]): string {
@@ -217,25 +324,30 @@ ${q.question_text}${optsLine}`;
 
 function buildOutputSchemaBlock(
   slots: QuestionSlot[],
-  templates: TemplateQuestion[]
+  templates: TemplateQuestionBlock[]
 ): string {
-  // Detection iterates EVERY template question passed in — never just the
-  // first. The function is called once per section, so `templates` is the
-  // section's question list; we union the types across all of it AND
-  // unconditionally include each of the four standard shapes the PPSU
-  // structure can ever use. This guarantees Section II's Q4 schema is
-  // present even if a future caller passes a partial templates list, and
-  // matches what the AI is told to emit for any section the paper contains.
   const typesPresent = new Set<string>();
   for (const t of templates) {
     if (t && typeof t.type === "string") typesPresent.add(t.type);
   }
-  void slots; // signature kept for future per-slot tuning
-  void typesPresent; // computed for diagnostic clarity; schemas below are unconditional
+  void slots;
 
   const blocks: string[] = [];
+  const questionBlockCount = templates.length;
 
-  blocks.push(`For MCQ (sub-parts):
+  if (typesPresent.has("pool")) {
+    templates.forEach((t, i) => {
+      if (t.type === "pool") {
+        blocks.push(buildPoolSchemaForQuestion(t, i + 1));
+      }
+    });
+    blocks.push(
+      `Pool output rule: emit ONE parent object per pool question block. The top-level JSON array for this section has ${questionBlockCount} element(s) — one per question block — NOT one element per atomic slot (${slots.length} slot(s) in Part B).`
+    );
+  }
+
+  if (typesPresent.has("mcq")) {
+    blocks.push(`For MCQ (sub-parts):
 {
   "slotKey": "Q1",
   "type": "mcq",
@@ -256,8 +368,10 @@ function buildOutputSchemaBlock(
     }
   ]
 }`);
+  }
 
-  blocks.push(`For descriptive / numerical (single part):
+  if (typesPresent.has("descriptive")) {
+    blocks.push(`For descriptive / numerical (single part):
 {
   "slotKey": "Q2",
   "type": "descriptive",
@@ -268,8 +382,10 @@ function buildOutputSchemaBlock(
   "btl": <integer 1-6>,
   "po": "<po code>"
 }`);
+  }
 
-  blocks.push(`For descriptive with OR (Q-3 style):
+  if (typesPresent.has("descriptive_with_or")) {
+    blocks.push(`For descriptive with OR (Q-3 style):
 {
   "slotKey": "Q3",
   "type": "descriptive_with_or",
@@ -283,8 +399,10 @@ function buildOutputSchemaBlock(
     { "slotKey": "Q3b_or", "label": "(b)", "question_text": string, "marks": <number>, "co": "<>", "btl": <>, "po": "<>" }
   ]
 }`);
+  }
 
-  blocks.push(`For attempt-any-one (Q-4 style):
+  if (typesPresent.has("attempt_any_one")) {
+    blocks.push(`For attempt-any-one (Q-4 style):
 {
   "slotKey": "Q4",
   "type": "attempt_any_one",
@@ -295,6 +413,7 @@ function buildOutputSchemaBlock(
     { "label": "(ii)", "question_text": string, "marks": <number>, "co": "<co code>", "btl": <integer 1-6>, "po": "<po code>" }
   ]
 }`);
+  }
 
   return blocks.join("\n\n");
 }
@@ -316,18 +435,26 @@ function buildUserPrompt(input: SectionGenInput, slots: QuestionSlot[]): string 
     slots,
     input.sectionTemplate.questions
   );
+  const poolCompositionBlock = buildPoolCompositionBlock(
+    input.sectionTemplate.questions
+  );
+  const hasStyleTags = slots.some((s) => s.style != null);
+  const questionBlockCount = input.sectionTemplate.questions.length;
+  const hasPool = input.sectionTemplate.questions.some((t) => t.type === "pool");
 
   // PART A — EXAMINATION CONTEXT
   const partA = `<examination_context>
 Section: ${sectionName}
 Total marks for this section: ${sectionMarks}
-Number of question slots to generate: ${slots.length}
+Question blocks in this section: ${questionBlockCount}
+Atomic slots (module assignments in Part B): ${slots.length}
+${hasPool ? "Pool blocks: each pool block produces ONE JSON object with an items[] array — not one object per sub-slot." : ""}
 </examination_context>`;
 
   // PART B — MODULE-TO-QUESTION ASSIGNMENT
   const partB = `<module_question_assignment>
 MANDATORY: The following assignment is derived from the official syllabus weightage. Generate questions ONLY from the assigned module for each slot. Deviation from this assignment produces an invalid examination paper that will be rejected by the examination committee.
-${slotsBlock}
+${poolCompositionBlock ? `${poolCompositionBlock}\n` : ""}${slotsBlock}
 Before finalising output: verify every question's slot key matches its assigned module. A question about Module 3 content must not appear in a slot assigned to Module 1.
 </module_question_assignment>`;
 
@@ -405,7 +532,13 @@ The following are actual questions from previous year examinations for this subj
 
 ${pyqExamples}
 
-APPLY this style to all generated questions.
+${
+  hasStyleTags
+    ? `Each slot above carries a "Sourcing style" tag — honor it per slot:
+- PYQ-style slots: closely mirror the phrasing, framing, and structure of the PYQ examples above (same style and difficulty), but with new data/values and a different specific problem. Never reproduce a PYQ verbatim.
+- Fresh slots: write the question with original framing and phrasing; you need not echo the PYQ style for these slots. All factual-accuracy and module/CO/BTL constraints still apply.`
+    : `APPLY this style to all generated questions.`
+}
 DO NOT reuse the exact data values, arrays, or problem instances from the PYQ examples above. Generate NEW problems with DIFFERENT data that follows the same pattern and difficulty.
 </pyq_style_reference>`;
 
@@ -502,7 +635,7 @@ PO values: number string, zero-padded to 2 digits (e.g., "01", "03")
 correct_option: present in the JSON but NEVER printed in the PDF.
 </output_format>
 
-Generate all ${slots.length} question slots for ${sectionName}.`;
+Generate ${questionBlockCount} question block(s) for ${sectionName}${hasPool ? " (pool blocks: one parent object each, with all sub-slots in items[])" : ""}.`;
 
   return [partA, partB, partC, partD, partE, partF, partG].join("\n\n");
 }
@@ -556,6 +689,7 @@ function parseQuestionArray(raw: string): unknown[] | null {
 interface RawSubPart {
   slotKey?: string;
   label?: string;
+  itemType?: string;
   question_text?: string;
   question?: string;
   options?: Record<string, string>;
@@ -564,6 +698,7 @@ interface RawSubPart {
   co?: string | number;
   btl?: number | string;
   po?: string | number;
+  model_answer?: string | null;
 }
 
 interface RawQuestion {
@@ -581,6 +716,7 @@ interface RawQuestion {
   main?: RawSubPart[];
   or_alternative?: RawSubPart[];
   options?: RawSubPart[];
+  items?: RawSubPart[];
 }
 
 function toStr(v: unknown): string | null {
@@ -630,12 +766,70 @@ function buildPart(
   };
 }
 
+function normalizePoolItems(
+  rawItems: RawSubPart[],
+  sectionQNum: number,
+  template: TemplatePoolQuestion
+): RawSubPart[] {
+  const expectedCount = poolTotalItems(template.composition);
+  const bySlotKey = new Map<string, RawSubPart>();
+  for (const item of rawItems) {
+    const key = item.slotKey ? String(item.slotKey).trim() : "";
+    if (key) bySlotKey.set(key, item);
+  }
+  const normalized: RawSubPart[] = [];
+  for (let i = 0; i < expectedCount; i++) {
+    const slotKey = mcqSubSlotKey(sectionQNum, i);
+    normalized.push(bySlotKey.get(slotKey) ?? rawItems[i] ?? {});
+  }
+  return normalized;
+}
+
+function buildPoolItem(
+  raw: RawSubPart,
+  idx: number,
+  template: TemplatePoolQuestion
+): PoolItem {
+  // Template composition is authoritative — AI itemType hints are ignored.
+  const itemType = poolItemTypeAtIndex(template.composition, idx);
+  const question_text = String(raw.question_text ?? raw.question ?? "");
+  let options =
+    raw.options && typeof raw.options === "object" ? raw.options : undefined;
+  if (isPoolItemMcqLike(itemType)) {
+    if (itemType === "true_false") {
+      options = { a: "True", b: "False" };
+    } else if (options) {
+      const a = String(options.a ?? "").trim();
+      const b = String(options.b ?? "").trim();
+      const c = String(options.c ?? "").trim();
+      const d = String(options.d ?? "").trim();
+      if (a && b && c && d) {
+        options = { a, b, c, d };
+      }
+    }
+  } else {
+    options = undefined;
+  }
+  return {
+    itemType,
+    question_text,
+    options,
+    model_answer: raw.model_answer != null ? String(raw.model_answer) : null,
+    co: toStr(raw.co),
+    btl: toInt(raw.btl),
+    po: toStr(raw.po),
+  };
+}
+
 function convertOne(
   raw: RawQuestion,
-  template: TemplateQuestion
+  template: TemplateQuestionBlock,
+  sectionQNum: number
 ): GeneratedQuestion {
   const type =
-    (raw.type ?? template.type ?? "descriptive").toString().toLowerCase();
+    template.type === "pool"
+      ? "pool"
+      : (raw.type ?? template.type ?? "descriptive").toString().toLowerCase();
 
   const out: GeneratedQuestion = {
     q_number: template.q_number,
@@ -668,6 +862,25 @@ function convertOne(
     return out;
   }
 
+  if (type === "pool") {
+    const tpl = template.type === "pool" ? template : null;
+    const rawItems = Array.isArray(raw.items) ? raw.items : [];
+    if (tpl) {
+      const normalized = normalizePoolItems(rawItems, sectionQNum, tpl);
+      out.items = normalized.map((s, i) => buildPoolItem(s, i, tpl));
+      out.type = "pool";
+      out.instruction =
+        typeof raw.instruction === "string" && raw.instruction.trim()
+          ? raw.instruction.trim()
+          : tpl.instruction ??
+            `Attempt any ${tpl.attemptCount} of the following ${poolTotalItems(tpl.composition)} questions.`;
+      out.total_marks = tpl.total_marks;
+      out.attempt_logic =
+        tpl.attemptCount === 1 ? "any_one" : `any_${tpl.attemptCount}`;
+    }
+    return out;
+  }
+
   if (type === "attempt_any_one") {
     const options = Array.isArray(raw.options) ? raw.options : [];
     out.parts = options.map((p, i) => buildPart(p, i, false, false));
@@ -691,7 +904,7 @@ function convertOne(
 
 function convertResponse(
   rawArr: unknown[],
-  templates: TemplateQuestion[]
+  templates: TemplateQuestionBlock[]
 ): GeneratedQuestion[] {
   return templates.map((t, i) => {
     // Slot keys are section-relative (Q1..Q4) — index, not template.q_number,
@@ -702,7 +915,7 @@ function convertResponse(
       const obj = r as RawQuestion;
       return obj.slotKey === `Q${sectionQNum}`;
     }) ?? rawArr[i] ?? {}) as RawQuestion;
-    return convertOne(match, t);
+    return convertOne(match, t, sectionQNum);
   });
 }
 
@@ -717,7 +930,7 @@ interface PartLookup {
 
 function gatherParts(
   questions: GeneratedQuestion[],
-  templates: TemplateQuestion[]
+  templates: TemplateQuestionBlock[]
 ): PartLookup[] {
   const out: PartLookup[] = [];
   questions.forEach((q, qi) => {
@@ -771,6 +984,17 @@ function gatherParts(
       });
       return;
     }
+    if (q.type === "pool") {
+      (q.items ?? []).forEach((item, i) => {
+        out.push({
+          slotKey: mcqSubSlotKey(sectionQNum, i),
+          btl: item.btl ?? null,
+          co: item.co ?? null,
+          po: item.po ?? null,
+        });
+      });
+      return;
+    }
     // descriptive
     const head = q.parts?.[0];
     out.push({
@@ -806,7 +1030,7 @@ function normalizeCoCode(co: string): string {
 export function validateGeneratedSection(
   questions: GeneratedQuestion[],
   slots: QuestionSlot[],
-  templates: TemplateQuestion[],
+  templates: TemplateQuestionBlock[],
   validCoCodes: string[]
 ): ValidationResult {
   const errors: string[] = [];
@@ -836,6 +1060,51 @@ export function validateGeneratedSection(
     }
   }
 
+  questions.forEach((q, qi) => {
+    const t = templates[qi];
+    if (!t || t.type !== "pool" || q.type !== "pool") return;
+    const sectionQNum = qi + 1;
+    const expectedCount = poolTotalItems(t.composition);
+    const items = q.items ?? [];
+    if (items.length !== expectedCount) {
+      errors.push(
+        `Pool Q${sectionQNum}: expected ${expectedCount} items, got ${items.length}`
+      );
+    }
+    items.forEach((item, i) => {
+      const slotKey = mcqSubSlotKey(sectionQNum, i);
+      const expectedType = poolItemTypeAtIndex(t.composition, i);
+      if (item.itemType !== expectedType) {
+        errors.push(
+          `Pool item type mismatch in ${slotKey}: expected "${expectedType}", got "${item.itemType}"`
+        );
+      }
+      if (isPoolItemMcqLike(expectedType)) {
+        if (!item.options) {
+          warnings.push(`${slotKey}: ${expectedType} item missing options`);
+        } else if (expectedType === "true_false") {
+          const keys = Object.keys(item.options).sort().join(",");
+          if (keys !== "a,b") {
+            warnings.push(
+              `${slotKey}: true_false options should be a/b only, got ${keys}`
+            );
+          }
+        } else if (
+          !item.options.a ||
+          !item.options.b ||
+          !item.options.c ||
+          !item.options.d
+        ) {
+          warnings.push(`${slotKey}: mcq item missing one or more options a–d`);
+        }
+      } else if (item.options && Object.keys(item.options).length > 0) {
+        warnings.push(
+          `${slotKey}: ${expectedType} item must not have options`
+        );
+      }
+    });
+  });
+
   return { valid: errors.length === 0, errors, warnings };
 }
 
@@ -843,7 +1112,9 @@ export function validateGeneratedSection(
 
 function buildSlotCtx(
   courseOutcomes: CourseOutcomeInfo[],
-  coPoMapping: CoPoMappingInfo[]
+  coPoMapping: CoPoMappingInfo[],
+  difficultyPreset?: DifficultyPreset,
+  customBtlWeights?: CustomBtlWeights | null
 ): SlotAssignmentContext {
   const coPoMap = new Map<string, Array<{ po_code: string; strength: number }>>();
   for (const m of coPoMapping) {
@@ -854,6 +1125,8 @@ function buildSlotCtx(
   return {
     coPoMap,
     allCoCodes: courseOutcomes.map((c) => c.co_code),
+    difficultyPreset,
+    customBtlWeights,
   };
 }
 
@@ -868,13 +1141,58 @@ function modulesToData(modules: ModuleInfo[]): ModuleData[] {
   }));
 }
 
-async function callPro(prompt: string): Promise<string> {
+/**
+ * Public access to the same deterministic slot→module assignment that
+ * `generateSection` computes internally. Callers (e.g. the qpaper route) use
+ * this to build per-slot bank targets that line up exactly with what the AI is
+ * told to generate. Pure + deterministic, so calling it again yields the same
+ * assignment the section generation will use.
+ */
+export function buildSectionSlotsAssignment(
+  modulesInSection: ModuleInfo[],
+  sectionTemplate: TemplateSection,
+  courseOutcomes: CourseOutcomeInfo[],
+  coPoMapping: CoPoMappingInfo[],
+  difficultyPreset?: DifficultyPreset,
+  customBtlWeights?: CustomBtlWeights | null
+): QuestionSlot[] {
+  return assignModulesToSlots(
+    modulesToData(modulesInSection),
+    sectionTemplate,
+    buildSlotCtx(courseOutcomes, coPoMapping, difficultyPreset, customBtlWeights)
+  );
+}
+
+function buildSectionSlots(
+  templates: TemplateQuestionBlock[]
+): { type: string; count: number }[] {
+  const out: { type: string; count: number }[] = [];
+  for (const t of templates) {
+    if (t.type === "mcq") {
+      out.push({ type: "mcq", count: t.sub_parts ?? 0 });
+    } else if (t.type === "attempt_any_one") {
+      out.push({ type: "descriptive", count: t.sub_parts ?? 2 });
+    } else if (t.type === "pool") {
+      for (const row of t.composition) {
+        out.push({
+          type: poolItemTokenBudgetType(row.itemType),
+          count: row.count,
+        });
+      }
+    } else {
+      out.push({ type: t.type, count: 1 });
+    }
+  }
+  return out;
+}
+
+async function callPro(prompt: string, maxTokens: number): Promise<string> {
   const result = await routeAI("qpaper_gen", {
     model: "pro",
     messages: [{ role: "user", content: prompt }],
     systemPrompt: SYSTEM_PROMPT,
     temperature: 0.4,
-    maxTokens: 8192,
+    maxTokens,
   });
   return String(result.content ?? "");
 }
@@ -885,17 +1203,33 @@ export async function generateSection(
   const slots = assignModulesToSlots(
     modulesToData(input.modulesInSection),
     input.sectionTemplate,
-    buildSlotCtx(input.courseOutcomes, input.coPoMapping)
+    buildSlotCtx(
+      input.courseOutcomes,
+      input.coPoMapping,
+      input.difficultyPreset,
+      input.customBtlWeights
+    )
   );
+  if (input.slotStyles && input.slotStyles.size > 0) {
+    for (const s of slots) {
+      const st = input.slotStyles.get(s.slotKey);
+      if (st) s.style = st;
+    }
+  }
   const templates = input.sectionTemplate.questions;
   const validCoCodes = input.courseOutcomes.map((c) => c.co_code);
+
+  const sectionBudget = estimateMaxOutputTokens(
+    buildSectionSlots(templates),
+    "generation"
+  );
 
   const attempt = async (label: string) => {
     const prompt = buildUserPrompt(input, slots);
     console.log(
-      `[generateSection] ${input.sectionName} ${label} promptChars=${prompt.length} slots=${slots.length}`
+      `[generateSection] ${input.sectionName} ${label} promptChars=${prompt.length} slots=${slots.length} maxTokens=${sectionBudget}`
     );
-    const raw = await callPro(prompt);
+    const raw = await callPro(prompt, sectionBudget);
     const arr = parseQuestionArray(raw);
     if (!arr || arr.length === 0) {
       console.error(
@@ -978,14 +1312,18 @@ function normalisePart(raw: Record<string, unknown>): Record<string, unknown> {
 
 export function normaliseQuestion(
   raw: unknown,
-  template: TemplateQuestion
+  template: TemplateQuestionBlock
 ): GeneratedQuestion {
   const row = (raw && typeof raw === "object" ? raw : {}) as Record<
     string,
     unknown
   >;
   const type =
-    typeof row.type === "string" && row.type ? row.type : template.type;
+    template.type === "pool"
+      ? "pool"
+      : typeof row.type === "string" && row.type
+        ? row.type
+        : template.type;
   const out: GeneratedQuestion = {
     q_number: Number(row.q_number ?? template.q_number),
     display_label: template.display_label,
@@ -1008,6 +1346,20 @@ export function normaliseQuestion(
         i
       )
     ) as unknown as GeneratedQuestion["sub_parts"];
+  } else if (type === "pool" && template.type === "pool") {
+    const rawItems = Array.isArray(row.items) ? row.items : [];
+    const sectionQNum = template.q_number;
+    const normalized = normalizePoolItems(
+      rawItems as RawSubPart[],
+      sectionQNum,
+      template
+    );
+    out.items = normalized.map((s, i) => buildPoolItem(s, i, template));
+    out.attempt_logic =
+      template.attemptCount === 1
+        ? "any_one"
+        : `any_${template.attemptCount}`;
+    out.total_marks = template.total_marks;
   } else {
     const parts = Array.isArray(row.parts) ? row.parts : [];
     out.parts = parts.map((p) =>

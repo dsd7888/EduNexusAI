@@ -20,6 +20,7 @@ import {
   Trash2,
   X,
 } from "lucide-react";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -44,6 +45,7 @@ import {
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
 import { cn } from "@/lib/utils";
+import { RichQuestionText } from "@/components/RichQuestionText";
 import { toast } from "sonner";
 import type { BankQuestion, MCQOption } from "@/lib/qbank/types";
 import {
@@ -96,12 +98,16 @@ export function BankQuestionCard({
   onDeleted,
   onStage,
   isStaged,
+  isSelected,
+  onToggleSelect,
 }: {
   question: BankQuestion;
   onUpdated: (q: BankQuestion) => void;
   onDeleted: (id: string) => void;
   onStage?: (q: BankQuestion) => void;
   isStaged?: boolean;
+  isSelected?: boolean;
+  onToggleSelect?: (id: string) => void;
 }) {
   const q = question;
   const [editing, setEditing] = useState(false);
@@ -308,7 +314,17 @@ export function BankQuestionCard({
 
   // ── Read mode ──────────────────────────────────────────────────────────
   return (
-    <Card className="p-3 space-y-2">
+    <Card className={cn("p-3 space-y-2", isSelected && "ring-1 ring-primary/50")}>
+      <div className="flex items-start gap-2">
+        {onToggleSelect && (
+          <Checkbox
+            checked={isSelected ?? false}
+            onCheckedChange={() => onToggleSelect(question.id)}
+            className="mt-0.5 shrink-0"
+            aria-label="Select question"
+          />
+        )}
+      <div className="flex-1 space-y-2">
       <div className="flex flex-wrap items-center gap-1.5">
         <Badge variant="secondary" className="text-[10px]">
           {TYPE_LABELS[q.question_type]}
@@ -345,7 +361,7 @@ export function BankQuestionCard({
         )}
       </div>
 
-      <div className="text-sm">{q.question_text}</div>
+      <RichQuestionText text={q.question_text} className="text-sm" />
 
       {q.question_type === "mcq" && q.options && q.options.length > 0 && (
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-0.5 text-xs text-muted-foreground">
@@ -381,8 +397,8 @@ export function BankQuestionCard({
         </button>
       )}
       {expanded && q.model_answer && (
-        <div className="text-xs text-muted-foreground border-l-2 border-emerald-500/40 pl-2 whitespace-pre-wrap">
-          {q.model_answer}
+        <div className="text-xs text-muted-foreground border-l-2 border-emerald-500/40 pl-2">
+          <RichQuestionText text={q.model_answer} />
         </div>
       )}
 
@@ -435,6 +451,8 @@ export function BankQuestionCard({
           </AlertDialogContent>
         </AlertDialog>
       </div>
+      </div>{/* flex-1 space-y-2 */}
+      </div>{/* flex items-start gap-2 */}
     </Card>
   );
 }

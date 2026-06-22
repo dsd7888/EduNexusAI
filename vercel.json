@@ -3,7 +3,7 @@
     "src/app/api/generate/ppt/outline/route.ts": { "maxDuration": 60 },
     "src/app/api/generate/ppt/batch/route.ts": { "maxDuration": 60 },
     "src/app/api/generate/ppt/build/route.ts": { "maxDuration": 60 },
-    "src/app/api/generate/qpaper/route.ts": { "maxDuration": 60 },
+    "src/app/api/generate/qpaper/route.ts": { "maxDuration": 120 },
     "src/app/api/generate/qpaper/regenerate-question/route.ts": { "maxDuration": 30 },
     "src/app/api/generate/qpaper/export/route.ts": { "maxDuration": 30 },
     "src/app/api/generate/qpaper/export-docx/route.ts": { "maxDuration": 60 },

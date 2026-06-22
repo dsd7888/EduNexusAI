@@ -49,7 +49,11 @@ export async function POST(request: NextRequest) {
       return apiError("Failed to create download link", 500);
     }
 
-    return Response.json({ success: true, downloadUrl: signed.signedUrl });
+    return Response.json({
+      success: true,
+      downloadUrl: signed.signedUrl,
+      filePath,
+    });
   } catch (err) {
     console.error("[qpaper/export-docx] error:", err);
     return apiError(

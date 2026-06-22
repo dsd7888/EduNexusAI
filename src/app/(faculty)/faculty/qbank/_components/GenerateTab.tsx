@@ -50,7 +50,7 @@ import {
   type ModuleRef,
 } from "./shared";
 
-const MAX_TOTAL = 60;
+const MAX_TOTAL = 150;
 const MARK_OPTIONS = [1, 2, 3, 4, 5, 6, 7, 8, 10];
 
 interface SlotRow {
@@ -418,6 +418,11 @@ export function GenerateTab({
           {total === 1 ? "" : "s"} total
           {overLimit && ` — over the ${MAX_TOTAL} limit`}
         </div>
+        {total > 60 && !overLimit && (
+          <p className="text-xs text-muted-foreground">
+            Larger batches may take longer to generate.
+          </p>
+        )}
 
         <div className="flex flex-col gap-1.5 pt-1">
           <label className="flex items-center gap-2 text-xs cursor-pointer">

@@ -6,6 +6,7 @@ import Link from "next/link";
 import { Check, X, ChevronDown, ChevronRight, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import { RichQuestionText } from "@/components/RichQuestionText";
 import type {
   PlacementBankQuestion,
   PlacementTopicMastery,
@@ -846,9 +847,10 @@ function PracticeInner() {
                   {isOpen && (
                     <div className="space-y-3 border-t border-gray-100 px-4 py-3 text-sm">
                       {/* Full question text */}
-                      <p className="font-medium leading-relaxed text-gray-900">
-                        {qq.question_text}
-                      </p>
+                      <RichQuestionText
+                        text={qq.question_text}
+                        className="font-medium leading-relaxed text-gray-900"
+                      />
 
                       {/* fill_code: show code block with blank */}
                       {qq.question_type === "fill_code" && qq.code_context && (
@@ -1034,9 +1036,10 @@ function PracticeInner() {
         {q.question_type === "fill_code" && q.code_context ? (
           <>
             {/* Context */}
-            <p className="text-base font-medium leading-relaxed text-gray-900">
-              {q.question_text}
-            </p>
+            <RichQuestionText
+              text={q.question_text}
+              className="text-base font-medium leading-relaxed text-gray-900"
+            />
 
             {/* Code block with blank */}
             <div className="mt-4 rounded-xl bg-gray-900 p-4 font-mono text-sm text-gray-100">
@@ -1082,9 +1085,10 @@ function PracticeInner() {
         ) : (
           <>
             {/* Question text */}
-            <p className="text-base font-medium leading-relaxed text-gray-900">
-              {q.question_text}
-            </p>
+            <RichQuestionText
+              text={q.question_text}
+              className="text-base font-medium leading-relaxed text-gray-900"
+            />
 
             {/* Options */}
             <div className="mt-4 space-y-2">

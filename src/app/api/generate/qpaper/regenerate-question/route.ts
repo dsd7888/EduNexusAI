@@ -23,6 +23,11 @@ export async function POST(request: NextRequest) {
       | { courseOutcomes?: Array<{ co_code: string; description: string }> }
       | undefined;
     const avoidText = String(body.question_context ?? "");
+    // Optional retag target (e.g. from a tag-validation "Regenerate instead"):
+    // steer the new question toward a specific CO/BTL.
+    const targetTags = body.target_tags as
+      | { co?: string | number | null; btl?: number | null }
+      | undefined;
 
     if (!templateQuestion) {
       return apiError("template_question is required", 400);
@@ -41,6 +46,28 @@ export async function POST(request: NextRequest) {
       (coPoData?.courseOutcomes ?? [])
         .map((c) => `${c.co_code}: ${c.description}`)
         .join("\n") || "(no CO data)";
+
+    const coTarget =
+      targetTags?.co != null && String(targetTags.co).trim()
+        ? String(targetTags.co).trim()
+        : null;
+    const btlTarget =
+      typeof targetTags?.btl === "number" &&
+      Number.isInteger(targetTags.btl) &&
+      targetTags.btl >= 1 &&
+      targetTags.btl <= 6
+        ? targetTags.btl
+        : null;
+    const targetBlock =
+      coTarget || btlTarget
+        ? `\n\n<target_tags>
+Tag this question${coTarget ? ` to ${coTarget}` : ""}${
+            coTarget && btlTarget ? " and" : ""
+          }${btlTarget ? ` at BTL ${btlTarget}` : ""}. Crucially, the question's
+actual subject matter and cognitive demand must GENUINELY match these tags — do
+not just relabel; write content that truly fits.
+</target_tags>`
+        : "";
 
     const prompt = `Regenerate ONE question matching this template entry:
 
@@ -63,7 +90,7 @@ ${pyqContext || "(no PYQ context)"}
 <avoid>
 Do NOT repeat the previous question text below. Generate a genuinely different question on a related topic within this section's modules.
 ${avoidText.slice(0, 1500)}
-</avoid>
+</avoid>${targetBlock}
 
 Output a SINGLE JSON object (not an array) with the same structure as the template type. For "mcq": use "sub_parts" (6 entries). For all other types: use "parts". Assign CO (number only), BTL (1-6) and PO (number) to each sub_part/part. No markdown, no prose.`;
 

@@ -119,11 +119,9 @@ export interface ListResponse {
   total_pages: number;
 }
 
-export async function listQuestions(params: ListParams): Promise<ListResponse> {
+function buildFilterParams(params: Partial<BankFilters> & { subject_id: string }): URLSearchParams {
   const sp = new URLSearchParams();
   sp.set("subject_id", params.subject_id);
-  if (params.page) sp.set("page", String(params.page));
-  sp.set("per_page", String(params.per_page ?? 50));
   if (params.question_type) sp.set("question_type", params.question_type);
   if (params.marks) sp.set("marks", params.marks);
   if (params.co_code) sp.set("co_code", params.co_code);
@@ -131,10 +129,43 @@ export async function listQuestions(params: ListParams): Promise<ListResponse> {
   if (params.source) sp.set("source", params.source);
   if (params.needs_review) sp.set("is_verified", "false");
   if (params.search) sp.set("search", params.search);
+  return sp;
+}
+
+export async function listQuestions(params: ListParams): Promise<ListResponse> {
+  const sp = buildFilterParams(params);
+  if (params.page) sp.set("page", String(params.page));
+  sp.set("per_page", String(params.per_page ?? 50));
 
   const res = await fetch(`/api/qbank/list?${sp.toString()}`);
   if (!res.ok) throw new Error(await res.text());
   return (await res.json()) as ListResponse;
+}
+
+/** Fetch all IDs matching the current filter (up to 1000) for select-all-matching. */
+export async function listQuestionIds(params: ListParams): Promise<string[]> {
+  const sp = buildFilterParams(params);
+  sp.set("ids_only", "true");
+
+  const res = await fetch(`/api/qbank/list?${sp.toString()}`);
+  if (!res.ok) throw new Error(await res.text());
+  const data = (await res.json()) as { ids: string[] };
+  return data.ids;
+}
+
+export interface BulkVerifyResult {
+  verified: number;
+  skipped: Array<{ id: string; question_text: string }>;
+}
+
+export async function bulkVerifyQuestions(ids: string[]): Promise<BulkVerifyResult> {
+  const res = await fetch("/api/qbank/bulk-verify", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ids }),
+  });
+  if (!res.ok) throw new Error(await res.text());
+  return (await res.json()) as BulkVerifyResult;
 }
 
 export async function patchQuestion(

@@ -12,8 +12,32 @@
  */
 
 import type { TemplateSection } from "./templates";
+import {
+  isPoolItemMcqLike,
+  poolItemAssignmentQType,
+  poolItemTokenBudgetType,
+  poolItemTypeAtIndex,
+  type QuestionType,
+  type TemplatePoolQuestion,
+} from "./templates";
 
 // ─── Public types ──────────────────────────────────────────────────────────
+
+export type DifficultyPreset =
+  | "foundational"
+  | "balanced"
+  | "application_heavy"
+  | "custom";
+
+/** Faculty-supplied tier weights, used when the "custom" preset is active. */
+export interface CustomBtlWeights {
+  /** BTL 1–2 weight. */
+  tier1: number;
+  /** BTL 3–4 weight. */
+  tier2: number;
+  /** BTL 5–6 weight. */
+  tier3: number;
+}
 
 export interface ModuleData {
   module_number: number;
@@ -43,6 +67,14 @@ export interface QuestionSlot {
   pos: string[];
   /** If true, this slot is the OR-alternative of an earlier slot — same module. */
   isOrAlternative: boolean;
+  /**
+   * AI sourcing style for this slot, when the caller has allocated one
+   * (from allocateSlotSources). "pyq_style" → mirror PYQ phrasing/framing;
+   * "fresh" → original framing. Unset = no per-slot style directive.
+   */
+  style?: "fresh" | "pyq_style";
+  /** Set on atomic slots inside a pool block — drives per-item prompt directives. */
+  poolItemType?: QuestionType;
 }
 
 export interface SlotAssignmentContext {
@@ -55,6 +87,10 @@ export interface SlotAssignmentContext {
   moduleCosFn?: (moduleNumber: number) => string[];
   /** Full list of CO codes for the subject (fallback when moduleCosFn absent). */
   allCoCodes?: string[];
+  /** When set, biases per-slot targetBtlRange toward the preset's tier weights. */
+  difficultyPreset?: DifficultyPreset;
+  /** Tier weights to use when difficultyPreset === "custom". */
+  customBtlWeights?: CustomBtlWeights | null;
 }
 
 // ─── Constants ─────────────────────────────────────────────────────────────
@@ -82,6 +118,285 @@ const TYPE_BTL_RANGE: Record<string, [number, number]> = {
   descriptive_with_or: [2, 4],
   attempt_any_one: [2, 3],
 };
+
+// ─── Difficulty preset ──────────────────────────────────────────────────────
+
+/** [tier1-weight, tier2-weight, tier3-weight] summing to 100. */
+const PRESET_TIER_WEIGHTS: Record<
+  Exclude<DifficultyPreset, "custom">,
+  [number, number, number]
+> = {
+  foundational:      [50, 35, 15],
+  balanced:          [25, 50, 25],
+  application_heavy: [10, 45, 45],
+};
+
+/** Inclusive [lo, hi] BTL ranges for each tier (0=low, 1=mid, 2=high). */
+export const BTL_TIER: [[number, number], [number, number], [number, number]] = [
+  [1, 2],
+  [3, 4],
+  [5, 6],
+];
+
+/**
+ * Which of the three BTL tiers (0 = BTL 1–2, 1 = BTL 3–4, 2 = BTL 5–6) a set
+ * of allowed BTL levels can actually satisfy. Ascending tier order.
+ */
+export function achievableTiersForLevels(allowed: number[]): number[] {
+  return [0, 1, 2].filter((t) => {
+    const [lo, hi] = BTL_TIER[t];
+    return allowed.some((b) => b >= lo && b <= hi);
+  });
+}
+
+/**
+ * THE renormalization primitive — the single source of truth shared by the real
+ * generation path (apportionBtlTiers) and the live UI preview. Given full 3-tier
+ * weights and the subset of tiers actually achievable, redistribute the weight
+ * that would have gone to unachievable tiers proportionally across the achievable
+ * ones so the result sums to 100. Returns one percentage per achievable tier,
+ * positionally aligned with `achievableTiers`. Never reimplement this elsewhere.
+ *
+ * Example: a module that only supports BTL 1–4 has achievable tiers {0, 1}.
+ *   Foundational {50,35,15} renormalizes to ~{59%, 41%} across tier0/tier1.
+ *   Application-Heavy {10,45,45} renormalizes to ~{18%, 82%} across tier0/tier1.
+ */
+export function renormalizeTierWeights(
+  weights: readonly [number, number, number],
+  achievableTiers: number[]
+): number[] {
+  const rawW = achievableTiers.map((t) => weights[t]);
+  const totalW = rawW.reduce((a, b) => a + b, 0);
+  if (totalW === 0) return achievableTiers.map(() => 0);
+  return rawW.map((w) => (w / totalW) * 100);
+}
+
+/** Resolve the effective 3-tier weights for a preset (or custom weights). */
+export function resolveTierWeights(
+  preset: DifficultyPreset,
+  custom?: CustomBtlWeights | null
+): [number, number, number] {
+  if (preset === "custom") {
+    if (!custom) return [...PRESET_TIER_WEIGHTS.balanced];
+    return [custom.tier1, custom.tier2, custom.tier3];
+  }
+  return [...PRESET_TIER_WEIGHTS[preset]];
+}
+
+export interface BtlDistributionPreview {
+  /** Achievable tiers (0/1/2 indices), ascending. Empty when no modules. */
+  tiers: number[];
+  /** Renormalized percentage per achievable tier, aligned with `tiers`. */
+  percents: number[];
+  /** Min/max achievable BTL level across the modules, or null when none. */
+  span: [number, number] | null;
+}
+
+/**
+ * High-level preview of how the active tier weights spread across whatever BTL
+ * tiers the given modules collectively support, *weighted by each module's share
+ * of the paper*. Mirrors the generation path: it normalises each module's BTL
+ * levels exactly like assignModulesToSlots, then caps each tier's deliverable
+ * percentage at the summed weightage of the modules that can actually reach it
+ * before renormalizing the requested weights against those real ceilings.
+ *
+ * Why weight by module share? A tier is only as deliverable as the marks that
+ * flow through modules supporting it. Treating tiers as binary achievable/not
+ * (the old behaviour) let the preview promise e.g. 80% BTL 5–6 even when a single
+ * module worth ~12% of the paper was the only one that could ever supply it.
+ * Capping at that ~12% ceiling — then spreading the freed weight over the lower
+ * tiers per the requested ratio — keeps the "~%" copy honest. Still approximate
+ * by design (it ignores slot counts / largest-remainder rounding).
+ */
+export function previewBtlDistribution(
+  modules: Array<Pick<ModuleData, "btl_levels" | "weightage_percent">>,
+  weights: readonly [number, number, number]
+): BtlDistributionPreview {
+  if (modules.length === 0) return { tiers: [], percents: [], span: null };
+
+  // Per-module normalised BTL levels + raw paper share. When every module is
+  // missing a weightage, fall back to an even split (same spirit as
+  // computeEffectiveWeights) so ceilings stay meaningful.
+  const normalised = modules.map((m) => ({
+    levels: normaliseBtl(m.btl_levels),
+    weight: m.weightage_percent ?? 0,
+  }));
+  if (normalised.every((m) => m.weight <= 0)) {
+    const even = 100 / normalised.length;
+    for (const m of normalised) m.weight = even;
+  }
+  const totalWeight = normalised.reduce((s, m) => s + m.weight, 0) || 1;
+
+  // Union of allowed levels → overall achievable span + tier set.
+  const allowed = new Set<number>();
+  for (const m of normalised) for (const b of m.levels) allowed.add(b);
+  const allowedArr = Array.from(allowed).sort((a, b) => a - b);
+  if (allowedArr.length === 0) return { tiers: [], percents: [], span: null };
+  const tiers = achievableTiersForLevels(allowedArr);
+
+  // Per-tier deliverable ceiling: the share of the paper carried by modules
+  // whose levels reach that tier (a module spanning two tiers counts toward
+  // both — it can supply either, just not both at full strength).
+  const ceilings = [0, 1, 2].map((t) => {
+    const [lo, hi] = BTL_TIER[t];
+    const w = normalised
+      .filter((m) => m.levels.some((b) => b >= lo && b <= hi))
+      .reduce((s, m) => s + m.weight, 0);
+    return (w / totalWeight) * 100;
+  }) as [number, number, number];
+
+  return {
+    tiers,
+    percents: capTierWeightsToCeilings(weights, ceilings, tiers),
+    span: [allowedArr[0], allowedArr[allowedArr.length - 1]],
+  };
+}
+
+/**
+ * Proportional allocation of 100% across the achievable tiers in the ratio of
+ * `weights`, but with each tier capped at its deliverable `ceilings[t]`. When a
+ * tier's proportional share exceeds its ceiling it is pinned at the ceiling and
+ * the surplus is redistributed across the remaining (uncapped) tiers in their
+ * requested ratio — iterating until nothing else caps. Returns one percentage
+ * per achievable tier, positionally aligned with `achievableTiers`.
+ *
+ * The weighted generalisation of renormalizeTierWeights: with every ceiling at
+ * 100 (every module reaches every tier) it reduces to exactly that function.
+ * sum(ceilings over achievable tiers) is always ≥ 100 — each module adds its
+ * full share to at least one tier — so the surplus always finds a home.
+ */
+function capTierWeightsToCeilings(
+  weights: readonly [number, number, number],
+  ceilings: readonly [number, number, number],
+  achievableTiers: number[]
+): number[] {
+  const result = new Map<number, number>(achievableTiers.map((t) => [t, 0]));
+  const capped = new Set<number>();
+  let remaining = 100;
+
+  for (let guard = 0; guard <= achievableTiers.length; guard++) {
+    const uncapped = achievableTiers.filter((t) => !capped.has(t));
+    if (uncapped.length === 0 || remaining <= 1e-9) break;
+
+    const totalW = uncapped.reduce((s, t) => s + weights[t], 0);
+    if (totalW <= 0) {
+      // Requested ratio gives the remaining tiers zero weight, yet the paper
+      // must still be filled — spread the surplus by leftover ceiling capacity.
+      const totalCap = uncapped.reduce(
+        (s, t) => s + (ceilings[t] - (result.get(t) ?? 0)),
+        0
+      );
+      if (totalCap <= 0) break;
+      for (const t of uncapped) {
+        const cap = ceilings[t] - (result.get(t) ?? 0);
+        result.set(t, (result.get(t) ?? 0) + remaining * (cap / totalCap));
+      }
+      break;
+    }
+
+    // Pin any tier whose proportional share would breach its ceiling, then loop
+    // so the surplus reflows to whoever still has headroom.
+    let placed = 0;
+    let newlyCapped = false;
+    for (const t of uncapped) {
+      if (remaining * (weights[t] / totalW) >= ceilings[t] - 1e-9) {
+        placed += ceilings[t] - (result.get(t) ?? 0);
+        result.set(t, ceilings[t]);
+        capped.add(t);
+        newlyCapped = true;
+      }
+    }
+    if (newlyCapped) {
+      remaining -= placed;
+      continue;
+    }
+
+    // No tier breached — assign the rest proportionally and finish.
+    for (const t of uncapped) {
+      result.set(t, (result.get(t) ?? 0) + remaining * (weights[t] / totalW));
+    }
+    break;
+  }
+
+  return achievableTiers.map((t) => result.get(t) ?? 0);
+}
+
+/**
+ * Mutates each slot's targetBtlRange to bias toward the given tier weights.
+ *
+ * Groups slots by which tiers their module can actually satisfy, then
+ * renormalizes the weights across only those achievable tiers before
+ * apportioning. This ensures different presets produce visibly different
+ * distributions even when some modules don't cover all three tiers.
+ */
+function apportionBtlTiers(
+  slots: QuestionSlot[],
+  weights: readonly [number, number, number]
+): void {
+  if (slots.length === 0) return;
+
+  // Group slot indices by their achievable tier set (comma-joined for Map key).
+  const groups = new Map<string, number[]>();
+  for (let i = 0; i < slots.length; i++) {
+    const tiers = achievableTiersForLevels(slots[i].allowedBtlLevels);
+    if (tiers.length === 0) continue; // no tier reachable — leave slot untouched
+    const key = tiers.join(",");
+    const arr = groups.get(key) ?? [];
+    arr.push(i);
+    groups.set(key, arr);
+  }
+
+  for (const [key, indices] of groups) {
+    const achievable = key.split(",").map(Number);
+    const n = indices.length;
+
+    // Renormalize weights to only the achievable tiers for this group.
+    const normW = renormalizeTierWeights(weights, achievable);
+    if (normW.every((w) => w === 0)) continue;
+
+    // Largest-remainder apportionment across achievable tiers.
+    const exact = normW.map((w) => (n * w) / 100);
+    const counts = exact.map((e) => Math.floor(e));
+    let remainder = n - counts.reduce((a, b) => a + b, 0);
+    const order = normW
+      .map((w, i) => ({ i, f: exact[i] - counts[i], w }))
+      .sort((a, b) => b.f - a.f || b.w - a.w || a.i - b.i);
+    for (let k = 0; remainder > 0; k++, remainder--) {
+      counts[order[k % order.length].i] += 1;
+    }
+
+    // Spread tier assignments evenly across the group: greedy deficit picks
+    // whichever achievable tier has the highest remaining fraction of its budget.
+    const tierSeq: number[] = [];
+    const remaining = [...counts];
+    const targets = [...counts];
+    for (let i = 0; i < n; i++) {
+      let best = -1;
+      let bestScore = -Infinity;
+      for (let j = 0; j < achievable.length; j++) {
+        if (remaining[j] > 0) {
+          const score = targets[j] > 0 ? remaining[j] / targets[j] : 0;
+          if (score > bestScore) { bestScore = score; best = j; }
+        }
+      }
+      if (best === -1) break;
+      tierSeq.push(achievable[best]);
+      remaining[best]--;
+    }
+
+    // Apply: tighten targetBtlRange to the assigned tier ∩ allowedBtlLevels.
+    for (let i = 0; i < indices.length; i++) {
+      const tier = tierSeq[i];
+      if (tier === undefined) continue;
+      const [lo, hi] = BTL_TIER[tier];
+      const slot = slots[indices[i]];
+      const inTier = slot.allowedBtlLevels.filter((b) => b >= lo && b <= hi);
+      if (inTier.length > 0) {
+        slot.targetBtlRange = [Math.min(...inTier), Math.max(...inTier)];
+      }
+    }
+  }
+}
 
 // ─── Helpers ───────────────────────────────────────────────────────────────
 
@@ -284,6 +599,7 @@ export function assignModulesToSlots(
     marks: number;
     qType: string;
     isOr?: boolean;
+    poolItemType?: QuestionType;
   }): QuestionSlot => {
     const allowed = normaliseBtl(params.module.btl_levels);
     const target = clampRangeToAllowed(
@@ -302,6 +618,7 @@ export function assignModulesToSlots(
       cos,
       pos: posFor(cos),
       isOrAlternative: params.isOr ?? false,
+      ...(params.poolItemType ? { poolItemType: params.poolItemType } : {}),
     };
   };
 
@@ -410,7 +727,44 @@ export function assignModulesToSlots(
       );
       return;
     }
+
+    if (q.type === "pool") {
+      const marksPer = q.marksPerItem;
+      let globalIdx = 0;
+      for (const row of q.composition) {
+        const count = Math.max(0, row.count);
+        const qType = poolItemAssignmentQType(row.itemType);
+        const mcqModules = isPoolItemMcqLike(row.itemType)
+          ? distributeMcqsAcrossModules(count, weighted)
+          : null;
+        for (let i = 0; i < count; i++) {
+          const mod = mcqModules
+            ? (mcqModules[i] ?? pickModule())
+            : pickModule();
+          commit(mod, marksPer);
+          slots.push(
+            buildSlot({
+              slotKey: `Q${sectionQNum}_${ROMAN[globalIdx] ?? `s${globalIdx + 1}`}`,
+              display: `${qLabel} (${ROMAN[globalIdx] ?? `s${globalIdx + 1}`})`,
+              module: mod,
+              marks: marksPer,
+              qType,
+              poolItemType: row.itemType,
+            })
+          );
+          globalIdx++;
+        }
+      }
+      return;
+    }
   });
+
+  if (ctx.difficultyPreset) {
+    apportionBtlTiers(
+      slots,
+      resolveTierWeights(ctx.difficultyPreset, ctx.customBtlWeights)
+    );
+  }
 
   return slots;
 }

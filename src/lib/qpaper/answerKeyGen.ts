@@ -4,7 +4,7 @@
  *   1. caller fetches subject + modules + the previously assembled paper
  *   2. for each section, build a Pro prompt that lists THAT section's
  *      questions verbatim and asks for a model answer + marking scheme
- *   3. routeAI("qpaper_gen", { model: "pro", ... }) → JSON array
+ *   3. routeAI("answer_key_descriptive", { model: "pro", ... }) → JSON array
  *   4. assemble all sections' answers + render to a CONFIDENTIAL PDF
  *
  * Pro is the right model here for the same reason it's used for Q-paper
@@ -16,11 +16,15 @@
  */
 
 import { routeAI } from "@/lib/ai/router";
+import { estimateMaxOutputTokens } from "@/lib/ai/tokenBudget";
 import { createPDFBuilder, COLORS } from "@/lib/pdf/builder";
 import type {
   AssembledPaper,
   GeneratedQuestion,
 } from "./builder";
+import { isPoolItemMcqLike, type PoolItem } from "./templates";
+import { poolItemLabel, poolMarksPerItem } from "./poolRender";
+import { mcqSubSlotKey } from "./moduleAssignment";
 
 // ─── Public types ───────────────────────────────────────────────────────────
 
@@ -49,6 +53,7 @@ export interface AnswerKeyEntry {
     | "descriptive"
     | "descriptive_with_or"
     | "attempt_any_one"
+    | "pool"
     | string;
   marking_note?: string;
   answers?: AnswerKeyMCQEntry[];
@@ -60,6 +65,12 @@ export interface AnswerKeyEntry {
   main?: AnswerKeyDescriptive[];
   or_alternative?: AnswerKeyDescriptive[];
   options?: AnswerKeyDescriptive[];
+  /**
+   * Populated only for the synthetic parent entry of a pool block. Holds one
+   * child entry per pool item, each a normal "mcq"/"descriptive" entry routed
+   * by its itemType, threaded back here by the merge step on its "Q<n>_i" slotKey.
+   */
+  pool_items?: AnswerKeyEntry[];
 }
 
 export interface AnswerKeyModuleInfo {
@@ -144,6 +155,7 @@ ${JSON.stringify(sectionQuestions, null, 2)}
 The above is the exact question paper JSON. Generate model answers for every question and sub-question present. Do not skip any.
 For attempt_any_one: provide model answers for BOTH options.
 For descriptive_with_or: provide model answers for BOTH the main set AND the OR alternative set.
+If a question object includes an explicit "slotKey" field (e.g. "Q3_ii"), you MUST copy that exact string into its output entry's slotKey — do not derive your own from q_number. For objects without a slotKey field, use "Q<q_number>".
 </questions>
 
 <module_content>
@@ -273,11 +285,56 @@ function parseAnswerKeyArray(raw: string): AnswerKeyEntry[] | null {
       if (typeof e?.slotKey === "string") {
         e.slotKey = normalizeSlotKey(e.slotKey);
       }
+      normalizeEntryText(e);
     }
     return entries;
   } catch {
     return null;
   }
+}
+
+// The prompt asks for every text field as a JSON string, but answer_key_descriptive
+// runs in JSON mode WITHOUT a responseSchema (see gemini.ts) — so Gemini Pro is
+// free to emit model_answer / marking_scheme / etc. as a nested array or object
+// (e.g. an array of step strings) for complex answers. Nothing enforced the
+// string shape after the qpaper_gen reuse was split off, so those non-strings
+// reached draw functions whose `.trim()` / .richText() calls assume a string and
+// crashed. Coerce every text-bearing field to a string here, at the boundary,
+// so all downstream rendering gets the shape its type annotation promises.
+function normalizeEntryText(e: AnswerKeyEntry): void {
+  if (!e || typeof e !== "object") return;
+
+  e.marking_note = coerceMaybe(e.marking_note);
+  e.marking_scheme = coerceMaybe(e.marking_scheme);
+  e.model_answer = coerceMaybe(e.model_answer);
+  e.partial_credit_note = coerceMaybe(e.partial_credit_note);
+  e.alternative_approaches = coerceMaybe(e.alternative_approaches);
+
+  for (const a of e.answers ?? []) {
+    a.correct_text = coerceMaybe(a.correct_text);
+    a.justification = coerceToText(a.justification);
+    a.distractor_note = coerceMaybe(a.distractor_note);
+  }
+
+  for (const part of [
+    ...(e.main ?? []),
+    ...(e.or_alternative ?? []),
+    ...(e.options ?? []),
+  ]) {
+    part.marking_scheme = coerceToText(part.marking_scheme);
+    part.model_answer = coerceToText(part.model_answer);
+    part.partial_credit_note = coerceMaybe(part.partial_credit_note);
+    part.alternative_approaches = coerceMaybe(part.alternative_approaches);
+  }
+}
+
+// Coerce a value that may be absent: undefined stays undefined (so optional
+// fields don't render an empty "(no answer)" block), anything present becomes
+// a string.
+function coerceMaybe(value: unknown): string | undefined {
+  if (value == null) return undefined;
+  if (typeof value === "string") return value;
+  return coerceToText(value);
 }
 
 // ─── MCQ-only Flash prompt ──────────────────────────────────────────────────
@@ -301,7 +358,7 @@ Subject: ${subjectName}
 ${JSON.stringify(sectionQuestions, null, 2)}
 </questions>
 
-For every MCQ slot in the list above, produce ONE answer entry. For each sub-question inside that slot:
+For every MCQ slot in the list above, produce ONE answer entry. If a question object includes an explicit "slotKey" field (e.g. "Q3_i"), copy that exact string into its entry's slotKey — do not derive your own from q_number. For objects without a slotKey field, use "Q<q_number>". For each sub-question inside that slot:
 - correct_option: "a" | "b" | "c" | "d"
 - correct_text: the verbatim text of the correct option (copy from the options object, do not paraphrase)
 - justification: ONE sentence stating why this option is correct
@@ -351,6 +408,65 @@ interface BlockResult {
   warning?: string;
 }
 
+// A pool item is a standalone question of its own itemType. Wrap one as a
+// synthetic GeneratedQuestion shaped exactly like a normal MCQ / descriptive
+// question so it flows through the existing answer_key_mcq / answer_key_descriptive
+// calls unchanged. The slotKey hint ("Q<n>_i") is what the AI echoes back and
+// what the merge step uses to thread the answer under its parent pool block.
+function poolItemToMcqQuestion(
+  parent: GeneratedQuestion,
+  item: PoolItem,
+  idx: number,
+  slotKey: string,
+  marks: number
+): GeneratedQuestion {
+  const label = poolItemLabel(idx);
+  return {
+    q_number: parent.q_number,
+    slotKey,
+    display_label: label,
+    type: "mcq",
+    total_marks: marks,
+    sub_parts: [
+      {
+        label,
+        question: item.question_text,
+        options: item.options,
+        co: item.co,
+        btl: item.btl,
+        po: item.po,
+      },
+    ],
+  };
+}
+
+function poolItemToDescriptiveQuestion(
+  parent: GeneratedQuestion,
+  item: PoolItem,
+  idx: number,
+  slotKey: string,
+  marks: number
+): GeneratedQuestion {
+  const label = poolItemLabel(idx);
+  return {
+    q_number: parent.q_number,
+    slotKey,
+    display_label: label,
+    type: "descriptive",
+    total_marks: marks,
+    parts: [
+      {
+        label,
+        question: item.question_text,
+        marks,
+        co: item.co,
+        btl: item.btl,
+        po: item.po,
+      },
+    ],
+  };
+}
+
 function splitQuestionsForBlocks(qs: GeneratedQuestion[]): {
   mcq: GeneratedQuestion[];
   main: GeneratedQuestion[];
@@ -363,6 +479,24 @@ function splitQuestionsForBlocks(qs: GeneratedQuestion[]): {
     const type = (q.type ?? "").toLowerCase();
     if (type === "mcq") {
       mcq.push(q);
+      continue;
+    }
+    if (type === "pool") {
+      // Decompose each pool item into its own synthetic question, routed by
+      // itemType: mcq/true_false → mcq (Flash) block, everything else
+      // (short/long/numerical/fill_blank) → main (Pro descriptive) block. Each
+      // keeps its own "Q<n>_i" slotKey so the merge can re-thread it under the
+      // parent pool entry. No new task type — these are ordinary mcq/descriptive
+      // questions to the answer-key calls.
+      const marksPer = poolMarksPerItem(q);
+      (q.items ?? []).forEach((item, idx) => {
+        const slotKey = mcqSubSlotKey(q.q_number, idx);
+        if (isPoolItemMcqLike(item.itemType)) {
+          mcq.push(poolItemToMcqQuestion(q, item, idx, slotKey, marksPer));
+        } else {
+          main.push(poolItemToDescriptiveQuestion(q, item, idx, slotKey, marksPer));
+        }
+      });
       continue;
     }
     if (type === "descriptive_with_or") {
@@ -492,10 +626,118 @@ function mergeBlockEntries(blocks: BlockResult[]): AnswerKeyEntry[] {
   return order.map((k) => map.get(k) as AnswerKeyEntry);
 }
 
+// ── Pool re-threading ───────────────────────────────────────────────────────
+//
+// splitQuestionsForBlocks decomposed each pool block into individual per-item
+// questions that ran through the mcq / main calls and came back as flat,
+// independently-keyed entries (Q<n>_i, Q<n>_ii, …) — scattered across blocks
+// the same way MCQ sub-parts are answered individually. This step threads those
+// per-item answers back under one synthetic parent "pool" entry keyed "Q<n>",
+// preserving item order, so the PDF can render the block as a unit.
+function regroupPoolEntries(
+  entries: AnswerKeyEntry[],
+  sectionQuestions: GeneratedQuestion[]
+): AnswerKeyEntry[] {
+  const poolQs = sectionQuestions.filter(
+    (q) => (q.type ?? "").toLowerCase() === "pool"
+  );
+  if (poolQs.length === 0) return entries;
+
+  // child slotKey → { parent "Q<n>", item index }
+  const childToParent = new Map<string, { parentKey: string; idx: number }>();
+  // parent "Q<n>" → pre-sized item bucket (shared by reference with the entry)
+  const poolBuckets = new Map<string, AnswerKeyEntry[]>();
+  for (const q of poolQs) {
+    const parentKey = `Q${q.q_number}`;
+    const count = (q.items ?? []).length;
+    poolBuckets.set(parentKey, new Array<AnswerKeyEntry>(count));
+    (q.items ?? []).forEach((_, idx) => {
+      childToParent.set(mcqSubSlotKey(q.q_number, idx), { parentKey, idx });
+    });
+  }
+
+  const out: AnswerKeyEntry[] = [];
+  const insertedParents = new Set<string>();
+  for (const entry of entries) {
+    const ref = entry.slotKey ? childToParent.get(entry.slotKey) : undefined;
+    if (!ref) {
+      out.push(entry);
+      continue;
+    }
+    // Slot the child into its parent's bucket by item index, and emit the
+    // parent entry at the position of its first-seen child.
+    entry.display_label = entry.display_label ?? poolItemLabel(ref.idx);
+    poolBuckets.get(ref.parentKey)![ref.idx] = entry;
+    if (!insertedParents.has(ref.parentKey)) {
+      insertedParents.add(ref.parentKey);
+      out.push({
+        slotKey: ref.parentKey,
+        type: "pool",
+        pool_items: poolBuckets.get(ref.parentKey)!,
+      });
+    }
+  }
+
+  // Drop holes for any pool item the AI failed to answer.
+  for (const e of out) {
+    if (e.type === "pool" && e.pool_items) {
+      e.pool_items = e.pool_items.filter(Boolean);
+    }
+  }
+
+  // Children arrive interleaved across mcq/main blocks, so the parent's
+  // insertion point can land out of Q-number order. Re-sort the whole section
+  // by leading slot number (stable) to restore Q1 → Q2 → Q3 … ordering.
+  const slotQNum = (e: AnswerKeyEntry): number => {
+    const m = e.slotKey ? /Q\s*-?\s*(\d+)/i.exec(e.slotKey) : null;
+    return m ? Number(m[1]) : Number.MAX_SAFE_INTEGER;
+  };
+  out.sort((a, b) => slotQNum(a) - slotQNum(b));
+  return out;
+}
+
+// Compute the slot composition for a non-MCQ answer-key block.
+// splitQuestionsForBlocks already filters q.parts to the relevant half
+// (main-only or OR-only for descriptive_with_or), so (q.parts ?? []).length
+// gives the exact number of full model answers this block must produce.
+function buildAnswerKeyBlockSlots(
+  qs: GeneratedQuestion[]
+): { type: string; count: number }[] {
+  const out: { type: string; count: number }[] = [];
+  for (const q of qs) {
+    const type = (q.type ?? "").toLowerCase();
+    if (type === "mcq") {
+      out.push({ type: "mcq", count: q.sub_parts?.length ?? 0 });
+    } else {
+      // descriptive, descriptive_with_or (filtered half), attempt_any_one, numerical
+      const partCount = (q.parts ?? []).length || 1;
+      out.push({ type: "descriptive", count: partCount });
+    }
+  }
+  return out;
+}
+
 export async function generateAnswerKeySection(
   input: AnswerKeySectionInput
 ): Promise<AnswerKeyGenSectionResult> {
   const split = splitQuestionsForBlocks(input.sectionQuestions);
+
+  const mcqSubParts = split.mcq.reduce(
+    (s, q) => s + (q.sub_parts?.length ?? 0),
+    0
+  );
+  const mcqBudget = estimateMaxOutputTokens(
+    [{ type: "mcq", count: mcqSubParts }],
+    "answer_key"
+  );
+  const mainBudget = estimateMaxOutputTokens(
+    buildAnswerKeyBlockSlots(split.main),
+    "answer_key"
+  );
+  const altBudget = estimateMaxOutputTokens(
+    buildAnswerKeyBlockSlots(split.alt),
+    "answer_key"
+  );
 
   const proPromptFor = (subset: GeneratedQuestion[]) =>
     buildAnswerKeyPrompt({ ...input, sectionQuestions: subset });
@@ -518,7 +760,7 @@ export async function generateAnswerKeySection(
             ],
             systemPrompt: ANSWER_KEY_MCQ_SYSTEM_PROMPT,
             temperature: 0.4,
-            maxTokens: 2048,
+            maxTokens: mcqBudget,
           })
         )
       : emptyBlock("mcq");
@@ -526,12 +768,12 @@ export async function generateAnswerKeySection(
   const mainPromise: Promise<BlockResult> =
     split.main.length > 0
       ? runBlock(input.sectionName, "main", () =>
-          routeAI("qpaper_gen", {
+          routeAI("answer_key_descriptive", {
             model: "pro",
             messages: [{ role: "user", content: proPromptFor(split.main) }],
             systemPrompt: ANSWER_KEY_SYSTEM_PROMPT,
             temperature: 0.4,
-            maxTokens: 12288,
+            maxTokens: mainBudget,
           })
         )
       : emptyBlock("main");
@@ -539,12 +781,12 @@ export async function generateAnswerKeySection(
   const altPromise: Promise<BlockResult> =
     split.alt.length > 0
       ? runBlock(input.sectionName, "alt", () =>
-          routeAI("qpaper_gen", {
+          routeAI("answer_key_descriptive", {
             model: "pro",
             messages: [{ role: "user", content: proPromptFor(split.alt) }],
             systemPrompt: ANSWER_KEY_SYSTEM_PROMPT,
             temperature: 0.4,
-            maxTokens: 12288,
+            maxTokens: altBudget,
           })
         )
       : emptyBlock("alt");
@@ -561,7 +803,10 @@ export async function generateAnswerKeySection(
   if (altRes.warning) warnings.push(altRes.warning);
 
   // Merge in mcq → main → alt order so Q1 → Q2 → Q3 → Q4 ordering is preserved.
-  const entries = mergeBlockEntries([mcqRes, mainRes, altRes]);
+  const merged = mergeBlockEntries([mcqRes, mainRes, altRes]);
+  // Thread any decomposed pool items back under their parent "Q<n>" entry.
+  // No-op (and order-preserving) for sections without pool blocks.
+  const entries = regroupPoolEntries(merged, input.sectionQuestions);
 
   return {
     sectionName: input.sectionName,
@@ -672,11 +917,24 @@ export async function buildAnswerKeyPDF(
     });
     builder.space(6);
 
+    // A warning means one of the parallel blocks (mcq / main / alt) failed.
+    // The blocks that succeeded are still in sec.entries, so surface the
+    // warning as a note but DO render whatever was generated — never discard a
+    // section's working answers because a sibling block failed.
     if (sec.warning) {
       builder.text(
-        `Note: ${sec.warning}. Answers for this section were not generated.`,
+        `Note: ${sec.warning}. Some answers in this section may be incomplete — verify before distributing.`,
         { font: FONT_ITALIC, size: 10, color: BLACK }
       );
+      builder.space(4);
+    }
+
+    if (sec.entries.length === 0) {
+      builder.text("(no answers were generated for this section)", {
+        font: FONT_ITALIC,
+        size: 10,
+        color: BLACK,
+      });
       continue;
     }
 
@@ -737,7 +995,11 @@ function stripInline(text: string): string {
 }
 
 function renderPlainBody(builder: Builder, content: string): void {
-  if (!content || !content.trim()) {
+  // Defensive coercion: the `string` annotation is not always honored at
+  // runtime (see drawDescriptive / answer_key_descriptive shape mismatch).
+  // Turn any input shape into a string so this never throws on .trim().
+  const text = coerceToText(content);
+  if (!text || !text.trim()) {
     builder.text("(no answer generated)", {
       font: builder.getFont("italic"),
       size: 10,
@@ -745,100 +1007,41 @@ function renderPlainBody(builder: Builder, content: string): void {
     });
     return;
   }
-  const lines = String(content).split(/\r?\n/);
-  let inFence = false;
-  for (const raw of lines) {
-    const line = raw.replace(/\s+$/g, "");
-    const trimmed = line.trim();
+  // Run model answers through the shared parser so DP grids / matrices render
+  // as real bordered tables and lists get proper markers, instead of the old
+  // flattening that joined table cells into a single space-separated line.
+  builder.richText(text, { size: 10 });
+}
 
-    // Blank → small vertical gap.
-    if (!trimmed) {
-      builder.space(3);
-      continue;
-    }
-
-    // Fenced code block toggle — strip the fence line, render contents
-    // as plain indented text on the next iterations.
-    if (/^```/.test(trimmed)) {
-      inFence = !inFence;
-      continue;
-    }
-
-    // Markdown table separator row (|---|---| or ----- or =====).
-    if (/^[|\s\-:=]+$/.test(trimmed) && /[-=]/.test(trimmed)) {
-      continue;
-    }
-
-    // Markdown table data row: |cell|cell|cell|
-    if (
-      trimmed.startsWith("|") &&
-      trimmed.endsWith("|") &&
-      trimmed.indexOf("|", 1) !== -1
-    ) {
-      const cells = trimmed
-        .slice(1, -1)
-        .split("|")
-        .map((c) => stripInline(c))
-        .filter((c) => c.length > 0);
-      if (cells.length > 0) {
-        builder.text("  " + cells.join("   "), {
-          font: builder.getFont("regular"),
-          size: 10,
-          color: COLORS.text,
-        });
-      }
-      continue;
-    }
-
-    // Markdown heading line → render as plain bold, drop the # markers.
-    const headingMatch = /^(#{1,6})\s+(.+)$/.exec(trimmed);
-    if (headingMatch) {
-      builder.text(stripInline(headingMatch[2]), {
-        font: builder.getFont("bold"),
-        size: 10,
-        color: COLORS.text,
-      });
-      continue;
-    }
-
-    // Bullet → "- text" indented.
-    const bulletMatch = /^[-*+]\s+(.+)$/.exec(trimmed);
-    if (bulletMatch) {
-      builder.text("  - " + stripInline(bulletMatch[1]), {
-        font: builder.getFont("regular"),
-        size: 10,
-        color: COLORS.text,
-      });
-      continue;
-    }
-
-    // Numbered list → "1. text" indented.
-    const numberedMatch = /^(\d+)[.)]\s+(.+)$/.exec(trimmed);
-    if (numberedMatch) {
-      builder.text(
-        `  ${numberedMatch[1]}. ${stripInline(numberedMatch[2])}`,
-        { font: builder.getFont("regular"), size: 10, color: COLORS.text }
-      );
-      continue;
-    }
-
-    // Inside a code fence → indent the line so it still reads as a block.
-    if (inFence) {
-      builder.text("  " + stripInline(trimmed), {
-        font: builder.getFont("regular"),
-        size: 10,
-        color: COLORS.text,
-      });
-      continue;
-    }
-
-    // Default paragraph.
-    builder.text(stripInline(trimmed), {
-      font: builder.getFont("regular"),
-      size: 10,
-      color: COLORS.text,
-    });
+// Coerce an arbitrary value (string | string[] | object | null) into the
+// plain text we want to render. Never throws. Falls back to the empty string
+// so callers hit the graceful "(no answer generated)" path.
+function coerceToText(value: unknown): string {
+  if (value == null) return "";
+  if (typeof value === "string") return value;
+  if (typeof value === "number" || typeof value === "boolean") {
+    return String(value);
   }
+  if (Array.isArray(value)) {
+    return value.map(coerceToText).filter(Boolean).join("\n");
+  }
+  if (typeof value === "object") {
+    // Pull out whatever text-bearing field the model actually returned,
+    // rather than rendering "[object Object]".
+    const obj = value as Record<string, unknown>;
+    for (const key of ["answer", "text", "content", "body", "value"]) {
+      if (typeof obj[key] === "string" && obj[key]) {
+        return obj[key] as string;
+      }
+    }
+    // Last resort: stringify so something legible reaches the page.
+    try {
+      return JSON.stringify(value);
+    } catch {
+      return "";
+    }
+  }
+  return "";
 }
 
 // ─── Entry-type dispatch ─────────────────────────────────────────────────
@@ -858,8 +1061,32 @@ function drawAnswerEntry(
     case "attempt_any_one":
       drawAttemptAnyOne(builder, label, entry);
       break;
+    case "pool":
+      drawPoolAnswer(builder, label, entry);
+      break;
     default:
       drawDescriptive(builder, label, entry);
+  }
+}
+
+// Pool block: render a header, then iterate the items and reuse the existing
+// MCQ / descriptive drawers per item (the same reuse the student-paper pool
+// renderer uses) — each child entry is an ordinary "mcq"/"descriptive" entry.
+function drawPoolAnswer(
+  builder: Builder,
+  label: string,
+  entry: AnswerKeyEntry
+): void {
+  builder.space(6);
+  builder.ensureSpace(40);
+  builder.text(`${label}   (Pool - model answers for all listed items)`, {
+    font: builder.getFont("bold"),
+    size: 10.5,
+    color: COLORS.text,
+  });
+  for (const item of entry.pool_items ?? []) {
+    const itemLabel = item.display_label ?? item.slotKey ?? "";
+    drawAnswerEntry(builder, itemLabel, item);
   }
 }
 

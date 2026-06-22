@@ -29,7 +29,11 @@ export async function POST(request: NextRequest) {
       .from("generated-content")
       .getPublicUrl(filePath);
 
-    return Response.json({ success: true, downloadUrl: urlData.publicUrl });
+    return Response.json({
+      success: true,
+      downloadUrl: urlData.publicUrl,
+      filePath,
+    });
   } catch (err) {
     console.error("[qpaper/export] error:", err);
     return apiError(

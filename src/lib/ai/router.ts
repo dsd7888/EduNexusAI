@@ -10,7 +10,9 @@ const TASK_TO_MODEL: Record<string, "flash" | "pro"> = {
   ppt_extract: "flash",
   ppt_refine: "flash",
   qpaper_gen: "pro",
+  qpaper_validate_tags: "flash",
   answer_key_mcq: "flash",
+  answer_key_descriptive: "pro", // model answers + marking schemes — same reasoning needs as qpaper_gen
   refine: "flash",
   placement_gen: "pro",
   syllabus_extract: "flash",
@@ -51,6 +53,8 @@ export async function routeAI(
                 ? 6000
                 : task === "qpaper_gen"
                 ? 8192
+                : task === "qpaper_validate_tags"
+                ? 512
                 : task === "answer_key_mcq"
                   ? 2048
                   : task === "refine"

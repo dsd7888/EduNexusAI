@@ -13,6 +13,9 @@ import {
 } from "@/lib/qpaper/builder";
 import {
   generateSection,
+  buildSectionSlotsAssignment,
+  type CustomBtlWeights,
+  type DifficultyPreset,
   type ModuleInfo,
   type CourseOutcomeInfo,
   type CoPoMappingInfo,
@@ -23,7 +26,17 @@ import {
   assembleSectionFromBank,
   overlayBankOntoSection,
   usedBankIds,
+  computeSlots,
+  slotKeyStr,
+  slotAssignmentKey,
+  type SlotTarget,
 } from "@/lib/qpaper/bankFill";
+import {
+  allocateSlotSources,
+  type SourcingMix,
+  type SourceCategory,
+} from "@/lib/qpaper/sourcing";
+import { attachTagValidations } from "@/lib/qpaper/validateTags";
 import { rowToBankQuestion, type FqbRow } from "@/lib/qbank/row";
 import type { BankQuestion } from "@/lib/qbank/types";
 import type { NextRequest } from "next/server";
@@ -70,6 +83,40 @@ function modulesForSection(
     }));
 }
 
+const SOURCE_CATEGORIES: SourceCategory[] = ["fresh", "pyq_style", "bank"];
+
+/**
+ * Resolve the effective sourcing mix from the request body, with backward
+ * compatibility for the old single-toggle fields:
+ *   - explicit `sourcingMix: [{ category, percent }]` summing to 100 wins,
+ *   - else legacy `fromBank` → 100% bank,
+ *   - else 100% fresh.
+ */
+function resolveSourcingMix(
+  body: Record<string, unknown>,
+  fromBank: boolean
+): SourcingMix[] {
+  const raw = body.sourcingMix;
+  if (Array.isArray(raw) && raw.length > 0) {
+    const mix = raw
+      .map((r) => r as Record<string, unknown>)
+      .map((r) => ({
+        category: String(r.category) as SourceCategory,
+        percent: Number(r.percent),
+      }))
+      .filter(
+        (m) =>
+          SOURCE_CATEGORIES.includes(m.category) &&
+          Number.isFinite(m.percent) &&
+          m.percent > 0
+      );
+    const sum = mix.reduce((s, m) => s + m.percent, 0);
+    if (mix.length > 0 && Math.abs(sum - 100) < 1e-6) return mix;
+  }
+  if (fromBank) return [{ category: "bank", percent: 100 }];
+  return [{ category: "fresh", percent: 100 }];
+}
+
 export async function POST(request: NextRequest) {
   try {
     console.log("[qpaper] POST request received");
@@ -91,6 +138,42 @@ export async function POST(request: NextRequest) {
       typeof body.templateId === "string" ? body.templateId.trim() : "";
     const fromBank =
       body.fromBank === true || body.questionSource === "from_bank";
+    const sourcingMix = resolveSourcingMix(body, fromBank);
+    const preferredQuestionIds = Array.isArray(body.preferredQuestionIds)
+      ? (body.preferredQuestionIds as unknown[]).map(String)
+      : [];
+    const VALID_PRESETS: DifficultyPreset[] = [
+      "foundational",
+      "balanced",
+      "application_heavy",
+      "custom",
+    ];
+    const rawPreset = String(body.difficultyPreset ?? "balanced");
+    const difficultyPreset: DifficultyPreset = VALID_PRESETS.includes(
+      rawPreset as DifficultyPreset
+    )
+      ? (rawPreset as DifficultyPreset)
+      : "balanced";
+    // Custom tier weights only matter when the preset is "custom". Each must be
+    // a finite, non-negative number; otherwise the resolver falls back to
+    // balanced, so a missing/garbage value degrades gracefully.
+    let customBtlWeights: CustomBtlWeights | null = null;
+    if (difficultyPreset === "custom") {
+      const raw = (body.customBtlWeights ?? {}) as Record<string, unknown>;
+      const num = (v: unknown) =>
+        Number.isFinite(Number(v)) ? Math.max(0, Number(v)) : 0;
+      const tier1 = num(raw.tier1);
+      const tier2 = num(raw.tier2);
+      const tier3 = num(raw.tier3);
+      if (tier1 + tier2 + tier3 > 0) {
+        customBtlWeights = { tier1, tier2, tier3 };
+      }
+    }
+    // Load the bank when the mix sources from it OR there are guaranteed-include
+    // preferred questions (those are included regardless of the bank percentage).
+    const wantBank =
+      sourcingMix.some((m) => m.category === "bank") ||
+      preferredQuestionIds.length > 0;
 
     // ── Step 1a: subject ──────────────────────────────────────────────────
     const { data: subject, error: subjectError } = await adminClient
@@ -225,37 +308,153 @@ export async function POST(request: NextRequest) {
       }`
     );
 
-    // ── Step 1h: faculty question bank (only for "From Q Bank" mode) ─────
+    // ── Step 1h: faculty question bank (whenever the mix sources from it) ─
     let bank: BankQuestion[] = [];
-    if (fromBank) {
+    if (wantBank) {
       const { data: bankRows } = await adminClient
         .from("faculty_question_bank")
         .select("*")
         .eq("subject_id", subjectId)
         .eq("faculty_id", user.id);
       bank = ((bankRows ?? []) as FqbRow[]).map(rowToBankQuestion);
-      console.log(`[qpaper] From Q Bank: ${bank.length} bank question(s) available`);
+      console.log(`[qpaper] Q Bank: ${bank.length} bank question(s) available`);
     }
 
-    // ── Step 2: per-section generation ──────────────────────────────────
-    // Sections are independent. In normal mode each is a parallel Pro call.
-    // In "From Q Bank" mode we first allocate bank questions to every slot
-    // (sequentially, sharing one `used` set so no question repeats across the
-    // paper); sections fully covered by the bank skip AI entirely, the rest
-    // fall back to an AI section with the matched bank questions overlaid.
-    console.log(
-      `[qpaper] Generating ${structure.sections.length} section(s)` +
-        (fromBank ? " — From Q Bank (AI fallback per uncovered section)" : " via Pro — parallel AI calls")
+    // ── Step 2: source allocation + per-section generation ──────────────
+    // One sourcing decision per request: allocateSlotSources spreads every
+    // atomic slot across fresh / pyq_style / bank per the configured mix
+    // (deterministic largest-remainder). Bank-assigned slots are filled from
+    // the Q Bank respecting each slot's pre-computed module/CO/BTL target;
+    // everything else is generated by the section AI. Bank slots that find no
+    // match fall back to AI (counted in bankFallbackCount).
+    //
+    // NOTE: the active generation path is section-level (one Pro call per
+    // section, see generateSection) and its prompt always blends PYQ style, so
+    // "fresh" and "pyq_style" slots currently route to the *same* AI output —
+    // only "bank" diverges. The allocation is computed at slot granularity so a
+    // future per-slot / per-section style toggle can split fresh vs pyq_style
+    // without re-plumbing this route.
+    const moduleIdByNumber = new Map(
+      modules.map((m) => [m.module_number, m.id])
     );
 
-    const used = new Set<string>();
-    const allocations = fromBank
-      ? structure.sections.map((section) =>
-          allocateBankForSection(section, bank, used)
-        )
-      : structure.sections.map(() => null);
+    // Per-section atomic slots (canonical fill units) + module/CO/BTL targets.
+    const sectionSlotInfo = structure.sections.map((section) => {
+      const atomic = computeSlots(section);
+      const qslots = buildSectionSlotsAssignment(
+        modulesForSection(modules, section),
+        section,
+        courseOutcomes,
+        coPoMapping,
+        difficultyPreset,
+        customBtlWeights
+      );
+      const targets = new Map<string, SlotTarget>();
+      for (const qs of qslots) {
+        const t: SlotTarget = {};
+        const mid = moduleIdByNumber.get(qs.moduleNumber);
+        if (mid) t.moduleId = mid;
+        // Only constrain CO/BTL when the assignment is unambiguous, otherwise
+        // module + type + marks drive the match (and CO/BTL stay free).
+        const [lo, hi] = qs.targetBtlRange;
+        if (lo === hi) t.btlLevel = lo;
+        if (qs.cos.length === 1) t.coCode = qs.cos[0];
+        targets.set(qs.slotKey, t);
+      }
+      return { atomic, targets };
+    });
 
-    const runAi = async (section: TemplateSection) => {
+    const allAtomic = sectionSlotInfo.flatMap((info, sIdx) =>
+      info.atomic.map((slot) => ({ sIdx, slot }))
+    );
+
+    const bankKeysBySection: Set<string>[] = structure.sections.map(
+      () => new Set<string>()
+    );
+    // Per-slot AI style (fresh vs pyq_style) for the non-bank slots, keyed by
+    // the moduleAssignment slot key so generateSection can apply it. Bank slots
+    // that later fall back to AI carry no style (legacy behaviour).
+    const styleBySection: Map<string, "fresh" | "pyq_style">[] =
+      structure.sections.map(() => new Map());
+
+    // ── Reserve slots for guaranteed-included preferred questions first ──
+    // Each preferred question (that actually exists in the bank) claims a
+    // compatible slot (same type, exact marks then ±0.5) regardless of the
+    // mix. Those slots are bank-sourced and target-suppressed so the preferred
+    // question lands there. The percentage mix then governs only what's left.
+    const MARKS_TOL = 0.5;
+    const preferredSet = new Set(preferredQuestionIds);
+    const preferredRows = bank.filter((b) => preferredSet.has(b.id));
+    const reserved = new Set<number>(); // indices into allAtomic
+    const forcedKeysBySection: Set<string>[] = structure.sections.map(
+      () => new Set<string>()
+    );
+    const unplaceablePreferredRows: Array<{ id: string; question_text: string }> = [];
+    for (const row of preferredRows) {
+      const matchAt = (tol: number) =>
+        allAtomic.findIndex(
+          (e, i) =>
+            !reserved.has(i) &&
+            e.slot.bankType === row.question_type &&
+            Math.abs(e.slot.marks - row.marks) <= tol
+        );
+      const idx = matchAt(0) !== -1 ? matchAt(0) : matchAt(MARKS_TOL);
+      if (idx === -1) {
+        // No compatible slot — can't place this question.
+        unplaceablePreferredRows.push({ id: row.id, question_text: row.question_text });
+        continue;
+      }
+      reserved.add(idx);
+      const entry = allAtomic[idx];
+      const keyStr = slotKeyStr(entry.slot);
+      bankKeysBySection[entry.sIdx].add(keyStr);
+      forcedKeysBySection[entry.sIdx].add(keyStr);
+    }
+    if (unplaceablePreferredRows.length > 0) {
+      console.warn(
+        `[qpaper] ${unplaceablePreferredRows.length} preferred question(s) had no compatible slot and were not included`,
+        unplaceablePreferredRows.map((r) => r.id)
+      );
+    }
+
+    // ── The mix governs only the remaining (unreserved) slots ───────────
+    const remaining = allAtomic
+      .map((entry, i) => ({ entry, i }))
+      .filter(({ i }) => !reserved.has(i));
+    const sourceAssignments = allocateSlotSources(remaining.length, sourcingMix);
+    for (const a of sourceAssignments) {
+      const { entry } = remaining[a.slotIndex];
+      if (a.source === "bank") {
+        bankKeysBySection[entry.sIdx].add(slotKeyStr(entry.slot));
+      } else {
+        // attempt_any_one's two options share one assignment key — last write
+        // wins, so both options get the same style.
+        styleBySection[entry.sIdx].set(slotAssignmentKey(entry.slot), a.source);
+      }
+    }
+
+    console.log(
+      `[qpaper] Generating ${structure.sections.length} section(s) — mix ` +
+        sourcingMix.map((m) => `${m.category}:${m.percent}%`).join(" ") +
+        ` over ${allAtomic.length} slot(s)`
+    );
+
+    // Sequential allocation sharing one `used` set so no bank question (or
+    // preferred id) repeats across the paper. Sections with no bank-assigned
+    // slot get a null allocation and go entirely to AI.
+    const used = new Set<string>();
+    const allocations = structure.sections.map((section, sIdx) => {
+      const bankSlotKeys = bankKeysBySection[sIdx];
+      if (bankSlotKeys.size === 0) return null;
+      return allocateBankForSection(section, bank, used, {
+        targets: sectionSlotInfo[sIdx].targets,
+        preferredQuestionIds,
+        bankSlotKeys,
+        forcedPreferredKeys: forcedKeysBySection[sIdx],
+      });
+    });
+
+    const runAi = async (section: TemplateSection, sIdx: number) => {
       const sectionModules = modulesForSection(modules, section);
       try {
         const { questions, warnings } = await generateSection({
@@ -268,6 +467,9 @@ export async function POST(request: NextRequest) {
           pyqContext,
           subjectName,
           subjectCode,
+          slotStyles: styleBySection[sIdx],
+          difficultyPreset,
+          customBtlWeights,
         });
         return { questions, warnings, error: null as string | null };
       } catch (err) {
@@ -285,19 +487,21 @@ export async function POST(request: NextRequest) {
     const aiSettled = await Promise.all(
       structure.sections.map(async (section, i) => {
         const alloc = allocations[i];
-        if (fromBank && alloc && alloc.fullyCovered) return null;
-        return runAi(section);
+        if (alloc && alloc.fullyCovered) return null;
+        return runAi(section, i);
       })
     );
 
     const generatedSections: GeneratedSection[] = [];
     const allWarnings: string[] = [];
     const usedIds: string[] = [];
+    // Bank-assigned slots that found no match and fell back to AI generation.
+    let bankFallbackCount = 0;
 
     structure.sections.forEach((section, i) => {
       const alloc = allocations[i];
 
-      if (fromBank && alloc && alloc.fullyCovered) {
+      if (alloc && alloc.fullyCovered) {
         generatedSections.push(assembleSectionFromBank(section, alloc));
         usedIds.push(...usedBankIds(alloc));
         console.log(
@@ -328,16 +532,17 @@ export async function POST(request: NextRequest) {
         questions: ai.questions,
       };
 
-      if (fromBank && alloc) {
+      if (alloc) {
         const overlay = overlayBankOntoSection(built, section, alloc);
         built = overlay.section;
         // Only count bank questions that were actually placed (an AI-failed
         // empty section overlays nothing, so don't bump usage for it).
         if (overlay.replaced > 0) usedIds.push(...usedBankIds(alloc));
         if (alloc.unmatched.length > 0) {
+          bankFallbackCount += alloc.unmatched.length;
           console.log(
             `[qpaper] ${section.section_name}: ${overlay.replaced} from bank, ` +
-              `${alloc.unmatched.length} slot(s) fell back to AI:\n  ` +
+              `${alloc.unmatched.length} bank slot(s) fell back to AI:\n  ` +
               alloc.unmatched.join("\n  ")
           );
           allWarnings.push(
@@ -350,7 +555,7 @@ export async function POST(request: NextRequest) {
     });
 
     // ── Step 2b: bump usage_count / last_used_at for used bank questions ─
-    if (fromBank && usedIds.length > 0) {
+    if (usedIds.length > 0) {
       const uniqueUsed = Array.from(new Set(usedIds));
       const nowIso = new Date().toISOString();
       const byId = new Map(bank.map((b) => [b.id, b]));
@@ -369,6 +574,31 @@ export async function POST(request: NextRequest) {
       console.log(`[qpaper] Bumped usage on ${uniqueUsed.length} bank question(s)`);
     }
 
+    // ── Step 2c: CO/BTL tag validation (one parallel Flash batch) ────────
+    // Judge whether each AI-generated question's content & cognitive demand
+    // genuinely match its claimed CO/BTL. Mutates generatedSections in place,
+    // attaching `validation` only to genuine mismatches. Non-fatal: a failure
+    // here just means the paper ships without flags.
+    try {
+      const moduleContentBySection = structure.sections.map((section) =>
+        modulesForSection(modules, section)
+          .map(
+            (m) => `Module ${m.module_number} — ${m.name}: ${m.description ?? ""}`
+          )
+          .join("\n")
+      );
+      await attachTagValidations(
+        generatedSections,
+        courseOutcomes.map((c) => ({
+          co_code: c.co_code,
+          description: c.description,
+        })),
+        moduleContentBySection
+      );
+    } catch (err) {
+      console.error("[qpaper] tag validation batch failed:", err);
+    }
+
     // ── Step 3: assemble paper ───────────────────────────────────────────
     const paperTitle = `${subjectCode} - ${subjectName}`;
     const paper: AssembledPaper = {
@@ -384,6 +614,7 @@ export async function POST(request: NextRequest) {
       sections: generatedSections,
       courseOutcomes: hasCoPoData ? courseOutcomes : undefined,
       hasCoPoData,
+      ...(structure.flatLayout ? { flatLayout: true } : {}),
     };
 
     // ── Step 4: render PDF + upload ──────────────────────────────────────
@@ -410,7 +641,8 @@ export async function POST(request: NextRequest) {
           (q, qq) =>
             q +
             (qq.sub_parts?.length ?? 0) +
-            (qq.parts?.length ?? (qq.sub_parts?.length ? 0 : 1)),
+            (qq.items?.length ?? 0) +
+            (qq.parts?.length ?? (qq.sub_parts?.length || qq.items?.length ? 0 : 1)),
           0
         ),
       0
@@ -437,8 +669,11 @@ export async function POST(request: NextRequest) {
       success: true,
       paper,
       downloadUrl: urlData.publicUrl,
+      filePath,
       totalQuestions,
       warnings: allWarnings,
+      bankFallbackCount,
+      unplaceablePreferred: unplaceablePreferredRows,
     });
   } catch (err) {
     console.error("[qpaper] Error:", err);

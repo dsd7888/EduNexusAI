@@ -23,6 +23,7 @@ import {
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import {
+  CheckSquare,
   ChevronDown,
   ChevronUp,
   FileOutput,
@@ -30,10 +31,12 @@ import {
   Library,
   Loader2,
   Search,
+  ShieldCheck,
   Sparkles,
   Upload,
   X,
 } from "lucide-react";
+import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -53,7 +56,9 @@ import {
   QUESTION_TYPES,
   SOURCE_LABELS,
   TYPE_LABELS,
+  bulkVerifyQuestions,
   formatCo,
+  listQuestionIds,
   listQuestions,
   type BankFilters,
   type BankStats,
@@ -97,6 +102,8 @@ export function MyBankTab({
   const [totalPages, setTotalPages] = useState(1);
   const [loading, setLoading] = useState(false);
   const [loadedOnce, setLoadedOnce] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [verifying, setVerifying] = useState(false);
 
   // Debounce the search box into the filter set.
   useEffect(() => {
@@ -138,6 +145,7 @@ export function MyBankTab({
     setPage(1);
     setTotalPages(1);
     setLoadedOnce(false);
+    setSelectedIds(new Set());
     if (subjectId) load(1, true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [subjectId, filterKey]);
@@ -164,7 +172,73 @@ export function MyBankTab({
   const handleDeleted = (id: string) => {
     setItems((prev) => prev.filter((it) => it.id !== id));
     onUnstage(id);
+    setSelectedIds((prev) => { const next = new Set(prev); next.delete(id); return next; });
     refreshStats();
+  };
+
+  const toggleSelect = (id: string) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
+
+  const selectAllVisible = () => {
+    const allVisibleIds = items.map((it) => it.id);
+    const allSelected = allVisibleIds.every((id) => selectedIds.has(id));
+    if (allSelected) {
+      setSelectedIds((prev) => {
+        const next = new Set(prev);
+        allVisibleIds.forEach((id) => next.delete(id));
+        return next;
+      });
+    } else {
+      setSelectedIds((prev) => new Set([...prev, ...allVisibleIds]));
+    }
+  };
+
+  const selectAllMatching = async () => {
+    try {
+      const ids = await listQuestionIds({ subject_id: subjectId, ...filters });
+      setSelectedIds(new Set(ids));
+    } catch (err) {
+      console.error("[qbank] selectAllMatching failed", err);
+    }
+  };
+
+  const handleVerifySelected = async () => {
+    if (selectedIds.size === 0) return;
+    setVerifying(true);
+    try {
+      const { verified, skipped } = await bulkVerifyQuestions([...selectedIds]);
+      // Update local items to reflect newly verified state.
+      const verifiedSet = new Set([...selectedIds].filter(
+        (id) => !skipped.find((s) => s.id === id)
+      ));
+      setItems((prev) =>
+        prev.map((it) => (verifiedSet.has(it.id) ? { ...it, is_verified: true } : it))
+      );
+      setSelectedIds(new Set());
+      refreshStats();
+      const msg =
+        skipped.length === 0
+          ? `${verified} question${verified === 1 ? "" : "s"} verified`
+          : `${verified} verified, ${skipped.length} skipped (missing CO or BTL)`;
+      if (skipped.length === 0) {
+        toast.success(msg);
+      } else {
+        toast.warning(msg, {
+          description: skipped.map((s) => `• ${s.question_text.slice(0, 60)}…`).join("\n"),
+          duration: 6000,
+        });
+      }
+    } catch (err) {
+      console.error("[qbank] bulkVerify failed", err);
+      toast.error("Bulk verify failed");
+    } finally {
+      setVerifying(false);
+    }
   };
 
   const stagedIds = useMemo(() => new Set(staged.map((s) => s.id)), [staged]);
@@ -300,6 +374,51 @@ export function MyBankTab({
               className="h-8 pl-7 text-sm"
             />
           </div>
+          {/* Selection toolbar — shown once questions are loaded */}
+          {loadedOnce && items.length > 0 && (
+            <div className="flex flex-wrap items-center gap-2 pt-1 border-t border-border/40">
+              <button
+                type="button"
+                onClick={selectAllVisible}
+                className="flex items-center gap-1 px-2 py-1 rounded-md border text-xs font-medium text-muted-foreground hover:bg-muted transition-colors"
+              >
+                <CheckSquare className="size-3.5" />
+                {items.every((it) => selectedIds.has(it.id)) && selectedIds.size > 0
+                  ? "Deselect visible"
+                  : `Select visible (${items.length})`}
+              </button>
+              {page < totalPages && (
+                <button
+                  type="button"
+                  onClick={selectAllMatching}
+                  className="flex items-center gap-1 px-2 py-1 rounded-md border text-xs font-medium text-muted-foreground hover:bg-muted transition-colors"
+                >
+                  <CheckSquare className="size-3.5" />
+                  Select all matching filter
+                </button>
+              )}
+              {selectedIds.size > 0 && (
+                <>
+                  <span className="px-2 py-0.5 rounded-full bg-primary/10 text-primary text-xs font-semibold">
+                    {selectedIds.size} selected
+                  </span>
+                  <Button
+                    size="sm"
+                    className="h-7 text-xs"
+                    onClick={handleVerifySelected}
+                    disabled={verifying}
+                  >
+                    {verifying ? (
+                      <Loader2 className="size-3 mr-1 animate-spin" />
+                    ) : (
+                      <ShieldCheck className="size-3 mr-1" />
+                    )}
+                    Verify Selected
+                  </Button>
+                </>
+              )}
+            </div>
+          )}
         </Card>
 
         {/* List */}
@@ -312,6 +431,8 @@ export function MyBankTab({
               onDeleted={handleDeleted}
               onStage={onStage}
               isStaged={stagedIds.has(q.id)}
+              isSelected={selectedIds.has(q.id)}
+              onToggleSelect={toggleSelect}
             />
           ))}
 

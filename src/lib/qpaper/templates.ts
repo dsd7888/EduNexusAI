@@ -16,14 +16,40 @@ export type TemplateQuestionType =
   | "descriptive_with_or"
   | "attempt_any_one";
 
+/** Per-item types that can be composed into a pool question block. */
+export type QuestionType =
+  | "mcq"
+  | "true_false"
+  | "short"
+  | "long"
+  | "numerical"
+  | "fill_blank";
+
+export interface PoolCompositionEntry {
+  itemType: QuestionType;
+  count: number;
+}
+
+/** One generated item inside a pool block (populated after generation). */
+export interface PoolItem {
+  itemType: QuestionType;
+  question_text: string;
+  /** Present for mcq-like item types (mcq, true_false). */
+  options?: Record<string, string>;
+  model_answer?: string | null;
+  co?: string | null;
+  btl?: number | null;
+  po?: string | null;
+}
+
 export type PresetKey = "PPSU_ESE" | "CE_QUIZ" | "CUSTOM";
 
-export interface TemplateQuestion {
+/** Fields shared by every question block in a template section. */
+interface TemplateQuestionBlockShared {
   q_number: number;
   display_label: string;
-  type: TemplateQuestionType;
-  instruction?: string | null;
   total_marks: number;
+  instruction?: string | null;
   sub_parts?: number;
   marks_per_part?: number;
   parts?: string[];
@@ -31,12 +57,124 @@ export interface TemplateQuestion {
   attempt_logic?: string | null;
 }
 
+export interface TemplateQuestion extends TemplateQuestionBlockShared {
+  type: TemplateQuestionType;
+}
+
+/**
+ * Mixed-type pool block: N items of various types, student attempts K of them.
+ * Default instruction (when omitted): "Attempt any {attemptCount} of the following {N} questions."
+ */
+export interface TemplatePoolQuestion extends TemplateQuestionBlockShared {
+  type: "pool";
+  composition: PoolCompositionEntry[];
+  /** K — how many of the total items must be attempted. */
+  attemptCount: number;
+  /** Single mark value applied to every item regardless of itemType. */
+  marksPerItem: number;
+  /** Populated after generation. */
+  items?: PoolItem[];
+}
+
+export type TemplateQuestionBlock = TemplateQuestion | TemplatePoolQuestion;
+
+/** MCQ-like pool items share the mcq assignment / options path. */
+export function isPoolItemMcqLike(itemType: QuestionType): boolean {
+  return itemType === "mcq" || itemType === "true_false";
+}
+
+/** Maps a pool item type to the module-assignment qType (TYPE_BTL_RANGE key). */
+export function poolItemAssignmentQType(itemType: QuestionType): string {
+  if (isPoolItemMcqLike(itemType)) return "mcq";
+  if (itemType === "numerical") return "numerical";
+  return "descriptive";
+}
+
+/** Maps a pool item type to token-budget generation profile keys. */
+export function poolItemTokenBudgetType(itemType: QuestionType): string {
+  if (isPoolItemMcqLike(itemType)) return "mcq";
+  if (itemType === "numerical") return "numerical";
+  if (itemType === "long") return "long_answer";
+  if (itemType === "fill_blank") return "fill_blank";
+  return "short_answer";
+}
+
+export function poolTotalItems(composition: PoolCompositionEntry[]): number {
+  return composition.reduce((sum, row) => sum + row.count, 0);
+}
+
+/** Resolve the expected itemType for pool item index `idx` from the template composition. */
+export function poolItemTypeAtIndex(
+  composition: PoolCompositionEntry[],
+  idx: number
+): QuestionType {
+  let cursor = 0;
+  for (const row of composition) {
+    for (let i = 0; i < row.count; i++) {
+      if (cursor === idx) return row.itemType;
+      cursor++;
+    }
+  }
+  return "mcq";
+}
+
+/** Human-readable directive for the AI prompt — one line per pool item type. */
+export function poolItemPromptDirective(itemType: QuestionType): string {
+  switch (itemType) {
+    case "mcq":
+      return "MCQ — provide exactly four options (a–d) and correct_option";
+    case "true_false":
+      return 'True/False — options MUST be { "a": "True", "b": "False" } only; correct_option is a or b';
+    case "short":
+      return "Short answer — question_text only; do NOT include options or correct_option";
+    case "long":
+      return "Long answer — question_text only; do NOT include options or correct_option";
+    case "numerical":
+      return "Numerical — question_text with concrete solvable data; do NOT include options or correct_option";
+    case "fill_blank":
+      return "Fill in the blank — question_text with blank(s); do NOT include options or correct_option";
+  }
+}
+
+/** JSON schema fragment for one pool item (Part G of the generation prompt). */
+export function poolItemSchemaFragment(
+  itemType: QuestionType,
+  slotKey: string,
+  label: string,
+  marks: number
+): string {
+  const tags = `"co": "<co code>", "btl": <integer 1-6>, "po": "<po code>"`;
+  const head = `{
+      "slotKey": "${slotKey}",
+      "label": "${label}",
+      "itemType": "${itemType}",
+      "question_text": string,
+      "marks": ${marks}`;
+  if (itemType === "mcq") {
+    return `${head},
+      "options": { "a": string, "b": string, "c": string, "d": string },
+      "correct_option": "a"|"b"|"c"|"d",
+      ${tags}
+    }`;
+  }
+  if (itemType === "true_false") {
+    return `${head},
+      "options": { "a": "True", "b": "False" },
+      "correct_option": "a"|"b",
+      ${tags}
+    }`;
+  }
+  return `${head},
+      ${tags}
+    }`;
+}
+
 export interface TemplateSection {
   section_name: string;
   /** Inclusive module-number range. `[1, 999]` is the "all modules" sentinel. */
   module_range: [number, number];
   total_marks: number;
-  questions: TemplateQuestion[];
+  questions: TemplateQuestionBlock[];
 }
 
 /** Sentinel value meaning "include every module in the subject". */
@@ -49,6 +187,8 @@ export function isAllModulesRange(r: [number, number] | null | undefined): boole
 
 export interface TemplateStructure {
   preset_key?: PresetKey;
+  /** When true: one implicit section, all section headers suppressed everywhere. */
+  flatLayout?: boolean;
   sections: TemplateSection[];
 }
 
@@ -139,6 +279,7 @@ export const PPSU_DEFAULT_STRUCTURE: TemplateStructure = {
 
 const CE_QUIZ_STRUCTURE: TemplateStructure = {
   preset_key: "CE_QUIZ",
+  flatLayout: true,
   sections: [
     {
       section_name: "Section A",

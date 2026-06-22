@@ -188,17 +188,17 @@ export async function POST(request: NextRequest) {
     if (generatedContentId) {
       // If the caller knows the parent qpaper row, patch the answer-key
       // columns onto it directly.
-      // status is forced to 'ready' on every write from this route — the
+      // status is forced to 'completed' on every write from this route — the
       // generated_content.status check constraint only accepts
-      // 'processing' | 'ready' | 'failed' | 'archived', and any stale value
-      // already on the row would fail the constraint when we update other
-      // columns alongside it.
+      // 'pending' | 'completed' | 'failed' (see generated_content_status_check
+      // in the initial schema). The qpaper row is already complete by the time
+      // its answer key is generated, so 'completed' is the correct value.
       const { error: updateError } = await adminClient
         .from("generated_content")
         .update({
           answer_key_path: filePath,
           answer_key_generated_at: generatedAt,
-          status: "ready",
+          status: "completed",
         })
         .eq("id", generatedContentId);
       if (updateError) {
@@ -224,7 +224,7 @@ export async function POST(request: NextRequest) {
             warnings,
           },
           generated_by: user.id,
-          status: "ready",
+          status: "completed",
           answer_key_path: filePath,
           answer_key_generated_at: generatedAt,
         });

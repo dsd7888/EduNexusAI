@@ -5,6 +5,7 @@ import {
   type PDFPage,
   type PDFFont,
 } from "pdf-lib";
+import { parseMarkdownLite } from "@/lib/text/markdownLite";
 
 // Brand colors
 export const COLORS = {
@@ -563,6 +564,182 @@ export class PDFBuilder {
       .replace(/`(.+?)`/g, "$1")
       .trim();
     return this.sanitize(cleaned);
+  }
+
+  // Wrap a single cell's text to a max width, returning the wrapped lines.
+  private wrapToWidth(text: string, font: PDFFont, size: number, maxW: number): string[] {
+    const words = this.sanitize(text).split(/\s+/).filter(Boolean);
+    const lines: string[] = [];
+    let current = "";
+    for (const word of words) {
+      const test = current ? `${current} ${word}` : word;
+      if (font.widthOfTextAtSize(test, size) > maxW && current) {
+        lines.push(current);
+        current = word;
+      } else {
+        current = test;
+      }
+    }
+    if (current) lines.push(current);
+    return lines.length > 0 ? lines : [""];
+  }
+
+  /**
+   * Draw a bordered table with even column widths. Cells wrap, every cell gets
+   * a visible border, the header row is shaded + bold, and the cursor advances
+   * past the table. If the whole table fits on a fresh page but not in the
+   * space remaining here, it starts on a new page rather than being cut off
+   * mid-table; tables taller than a full page fall back to per-row breaks with
+   * the header repeated on each continuation page.
+   */
+  drawTable(
+    headers: string[],
+    rows: string[][],
+    opts: { size?: number; x?: number; maxWidth?: number } = {}
+  ) {
+    const size = opts.size ?? 9.5;
+    const x0 = opts.x ?? MARGIN;
+    const tableW = opts.maxWidth ?? CONTENT_W - (x0 - MARGIN);
+    const nCols = Math.max(1, headers.length);
+    const colW = tableW / nCols;
+    const padX = 4;
+    const padY = 3;
+    const lineH = size * 1.25;
+    const headFont = this.fonts.bold;
+    const bodyFont = this.fonts.regular;
+    const innerW = colW - padX * 2;
+
+    const rowHeight = (cells: string[], font: PDFFont): number => {
+      let maxLines = 1;
+      for (let c = 0; c < nCols; c++) {
+        const ls = this.wrapToWidth(cells[c] ?? "", font, size, innerW);
+        if (ls.length > maxLines) maxLines = ls.length;
+      }
+      return maxLines * lineH + padY * 2;
+    };
+
+    const headerH = rowHeight(headers, headFont);
+    const rowHeights = rows.map((r) => rowHeight(r, bodyFont));
+    const totalH = headerH + rowHeights.reduce((s, h) => s + h, 0);
+
+    const pageInnerH = PAGE_H - MARGIN * 2;
+    const remaining = PAGE_H - MARGIN - this.y;
+    // Whole table fits on a fresh page but not here → push it to a new page.
+    if (totalH > remaining && totalH <= pageInnerH) {
+      this.currentPage = this.doc.addPage([PAGE_W, PAGE_H]);
+      this.pages.push(this.currentPage);
+      this.y = MARGIN;
+    }
+
+    const drawRow = (cells: string[], font: PDFFont, fill: boolean) => {
+      const h = rowHeight(cells, font);
+      // For an over-long table, break between rows and repeat the header.
+      // (Guard against a single row taller than a page → no infinite break.)
+      if (this.y + h > PAGE_H - MARGIN && this.y > MARGIN) {
+        this.currentPage = this.doc.addPage([PAGE_W, PAGE_H]);
+        this.pages.push(this.currentPage);
+        this.y = MARGIN;
+        if (!fill) drawRow(headers, headFont, true);
+      }
+      const topY = this.y;
+      for (let c = 0; c < nCols; c++) {
+        const cx = x0 + c * colW;
+        // Cell box (shaded for the header) with a visible border.
+        this.currentPage.drawRectangle({
+          x: cx,
+          y: this.py(topY) - h,
+          width: colW,
+          height: h,
+          color: fill ? COLORS.bgAccent : COLORS.white,
+          borderColor: COLORS.muted,
+          borderWidth: 0.5,
+        });
+        const ls = this.wrapToWidth(cells[c] ?? "", font, size, innerW);
+        let ty = topY + padY;
+        for (const ln of ls) {
+          this.currentPage.drawText(ln, {
+            x: cx + padX,
+            y: this.py(ty + size),
+            size,
+            font,
+            color: COLORS.text,
+          });
+          ty += lineH;
+        }
+      }
+      this.y = topY + h;
+    };
+
+    drawRow(headers, headFont, true);
+    for (const r of rows) drawRow(r, bodyFont, false);
+  }
+
+  /**
+   * Render AI text that may carry light markdown leakage (pipe tables, bullet /
+   * numbered lists, **bold**, `code`, ## headings). Tables become real bordered
+   * tables; lists get proper markers + indentation; everything else renders as
+   * plain wrapped paragraphs. Backed by the shared parseMarkdownLite parser.
+   */
+  richText(content: string, opts: { size?: number } = {}) {
+    const size = opts.size ?? 10;
+    const segments = parseMarkdownLite(content ?? "");
+
+    for (const seg of segments) {
+      if (seg.type === "table") {
+        this.space(3);
+        this.drawTable(seg.headers, seg.rows, { size: Math.min(size, 9.5) });
+        this.space(3);
+        continue;
+      }
+
+      if (seg.type === "list") {
+        seg.items.forEach((item, i) => {
+          const marker = seg.ordered ? `${i + 1}.` : "*";
+          const indent = seg.ordered ? 26 : 22;
+          this.checkNewPage(size * 1.5 + 4);
+          this.currentPage.drawText(marker, {
+            x: MARGIN + 8,
+            y: this.py(this.y + size),
+            size,
+            font: this.fonts.bold,
+            color: COLORS.primary,
+          });
+          this.text(this.stripInlineMarkdown(item), {
+            x: MARGIN + indent,
+            maxWidth: CONTENT_W - indent,
+            size,
+            lineHeight: size * 1.5,
+          });
+        });
+        this.space(2);
+        continue;
+      }
+
+      // Text segment — handle headings + fenced-code markers line by line,
+      // strip remaining inline markup, and render as plain paragraphs.
+      let inFence = false;
+      for (const raw of seg.content.split(/\r?\n/)) {
+        const line = raw.trim();
+        if (!line) {
+          this.space(3);
+          continue;
+        }
+        if (/^```/.test(line)) {
+          inFence = !inFence;
+          continue;
+        }
+        const heading = /^(#{1,6})\s+(.+)$/.exec(line);
+        if (heading) {
+          this.text(this.stripInlineMarkdown(heading[2]), {
+            font: this.fonts.bold,
+            size,
+            color: COLORS.text,
+          });
+          continue;
+        }
+        this.text(this.stripInlineMarkdown(line), { size, color: COLORS.text });
+      }
+    }
   }
 
   // Page header with logo area and colored bar

@@ -1,994 +1,78 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
-import {
-  DndContext,
-  closestCenter,
-  KeyboardSensor,
-  PointerSensor,
-  useSensor,
-  useSensors,
-  type DragEndEvent,
-} from "@dnd-kit/core";
-import {
-  arrayMove,
-  SortableContext,
-  sortableKeyboardCoordinates,
-  useSortable,
-  verticalListSortingStrategy,
-} from "@dnd-kit/sortable";
-import { CSS } from "@dnd-kit/utilities";
-import {
-  ChevronDown,
-  ChevronRight,
-  Copy,
-  Download,
-  FileText,
-  GripVertical,
-  Library,
-  Loader2,
-  Lock,
-  Pencil,
-  Plus,
-  RefreshCw,
-  Save,
-  Trash2,
-  X,
-} from "lucide-react";
-import { Badge } from "@/components/ui/badge";
+/**
+ * Faculty Q-paper builder. Owns the shared builder state (subject, modules,
+ * paper metadata, section/question structure, sourcing options, and the
+ * generated paper + its download URLs) and the generate flow, then composes
+ * the stage components under ./_components.
+ */
+
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import Link from "next/link";
+import { FileText, History } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { Switch } from "@/components/ui/switch";
-import { Textarea } from "@/components/ui/textarea";
 import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
-import {
-  Dialog,
-  DialogContent,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { createBrowserClient } from "@/lib/db/supabase-browser";
-import {
-  useFacultySubjects,
-  type SubjectRow,
-} from "@/hooks/useSupabaseData";
-import { cn } from "@/lib/utils";
+import { useFacultySubjects } from "@/hooks/useSupabaseData";
 import { toast } from "sonner";
+import {
+  STAGING_KEY,
+  type StagedQuestion,
+} from "../qbank/_components/shared";
+import {
+  buildTemplatePayload,
+  defaultCustomBtlWeights,
+  defaultMetadata,
+  defaultSourcingMix,
+  eseMetadata,
+  eseStandardSections,
+  newQuestion,
+  paperTotal,
+  quizMetadata,
+  quizSection,
+  sourcingMixToApi,
+  sourcingMixTotal,
+  uid,
+  type AssembledPaper,
+  type BuilderSection,
+  type ModuleRow,
+  type PaperMetadata,
+  type SourcingMixState,
+} from "./_components/shared";
+import type {
+  CustomBtlWeights,
+  DifficultyPreset,
+} from "@/lib/qpaper/moduleAssignment";
+import { useQpaperDraft, type BuilderSnapshot } from "./_components/useQpaperDraft";
+import { ScopeAndDifficultyStage } from "./_components/ScopeAndDifficultyStage";
+import { SourcingStage } from "./_components/SourcingStage";
+import { TemplateStructureStage } from "./_components/TemplateStructureStage";
+import { BuilderSectionsEditor } from "./_components/BuilderSectionsEditor";
+import { FinalizeExportStage } from "./_components/FinalizeExportStage";
+import { ReviewAndValidateStage } from "./_components/ReviewAndValidateStage";
 
-// ─── Types ──────────────────────────────────────────────────────────────────
-
-type ContentType = "mcq" | "truefalse" | "short" | "long" | "numerical";
-
-interface BuilderQuestion {
-  id: string;
-  displayLabel: string;
-  contentType: ContentType;
-  instruction: string;
-  /** MCQ/True-False: number of sub-part rows (e.g. 6 mini MCQs). */
-  subPartsCount: number;
-  /** MCQ: marks per sub-part. Other types: ignored. */
-  marksPerPart: number;
-  /** Total marks for a single descriptive question. */
-  marks: number;
-  /** Has "OR" alternative — adds a mirrored block. */
-  hasOr: boolean;
-  /** Primary parts count (1 = single, 2 = a+b, etc.). Used with hasOr. */
-  partsCount: number;
-  /** Marks per part (descriptive_with_or / multi-part). */
-  marksPerSubPart: number;
-  /** "Attempt any N of M" modifier. */
-  hasAttemptAny: boolean;
-  attemptAnyTake: number;
-  attemptAnyOfTotal: number;
-  /** Per option marks for attempt-any. */
-  attemptAnyMarks: number;
+/**
+ * Recover the Storage object path from a public `generated-content` URL, so a
+ * paper resumed from a draft (which restores only the public PDF URL, not the
+ * path) can still be recorded in history with a re-signable path.
+ */
+function pathFromPublicUrl(url: string | null): string | null {
+  if (!url) return null;
+  const marker = "/generated-content/";
+  const i = url.indexOf(marker);
+  if (i === -1) return null;
+  return url.slice(i + marker.length).split("?")[0];
 }
-
-interface BuilderSection {
-  id: string;
-  name: string;
-  questions: BuilderQuestion[];
-}
-
-interface InstructionItem {
-  id: string;
-  text: string;
-}
-
-interface PaperMetadata {
-  examTitle: string;
-  semester: string;
-  date: string;
-  time: string;
-  universityName: string;
-  instructions: InstructionItem[];
-}
-
-type PyqMode = "fresh" | "pyq_mix" | "pyq_pattern";
-
-/** Draft state for the inline question editor. */
-interface EditDraft {
-  question: string;
-  options?: Record<string, string>; // keys a,b,c,d
-  correct_option?: string;
-  model_answer: string;
-}
-
-interface ModuleRow {
-  id: string;
-  name: string;
-  module_number: number;
-  section_number: number | null;
-  weightage_percent: number | null;
-}
-
-// ─── Server payload (returned from /api/generate/qpaper) ────────────────────
-
-interface SubQuestion {
-  label: string;
-  question: string;
-  options?: Record<string, string>;
-  correct_option?: string;
-  co?: string | null;
-  btl?: number | null;
-  po?: string | null;
-  from_bank?: boolean;
-  bank_id?: string;
-  model_answer?: string | null;
-}
-
-interface QuestionPart {
-  label?: string | null;
-  question: string;
-  marks: number;
-  co?: string | null;
-  btl?: number | null;
-  po?: string | null;
-  is_or_alternative?: boolean;
-  from_bank?: boolean;
-  bank_id?: string;
-  model_answer?: string | null;
-}
-
-interface GeneratedQuestion {
-  q_number: number;
-  display_label?: string;
-  type: string;
-  instruction?: string | null;
-  total_marks: number;
-  attempt_logic?: string | null;
-  sub_parts?: SubQuestion[];
-  parts?: QuestionPart[];
-  from_bank?: boolean;
-}
-
-interface GeneratedSection {
-  section_name: string;
-  module_range?: [number, number];
-  total_marks?: number;
-  questions: GeneratedQuestion[];
-}
-
-interface AssembledPaper {
-  paperTitle?: string;
-  universityName: string;
-  examTitle?: string | null;
-  courseCode: string;
-  courseName: string;
-  date?: string | null;
-  duration: number;
-  totalMarks: number;
-  instructions: string[];
-  sections: GeneratedSection[];
-  courseOutcomes?: Array<{ co_code: string; description: string }>;
-  hasCoPoData?: boolean;
-}
-
-// ─── Template payload (sent to /api/qpaper/templates) ───────────────────────
-
-interface TemplateQuestionPayload {
-  q_number: number;
-  display_label: string;
-  type: "mcq" | "descriptive" | "descriptive_with_or" | "attempt_any_one";
-  instruction: string | null;
-  total_marks: number;
-  sub_parts?: number;
-  marks_per_part?: number;
-  parts?: string[];
-  has_numerical?: boolean;
-  attempt_logic: string | null;
-}
-
-interface TemplateSectionPayload {
-  section_name: string;
-  module_range: [number, number];
-  total_marks: number;
-  questions: TemplateQuestionPayload[];
-}
-
-// ─── Constants ──────────────────────────────────────────────────────────────
-
-const CONTENT_TYPE_LABELS: Record<ContentType, string> = {
-  mcq: "MCQ",
-  truefalse: "True / False",
-  short: "Short Answer",
-  long: "Long Answer",
-  numerical: "Numerical",
-};
-
-const DEFAULT_INSTRUCTIONS = [
-  "All questions of Section I and Section II must be attempted in separate answer sheets.",
-  "Make suitable assumptions and draw neat figures wherever required.",
-  "Use of scientific calculator is allowed.",
-  "Figures to the right indicate full marks.",
-];
-
-const QUIZ_INSTRUCTIONS = [
-  "All questions are compulsory.",
-  "Each question carries 1 mark.",
-  "No negative marking.",
-];
-
-// ─── Helpers ────────────────────────────────────────────────────────────────
-
-function uid() {
-  return Math.random().toString(36).slice(2, 10);
-}
-
-function makeInstruction(text = ""): InstructionItem {
-  return { id: uid(), text };
-}
-
-function defaultMetadata(): PaperMetadata {
-  return {
-    examTitle: "",
-    semester: "",
-    date: "",
-    time: "150 Minutes",
-    universityName: "P P Savani University",
-    instructions: DEFAULT_INSTRUCTIONS.map(makeInstruction),
-  };
-}
-
-function newQuestion(
-  contentType: ContentType = "long",
-  patch: Partial<BuilderQuestion> = {}
-): BuilderQuestion {
-  const defaults: Record<ContentType, Partial<BuilderQuestion>> = {
-    mcq: { subPartsCount: 5, marksPerPart: 1, marks: 5 },
-    truefalse: { subPartsCount: 5, marksPerPart: 1, marks: 5 },
-    short: { subPartsCount: 1, marksPerPart: 1, marks: 3 },
-    long: { subPartsCount: 1, marksPerPart: 1, marks: 5 },
-    numerical: { subPartsCount: 1, marksPerPart: 1, marks: 5 },
-  };
-  return {
-    id: uid(),
-    displayLabel: "Q - ?",
-    contentType,
-    instruction: "",
-    subPartsCount: 1,
-    marksPerPart: 1,
-    marks: 5,
-    hasOr: false,
-    partsCount: 1,
-    marksPerSubPart: 6,
-    hasAttemptAny: false,
-    attemptAnyTake: 1,
-    attemptAnyOfTotal: 2,
-    attemptAnyMarks: 6,
-    ...defaults[contentType],
-    ...patch,
-  };
-}
-
-function effectiveMarks(q: BuilderQuestion): number {
-  if (q.contentType === "mcq" || q.contentType === "truefalse") {
-    return q.subPartsCount * q.marksPerPart;
-  }
-  if (q.hasAttemptAny) {
-    return q.attemptAnyTake * q.attemptAnyMarks;
-  }
-  if (q.hasOr) {
-    return q.partsCount * q.marksPerSubPart;
-  }
-  return q.marks;
-}
-
-function sectionTotal(s: BuilderSection): number {
-  return s.questions.reduce((sum, q) => sum + effectiveMarks(q), 0);
-}
-
-function paperTotal(sections: BuilderSection[]): number {
-  return sections.reduce((sum, s) => sum + sectionTotal(s), 0);
-}
-
-const PART_LETTERS = "abcdefghijklmnopqrstuvwxyz";
-
-function toTemplateQuestion(
-  q: BuilderQuestion,
-  qNumber: number
-): TemplateQuestionPayload {
-  const display_label = q.displayLabel?.trim() || `Q - ${qNumber}`;
-  const instruction = q.instruction.trim() ? q.instruction.trim() : null;
-
-  if (q.contentType === "mcq" || q.contentType === "truefalse") {
-    return {
-      q_number: qNumber,
-      display_label,
-      type: "mcq",
-      instruction:
-        instruction ??
-        (q.contentType === "truefalse"
-          ? "True / False"
-          : "MCQ/Short Question/Fill in the Blanks"),
-      total_marks: q.subPartsCount * q.marksPerPart,
-      sub_parts: q.subPartsCount,
-      marks_per_part: q.marksPerPart,
-      attempt_logic: null,
-    };
-  }
-
-  if (q.hasAttemptAny) {
-    return {
-      q_number: qNumber,
-      display_label,
-      type: "attempt_any_one",
-      instruction:
-        instruction ?? `Attempt any ${q.attemptAnyTake} of ${q.attemptAnyOfTotal}.`,
-      total_marks: q.attemptAnyTake * q.attemptAnyMarks,
-      sub_parts: q.attemptAnyOfTotal,
-      attempt_logic:
-        q.attemptAnyTake === 1 ? "any_one" : `any_${q.attemptAnyTake}`,
-    };
-  }
-
-  if (q.hasOr) {
-    return {
-      q_number: qNumber,
-      display_label,
-      type: "descriptive_with_or",
-      instruction,
-      total_marks: q.partsCount * q.marksPerSubPart,
-      marks_per_part: q.marksPerSubPart,
-      parts: Array.from({ length: q.partsCount }, (_, i) => PART_LETTERS[i]),
-      attempt_logic: null,
-    };
-  }
-
-  return {
-    q_number: qNumber,
-    display_label,
-    type: "descriptive",
-    instruction,
-    total_marks: q.marks,
-    has_numerical: q.contentType === "numerical",
-    attempt_logic: null,
-  };
-}
-
-function moduleRangeForSection(
-  sectionIdx: number,
-  modules: ModuleRow[],
-  selectedModuleIds: string[]
-): [number, number] {
-  const sectionNumber = sectionIdx + 1;
-  const inSection = modules.filter(
-    (m) =>
-      selectedModuleIds.includes(m.id) &&
-      (m.section_number == null || m.section_number === sectionNumber)
-  );
-  if (inSection.length === 0) {
-    const all = modules.filter((m) => selectedModuleIds.includes(m.id));
-    if (all.length === 0) return [1, 999];
-    return [
-      Math.min(...all.map((m) => m.module_number)),
-      Math.max(...all.map((m) => m.module_number)),
-    ];
-  }
-  return [
-    Math.min(...inSection.map((m) => m.module_number)),
-    Math.max(...inSection.map((m) => m.module_number)),
-  ];
-}
-
-// ─── Prefill templates ──────────────────────────────────────────────────────
-
-function eseStandardSections(): BuilderSection[] {
-  const build = (name: string): BuilderSection => ({
-    id: uid(),
-    name,
-    questions: [
-      newQuestion("mcq", {
-        displayLabel: "Q - 1",
-        instruction: "MCQ/Short Question/Fill in the Blanks",
-        subPartsCount: 6,
-        marksPerPart: 1,
-      }),
-      newQuestion("numerical", {
-        displayLabel: "Q - 2",
-        marks: 6,
-      }),
-      newQuestion("long", {
-        displayLabel: "Q - 3",
-        hasOr: true,
-        partsCount: 2,
-        marksPerSubPart: 6,
-      }),
-      newQuestion("long", {
-        displayLabel: "Q - 4",
-        instruction: "Attempt any one.",
-        hasAttemptAny: true,
-        attemptAnyTake: 1,
-        attemptAnyOfTotal: 2,
-        attemptAnyMarks: 6,
-      }),
-    ],
-  });
-  return [build("Section I"), build("Section II")];
-}
-
-function quizSection(): BuilderSection[] {
-  return [
-    {
-      id: uid(),
-      name: "Section A",
-      questions: [
-        newQuestion("mcq", {
-          displayLabel: "Q - 1",
-          instruction: "Answer all questions.",
-          subPartsCount: 10,
-          marksPerPart: 1,
-        }),
-      ],
-    },
-  ];
-}
-
-function eseMetadata(): PaperMetadata {
-  return {
-    examTitle: "Fifth Semester of B. Tech. Examination",
-    semester: "Fifth Semester of B. Tech. Examination",
-    date: "",
-    time: "150 Minutes",
-    universityName: "P P Savani University",
-    instructions: DEFAULT_INSTRUCTIONS.map(makeInstruction),
-  };
-}
-
-function quizMetadata(): PaperMetadata {
-  return {
-    examTitle: "Continuous Evaluation Quiz",
-    semester: "",
-    date: "",
-    time: "20 Minutes",
-    universityName: "P P Savani University",
-    instructions: QUIZ_INSTRUCTIONS.map(makeInstruction),
-  };
-}
-
-// ─── Sortable instruction row ───────────────────────────────────────────────
-
-function SortableInstruction({
-  item,
-  index,
-  onChange,
-  onRemove,
-}: {
-  item: InstructionItem;
-  index: number;
-  onChange: (text: string) => void;
-  onRemove: () => void;
-}) {
-  const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
-    useSortable({ id: item.id });
-  const style = {
-    transform: CSS.Transform.toString(transform),
-    transition,
-    opacity: isDragging ? 0.5 : 1,
-  };
-  return (
-    <div ref={setNodeRef} style={style} className="flex items-center gap-2">
-      <button
-        type="button"
-        {...attributes}
-        {...listeners}
-        className="text-muted-foreground hover:text-foreground cursor-grab active:cursor-grabbing touch-none"
-        title="Drag to reorder"
-      >
-        <GripVertical className="size-3.5" />
-      </button>
-      <span className="text-xs text-muted-foreground w-5">{index + 1}.</span>
-      <Input
-        value={item.text}
-        onChange={(e) => onChange(e.target.value)}
-        className="h-7 text-xs flex-1"
-        placeholder="Instruction text"
-      />
-      <button
-        type="button"
-        onClick={onRemove}
-        className="text-muted-foreground hover:text-destructive"
-        title="Remove"
-      >
-        <Trash2 className="size-3.5" />
-      </button>
-    </div>
-  );
-}
-
-// ─── Sortable question card ─────────────────────────────────────────────────
-
-function SortableQuestion({
-  question,
-  qNumber,
-  onUpdate,
-  onRemove,
-  onDuplicate,
-}: {
-  question: BuilderQuestion;
-  qNumber: number;
-  onUpdate: (q: BuilderQuestion) => void;
-  onRemove: () => void;
-  onDuplicate: () => void;
-}) {
-  const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
-    useSortable({ id: question.id });
-  const style = {
-    transform: CSS.Transform.toString(transform),
-    transition,
-    opacity: isDragging ? 0.5 : 1,
-  };
-
-  const isMcqLike =
-    question.contentType === "mcq" || question.contentType === "truefalse";
-
-  const previewParts = question.hasOr
-    ? Array.from({ length: question.partsCount }, (_, i) => PART_LETTERS[i])
-    : [];
-
-  return (
-    <div ref={setNodeRef} style={style}>
-      <Card className="p-4 space-y-3">
-        {/* ── Top row: handle, label, type, marks, actions ──────────────── */}
-        <div className="flex flex-wrap items-center gap-2">
-          <button
-            type="button"
-            {...attributes}
-            {...listeners}
-            className="text-muted-foreground hover:text-foreground cursor-grab active:cursor-grabbing touch-none shrink-0"
-            title="Drag to reorder"
-          >
-            <GripVertical className="size-5" />
-          </button>
-
-          <Input
-            value={question.displayLabel}
-            onChange={(e) =>
-              onUpdate({ ...question, displayLabel: e.target.value })
-            }
-            className="h-8 text-sm font-semibold w-24"
-            placeholder={`Q - ${qNumber}`}
-          />
-
-          <Select
-            value={question.contentType}
-            onValueChange={(val) => {
-              const ct = val as ContentType;
-              onUpdate({
-                ...question,
-                contentType: ct,
-                // Reset MCQ-specific fields when switching away
-                ...(ct === "mcq" || ct === "truefalse"
-                  ? { subPartsCount: Math.max(1, question.subPartsCount) }
-                  : {}),
-              });
-            }}
-          >
-            <SelectTrigger className="h-8 w-36 text-xs">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {Object.entries(CONTENT_TYPE_LABELS).map(([val, label]) => (
-                <SelectItem key={val} value={val} className="text-xs">
-                  {label}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-
-          <div className="flex-1 min-w-2" />
-
-          <Badge variant="secondary" className="text-xs shrink-0">
-            {effectiveMarks(question)}M
-          </Badge>
-
-          <button
-            type="button"
-            onClick={onDuplicate}
-            className="text-muted-foreground hover:text-foreground"
-            title="Duplicate question"
-          >
-            <Copy className="size-4" />
-          </button>
-          <button
-            type="button"
-            onClick={onRemove}
-            className="text-muted-foreground hover:text-destructive"
-            title="Delete question"
-          >
-            <Trash2 className="size-4" />
-          </button>
-        </div>
-
-        {/* ── Instruction text ──────────────────────────────────────────── */}
-        <div className="ml-8">
-          <Input
-            value={question.instruction}
-            onChange={(e) =>
-              onUpdate({ ...question, instruction: e.target.value })
-            }
-            className="h-7 text-xs"
-            placeholder="Instruction (optional, shown above question in PDF)"
-          />
-        </div>
-
-        {/* ── Configurable rows ────────────────────────────────────────── */}
-        <div className="ml-8 space-y-2 text-xs">
-          {isMcqLike ? (
-            <div className="flex flex-wrap items-center gap-3">
-              <div className="flex items-center gap-1">
-                <span className="text-muted-foreground">Sub-parts</span>
-                <Input
-                  type="number"
-                  min={1}
-                  max={50}
-                  value={question.subPartsCount}
-                  onChange={(e) =>
-                    onUpdate({
-                      ...question,
-                      subPartsCount: Math.max(
-                        1,
-                        parseInt(e.target.value, 10) || 1
-                      ),
-                    })
-                  }
-                  className="h-7 w-16 text-center text-xs"
-                />
-              </div>
-              <div className="flex items-center gap-1">
-                <span className="text-muted-foreground">Marks / part</span>
-                <Input
-                  type="number"
-                  min={1}
-                  max={20}
-                  value={question.marksPerPart}
-                  onChange={(e) =>
-                    onUpdate({
-                      ...question,
-                      marksPerPart: Math.max(
-                        1,
-                        parseInt(e.target.value, 10) || 1
-                      ),
-                    })
-                  }
-                  className="h-7 w-16 text-center text-xs"
-                />
-              </div>
-            </div>
-          ) : question.hasAttemptAny ? (
-            <div className="flex flex-wrap items-center gap-3">
-              <span className="text-muted-foreground">Attempt any</span>
-              <Input
-                type="number"
-                min={1}
-                max={question.attemptAnyOfTotal}
-                value={question.attemptAnyTake}
-                onChange={(e) =>
-                  onUpdate({
-                    ...question,
-                    attemptAnyTake: Math.max(
-                      1,
-                      Math.min(
-                        question.attemptAnyOfTotal,
-                        parseInt(e.target.value, 10) || 1
-                      )
-                    ),
-                  })
-                }
-                className="h-7 w-16 text-center text-xs"
-              />
-              <span className="text-muted-foreground">of</span>
-              <Input
-                type="number"
-                min={Math.max(2, question.attemptAnyTake)}
-                max={10}
-                value={question.attemptAnyOfTotal}
-                onChange={(e) =>
-                  onUpdate({
-                    ...question,
-                    attemptAnyOfTotal: Math.max(
-                      Math.max(2, question.attemptAnyTake),
-                      parseInt(e.target.value, 10) || 2
-                    ),
-                  })
-                }
-                className="h-7 w-16 text-center text-xs"
-              />
-              <span className="text-muted-foreground ml-2">
-                Marks / option
-              </span>
-              <Input
-                type="number"
-                min={1}
-                max={50}
-                value={question.attemptAnyMarks}
-                onChange={(e) =>
-                  onUpdate({
-                    ...question,
-                    attemptAnyMarks: Math.max(
-                      1,
-                      parseInt(e.target.value, 10) || 1
-                    ),
-                  })
-                }
-                className="h-7 w-16 text-center text-xs"
-              />
-            </div>
-          ) : question.hasOr ? (
-            <div className="flex flex-wrap items-center gap-3">
-              <span className="text-muted-foreground">Parts</span>
-              <Input
-                type="number"
-                min={1}
-                max={6}
-                value={question.partsCount}
-                onChange={(e) =>
-                  onUpdate({
-                    ...question,
-                    partsCount: Math.max(
-                      1,
-                      Math.min(6, parseInt(e.target.value, 10) || 1)
-                    ),
-                  })
-                }
-                className="h-7 w-16 text-center text-xs"
-              />
-              <span className="text-muted-foreground">Marks / part</span>
-              <Input
-                type="number"
-                min={1}
-                max={50}
-                value={question.marksPerSubPart}
-                onChange={(e) =>
-                  onUpdate({
-                    ...question,
-                    marksPerSubPart: Math.max(
-                      1,
-                      parseInt(e.target.value, 10) || 1
-                    ),
-                  })
-                }
-                className="h-7 w-16 text-center text-xs"
-              />
-            </div>
-          ) : (
-            <div className="flex flex-wrap items-center gap-3">
-              <span className="text-muted-foreground">Marks</span>
-              <Input
-                type="number"
-                min={1}
-                max={100}
-                value={question.marks}
-                onChange={(e) =>
-                  onUpdate({
-                    ...question,
-                    marks: Math.max(1, parseInt(e.target.value, 10) || 1),
-                  })
-                }
-                className="h-7 w-20 text-center text-xs"
-              />
-            </div>
-          )}
-
-          {/* ── Toggles ──────────────────────────────────────────────── */}
-          {!isMcqLike && (
-            <div className="flex flex-wrap items-center gap-4 pt-1">
-              <label className="flex items-center gap-2 text-xs cursor-pointer">
-                <Switch
-                  checked={question.hasOr}
-                  onCheckedChange={(v) =>
-                    onUpdate({
-                      ...question,
-                      hasOr: v,
-                      hasAttemptAny: v ? false : question.hasAttemptAny,
-                      partsCount: v ? Math.max(1, question.partsCount) : 1,
-                      marksPerSubPart: v
-                        ? Math.max(1, question.marksPerSubPart)
-                        : question.marksPerSubPart,
-                    })
-                  }
-                />
-                <span>Has OR alternative</span>
-              </label>
-              <label className="flex items-center gap-2 text-xs cursor-pointer">
-                <Switch
-                  checked={question.hasAttemptAny}
-                  onCheckedChange={(v) =>
-                    onUpdate({
-                      ...question,
-                      hasAttemptAny: v,
-                      hasOr: v ? false : question.hasOr,
-                    })
-                  }
-                />
-                <span>Attempt any</span>
-              </label>
-            </div>
-          )}
-        </div>
-
-        {/* ── OR alternative mirror block (visual indicator) ──────────── */}
-        {question.hasOr && (
-          <div className="ml-12 border-l-2 border-dashed border-muted-foreground/40 pl-4 space-y-1">
-            <div className="text-[11px] uppercase tracking-wide text-muted-foreground italic">
-              OR — mirrored alternative ({question.partsCount} parts ×{" "}
-              {question.marksPerSubPart}M)
-            </div>
-            {previewParts.map((label) => (
-              <div key={label} className="text-xs text-muted-foreground">
-                ({label}) AI will generate an alternative on the same module —
-                attempt either side.
-              </div>
-            ))}
-          </div>
-        )}
-
-        {question.hasAttemptAny && (
-          <div className="ml-12 border-l-2 border-dashed border-muted-foreground/40 pl-4 text-[11px] text-muted-foreground italic">
-            {question.attemptAnyOfTotal} options listed, student attempts{" "}
-            {question.attemptAnyTake}.
-          </div>
-        )}
-      </Card>
-    </div>
-  );
-}
-
-// ─── Course header field row ────────────────────────────────────────────────
-
-function CourseHeaderRow({
-  subject,
-  meta,
-  setMeta,
-}: {
-  subject: SubjectRow | undefined;
-  meta: PaperMetadata;
-  setMeta: (m: PaperMetadata) => void;
-}) {
-  return (
-    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-      <div>
-        <Label className="text-xs mb-1 block">Subject</Label>
-        <Input
-          value={subject?.name ?? ""}
-          readOnly
-          className="h-8 text-sm bg-muted/40"
-        />
-      </div>
-      <div>
-        <Label className="text-xs mb-1 block">Course Code</Label>
-        <Input
-          value={subject?.code ?? ""}
-          readOnly
-          className="h-8 text-sm bg-muted/40"
-        />
-      </div>
-      <div>
-        <Label className="text-xs mb-1 block">Exam Title</Label>
-        <Input
-          value={meta.examTitle}
-          onChange={(e) => setMeta({ ...meta, examTitle: e.target.value })}
-          className="h-8 text-sm"
-          placeholder="End Semester Examination"
-        />
-      </div>
-      <div>
-        <Label className="text-xs mb-1 block">Semester</Label>
-        <Input
-          value={meta.semester}
-          onChange={(e) => setMeta({ ...meta, semester: e.target.value })}
-          className="h-8 text-sm"
-          placeholder="Fifth Semester of B. Tech. Examination"
-        />
-      </div>
-      <div>
-        <Label className="text-xs mb-1 block">Date</Label>
-        <Input
-          value={meta.date}
-          onChange={(e) => setMeta({ ...meta, date: e.target.value })}
-          className="h-8 text-sm"
-          placeholder="DD / MM / YYYY"
-        />
-      </div>
-      <div>
-        <Label className="text-xs mb-1 block">Time</Label>
-        <Input
-          value={meta.time}
-          onChange={(e) => setMeta({ ...meta, time: e.target.value })}
-          className="h-8 text-sm"
-          placeholder="150 Minutes"
-        />
-      </div>
-      <div className="md:col-span-2">
-        <Label className="text-xs mb-1 block">University Name</Label>
-        <Input
-          value={meta.universityName}
-          onChange={(e) =>
-            setMeta({ ...meta, universityName: e.target.value })
-          }
-          className="h-8 text-sm"
-        />
-      </div>
-    </div>
-  );
-}
-
-// ─── Inline-edit action buttons (Save / Save to Bank / Cancel) ──────────────
-
-function EditActions({
-  onSave,
-  onCancel,
-  onSaveToBank,
-  savingBank,
-}: {
-  onSave: () => void;
-  onCancel: () => void;
-  onSaveToBank: () => void;
-  savingBank: boolean;
-}) {
-  return (
-    <div className="flex items-center gap-2">
-      <Button size="sm" className="h-7 text-xs" onClick={onSave}>
-        <Save className="size-3 mr-1" />
-        Save
-      </Button>
-      <Button
-        size="sm"
-        variant="outline"
-        className="h-7 text-xs"
-        onClick={onSaveToBank}
-        disabled={savingBank}
-      >
-        {savingBank ? (
-          <Loader2 className="size-3 mr-1 animate-spin" />
-        ) : (
-          <Library className="size-3 mr-1" />
-        )}
-        Save to Bank
-      </Button>
-      <Button
-        size="sm"
-        variant="ghost"
-        className="h-7 text-xs"
-        onClick={onCancel}
-      >
-        <X className="size-3 mr-1" />
-        Cancel
-      </Button>
-    </div>
-  );
-}
-
-// ─── Main page ──────────────────────────────────────────────────────────────
 
 export default function QpaperPage() {
   const { subjects, isLoading: isLoadingSubjects } = useFacultySubjects();
@@ -1003,29 +87,64 @@ export default function QpaperPage() {
   const [sections, setSections] = useState<BuilderSection[]>(
     eseStandardSections()
   );
+  const [flatLayout, setFlatLayout] = useState(false);
   const [targetMarks, setTargetMarks] = useState<number>(60);
-  const [pyqMode, setPyqMode] = useState<PyqMode>("fresh");
-  const [pyqPercent, setPyqPercent] = useState(50);
-  const [fromBank, setFromBank] = useState(false);
-  // null = unknown/checking; number = count of bank questions for the subject
-  const [bankCount, setBankCount] = useState<number | null>(null);
+  const [sourcingMix, setSourcingMix] = useState<SourcingMixState>(
+    defaultSourcingMix()
+  );
+  const [difficultyPreset, setDifficultyPreset] =
+    useState<DifficultyPreset>("balanced");
+  const [customBtlWeights, setCustomBtlWeights] = useState<CustomBtlWeights>(
+    defaultCustomBtlWeights()
+  );
+  // IDs guaranteed-included from the Q Bank (set when arriving via staging).
+  const [preferredBankQuestionIds, setPreferredBankQuestionIds] = useState<
+    string[]
+  >([]);
+  // null = unknown/checking; number = verified bank questions for the subject.
+  const [verifiedBankCount, setVerifiedBankCount] = useState<number | null>(
+    null
+  );
+  // From the last generation response — drives the non-blocking fallback note.
+  const [bankFallbackCount, setBankFallbackCount] = useState(0);
+  const [unplaceablePreferred, setUnplaceablePreferred] = useState<
+    Array<{ id: string; question_text: string }>
+  >([]);
 
   const [paper, setPaper] = useState<AssembledPaper | null>(null);
   const [downloadUrl, setDownloadUrl] = useState<string | null>(null);
   const [answerKeyUrl, setAnswerKeyUrl] = useState<string | null>(null);
-  const [isGeneratingAnswerKey, setIsGeneratingAnswerKey] = useState(false);
+  // Per-section answer-key warnings from the last key generation (e.g. a block
+  // that failed to parse). Drives the non-blocking note below, alongside the
+  // bank-fallback / unplaceable-preferred notes.
+  const [answerKeyWarnings, setAnswerKeyWarnings] = useState<string[]>([]);
+  // Wraps setPaper for ReviewAndValidateStage: any post-generation mutation
+  // (inline edit, tag relabel, per-question regen) invalidates the answer key.
+  const setPaperAndClearKey = useCallback(
+    (value: React.SetStateAction<AssembledPaper | null>) => {
+      setPaper(value);
+      setAnswerKeyUrl(null);
+      setAnswerKeyWarnings([]);
+    },
+    []
+  );
+  // Storage paths for the artifacts (stable; URLs above expire). Captured as
+  // each artifact is produced so the finalize event can persist them to
+  // qpaper_history for later re-downloads.
+  const [pdfPath, setPdfPath] = useState<string | null>(null);
+  const [docxPath, setDocxPath] = useState<string | null>(null);
+  const [answerKeyPath, setAnswerKeyPath] = useState<string | null>(null);
   const [isGenerating, setIsGenerating] = useState(false);
-  const [isReExporting, setIsReExporting] = useState(false);
-  const [isExportingDocx, setIsExportingDocx] = useState(false);
-  const [regenKey, setRegenKey] = useState<string | null>(null);
-  const [editingKey, setEditingKey] = useState<string | null>(null);
-  const [editDraft, setEditDraft] = useState<EditDraft | null>(null);
-  const [savingBankKey, setSavingBankKey] = useState<string | null>(null);
   const [progressMsg, setProgressMsg] = useState("");
 
-  const [saveOpen, setSaveOpen] = useState(false);
-  const [saveName, setSaveName] = useState("");
-  const [isSaving, setIsSaving] = useState(false);
+  // Whether this page load came from a Q Bank staging hand-off. Read once on
+  // first render (before the staging effect clears the key) so the draft hook
+  // can skip the "resume?" prompt when the user arrived with explicit intent.
+  const [cameFromStaging] = useState(
+    () =>
+      typeof window !== "undefined" &&
+      !!sessionStorage.getItem(STAGING_KEY)
+  );
 
   // Hydration gate: @dnd-kit assigns aria IDs from a global counter
   // (DndDescribedBy-N) that drifts between SSR and client hydration. Also,
@@ -1037,14 +156,33 @@ export default function QpaperPage() {
     setMounted(true);
   }, []);
 
-  const selectedSubject = subjects.find((s) => s.id === selectedSubjectId);
+  // ─── Q Bank staged-question hydration (runs once on mount) ──────────────
+  // The Q Bank page stages a set of questions; instead of dumping them into a
+  // flat section, we extract just their IDs as "guaranteed-included" preferred
+  // questions and bias the mix toward the bank. Faculty still picks
+  // modules/marks and hits Generate on the normal Scope/Sourcing flow.
+  useEffect(() => {
+    const raw = sessionStorage.getItem(STAGING_KEY);
+    if (!raw) return;
+    sessionStorage.removeItem(STAGING_KEY);
+    try {
+      const { subjectId, questions } = JSON.parse(raw) as {
+        subjectId: string;
+        questions: StagedQuestion[];
+      };
+      setSelectedSubjectId(subjectId);
+      const ids = questions.map((q) => q.id).filter(Boolean);
+      setPreferredBankQuestionIds(ids);
+      setSourcingMix({ fresh: 60, pyq_style: 10, bank: 30 });
+      toast.success(
+        `${ids.length} question(s) from your Q Bank will be included`
+      );
+    } catch {
+      // malformed sessionStorage data — ignore
+    }
+  }, []);
 
-  const sensors = useSensors(
-    useSensor(PointerSensor),
-    useSensor(KeyboardSensor, {
-      coordinateGetter: sortableKeyboardCoordinates,
-    })
-  );
+  const selectedSubject = subjects.find((s) => s.id === selectedSubjectId);
 
   // ─── Subject autoselect ─────────────────────────────────────────────────
   useEffect(() => {
@@ -1052,6 +190,23 @@ export default function QpaperPage() {
       setSelectedSubjectId(subjects[0].id);
     }
   }, [subjects, selectedSubjectId]);
+
+  // Ref for the generated-paper review section — used to scroll to it on resume
+  // when the snapshot already has content.
+  const reviewRef = useRef<HTMLDivElement>(null);
+  // Set to true by handleResume when the restored snapshot has a paper; cleared
+  // once the scroll fires.
+  const scrollToPaperRef = useRef(false);
+
+  // Tracks the qpaper_history row id for the current paper session. Null = no
+  // row written yet (first finalize will insert); non-null = row exists and
+  // subsequent finalizes will update it with newly-available artifact paths.
+  const historyRowIdRef = useRef<string | null>(null);
+
+  // Module ids to honor on the next modules load instead of "select all" —
+  // set by a draft restore so a resumed module subset survives the reload that
+  // a subject change triggers. Consumed once, then cleared.
+  const restoredModuleIdsRef = useRef<string[] | null>(null);
 
   // ─── Modules load (need section_number + weightage_percent) ─────────────
   useEffect(() => {
@@ -1063,41 +218,55 @@ export default function QpaperPage() {
     const supabase = createBrowserClient();
     supabase
       .from("modules")
-      .select("id, name, module_number, section_number, weightage_percent")
+      .select(
+        "id, name, module_number, section_number, weightage_percent, btl_levels"
+      )
       .eq("subject_id", selectedSubjectId)
       .order("module_number")
       .then(({ data }) => {
         const rows = (data ?? []) as ModuleRow[];
         setModules(rows);
-        setSelectedModuleIds(rows.map((m) => m.id));
+        const restored = restoredModuleIdsRef.current;
+        restoredModuleIdsRef.current = null;
+        if (restored) {
+          const valid = new Set(rows.map((m) => m.id));
+          setSelectedModuleIds(restored.filter((id) => valid.has(id)));
+        } else {
+          setSelectedModuleIds(rows.map((m) => m.id));
+        }
       });
   }, [selectedSubjectId]);
 
-  // ─── Q Bank availability for the selected subject ───────────────────────
+  // ─── Verified Q Bank availability for the selected subject ──────────────
   useEffect(() => {
     if (!selectedSubjectId) {
-      setBankCount(null);
+      setVerifiedBankCount(null);
       return;
     }
     let cancelled = false;
-    setBankCount(null);
-    fetch(`/api/qbank/list?subject_id=${selectedSubjectId}&per_page=1`)
+    setVerifiedBankCount(null);
+    fetch(
+      `/api/qbank/list?subject_id=${selectedSubjectId}&is_verified=true&per_page=1`
+    )
       .then((r) => (r.ok ? r.json() : Promise.reject(r)))
       .then((data: { total?: number }) => {
-        if (!cancelled) setBankCount(data.total ?? 0);
+        if (!cancelled) setVerifiedBankCount(data.total ?? 0);
       })
       .catch(() => {
-        if (!cancelled) setBankCount(0);
+        if (!cancelled) setVerifiedBankCount(0);
       });
     return () => {
       cancelled = true;
     };
   }, [selectedSubjectId]);
 
-  // If the chosen subject has no bank, fall off the "From Q Bank" source.
+  // If the chosen subject has no verified bank, move any bank% back to fresh so
+  // the disabled Bank row can't leave an unsatisfiable allocation.
   useEffect(() => {
-    if (bankCount === 0 && fromBank) setFromBank(false);
-  }, [bankCount, fromBank]);
+    if (verifiedBankCount === 0 && sourcingMix.bank > 0) {
+      setSourcingMix((m) => ({ ...m, fresh: m.fresh + m.bank, bank: 0 }));
+    }
+  }, [verifiedBankCount, sourcingMix.bank]);
 
   // ─── Beforeunload during generation ─────────────────────────────────────
   useEffect(() => {
@@ -1113,137 +282,183 @@ export default function QpaperPage() {
   // ─── Live total ─────────────────────────────────────────────────────────
   const totalMarksLive = useMemo(() => paperTotal(sections), [sections]);
 
-  // ─── Modules grouped by section_number ──────────────────────────────────
-  const moduleGroups = useMemo(() => {
-    const groups = new Map<number, ModuleRow[]>();
-    for (const m of modules) {
-      const k = m.section_number ?? 0;
-      const arr = groups.get(k) ?? [];
-      arr.push(m);
-      groups.set(k, arr);
+  // ─── Autosave / draft resume ─────────────────────────────────────────────
+  // Memoized so the hook's autosave only fires on real value changes, not on
+  // every render.
+  const snapshot = useMemo<BuilderSnapshot>(
+    () => ({
+      selectedSubjectId,
+      selectedModuleIds,
+      meta,
+      sections,
+      flatLayout,
+      targetMarks,
+      sourcingMix,
+      difficultyPreset,
+      customBtlWeights,
+      preferredBankQuestionIds,
+      paper,
+      downloadUrl,
+      answerKeyUrl,
+    }),
+    [
+      selectedSubjectId,
+      selectedModuleIds,
+      meta,
+      sections,
+      flatLayout,
+      targetMarks,
+      sourcingMix,
+      difficultyPreset,
+      customBtlWeights,
+      preferredBankQuestionIds,
+      paper,
+      downloadUrl,
+      answerKeyUrl,
+    ]
+  );
+
+  const {
+    resumeCandidate,
+    lastSavedAt,
+    resume,
+    discard,
+    markGenerating,
+    markComplete,
+    markFailed,
+    clearDraft,
+  } = useQpaperDraft(snapshot, { skipResume: cameFromStaging });
+
+  // Hydrate the whole builder from a resumed draft, defaulting any field a
+  // stored snapshot might predate (including snapshots written before the paper
+  // fields were added).
+  const applySnapshot = useCallback((s: BuilderSnapshot) => {
+    // Queue the restored module subset so the subject-change reload honors it
+    // rather than reselecting every module.
+    restoredModuleIdsRef.current = s.selectedModuleIds ?? [];
+    setSelectedSubjectId(s.selectedSubjectId ?? "");
+    setSelectedModuleIds(s.selectedModuleIds ?? []);
+    setMeta(s.meta ?? defaultMetadata());
+    setSections(s.sections ?? eseStandardSections());
+    setFlatLayout(s.flatLayout ?? false);
+    setTargetMarks(s.targetMarks ?? 60);
+    setSourcingMix(s.sourcingMix ?? defaultSourcingMix());
+    setDifficultyPreset(s.difficultyPreset ?? "balanced");
+    setCustomBtlWeights(s.customBtlWeights ?? defaultCustomBtlWeights());
+    setPreferredBankQuestionIds(s.preferredBankQuestionIds ?? []);
+    // Restore generated output — null is fine; it just means builder view.
+    setPaper(s.paper ?? null);
+    setDownloadUrl(s.downloadUrl ?? null);
+    setAnswerKeyUrl(s.answerKeyUrl ?? null);
+  }, []);
+
+  const handleResume = () => {
+    const s = resume();
+    if (s) {
+      if (s.paper) scrollToPaperRef.current = true;
+      // A resumed paper is a fresh working session — let it be recorded again
+      // if finalized (its prior history row, if any, was written before).
+      historyRowIdRef.current = null;
+      applySnapshot(s);
+      toast.success(s.paper ? "Draft restored — scroll to review your paper" : "Draft restored");
     }
-    return Array.from(groups.entries()).sort(([a], [b]) => a - b);
-  }, [modules]);
-
-  // ─── Builder mutations ──────────────────────────────────────────────────
-  const addSection = () => {
-    setSections((prev) => [
-      ...prev,
-      {
-        id: uid(),
-        name: `Section ${
-          prev.length === 0
-            ? "I"
-            : ["II", "III", "IV", "V", "VI"][prev.length - 1] ?? `${prev.length + 1}`
-        }`,
-        questions: [newQuestion("long", { displayLabel: "Q - 1" })],
-      },
-    ]);
   };
 
-  const removeSection = (id: string) => {
-    setSections((prev) => prev.filter((s) => s.id !== id));
-  };
+  // ─── Finalize: record a history row, then clear the autosave draft ───────
+  // Wired into FinalizeExportStage's onFinalized; fires on every download
+  // (PDF button, Word export, and — via the answer-key setter — after key gen).
+  //
+  // First call in a session: inserts a new qpaper_history row with whatever
+  // artifact paths are already available, captures the returned id.
+  // Subsequent calls: updates that same row, patching in newly-available paths
+  // without touching any path columns already set. clearDraft() is called every
+  // time — deleting an already-deleted draft is a safe no-op.
+  const handleFinalized = useCallback(
+    async (patch?: { docxPath?: string | null }) => {
+      if (paper) {
+        const effectivePdfPath = pdfPath ?? pathFromPublicUrl(downloadUrl);
+        // patch.docxPath carries the fresh path from the just-completed export
+        // API call; docxPath state hasn't flushed yet in the same React tick.
+        const effectiveDocxPath = patch?.docxPath ?? docxPath;
 
-  const updateSection = (id: string, patch: Partial<BuilderSection>) => {
-    setSections((prev) =>
-      prev.map((s) => (s.id === id ? { ...s, ...patch } : s))
-    );
-  };
-
-  const addQuestion = (sectionId: string) => {
-    setSections((prev) =>
-      prev.map((s) =>
-        s.id === sectionId
-          ? {
-              ...s,
-              questions: [
-                ...s.questions,
-                newQuestion("long", {
-                  displayLabel: `Q - ${s.questions.length + 1}`,
-                }),
-              ],
+        try {
+          const supabase = createBrowserClient();
+          const {
+            data: { user },
+          } = await supabase.auth.getUser();
+          if (user) {
+            if (!historyRowIdRef.current) {
+              // ── Insert ───────────────────────────────────────────────────
+              const { data, error } = await supabase
+                .from("qpaper_history")
+                .insert({
+                  faculty_id: user.id,
+                  subject_id: selectedSubjectId || null,
+                  label:
+                    paper.paperTitle ||
+                    meta.examTitle ||
+                    selectedSubject?.name ||
+                    "Question Paper",
+                  total_marks: paper.totalMarks ?? totalMarksLive,
+                  structure_summary: snapshot,
+                  pdf_path: effectivePdfPath,
+                  docx_path: effectiveDocxPath,
+                  answer_key_path: answerKeyPath,
+                })
+                .select("id")
+                .single();
+              if (error) throw error;
+              historyRowIdRef.current = data.id;
+            } else {
+              // ── Update: add newly-available paths, leave existing ones ──
+              const updatePatch: Record<string, string> = {};
+              if (effectivePdfPath) updatePatch.pdf_path = effectivePdfPath;
+              if (effectiveDocxPath) updatePatch.docx_path = effectiveDocxPath;
+              if (answerKeyPath) updatePatch.answer_key_path = answerKeyPath;
+              if (Object.keys(updatePatch).length > 0) {
+                const { error } = await supabase
+                  .from("qpaper_history")
+                  .update(updatePatch)
+                  .eq("id", historyRowIdRef.current);
+                if (error) throw error;
+              }
             }
-          : s
-      )
-    );
-  };
+          }
+        } catch (err) {
+          // Non-fatal — history must never block a download. On insert failure
+          // historyRowIdRef stays null so the next finalize retries the insert.
+          console.error("[qpaper history] save failed", err);
+        }
+      }
+      clearDraft();
+    },
+    [
+      paper,
+      pdfPath,
+      downloadUrl,
+      docxPath,
+      answerKeyPath,
+      selectedSubjectId,
+      meta,
+      selectedSubject,
+      totalMarksLive,
+      snapshot,
+      clearDraft,
+    ]
+  );
 
-  const duplicateQuestion = (sectionId: string, qId: string) => {
-    setSections((prev) =>
-      prev.map((s) => {
-        if (s.id !== sectionId) return s;
-        const idx = s.questions.findIndex((q) => q.id === qId);
-        if (idx === -1) return s;
-        const src = s.questions[idx];
-        const dup: BuilderQuestion = {
-          ...src,
-          id: uid(),
-          displayLabel: `${src.displayLabel} (copy)`,
-        };
-        const next = [...s.questions];
-        next.splice(idx + 1, 0, dup);
-        return { ...s, questions: next };
-      })
-    );
-  };
-
-  const removeQuestion = (sectionId: string, qId: string) => {
-    setSections((prev) =>
-      prev.map((s) =>
-        s.id === sectionId
-          ? { ...s, questions: s.questions.filter((q) => q.id !== qId) }
-          : s
-      )
-    );
-  };
-
-  const updateQuestion = (sectionId: string, updated: BuilderQuestion) => {
-    setSections((prev) =>
-      prev.map((s) =>
-        s.id === sectionId
-          ? {
-              ...s,
-              questions: s.questions.map((q) =>
-                q.id === updated.id ? updated : q
-              ),
-            }
-          : s
-      )
-    );
-  };
-
-  const handleQuestionDragEnd = (sectionId: string, event: DragEndEvent) => {
-    const { active, over } = event;
-    if (!over || active.id === over.id) return;
-    setSections((prev) =>
-      prev.map((s) => {
-        if (s.id !== sectionId) return s;
-        const oldIdx = s.questions.findIndex((q) => q.id === active.id);
-        const newIdx = s.questions.findIndex((q) => q.id === over.id);
-        if (oldIdx === -1 || newIdx === -1) return s;
-        return { ...s, questions: arrayMove(s.questions, oldIdx, newIdx) };
-      })
-    );
-  };
-
-  const handleInstructionDragEnd = (event: DragEndEvent) => {
-    const { active, over } = event;
-    if (!over || active.id === over.id) return;
-    setMeta((prev) => {
-      const oldIdx = prev.instructions.findIndex((i) => i.id === active.id);
-      const newIdx = prev.instructions.findIndex((i) => i.id === over.id);
-      if (oldIdx === -1 || newIdx === -1) return prev;
-      return {
-        ...prev,
-        instructions: arrayMove(prev.instructions, oldIdx, newIdx),
-      };
-    });
-  };
+  // Scroll to the review section after a resume that includes generated content.
+  // Runs whenever `paper` changes; only fires when the one-shot flag is set.
+  useEffect(() => {
+    if (!scrollToPaperRef.current || !paper || !reviewRef.current) return;
+    scrollToPaperRef.current = false;
+    reviewRef.current.scrollIntoView({ behavior: "smooth", block: "start" });
+  }, [paper]);
 
   // ─── Template prefill actions ──────────────────────────────────────────
   const applyEse = () => {
     setSections(eseStandardSections());
+    setFlatLayout(false);
     setMeta(eseMetadata());
     setTargetMarks(60);
     setPaper(null);
@@ -1254,6 +469,7 @@ export default function QpaperPage() {
 
   const applyQuiz = () => {
     setSections(quizSection());
+    setFlatLayout(true);
     setMeta(quizMetadata());
     setTargetMarks(10);
     setPaper(null);
@@ -1270,88 +486,13 @@ export default function QpaperPage() {
         questions: [newQuestion("long", { displayLabel: "Q - 1" })],
       },
     ]);
+    setFlatLayout(false);
     setMeta(defaultMetadata());
     setTargetMarks(60);
     setPaper(null);
     setDownloadUrl(null);
     setAnswerKeyUrl(null);
     toast.message("Builder cleared");
-  };
-
-  // ─── Build template payload ────────────────────────────────────────────
-  const buildTemplatePayload = useCallback(
-    (name: string) => {
-      let qCounter = 0;
-      const apiSections: TemplateSectionPayload[] = sections.map((s, sIdx) => {
-        const range = moduleRangeForSection(
-          sIdx,
-          modules,
-          selectedModuleIds
-        );
-        const apiQuestions = s.questions.map((q) => {
-          qCounter += 1;
-          return toTemplateQuestion(q, qCounter);
-        });
-        return {
-          section_name: s.name,
-          module_range: range,
-          total_marks: sectionTotal(s),
-          questions: apiQuestions,
-        };
-      });
-
-      return {
-        subject_id: selectedSubjectId,
-        name,
-        university_name: meta.universityName,
-        exam_title: meta.examTitle || meta.semester || null,
-        duration_minutes: Number(meta.time.replace(/\D+/g, "")) || 150,
-        total_marks: totalMarksLive,
-        instructions: meta.instructions
-          .map((i) => i.text.trim())
-          .filter(Boolean),
-        structure: { sections: apiSections },
-        is_default: false,
-      };
-    },
-    [
-      sections,
-      modules,
-      selectedModuleIds,
-      meta,
-      totalMarksLive,
-      selectedSubjectId,
-    ]
-  );
-
-  // ─── Save template (explicit) ──────────────────────────────────────────
-  const saveTemplate = async () => {
-    if (!selectedSubjectId) {
-      toast.error("Select a subject first");
-      return;
-    }
-    const name = saveName.trim();
-    if (!name) {
-      toast.error("Enter a template name");
-      return;
-    }
-    setIsSaving(true);
-    try {
-      const res = await fetch("/api/qpaper/templates", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(buildTemplatePayload(name)),
-      });
-      if (!res.ok) throw new Error(await res.text());
-      toast.success(`Saved "${name}"`);
-      setSaveOpen(false);
-      setSaveName("");
-    } catch (err) {
-      console.error(err);
-      toast.error("Failed to save template");
-    } finally {
-      setIsSaving(false);
-    }
   };
 
   // ─── Generate ──────────────────────────────────────────────────────────
@@ -1364,17 +505,44 @@ export default function QpaperPage() {
       toast.error("Add at least one question first");
       return;
     }
+    if (selectedModuleIds.length === 0) {
+      toast.error("Select at least one module");
+      return;
+    }
+    if (sourcingMixTotal(sourcingMix) !== 100) {
+      toast.error("Sourcing mix must total 100%");
+      return;
+    }
     setIsGenerating(true);
     setPaper(null);
     setDownloadUrl(null);
     setAnswerKeyUrl(null);
+    setPdfPath(null);
+    setDocxPath(null);
+    setAnswerKeyPath(null);
+    historyRowIdRef.current = null;
+    setBankFallbackCount(0);
+    setUnplaceablePreferred([]);
+    // Flush the draft and mark it generating so a tab closed mid-request leaves
+    // an honest 'generating' status to surface on return.
+    void markGenerating();
     try {
       setProgressMsg("Saving paper structure...");
       const draftName = `Draft ${new Date().toLocaleString()}`;
       const tplRes = await fetch("/api/qpaper/templates", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(buildTemplatePayload(draftName)),
+        body: JSON.stringify(
+          buildTemplatePayload(draftName, {
+            sections,
+            modules,
+            selectedModuleIds,
+            meta,
+            totalMarksLive,
+            selectedSubjectId,
+            flatLayout,
+          })
+        ),
       });
       if (!tplRes.ok) throw new Error(await tplRes.text());
       const tplData = (await tplRes.json()) as {
@@ -1394,319 +562,34 @@ export default function QpaperPage() {
         body: JSON.stringify({
           subjectId: selectedSubjectId,
           templateId,
-          fromBank,
-          pyqMode,
-          pyqPercent: pyqMode === "pyq_mix" ? pyqPercent : null,
+          sourcingMix: sourcingMixToApi(sourcingMix),
+          preferredQuestionIds: preferredBankQuestionIds,
+          difficultyPreset,
+          ...(difficultyPreset === "custom" ? { customBtlWeights } : {}),
         }),
       });
       if (!res.ok) throw new Error(await res.text());
       const data = (await res.json()) as {
         paper: AssembledPaper;
         downloadUrl?: string;
+        filePath?: string;
+        bankFallbackCount?: number;
+        unplaceablePreferred?: Array<{ id: string; question_text: string }>;
       };
       setPaper(data.paper);
       setDownloadUrl(data.downloadUrl ?? null);
+      setPdfPath(data.filePath ?? null);
+      setBankFallbackCount(data.bankFallbackCount ?? 0);
+      setUnplaceablePreferred(data.unplaceablePreferred ?? []);
+      void markComplete();
       toast.success("Question paper generated!");
     } catch (err) {
       console.error(err);
+      void markFailed();
       toast.error("Failed to generate. Please try again.");
     } finally {
       setIsGenerating(false);
       setProgressMsg("");
-    }
-  };
-
-  // ─── Regenerate single question ────────────────────────────────────────
-  const regenerateQuestion = async (sIdx: number, qIdx: number) => {
-    if (!paper) return;
-    const tplQ = sections[sIdx]?.questions[qIdx];
-    if (!tplQ) return;
-    const templateQuestion = toTemplateQuestion(tplQ, qIdx + 1);
-    const sectionRange = moduleRangeForSection(
-      sIdx,
-      modules,
-      selectedModuleIds
-    );
-    const sectionModulesForServer = modules
-      .filter(
-        (m) =>
-          m.module_number >= sectionRange[0] &&
-          m.module_number <= sectionRange[1]
-      )
-      .map((m) => ({
-        module_number: m.module_number,
-        name: m.name,
-      }));
-
-    const existing = paper.sections[sIdx]?.questions[qIdx];
-    const existingText = JSON.stringify(existing ?? {});
-    const key = `${sIdx}-${qIdx}`;
-    setRegenKey(key);
-
-    try {
-      const res = await fetch("/api/generate/qpaper/regenerate-question", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          template_question: templateQuestion,
-          section_modules: sectionModulesForServer,
-          pyq_context: "",
-          co_po_data: { courseOutcomes: paper.courseOutcomes ?? [] },
-          question_context: existingText,
-        }),
-      });
-      if (!res.ok) throw new Error(await res.text());
-      const data = (await res.json()) as { question: GeneratedQuestion };
-      setPaper((prev) => {
-        if (!prev) return prev;
-        const next = { ...prev, sections: prev.sections.map((s) => ({ ...s })) };
-        next.sections[sIdx] = {
-          ...next.sections[sIdx],
-          questions: next.sections[sIdx].questions.map((q, i) =>
-            i === qIdx ? data.question : q
-          ),
-        };
-        return next;
-      });
-      toast.success("Question regenerated");
-    } catch (err) {
-      console.error(err);
-      toast.error("Failed to regenerate question");
-    } finally {
-      setRegenKey(null);
-    }
-  };
-
-  // ─── Inline edit ───────────────────────────────────────────────────────
-  const beginEdit = (
-    sIdx: number,
-    qIdx: number,
-    kind: "sub" | "part",
-    innerIdx: number
-  ) => {
-    const q = paper?.sections[sIdx]?.questions[qIdx];
-    if (!q) return;
-    if (kind === "sub") {
-      const sub = q.sub_parts?.[innerIdx];
-      setEditDraft({
-        question: sub?.question ?? "",
-        options: sub?.options
-          ? { ...sub.options }
-          : { a: "", b: "", c: "", d: "" },
-        correct_option: sub?.correct_option,
-        model_answer: sub?.model_answer ?? "",
-      });
-    } else {
-      const part = q.parts?.[innerIdx];
-      setEditDraft({
-        question: part?.question ?? "",
-        model_answer: part?.model_answer ?? "",
-      });
-    }
-    setEditingKey(`${sIdx}-${qIdx}-${kind}-${innerIdx}`);
-  };
-
-  const cancelEdit = () => {
-    setEditingKey(null);
-    setEditDraft(null);
-  };
-
-  const saveEdit = (
-    sIdx: number,
-    qIdx: number,
-    kind: "sub" | "part",
-    innerIdx: number
-  ) => {
-    const draft = editDraft;
-    if (!draft) return cancelEdit();
-    setPaper((prev) => {
-      if (!prev) return prev;
-      const next = { ...prev, sections: prev.sections.map((s) => ({ ...s })) };
-      const q = { ...next.sections[sIdx].questions[qIdx] };
-      if (kind === "sub" && q.sub_parts) {
-        q.sub_parts = q.sub_parts.map((s, i) =>
-          i === innerIdx
-            ? {
-                ...s,
-                question: draft.question,
-                options: draft.options ? { ...draft.options } : s.options,
-                correct_option: draft.correct_option ?? s.correct_option,
-                model_answer: draft.model_answer || null,
-              }
-            : s
-        );
-      } else if (kind === "part" && q.parts) {
-        q.parts = q.parts.map((p, i) =>
-          i === innerIdx
-            ? {
-                ...p,
-                question: draft.question,
-                model_answer: draft.model_answer || null,
-              }
-            : p
-        );
-      }
-      next.sections[sIdx].questions = next.sections[sIdx].questions.map(
-        (orig, i) => (i === qIdx ? q : orig)
-      );
-      return next;
-    });
-    cancelEdit();
-  };
-
-  // ─── Save an (edited) question into the faculty Q Bank ──────────────────
-  const saveQuestionToBank = async (
-    sIdx: number,
-    qIdx: number,
-    kind: "sub" | "part",
-    innerIdx: number
-  ) => {
-    if (!selectedSubjectId) {
-      toast.error("Select a subject first");
-      return;
-    }
-    const q = paper?.sections[sIdx]?.questions[qIdx];
-    if (!q) return;
-    const key = `${sIdx}-${qIdx}-${kind}-${innerIdx}`;
-    // Prefer the live draft when this unit is being edited.
-    const editing = editingKey === key && editDraft ? editDraft : null;
-
-    let payload: Record<string, unknown>;
-    if (kind === "sub") {
-      const sub = q.sub_parts?.[innerIdx];
-      if (!sub) return;
-      const opts = editing?.options ?? sub.options ?? {};
-      const correct = (editing?.correct_option ?? sub.correct_option ?? "")
-        .toString()
-        .toUpperCase();
-      const options = (["a", "b", "c", "d"] as const)
-        .filter((k) => opts[k]?.trim())
-        .map((k) => ({
-          label: k.toUpperCase(),
-          text: opts[k],
-          is_correct: k.toUpperCase() === correct,
-        }));
-      payload = {
-        subject_id: selectedSubjectId,
-        question_text: editing?.question ?? sub.question,
-        question_type: "mcq",
-        marks: 1,
-        options,
-        model_answer: editing?.model_answer ?? sub.model_answer ?? "",
-        co_code: sub.co ?? undefined,
-        btl_level: sub.btl ?? undefined,
-      };
-    } else {
-      const part = q.parts?.[innerIdx];
-      if (!part) return;
-      payload = {
-        subject_id: selectedSubjectId,
-        question_text: editing?.question ?? part.question,
-        question_type: q.type,
-        marks: part.marks,
-        model_answer: editing?.model_answer ?? part.model_answer ?? "",
-        co_code: part.co ?? undefined,
-        btl_level: part.btl ?? undefined,
-      };
-    }
-
-    setSavingBankKey(key);
-    try {
-      const res = await fetch("/api/qbank/questions", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
-      if (!res.ok) throw new Error(await res.text());
-      toast.success("Saved to your Question Bank");
-      // Reflect that the bank now has at least one question for this subject.
-      setBankCount((c) => (c == null ? 1 : c + 1));
-    } catch (err) {
-      console.error(err);
-      toast.error("Failed to save to bank");
-    } finally {
-      setSavingBankKey(null);
-    }
-  };
-
-  // ─── Generate answer key ───────────────────────────────────────────────
-  const handleGenerateAnswerKey = async () => {
-    if (!paper || !selectedSubjectId) return;
-    setIsGeneratingAnswerKey(true);
-    setAnswerKeyUrl(null);
-    try {
-      const res = await fetch("/api/generate/qpaper/answer-key", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          subject_id: selectedSubjectId,
-          paper,
-        }),
-      });
-      if (!res.ok) throw new Error(await res.text());
-      const data = (await res.json()) as {
-        downloadUrl: string;
-        warnings?: string[];
-      };
-      setAnswerKeyUrl(data.downloadUrl);
-      if (data.warnings && data.warnings.length > 0) {
-        toast.warning(
-          `Answer key ready (with ${data.warnings.length} warning${
-            data.warnings.length === 1 ? "" : "s"
-          })`
-        );
-      } else {
-        toast.success("Answer key generated!");
-      }
-    } catch (err) {
-      console.error(err);
-      toast.error("Failed to generate answer key");
-    } finally {
-      setIsGeneratingAnswerKey(false);
-    }
-  };
-
-  // ─── Export Word (.docx) ───────────────────────────────────────────────
-  const exportDocx = async () => {
-    if (!paper) return;
-    setIsExportingDocx(true);
-    try {
-      const res = await fetch("/api/generate/qpaper/export-docx", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ qpaper_content: paper }),
-      });
-      if (!res.ok) throw new Error(await res.text());
-      const data = (await res.json()) as { downloadUrl: string };
-      window.open(data.downloadUrl, "_blank");
-      toast.success("Word document ready");
-    } catch (err) {
-      console.error(err);
-      toast.error("Failed to export Word document");
-    } finally {
-      setIsExportingDocx(false);
-    }
-  };
-
-  // ─── Re-export PDF ─────────────────────────────────────────────────────
-  const reExportPdf = async () => {
-    if (!paper) return;
-    setIsReExporting(true);
-    try {
-      const res = await fetch("/api/generate/qpaper/export", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ paper }),
-      });
-      if (!res.ok) throw new Error(await res.text());
-      const data = (await res.json()) as { downloadUrl: string };
-      setDownloadUrl(data.downloadUrl);
-      toast.success("Updated PDF ready");
-    } catch (err) {
-      console.error(err);
-      toast.error("Failed to update PDF");
-    } finally {
-      setIsReExporting(false);
     }
   };
 
@@ -1731,936 +614,200 @@ export default function QpaperPage() {
 
   return (
     <div className="p-6 max-w-5xl mx-auto space-y-6">
-      <div>
-        <h1 className="text-2xl font-bold flex items-center gap-2">
-          <FileText className="size-6" />
-          Question Paper Generator
-        </h1>
-        <p className="text-muted-foreground text-sm mt-1">
-          Build your paper structure — AI generates the questions
-        </p>
-      </div>
-
-      {/* ── Setup: Subject + Modules + Question Source ───────────────── */}
-      <Card className="p-4 space-y-4">
-        <div className="grid grid-cols-1 md:grid-cols-[2fr_1fr] gap-3">
-          <div>
-            <Label className="text-xs mb-1 block">Subject</Label>
-            <Select
-              value={selectedSubjectId}
-              onValueChange={setSelectedSubjectId}
-              disabled={isLoadingSubjects || subjects.length === 0}
-            >
-              <SelectTrigger className="h-9">
-                <SelectValue
-                  placeholder={
-                    isLoadingSubjects
-                      ? "Loading subjects..."
-                      : subjects.length === 0
-                        ? "No subjects assigned"
-                        : "Select subject"
-                  }
-                />
-              </SelectTrigger>
-              <SelectContent>
-                {subjects.map((s) => (
-                  <SelectItem key={s.id} value={s.id}>
-                    {s.code} — {s.name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-          <div>
-            <Label className="text-xs mb-1 block">Target Marks</Label>
-            <Input
-              type="number"
-              min={1}
-              max={500}
-              value={targetMarks}
-              onChange={(e) =>
-                setTargetMarks(Math.max(1, parseInt(e.target.value, 10) || 1))
-              }
-              className="h-9 text-sm font-semibold"
-            />
-          </div>
-        </div>
-
-        {modules.length > 0 && (
-          <div className="space-y-2">
-            <Label className="text-xs">Modules</Label>
-            <div className="space-y-2">
-              {moduleGroups.map(([sectionNum, mods]) => {
-                const allSelected = mods.every((m) =>
-                  selectedModuleIds.includes(m.id)
-                );
-                const groupLabel =
-                  sectionNum > 0
-                    ? `Section ${
-                        ["I", "II", "III", "IV", "V"][sectionNum - 1] ??
-                        sectionNum
-                      }`
-                    : "All";
-                return (
-                  <div
-                    key={sectionNum}
-                    className="flex flex-wrap items-center gap-1.5"
-                  >
-                    <span className="text-[10px] uppercase tracking-wide font-semibold text-muted-foreground mr-1">
-                      {groupLabel}
-                    </span>
-                    {mods.map((mod) => {
-                      const selected = selectedModuleIds.includes(mod.id);
-                      return (
-                        <button
-                          key={mod.id}
-                          type="button"
-                          onClick={() =>
-                            setSelectedModuleIds((prev) =>
-                              selected
-                                ? prev.filter((id) => id !== mod.id)
-                                : [...prev, mod.id]
-                            )
-                          }
-                          className={cn(
-                            "px-2.5 py-0.5 rounded-full text-[11px] font-medium border transition-colors",
-                            selected
-                              ? "bg-primary text-primary-foreground border-primary"
-                              : "bg-background text-muted-foreground border-border hover:border-primary/50"
-                          )}
-                          title={
-                            mod.weightage_percent != null
-                              ? `${mod.weightage_percent}% weightage`
-                              : undefined
-                          }
-                        >
-                          M{mod.module_number}: {mod.name}
-                        </button>
-                      );
-                    })}
-                    <button
-                      type="button"
-                      onClick={() => {
-                        const ids = mods.map((m) => m.id);
-                        setSelectedModuleIds((prev) => {
-                          if (allSelected) {
-                            return prev.filter((id) => !ids.includes(id));
-                          }
-                          const set = new Set(prev);
-                          ids.forEach((id) => set.add(id));
-                          return Array.from(set);
-                        });
-                      }}
-                      className="text-[10px] text-primary hover:underline ml-1"
-                    >
-                      {allSelected ? "Clear" : "All"}
-                    </button>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-        )}
-
-        <div className="space-y-1.5">
-          <Label className="text-xs">Question source</Label>
-          <div className="flex flex-wrap items-center gap-2">
-            <div className="inline-flex rounded-md border overflow-hidden text-xs font-medium">
-              {(
-                [
-                  ["fresh", "Fresh Only"],
-                  ["pyq_mix", "PYQ + Fresh"],
-                  ["pyq_pattern", "PYQ Style"],
-                ] as const
-              ).map(([val, label]) => (
-                <button
-                  key={val}
-                  type="button"
-                  onClick={() => {
-                    setFromBank(false);
-                    setPyqMode(val);
-                  }}
-                  className={cn(
-                    "px-3 py-1.5 transition-colors",
-                    !fromBank && pyqMode === val
-                      ? "bg-primary text-primary-foreground"
-                      : "hover:bg-muted text-muted-foreground"
-                  )}
-                >
-                  {label}
-                </button>
-              ))}
-              <button
-                type="button"
-                onClick={() => bankCount && bankCount > 0 && setFromBank(true)}
-                disabled={!bankCount || bankCount === 0}
-                title={
-                  bankCount === 0
-                    ? "No questions in bank for this subject. Generate or import first."
-                    : bankCount == null
-                      ? "Checking your question bank…"
-                      : `${bankCount} question${bankCount === 1 ? "" : "s"} in your bank`
-                }
-                className={cn(
-                  "px-3 py-1.5 transition-colors border-l",
-                  fromBank
-                    ? "bg-primary text-primary-foreground"
-                    : !bankCount || bankCount === 0
-                      ? "text-muted-foreground/40 cursor-not-allowed"
-                      : "hover:bg-muted text-muted-foreground"
-                )}
-              >
-                📚 From Q Bank
-              </button>
-            </div>
-            {!fromBank && pyqMode === "pyq_mix" && (
-              <div className="flex items-center gap-2 flex-1 min-w-48">
-                <input
-                  type="range"
-                  min={10}
-                  max={90}
-                  step={10}
-                  value={pyqPercent}
-                  onChange={(e) =>
-                    setPyqPercent(parseInt(e.target.value, 10))
-                  }
-                  className="flex-1 accent-primary"
-                />
-                <span className="text-[11px] font-medium w-28 text-right">
-                  {pyqPercent}% PYQ · {100 - pyqPercent}% Fresh
-                </span>
-              </div>
-            )}
-          </div>
-          <p className="text-[10px] text-muted-foreground">
-            {fromBank
-              ? "Questions are pulled from your verified Q Bank first; any slot the bank can't fill is AI-generated and marked with a 📚 badge."
-              : "PYQ content is always used as a style reference. This controls whether actual PYQs can be reused verbatim."}
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <h1 className="text-2xl font-bold flex items-center gap-2">
+            <FileText className="size-6" />
+            Question Paper Generator
+          </h1>
+          <p className="text-muted-foreground text-sm mt-1">
+            Build your paper structure — AI generates the questions
           </p>
-        </div>
-      </Card>
-
-      {/* ── SECTION 1: Paper Details metadata form ───────────────────── */}
-      <Card className="p-4 space-y-3">
-        <div
-          role="button"
-          tabIndex={0}
-          onClick={() => setMetaOpen((v) => !v)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" || e.key === " ") {
-              e.preventDefault();
-              setMetaOpen((v) => !v);
-            }
-          }}
-          className="flex items-center justify-between cursor-pointer select-none"
-        >
-          <div className="flex items-center gap-2">
-            {metaOpen ? (
-              <ChevronDown className="size-4" />
-            ) : (
-              <ChevronRight className="size-4" />
-            )}
-            <h2 className="text-sm font-semibold">Paper Details</h2>
-          </div>
-          <span className="text-xs text-muted-foreground">
-            {totalMarksLive} marks · {sections.length} section
-            {sections.length === 1 ? "" : "s"}
-          </span>
-        </div>
-
-        {metaOpen && (
-          <div className="space-y-4 pt-2">
-            <CourseHeaderRow
-              subject={selectedSubject}
-              meta={meta}
-              setMeta={setMeta}
-            />
-
-            <div>
-              <Label className="text-xs mb-2 block">Instructions</Label>
-              <DndContext
-                sensors={sensors}
-                collisionDetection={closestCenter}
-                onDragEnd={handleInstructionDragEnd}
-              >
-                <SortableContext
-                  items={meta.instructions.map((i) => i.id)}
-                  strategy={verticalListSortingStrategy}
-                >
-                  <div className="space-y-1">
-                    {meta.instructions.map((ins, idx) => (
-                      <SortableInstruction
-                        key={ins.id}
-                        item={ins}
-                        index={idx}
-                        onChange={(text) =>
-                          setMeta({
-                            ...meta,
-                            instructions: meta.instructions.map((x) =>
-                              x.id === ins.id ? { ...x, text } : x
-                            ),
-                          })
-                        }
-                        onRemove={() =>
-                          setMeta({
-                            ...meta,
-                            instructions: meta.instructions.filter(
-                              (x) => x.id !== ins.id
-                            ),
-                          })
-                        }
-                      />
-                    ))}
-                  </div>
-                </SortableContext>
-              </DndContext>
-              <button
-                type="button"
-                onClick={() =>
-                  setMeta({
-                    ...meta,
-                    instructions: [...meta.instructions, makeInstruction()],
-                  })
-                }
-                className="text-xs text-primary hover:underline flex items-center gap-1 mt-2"
-              >
-                <Plus className="size-3" /> Add instruction
-              </button>
-            </div>
-          </div>
-        )}
-      </Card>
-
-      {/* ── SECTION 2: Template selector ─────────────────────────────── */}
-      <div className="flex flex-wrap items-center gap-2">
-        <span className="text-xs text-muted-foreground mr-1">Quick start:</span>
-        <Button variant="outline" size="sm" onClick={applyEse}>
-          ESE Standard — 60M
-        </Button>
-        <Button variant="outline" size="sm" onClick={applyQuiz}>
-          Quiz — 10M
-        </Button>
-        <button
-          type="button"
-          onClick={clearBuilder}
-          className="text-xs text-muted-foreground hover:text-foreground underline underline-offset-2 ml-1"
-        >
-          Start from scratch
-        </button>
-      </div>
-
-      {/* ── SECTION 3: Drag-drop builder ─────────────────────────────── */}
-      <div className="space-y-4">
-        {(() => {
-          const diff = totalMarksLive - targetMarks;
-          const status =
-            diff === 0
-              ? { label: "On target", tone: "text-emerald-600 bg-emerald-50 border-emerald-200" }
-              : diff < 0
-                ? {
-                    label: `${Math.abs(diff)} marks left`,
-                    tone: "text-amber-700 bg-amber-50 border-amber-200",
-                  }
-                : {
-                    label: `${diff} over target`,
-                    tone: "text-rose-700 bg-rose-50 border-rose-200",
-                  };
-          const pct = Math.min(100, Math.round((totalMarksLive / Math.max(1, targetMarks)) * 100));
-          return (
-            <div className="sticky top-2 z-10 rounded-lg border bg-background/95 backdrop-blur p-3 shadow-sm">
-              <div className="flex items-center justify-between gap-3 mb-1.5">
-                <div className="flex items-baseline gap-2">
-                  <span className="text-xl font-bold tabular-nums">
-                    {totalMarksLive}
-                  </span>
-                  <span className="text-xs text-muted-foreground">
-                    of {targetMarks} marks
-                  </span>
-                </div>
-                <span
-                  className={cn(
-                    "text-[11px] font-medium px-2 py-0.5 rounded-full border",
-                    status.tone
-                  )}
-                >
-                  {status.label}
-                </span>
-              </div>
-              <div className="h-1.5 rounded-full bg-muted overflow-hidden">
-                <div
-                  className={cn(
-                    "h-full transition-all",
-                    diff === 0
-                      ? "bg-emerald-500"
-                      : diff < 0
-                        ? "bg-amber-500"
-                        : "bg-rose-500"
-                  )}
-                  style={{ width: `${pct}%` }}
-                />
-              </div>
-            </div>
-          );
-        })()}
-
-        {sections.map((section, sIdx) => (
-          <div key={section.id} className="space-y-3">
-            <div className="flex items-center gap-3">
-              <Input
-                value={section.name}
-                onChange={(e) =>
-                  updateSection(section.id, { name: e.target.value })
-                }
-                className="font-semibold w-44 h-8 text-sm"
-              />
-              <span className="text-xs text-muted-foreground">
-                {sectionTotal(section)}M
-              </span>
-              <div className="flex-1 h-px bg-border" />
-              {sections.length > 1 && (
-                <button
-                  type="button"
-                  onClick={() => removeSection(section.id)}
-                  className="text-xs text-muted-foreground hover:text-destructive"
-                >
-                  Remove section
-                </button>
-              )}
-            </div>
-
-            <DndContext
-              sensors={sensors}
-              collisionDetection={closestCenter}
-              onDragEnd={(e) => handleQuestionDragEnd(section.id, e)}
-            >
-              <SortableContext
-                items={section.questions.map((q) => q.id)}
-                strategy={verticalListSortingStrategy}
-              >
-                <div className="space-y-2">
-                  {section.questions.map((q, qIdx) => (
-                    <SortableQuestion
-                      key={q.id}
-                      question={q}
-                      qNumber={qIdx + 1}
-                      onUpdate={(updated) =>
-                        updateQuestion(section.id, updated)
-                      }
-                      onRemove={() => removeQuestion(section.id, q.id)}
-                      onDuplicate={() => duplicateQuestion(section.id, q.id)}
-                    />
-                  ))}
-                </div>
-              </SortableContext>
-            </DndContext>
-
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => addQuestion(section.id)}
-              className="w-full border-dashed"
-            >
-              <Plus className="size-4 mr-2" />
-              Add question to {section.name}
-            </Button>
-          </div>
-        ))}
-
-        <Button
-          variant="ghost"
-          size="sm"
-          onClick={addSection}
-          className="text-muted-foreground"
-        >
-          <Plus className="size-4 mr-1" />
-          Add section
-        </Button>
-      </div>
-
-      {/* ── SECTION 5: Generate / Save / Download ───────────────────── */}
-      <div className="flex flex-wrap items-center gap-3 pt-2">
-        <Button
-          onClick={handleGenerate}
-          disabled={isGenerating || !selectedSubjectId}
-          size="lg"
-          className="flex-1 min-w-48"
-        >
-          {isGenerating ? (
-            <>
-              <Loader2 className="mr-2 size-4 animate-spin" />
-              {progressMsg || "Generating..."}
-            </>
-          ) : (
-            "Generate Question Paper"
+          {lastSavedAt && (
+            <p className="text-muted-foreground text-xs mt-1">
+              Draft autosaved · {new Date(lastSavedAt).toLocaleTimeString()}
+            </p>
           )}
+        </div>
+        <Button variant="outline" size="sm" asChild>
+          <Link href="/faculty/qpaper/history">
+            <History className="mr-2 size-4" />
+            Past papers
+          </Link>
         </Button>
-
-        <Button
-          variant="outline"
-          size="lg"
-          onClick={() => {
-            setSaveName("");
-            setSaveOpen(true);
-          }}
-          disabled={!selectedSubjectId}
-        >
-          <Save className="mr-2 size-4" />
-          Save as template
-        </Button>
-
-        {downloadUrl && (
-          <Button
-            size="lg"
-            onClick={() => window.open(downloadUrl, "_blank")}
-          >
-            <Download className="mr-2 size-4" />
-            Download Question Paper
-          </Button>
-        )}
-
-        {paper && !answerKeyUrl && (
-          <Button
-            variant="outline"
-            size="lg"
-            onClick={handleGenerateAnswerKey}
-            disabled={isGeneratingAnswerKey}
-          >
-            {isGeneratingAnswerKey ? (
-              <Loader2 className="mr-2 size-4 animate-spin" />
-            ) : (
-              <Lock className="mr-2 size-4" />
-            )}
-            {isGeneratingAnswerKey
-              ? "Generating answer key..."
-              : "Generate Answer Key"}
-          </Button>
-        )}
-
-        {answerKeyUrl && (
-          <Button
-            variant="outline"
-            size="lg"
-            onClick={() => window.open(answerKeyUrl, "_blank")}
-          >
-            <Lock className="mr-2 size-4" />
-            Download Answer Key
-          </Button>
-        )}
-
-        {paper && (
-          <Button
-            variant="outline"
-            size="lg"
-            onClick={reExportPdf}
-            disabled={isReExporting}
-          >
-            {isReExporting ? (
-              <Loader2 className="mr-2 size-4 animate-spin" />
-            ) : (
-              <RefreshCw className="mr-2 size-4" />
-            )}
-            Update PDF
-          </Button>
-        )}
-
-        {paper && (
-          <Button
-            variant="outline"
-            size="lg"
-            onClick={exportDocx}
-            disabled={isExportingDocx}
-          >
-            {isExportingDocx ? (
-              <Loader2 className="mr-2 size-4 animate-spin" />
-            ) : (
-              <FileText className="mr-2 size-4" />
-            )}
-            Download Word (.docx)
-          </Button>
-        )}
       </div>
 
-      {paper && (
-        <p className="text-xs text-muted-foreground -mt-1">
-          Answer key includes marking scheme and model answers for all
-          questions including OR alternatives.
+      {/* ── Resume an in-progress draft ──────────────────────────────── */}
+      <AlertDialog open={!!resumeCandidate}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              {resumeCandidate?.generationStatus === "generating"
+                ? "Your last generation may not have completed"
+                : "Resume your draft?"}
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              {resumeCandidate?.generationStatus === "generating"
+                ? `You left a paper generating on ${
+                    resumeCandidate
+                      ? new Date(resumeCandidate.lastSavedAt).toLocaleString()
+                      : ""
+                  }. It may have finished or failed after you navigated away — restore the setup and retry?`
+                : `We found an in-progress paper from ${
+                    resumeCandidate
+                      ? new Date(resumeCandidate.lastSavedAt).toLocaleString()
+                      : ""
+                  }. Pick up where you left off, or discard it and start fresh.`}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel onClick={discard}>
+              Discard
+            </AlertDialogCancel>
+            <AlertDialogAction onClick={handleResume}>
+              {resumeCandidate?.generationStatus === "generating"
+                ? "Restore & retry"
+                : "Resume draft"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* ── Setup: Subject + Modules + Sourcing mix ──────────────────── */}
+      <Card className="p-4 space-y-4">
+        <ScopeAndDifficultyStage
+          subjects={subjects}
+          isLoadingSubjects={isLoadingSubjects}
+          selectedSubjectId={selectedSubjectId}
+          onSelectSubject={setSelectedSubjectId}
+          targetMarks={targetMarks}
+          onTargetMarksChange={setTargetMarks}
+          modules={modules}
+          selectedModuleIds={selectedModuleIds}
+          setSelectedModuleIds={setSelectedModuleIds}
+          difficultyPreset={difficultyPreset}
+          onDifficultyPresetChange={setDifficultyPreset}
+          customBtlWeights={customBtlWeights}
+          onCustomBtlWeightsChange={setCustomBtlWeights}
+        />
+        <SourcingStage
+          mix={sourcingMix}
+          setMix={setSourcingMix}
+          verifiedBankCount={verifiedBankCount}
+          preferredBankQuestionIds={preferredBankQuestionIds}
+        />
+      </Card>
+
+      {/* ── Paper Details metadata + quick-start presets ─────────────── */}
+      <TemplateStructureStage
+        selectedSubject={selectedSubject}
+        meta={meta}
+        setMeta={setMeta}
+        metaOpen={metaOpen}
+        setMetaOpen={setMetaOpen}
+        totalMarksLive={totalMarksLive}
+        sectionsCount={sections.length}
+        onApplyEse={applyEse}
+        onApplyQuiz={applyQuiz}
+        onClearBuilder={clearBuilder}
+      />
+
+      {/* ── Drag-drop section/question builder ───────────────────────── */}
+      <BuilderSectionsEditor
+        sections={sections}
+        setSections={setSections}
+        targetMarks={targetMarks}
+        totalMarksLive={totalMarksLive}
+        flatLayout={flatLayout}
+      />
+
+      {/* ── Generate / Save / Download actions ───────────────────────── */}
+      <FinalizeExportStage
+        paper={paper}
+        downloadUrl={downloadUrl}
+        setDownloadUrl={setDownloadUrl}
+        answerKeyUrl={answerKeyUrl}
+        setAnswerKeyUrl={setAnswerKeyUrl}
+        setAnswerKeyWarnings={setAnswerKeyWarnings}
+        setPdfPath={setPdfPath}
+        setDocxPath={setDocxPath}
+        setAnswerKeyPath={setAnswerKeyPath}
+        selectedSubjectId={selectedSubjectId}
+        isGenerating={isGenerating}
+        progressMsg={progressMsg}
+        onGenerate={handleGenerate}
+        onFinalized={handleFinalized}
+        sections={sections}
+        modules={modules}
+        selectedModuleIds={selectedModuleIds}
+        meta={meta}
+        totalMarksLive={totalMarksLive}
+      />
+
+      {/* ── Non-blocking note: bank slots that fell back to fresh AI ──── */}
+      {bankFallbackCount > 0 && (
+        <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-3 py-2 -mt-2">
+          Bank allocation requested but {bankFallbackCount} question
+          {bankFallbackCount === 1 ? "" : "s"} fell back to fresh generation due
+          to insufficient verified coverage.
         </p>
       )}
 
-      {/* ── Generated paper preview ─────────────────────────────────── */}
-      {paper && (
-        <Card className="p-6 space-y-4 font-serif">
-          <div className="text-center space-y-1">
-            <div className="text-lg font-bold">{paper.universityName}</div>
-            {paper.examTitle && (
-              <div className="text-sm">{paper.examTitle}</div>
-            )}
-            <div className="text-base font-semibold">
-              {paper.courseCode} — {paper.courseName}
-            </div>
-            <div className="flex justify-between text-xs px-2 pt-1">
-              <span>Time: {paper.duration} Minutes</span>
-              <span className="font-semibold">
-                Maximum Marks: {paper.totalMarks}
-              </span>
-            </div>
-          </div>
-
-          {paper.instructions.length > 0 && (
-            <div className="text-xs border rounded p-3">
-              <div className="font-semibold mb-1">Instructions:</div>
-              <ol className="list-decimal pl-5 space-y-0.5">
-                {paper.instructions.map((ins, i) => (
-                  <li key={i}>{ins}</li>
-                ))}
-              </ol>
-            </div>
-          )}
-
-          {paper.sections.map((section, sIdx) => (
-            <div key={sIdx} className="space-y-3">
-              <div className="text-center font-bold underline">
-                {section.section_name.toUpperCase()}
-              </div>
-
-              {section.questions.map((q, qIdx) => (
-                <div
-                  key={qIdx}
-                  className="border rounded p-3 space-y-2 text-sm"
-                >
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="font-semibold">
-                      {q.display_label ?? `Q - ${q.q_number}`}
-                      {q.instruction ? (
-                        <span className="font-normal ml-2">{q.instruction}</span>
-                      ) : null}
-                    </div>
-                    <div className="flex items-center gap-2 shrink-0">
-                      {q.from_bank && (
-                        <Badge
-                          variant="outline"
-                          className="text-[10px] border-emerald-300 bg-emerald-50 text-emerald-700"
-                          title="Sourced from your Question Bank"
-                        >
-                          📚 From Bank
-                        </Badge>
-                      )}
-                      <Badge variant="secondary" className="text-[10px]">
-                        [{String(q.total_marks).padStart(2, "0")}]
-                      </Badge>
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        disabled={regenKey === `${sIdx}-${qIdx}`}
-                        onClick={() => regenerateQuestion(sIdx, qIdx)}
-                        title="Regenerate this question"
-                      >
-                        {regenKey === `${sIdx}-${qIdx}` ? (
-                          <Loader2 className="size-3.5 animate-spin" />
-                        ) : (
-                          <RefreshCw className="size-3.5" />
-                        )}
-                      </Button>
-                    </div>
-                  </div>
-
-                  {q.sub_parts?.map((sub, si) => {
-                    const k = `${sIdx}-${qIdx}-sub-${si}`;
-                    const isEditing = editingKey === k && editDraft;
-                    return (
-                      <div key={si} className="ml-3 space-y-1">
-                        {isEditing ? (
-                          <div className="space-y-2 border rounded p-2 bg-muted/30">
-                            <Textarea
-                              value={editDraft.question}
-                              onChange={(e) =>
-                                setEditDraft({
-                                  ...editDraft,
-                                  question: e.target.value,
-                                })
-                              }
-                              className="text-xs"
-                              rows={2}
-                              placeholder="Question text"
-                            />
-                            <div className="space-y-1">
-                              {(["a", "b", "c", "d"] as const).map((kk) => (
-                                <div
-                                  key={kk}
-                                  className="flex items-center gap-2"
-                                >
-                                  <button
-                                    type="button"
-                                    title="Mark correct option"
-                                    onClick={() =>
-                                      setEditDraft({
-                                        ...editDraft,
-                                        correct_option: kk,
-                                      })
-                                    }
-                                    className={cn(
-                                      "size-5 shrink-0 rounded-full border text-[10px] font-bold",
-                                      (editDraft.correct_option ?? "")
-                                        .toString()
-                                        .toLowerCase() === kk
-                                        ? "bg-emerald-500 text-white border-emerald-500"
-                                        : "text-muted-foreground"
-                                    )}
-                                  >
-                                    {kk.toUpperCase()}
-                                  </button>
-                                  <Input
-                                    value={editDraft.options?.[kk] ?? ""}
-                                    onChange={(e) =>
-                                      setEditDraft({
-                                        ...editDraft,
-                                        options: {
-                                          ...(editDraft.options ?? {}),
-                                          [kk]: e.target.value,
-                                        },
-                                      })
-                                    }
-                                    className="h-7 text-xs"
-                                    placeholder={`Option ${kk.toUpperCase()}`}
-                                  />
-                                </div>
-                              ))}
-                            </div>
-                            <Textarea
-                              value={editDraft.model_answer}
-                              onChange={(e) =>
-                                setEditDraft({
-                                  ...editDraft,
-                                  model_answer: e.target.value,
-                                })
-                              }
-                              className="text-xs"
-                              rows={2}
-                              placeholder="Model answer (optional, used in answer key)"
-                            />
-                            <EditActions
-                              onSave={() => saveEdit(sIdx, qIdx, "sub", si)}
-                              onCancel={cancelEdit}
-                              onSaveToBank={() =>
-                                saveQuestionToBank(sIdx, qIdx, "sub", si)
-                              }
-                              savingBank={savingBankKey === k}
-                            />
-                          </div>
-                        ) : (
-                          <>
-                            <div className="flex items-start justify-between gap-3">
-                              <div className="flex-1">
-                                <span className="font-mono mr-1">
-                                  {sub.label}
-                                </span>
-                                {sub.question}
-                              </div>
-                              <div className="flex items-center gap-1 shrink-0">
-                                <Button
-                                  size="icon"
-                                  variant="ghost"
-                                  className="size-6"
-                                  title="Edit"
-                                  onClick={() =>
-                                    beginEdit(sIdx, qIdx, "sub", si)
-                                  }
-                                >
-                                  <Pencil className="size-3" />
-                                </Button>
-                                <Button
-                                  size="icon"
-                                  variant="ghost"
-                                  className="size-6"
-                                  title="Save to Q Bank"
-                                  disabled={savingBankKey === k}
-                                  onClick={() =>
-                                    saveQuestionToBank(sIdx, qIdx, "sub", si)
-                                  }
-                                >
-                                  {savingBankKey === k ? (
-                                    <Loader2 className="size-3 animate-spin" />
-                                  ) : (
-                                    <Library className="size-3" />
-                                  )}
-                                </Button>
-                              </div>
-                            </div>
-                            {sub.options && (
-                              <div className="ml-4 grid grid-cols-2 gap-x-4 text-xs text-muted-foreground">
-                                {(["a", "b", "c", "d"] as const).map(
-                                  (kk) =>
-                                    sub.options?.[kk] && (
-                                      <div key={kk}>
-                                        {kk}) {sub.options[kk]}
-                                      </div>
-                                    )
-                                )}
-                              </div>
-                            )}
-                          </>
-                        )}
-                      </div>
-                    );
-                  })}
-
-                  {q.parts?.map((part, pi) => {
-                    const k = `${sIdx}-${qIdx}-part-${pi}`;
-                    const isOrAlternative = part.is_or_alternative;
-                    const showOrSeparator =
-                      isOrAlternative &&
-                      (pi === 0 ||
-                        !q.parts?.[pi - 1]?.is_or_alternative);
-                    const labelClean = part.label
-                      ? String(part.label)
-                          .replace(/^\(/, "")
-                          .replace(/\)$/, "")
-                      : null;
-                    const isEditing = editingKey === k && editDraft;
-                    return (
-                      <div key={pi}>
-                        {showOrSeparator && (
-                          <div className="text-center text-xs italic my-2">
-                            OR
-                          </div>
-                        )}
-                        {isEditing ? (
-                          <div className="ml-3 space-y-2 border rounded p-2 bg-muted/30">
-                            <Textarea
-                              value={editDraft.question}
-                              onChange={(e) =>
-                                setEditDraft({
-                                  ...editDraft,
-                                  question: e.target.value,
-                                })
-                              }
-                              className="text-xs"
-                              rows={3}
-                              placeholder="Question text"
-                            />
-                            <Textarea
-                              value={editDraft.model_answer}
-                              onChange={(e) =>
-                                setEditDraft({
-                                  ...editDraft,
-                                  model_answer: e.target.value,
-                                })
-                              }
-                              className="text-xs"
-                              rows={2}
-                              placeholder="Model answer (optional, used in answer key)"
-                            />
-                            <EditActions
-                              onSave={() => saveEdit(sIdx, qIdx, "part", pi)}
-                              onCancel={cancelEdit}
-                              onSaveToBank={() =>
-                                saveQuestionToBank(sIdx, qIdx, "part", pi)
-                              }
-                              savingBank={savingBankKey === k}
-                            />
-                          </div>
-                        ) : (
-                          <div className="ml-3 flex items-start justify-between gap-3">
-                            <div className="flex-1">
-                              {labelClean && (
-                                <span className="font-semibold mr-1">
-                                  ({labelClean})
-                                </span>
-                              )}
-                              {part.question}
-                            </div>
-                            <Badge
-                              variant="outline"
-                              className="text-[10px] shrink-0"
-                            >
-                              [{String(part.marks).padStart(2, "0")}]
-                            </Badge>
-                            <div className="flex items-center gap-1 shrink-0">
-                              <Button
-                                size="icon"
-                                variant="ghost"
-                                className="size-6"
-                                title="Edit"
-                                onClick={() =>
-                                  beginEdit(sIdx, qIdx, "part", pi)
-                                }
-                              >
-                                <Pencil className="size-3" />
-                              </Button>
-                              <Button
-                                size="icon"
-                                variant="ghost"
-                                className="size-6"
-                                title="Save to Q Bank"
-                                disabled={savingBankKey === k}
-                                onClick={() =>
-                                  saveQuestionToBank(sIdx, qIdx, "part", pi)
-                                }
-                              >
-                                {savingBankKey === k ? (
-                                  <Loader2 className="size-3 animate-spin" />
-                                ) : (
-                                  <Library className="size-3" />
-                                )}
-                              </Button>
-                            </div>
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })}
-                </div>
-              ))}
-            </div>
-          ))}
-        </Card>
+      {/* ── Non-blocking note: answer-key blocks that failed to generate ──── */}
+      {answerKeyWarnings.length > 0 && (
+        <div className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-3 py-2 -mt-2 space-y-1">
+          <p className="font-medium">
+            The answer key was generated, but {answerKeyWarnings.length} block
+            {answerKeyWarnings.length === 1 ? "" : "s"} could not be produced and{" "}
+            {answerKeyWarnings.length === 1 ? "is" : "are"} missing from the PDF.
+            Regenerate the answer key to retry, or fill{" "}
+            {answerKeyWarnings.length === 1 ? "it" : "them"} in manually.
+          </p>
+          <ul className="list-disc list-inside space-y-0.5 text-amber-600">
+            {answerKeyWarnings.map((w, i) => (
+              <li key={i} className="truncate">
+                {w}
+              </li>
+            ))}
+          </ul>
+        </div>
       )}
 
-      {/* ── Save-as-template dialog ─────────────────────────────────── */}
-      <Dialog open={saveOpen} onOpenChange={setSaveOpen}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Save as template</DialogTitle>
-          </DialogHeader>
-          <div className="space-y-2">
-            <Label htmlFor="tpl-name" className="text-xs">
-              Template name
-            </Label>
-            <Input
-              id="tpl-name"
-              value={saveName}
-              onChange={(e) => setSaveName(e.target.value)}
-              placeholder="My ESE template"
-              className="h-9 text-sm"
-              autoFocus
-            />
-            <p className="text-[11px] text-muted-foreground">
-              Saves the current structure and metadata. Reuse later from the
-              templates list.
-            </p>
-          </div>
-          <DialogFooter>
-            <Button
-              variant="ghost"
-              onClick={() => setSaveOpen(false)}
-              disabled={isSaving}
-            >
-              Cancel
-            </Button>
-            <Button
-              onClick={saveTemplate}
-              disabled={isSaving || !saveName.trim()}
-            >
-              {isSaving ? (
-                <Loader2 className="mr-2 size-4 animate-spin" />
-              ) : (
-                <Save className="mr-2 size-4" />
-              )}
-              Save
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      {/* ── Non-blocking note: preferred questions that couldn't be placed ── */}
+      {unplaceablePreferred.length > 0 && (
+        <div className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-3 py-2 -mt-2 space-y-1">
+          <p className="font-medium">
+            {unplaceablePreferred.length} of your selected Q Bank question
+            {unplaceablePreferred.length === 1 ? "" : "s"} couldn&apos;t be
+            placed in this paper — {unplaceablePreferred.length === 1 ? "its" : "their"}{" "}
+            marks or type didn&apos;t match any slot here. Adjust the paper
+            structure or pick different questions if you need{" "}
+            {unplaceablePreferred.length === 1 ? "it" : "them"} included.
+          </p>
+          <ul className="list-disc list-inside space-y-0.5 text-amber-600">
+            {unplaceablePreferred.map((q) => (
+              <li key={q.id} className="truncate">
+                {q.question_text}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {/* ── Generated paper preview (review + inline edit) ───────────── */}
+      <div ref={reviewRef}>
+        <ReviewAndValidateStage
+          paper={paper}
+          setPaper={setPaperAndClearKey}
+          sections={sections}
+          modules={modules}
+          selectedModuleIds={selectedModuleIds}
+          selectedSubjectId={selectedSubjectId}
+          onSavedToBank={() =>
+            setVerifiedBankCount((c) => (c == null ? 1 : c + 1))
+          }
+        />
+      </div>
     </div>
   );
 }

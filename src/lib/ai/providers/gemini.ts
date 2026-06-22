@@ -90,6 +90,11 @@ function createGeminiProvider(): AIProvider {
           "qbank_generate",
           "qbank_tag",
           "explainer_extract",
+          // Answer-key blocks emit a strict JSON array. The MCQ block runs on
+          // Flash, where leaving thinking uncapped silently consumes the
+          // maxOutputTokens budget and truncates the JSON → parse failure.
+          "answer_key_mcq",
+          "answer_key_descriptive",
         ].includes(taskName);
 
         const temperature =
@@ -116,7 +121,11 @@ function createGeminiProvider(): AIProvider {
         }
         // Otherwise: thinking is uncapped (default Flash behavior)
 
-        if (taskName === "qpaper_gen" || taskName === "pyq_extract") {
+        if (
+          taskName === "qpaper_gen" ||
+          taskName === "pyq_extract" ||
+          taskName === "answer_key_descriptive"
+        ) {
           generationConfig.responseMimeType = "application/json";
         }
 
