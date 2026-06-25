@@ -7,6 +7,46 @@ import type { NextRequest } from "next/server";
 
 type Operation = "patch" | "insert";
 
+// Shared responseSchema for both patch and insert. Covers every slide-type
+// variant this endpoint can produce. Only `type` and `title` are required —
+// `type` is an open enum (NOT pre-filled), so the model is free to change a
+// slide's type when an instruction demands a different structure. Everything
+// else is optional and populated per chosen type. With this passed as
+// params.responseSchema, Gemini guarantees schema-conformant JSON, so the
+// route no longer needs fence-stripping or completion-priming to parse.
+const REFINE_SLIDE_SCHEMA = {
+  type: "object",
+  properties: {
+    type: {
+      type: "string",
+      enum: [
+        "title",
+        "overview",
+        "concept",
+        "diagram",
+        "example",
+        "practice",
+        "summary",
+      ],
+    },
+    title: { type: "string" },
+    bullets: { type: "array", items: { type: "string" } },
+    note: { type: "string" },
+    renderHint: {
+      type: "string",
+      enum: ["svg", "mermaid", "imagen", "illustration"],
+    },
+    svg: { type: "string" },
+    mermaid: { type: "string" },
+    imagenPrompt: { type: "string" },
+    question: { type: "string" },
+    options: { type: "array", items: { type: "string" } },
+    answer: { type: "string" },
+    explanation: { type: "string" },
+  },
+  required: ["type", "title"],
+} as const;
+
 function stripHeavyFields(
   slide: Record<string, unknown>
 ): Record<string, unknown> {
@@ -95,6 +135,18 @@ export async function POST(req: NextRequest) {
       typeof body?.depth === "string" && body.depth.trim()
         ? body.depth.trim()
         : "intermediate";
+    const topic =
+      typeof body?.topic === "string" && body.topic.trim()
+        ? body.topic.trim()
+        : "";
+    const neighboringSlides = Array.isArray(body?.neighboringSlides)
+      ? (body.neighboringSlides as unknown[])
+          .filter(
+            (t): t is string => typeof t === "string" && t.trim().length > 0
+          )
+          .map((t) => t.trim())
+          .slice(0, 4)
+      : [];
 
     if (!operation || !["patch", "insert"].includes(operation)) {
       return Response.json({ error: "Invalid operation" }, { status: 400 });
@@ -123,6 +175,19 @@ export async function POST(req: NextRequest) {
 
     const slideObj = currentSlide as Record<string, unknown> | undefined;
     const slideType = String(slideObj?.type ?? "concept");
+
+    // Deck-level grounding context, shared by both operations. `topic` is the
+    // deck's SPECIFIC topic (distinct from the broad subjectName); neighbors
+    // give the model something concrete to ground vague instructions against.
+    const topicLine = topic || "(not specified — infer from neighboring slides)";
+    const neighborBlock =
+      neighboringSlides.length > 0
+        ? neighboringSlides.map((t) => `- ${t}`).join("\n")
+        : "(none provided)";
+    const groundingInstruction = `Ground your output in the SPECIFIC topic and \
+neighboring slides above, not the general subject area. If the instruction is \
+vague or unspecific about content, infer the most natural next sub-topic from \
+the neighboring slide titles — never an unrelated topic from the broader subject.`;
 
     if (operation === "patch") {
       systemPrompt = `You are a senior educational content designer specializing in \
@@ -159,12 +224,26 @@ or peer-reviewed resource for this specific domain.
 <task>
 Modify ONE presentation slide according to the faculty instruction.
 Return the modified slide as a single JSON object.
+
+The current slide type is ${slideType}. Change it if the instruction requires a
+different structure — for example, an instruction to add a diagram/visual to a
+non-diagram slide should result in type:"diagram" with the appropriate renderHint
+and svg/mermaid/imagenPrompt populated. Only keep the original type if the
+instruction doesn't require a structural change.
 </task>
 
 <context>
 <subject>${subjectName}</subject>
+<deck_topic>${topicLine}</deck_topic>
 <slide_number>${slideIndex + 1}</slide_number>
 <faculty_instruction>${instruction}</faculty_instruction>
+
+<neighboring_slides>
+${neighborBlock}
+</neighboring_slides>
+<grounding>
+${groundingInstruction}
+</grounding>
 
 <current_slide_metadata>
 ${JSON.stringify(stripHeavyFields(slideObj ?? {}), null, 2)}
@@ -297,18 +376,10 @@ Minimum contrast: text color must contrast with background.
 </svg_quality_rules>
 
 <format>
-Return ONLY a single valid JSON object.
-First character must be {
-Last character must be }
-No markdown fences. No text before or after. No comments.
-All fields from the original slide must be present.
-For SVG: escape all double quotes as \\" within the JSON string value.
-</format>
-
-JSON output (complete the following):
-{
-  "type": "${slideType}",
-  "title": `;
+Return the modified slide as a single, complete, standalone JSON object.
+Carry over every field that still applies, and include any new fields the
+resulting slide type requires (e.g. svg + renderHint when type becomes diagram).
+</format>`;
     } else {
       systemPrompt =
         "You are an expert curriculum designer. Generate exactly one new educational " +
@@ -316,31 +387,34 @@ JSON output (complete the following):
 
       prompt = `<task>Generate a new slide to insert into an educational presentation.</task>
 <subject>${subjectName}</subject>
+<deck_topic>${topicLine}</deck_topic>
 <depth>${depth}</depth>
 <instruction>${instruction}</instruction>
 <insert_position>After slide ${slideIndex + 1} (1-based)</insert_position>
-<schema>
-Return a JSON object with these fields (include only fields relevant to type):
-- type: concept | diagram | example | practice
-- title: string (clear, specific, max 60 chars)
-- bullets: string[] (4-6 items for concept; steps for example; omit for diagram/practice)
-- note: string (💡 prefix, max 90 chars, specific insight not in bullets)
-- svg: full valid SVG string (only if type=diagram and renderHint=svg)
-- mermaid: string (only if type=diagram and renderHint=mermaid)
-- renderHint: "svg"|"mermaid"|"imagen" (required if type=diagram)
-- imagenPrompt: string narrative paragraph (only if renderHint=imagen)
-- question: string (only if type=practice)
-- options: string[] of 4 (only if type=practice)
-- answer: string matching one option exactly (only if type=practice)
-- explanation: string (only if type=practice)
-</schema>
+
+<neighboring_slides>
+${neighborBlock}
+</neighboring_slides>
+<grounding>
+${groundingInstruction}
+</grounding>
+
+<field_guidance>
+Choose the slide type that best fits the instruction, then populate only the
+fields relevant to that type:
+- concept: 4-6 bullets, plus a note (💡 prefix, max 90 chars, a specific insight
+  not already in the bullets, naming a real system/tool/clinical fact).
+- example: bullets as ordered worked steps.
+- diagram: set renderHint and populate the matching field — svg (default),
+  mermaid, or imagenPrompt (a narrative paragraph). Omit bullets.
+- practice: question, exactly 4 options, answer (matching one option exactly),
+  and explanation.
+- title: a clear, specific title only (max 60 chars).
+</field_guidance>
 <rules>
-1. Return ONLY a single valid JSON object. First char: {. Last char: }.
-2. No markdown fences. No trailing text. No comments.
-3. Default renderHint to "svg" unless 3D/photorealistic content is needed.
-4. SVG: viewBox="0 0 800 400", white background rect, every element labelled.
-5. Mermaid: no () in edge labels, max 8 nodes.
-6. note: 💡 prefix, max 90 chars, must name a real system/tool/clinical fact.
+1. Default renderHint to "svg" unless 3D/photorealistic content is needed (then "imagen").
+2. SVG: viewBox="0 0 800 400", white background rect, every element labelled.
+3. Mermaid: no () in edge labels, max 8 nodes.
 </rules>`;
     }
 
@@ -352,22 +426,17 @@ Return a JSON object with these fields (include only fields relevant to type):
       messages: [{ role: "user", content: prompt }],
       systemPrompt,
       maxTokens,
+      responseSchema: REFINE_SLIDE_SCHEMA,
     });
 
-    // 5. Parse response — handle completion strategy where model continues
-    // from '{ "type": "...", "title": ' so we may need to prepend the opening
+    // 5. Parse response — responseSchema guarantees schema-conformant JSON, so
+    // a single JSON.parse is enough. The try/catch is a defensive last resort
+    // (network/provider edge cases), not the old fence/prefix recovery path.
     const raw = String(result.content ?? "").trim();
-    const jsonStr = raw.startsWith("{")
-      ? raw
-      : `{\n  "type": "${slideType}",\n  "title": ` + raw;
-    const clean = jsonStr
-      .replace(/^```(?:json)?\s*/i, "")
-      .replace(/\s*```$/i, "")
-      .trim();
 
     let parsed: Record<string, unknown>;
     try {
-      parsed = JSON.parse(clean);
+      parsed = JSON.parse(raw);
     } catch (e) {
       console.error(
         "[ppt/refine] Parse error:",

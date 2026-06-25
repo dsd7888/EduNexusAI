@@ -27,19 +27,23 @@ export async function POST(request: NextRequest) {
 
     const body = await request.json().catch(() => ({} as Record<string, unknown>));
     const subjectId = String(body?.subjectId ?? "").trim();
+    // contentId of the checkpoint row created by the outline route. When
+    // present, build finalizes (UPDATEs) that row instead of inserting a new
+    // one (Task 3). Absent only for legacy/edge callers.
+    const contentId = String(body?.contentId ?? "").trim() || null;
     const presentationTitle = String(body?.presentationTitle ?? "").trim();
     const subject = String(body?.subject ?? "").trim();
     const topic = String(body?.topic ?? "").trim();
     // This route does not call routeAI directly (outline/batches are separate routes).
     // To log a closer-to-true total here, the frontend can pass accumulated Flash costs.
     const totalFlashCost =
-      typeof (body as any)?.totalFlashCostInr === "number"
-        ? Number((body as any).totalFlashCostInr)
-        : Array.isArray((body as any)?.batchCostsInr)
-          ? (body as any).batchCostsInr
-              .map((x: unknown) => Number(x))
-              .filter((n: number) => Number.isFinite(n))
-              .reduce((a: number, b: number) => a + b, 0)
+      typeof body?.totalFlashCostInr === "number"
+        ? Number(body.totalFlashCostInr)
+        : Array.isArray(body?.batchCostsInr)
+          ? (body.batchCostsInr as unknown[])
+              .map((x) => Number(x))
+              .filter((n) => Number.isFinite(n))
+              .reduce((a, b) => a + b, 0)
           : 0;
     const addLogo = Boolean(body?.addLogo);
     const logoUrl =
@@ -135,7 +139,11 @@ export async function POST(request: NextRequest) {
           };
           console.log(`[ppt/build] Imagen image generated for slide ${result.value.idx}`);
         } else {
-          console.warn("[ppt/build] Imagen failed for a slide — will use fallback");
+          const reason =
+            result.status === "rejected"
+              ? result.reason
+              : "returned null";
+          console.warn(`[ppt/build] Imagen failed for a slide — will use fallback: ${reason}`);
         }
       }
     }
@@ -198,35 +206,102 @@ export async function POST(request: NextRequest) {
       return apiError("Failed to get download URL", 500);
     }
 
-    const { data: insertedRow, error: insertError } = await adminClient
-      .from("generated_content")
-      .insert({
-        subject_id: subjectId,
-        module_id: null,
-        type: "ppt",
-        title: pptData.presentationTitle,
-        file_path: filePath,
-        metadata: {
-          fileName,
-          presentationTitle,
-          slideCount: pptData.slides.length,
-          subject,
-          topic,
-          slides,
-          expires_at: expiresAt,
-          totalFlashCostInr: totalFlashCost,
-          totalImagenCostInr: totalImagenCost,
-          totalCostInr: totalFlashCost + totalImagenCost,
-        },
-        generated_by: user.id,
-        status: "completed",
-      })
-      .select("id")
-      .single();
+    // Finalize the checkpoint row from the outline route (Task 3): UPDATE in
+    // place rather than INSERT a new row, so the resumable record becomes the
+    // completed record. Fall back to INSERT only if no contentId was supplied
+    // (legacy callers) or the row has gone missing.
+    let finalContentId: string | null = null;
 
-    if (insertError || !insertedRow) {
-      console.error("[ppt/build] Insert error:", insertError);
-      return apiError("Failed to record generated content", 500);
+    if (contentId) {
+      const { data: existing } = await adminClient
+        .from("generated_content")
+        .select("id, generated_by, metadata")
+        .eq("id", contentId)
+        .eq("type", "ppt")
+        .maybeSingle();
+
+      const existingRow = existing as
+        | {
+            id: string;
+            generated_by: string;
+            metadata: Record<string, unknown> | null;
+          }
+        | null;
+
+      if (existingRow && existingRow.generated_by === user.id) {
+        const prevMeta = (existingRow.metadata ?? {}) as Record<string, unknown>;
+        const { error: updateError } = await adminClient
+          .from("generated_content")
+          .update({
+            title: pptData.presentationTitle,
+            file_path: filePath,
+            metadata: {
+              ...prevMeta,
+              fileName,
+              presentationTitle,
+              slideCount: pptData.slides.length,
+              subject,
+              topic,
+              slides,
+              expires_at: expiresAt,
+              // Prefer the server-accumulated Flash cost from checkpoints; fall
+              // back to the value the client passed if it is somehow larger.
+              totalFlashCostInr: Math.max(
+                typeof prevMeta.totalFlashCostInr === "number"
+                  ? prevMeta.totalFlashCostInr
+                  : 0,
+                totalFlashCost
+              ),
+              totalImagenCostInr: totalImagenCost,
+              totalCostInr:
+                (typeof prevMeta.totalFlashCostInr === "number"
+                  ? Math.max(prevMeta.totalFlashCostInr, totalFlashCost)
+                  : totalFlashCost) + totalImagenCost,
+            },
+            status: "completed",
+          })
+          .eq("id", contentId);
+
+        if (updateError) {
+          console.error("[ppt/build] Finalize update error:", updateError);
+          return apiError("Failed to record generated content", 500);
+        }
+        finalContentId = contentId;
+      }
+    }
+
+    if (!finalContentId) {
+      const { data: insertedRow, error: insertError } = await adminClient
+        .from("generated_content")
+        .insert({
+          subject_id: subjectId,
+          module_id: null,
+          type: "ppt",
+          title: pptData.presentationTitle,
+          file_path: filePath,
+          metadata: {
+            fileName,
+            presentationTitle,
+            slideCount: pptData.slides.length,
+            subject,
+            topic,
+            slides,
+            expires_at: expiresAt,
+            totalFlashCostInr: totalFlashCost,
+            totalImagenCostInr: totalImagenCost,
+            totalCostInr: totalFlashCost + totalImagenCost,
+          },
+          generated_by: user.id,
+          status: "completed",
+        })
+        .select("id")
+        .single();
+
+      if (insertError || !insertedRow) {
+        console.error("[ppt/build] Insert error:", insertError);
+        return apiError("Failed to record generated content", 500);
+      }
+      finalContentId = insertedRow.id;
     }
 
     console.log("[ppt/build] Done.", fileName);
@@ -236,7 +311,7 @@ export async function POST(request: NextRequest) {
       title: presentationTitle,
       slideCount: slides.length,
       fileName,
-      contentId: insertedRow.id,
+      contentId: finalContentId,
     });
   } catch (err) {
     console.error("[ppt/build] Error:", err);

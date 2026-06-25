@@ -451,6 +451,9 @@ async function generateSummarySlide(
       refined_body?: string[];
     };
 
+    if (typeof parsed.refined_title === 'string') parsed.refined_title = stripHtml(parsed.refined_title);
+    if (Array.isArray(parsed.refined_body)) parsed.refined_body = parsed.refined_body.map((b) => (typeof b === 'string' ? stripHtml(b) : b));
+
     if (!Array.isArray(parsed.refined_body) || parsed.refined_body.length === 0)
       return null;
 

@@ -10,6 +10,10 @@ import type { NextRequest } from "next/server";
 const VALID_DEPTHS = ["basic", "intermediate", "advanced"] as const;
 type Depth = (typeof VALID_DEPTHS)[number];
 
+// A generation is "done with" once it reaches one of these. Anything else
+// (outline_done / generating_* / building / pending) is still resumable.
+const TERMINAL_STATUSES = ["completed", "failed", "abandoned"] as const;
+
 type OutlineSlide = SlideOutline["outline"][number];
 
 function parseOutlineRobust(raw: string): SlideOutline | null {
@@ -232,6 +236,45 @@ export async function POST(request: NextRequest) {
       moduleDescription = String(m.description ?? "");
     }
 
+    // ── Double-submit / duplicate guard (Task 6) ──────────────────────────
+    // Run BEFORE any AI call so a duplicate never costs a second outline +
+    // diagram spend. If the same user already kicked off a non-terminal
+    // generation for this exact subject + module/topic in the last 10 minutes,
+    // hand that row back so the client can resume it instead of starting over.
+    const tenMinAgo = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+    const { data: recentRows } = await adminClient
+      .from("generated_content")
+      .select("id, status, metadata, created_at")
+      .eq("generated_by", user.id)
+      .eq("type", "ppt")
+      .eq("subject_id", subjectId)
+      .not("status", "in", `(${TERMINAL_STATUSES.join(",")})`)
+      .gte("created_at", tenMinAgo)
+      .order("created_at", { ascending: false })
+      .limit(10);
+
+    const duplicate = (recentRows ?? []).find((r) => {
+      const meta = (r.metadata ?? {}) as Record<string, unknown>;
+      const sameModule = (meta.moduleId ?? null) === (moduleId ?? null);
+      const sameTopic = (meta.customTopic ?? null) === (customTopic ?? null);
+      return sameModule && sameTopic;
+    });
+
+    if (duplicate) {
+      const meta = (duplicate.metadata ?? {}) as Record<string, unknown>;
+      const slides = Array.isArray(meta.slides) ? meta.slides : [];
+      const done = slides.filter((s) => s != null).length;
+      console.log(
+        `[ppt/outline] Duplicate in-flight generation ${duplicate.id} (${done}/${slides.length}) — offering resume`
+      );
+      return Response.json({
+        duplicate: true,
+        contentId: duplicate.id,
+        slidesDone: done,
+        slidesTotal: slides.length,
+      });
+    }
+
     console.log("[ppt/outline] Generating outline...");
     const outlinePrompt = buildOutlinePrompt({
       subjectName,
@@ -261,7 +304,52 @@ export async function POST(request: NextRequest) {
     }
 
     console.log(`[ppt/outline] Done. Slides planned: ${outline.outline.length}`);
-    return Response.json({ outline, costInr: outlineAi.costInr });
+
+    // ── Checkpoint immediately (Task 1) ───────────────────────────────────
+    // Persist a resumable row BEFORE any content/diagram batch runs. metadata
+    // .slides is a null-filled array sized to the outline; the checkpoint route
+    // fills it in as batches complete, and build finalizes this same row.
+    const outlineCostInr = outlineAi.costInr ?? 0;
+    const { data: checkpointRow, error: checkpointError } = await adminClient
+      .from("generated_content")
+      .insert({
+        subject_id: subjectId,
+        module_id: moduleId ?? null,
+        type: "ppt",
+        title: outline.presentationTitle,
+        file_path: null,
+        metadata: {
+          outline,
+          slides: new Array(outline.outline.length).fill(null),
+          slideCount: outline.outline.length,
+          presentationTitle: outline.presentationTitle,
+          subject: outline.subject,
+          topic: outline.topic,
+          depth,
+          moduleId: moduleId ?? null,
+          customTopic: customTopic ?? null,
+          totalFlashCostInr: outlineCostInr,
+        },
+        generated_by: user.id,
+        status: "outline_done",
+      })
+      .select("id")
+      .single();
+
+    if (checkpointError || !checkpointRow) {
+      // Non-fatal: the client can still generate without resume support. Log
+      // loudly so we notice if checkpointing silently stops working.
+      console.error(
+        "[ppt/outline] Checkpoint insert failed (continuing without resume):",
+        checkpointError?.message
+      );
+    }
+
+    return Response.json({
+      outline,
+      costInr: outlineCostInr,
+      contentId: checkpointRow?.id ?? null,
+    });
   } catch (err) {
     console.error("[ppt/outline] Error:", err);
     const message =

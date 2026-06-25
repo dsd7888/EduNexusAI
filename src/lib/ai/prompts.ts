@@ -454,6 +454,11 @@ Structure: a specific entity facing a specific constraint encounters a problem
 that seems unsolvable without the algorithm about to be taught. End with a
 single question. No bullets. No abstract benefits ('efficiency', 'scalability').
 Maximum 4 sentences. The scenario must use Indian context.
+
+WRONG: a bullet list of abstract benefits ("efficient", "scalable",
+       "fundamental in areas like...").
+RIGHT: one concrete scenario in 2-3 short sentences, ending on a single
+       question — no bullets, no theory.
 </hook_slide_rule>`;
 
 /**
@@ -481,7 +486,13 @@ Map the activity into the example fields:
 - problem = the Indian scenario, concise (≤180 chars): who, where, the data, what to find
 - steps   = 3-4 numbered things the STUDENT DOES (verbs: Map, Calculate, Draw,
             Identify, Decide), then one final step that is a discussion prompt
-            connecting their answer back to the algorithm just learned
+            connecting their answer back to the algorithm just learned.
+            The step list MUST include at least one step where the student
+            computes a specific numerical result from the actual numbers in
+            the scenario — "identify", "discuss", "outline", or "propose"
+            alone are not sufficient for that step.
+            WRONG: "Outline the steps the algorithm would take."
+            RIGHT:  "Calculate the new address using the values given above."
 - answer  = the solution hint: how the algorithm solves exactly this scenario
 
 Scenario inspiration (generate one fitting the actual concept and subject —
@@ -560,6 +571,31 @@ student-action steps are the slide.
 </diagram_completeness_rule>`;
 
 /**
+ * NO HEDGING RULE — injected at the top of {@link buildBatchContentPrompt}
+ * (after output_rules). Prevents reasoning-in-progress leaking into output fields.
+ */
+export const BATCH_PROMPT_NO_HEDGING = `<no_hedging_rule>
+NO HEDGING RULE:
+Never include reasoning-in-progress, self-correction, or hedge language
+("wait", "actually", "let me reconsider", "hmm") in any output field.
+If a computation seems wrong mid-generation, redo it silently and output
+only the final clean result.
+</no_hedging_rule>`;
+
+/**
+ * MCQ CONSISTENCY RULE — injected into {@link buildBatchContentPrompt} immediately
+ * before the "practice" slide type requirements. Enforces answer-first construction.
+ */
+export const BATCH_PROMPT_MCQ_CONSISTENCY = `<mcq_consistency_rule>
+MCQ CONSISTENCY RULE:
+When generating a practice question, compute the true correct result FIRST
+from the given data, then write the four options so the computed result appears
+verbatim as one of them, then build the other three as plausible near-miss
+distractors (off-by-one, wrong formula step, wrong unit). Never generate
+options and the answer independently of each other.
+</mcq_consistency_rule>`;
+
+/**
  * LAYOUT VARIETY RULE — injected into {@link buildBatchContentPrompt} after the
  * per-slide-type content requirements. Varies structure by slide purpose, using
  * only the existing renderable slide types (concept / example).
@@ -575,8 +611,14 @@ Do not make every slide six identical bullets. Vary the structure by purpose:
   — so the two sides read side by side.
 - WORKED EXAMPLE slides (type "example"): number each step 1, 2, 3...; show the
   intermediate state after each step; the ✓ answer bar is the clearly marked result.
-- HOOK slides (type "concept", title "Why does ... matter?"): one strong opening
-  scenario in 2-3 short bullets, ending on a question. No theory dump, no formulas.
+- HOOK slides (type "concept", title "Why does ... matter?"): one concrete scenario
+  in 2-3 short prose sentences (NOT a bullet list), ending on a single question.
+  No bullets. No abstract benefit list ("efficient", "scalable", "fundamental
+  in areas like..."). No formulas.
+  WRONG: bullets listing "efficient", "scalable", "fundamental in areas like..."
+  RIGHT: "Swiggy's router assigns 800 delivery orders per minute across Bengaluru.
+          Every second of delay costs a delivery partner ₹3. How does it decide
+          the fastest path in under 10 ms?"
 - ACTIVITY slides (type "example", title "Activity: ..."): the Indian scenario in
   the problem field, then numbered STUDENT-ACTION steps (Map..., Calculate...,
   Draw..., Identify..., Decide...). No theory — student-action language only.

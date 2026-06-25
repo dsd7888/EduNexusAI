@@ -274,6 +274,16 @@ export default function RefinePresentationPage() {
 
       try {
         const opForCall = pendingOperation ?? "patch";
+        // Up to 2 slide titles before and 2 after the target, for grounding.
+        const neighboringSlides = [
+          slides[selectedSlideIndex - 2],
+          slides[selectedSlideIndex - 1],
+          slides[selectedSlideIndex + 1],
+          slides[selectedSlideIndex + 2],
+        ]
+          .filter(Boolean)
+          .map((s) => s.title)
+          .filter((t): t is string => Boolean(t));
         const res = await fetch("/api/generate/ppt/refine", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -284,6 +294,8 @@ export default function RefinePresentationPage() {
             currentSlide:
               opForCall === "insert" ? undefined : slides[selectedSlideIndex],
             subjectName: subject || presentationTitle,
+            topic,
+            neighboringSlides,
             depth: "intermediate",
           }),
         });
@@ -360,6 +372,7 @@ export default function RefinePresentationPage() {
       slides,
       subject,
       presentationTitle,
+      topic,
       addMessage,
     ]
   );

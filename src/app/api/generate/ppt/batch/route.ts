@@ -15,6 +15,46 @@ import type { NextRequest } from "next/server";
 const VALID_DEPTHS = ["basic", "intermediate", "advanced"] as const;
 type Depth = (typeof VALID_DEPTHS)[number];
 
+// responseSchema for diagram-only (Pro) batches. The batch response is a JSON
+// array of slide objects; constraining it guarantees parseable JSON on the
+// first call, so a malformed-JSON diagram response no longer costs a full
+// wasted Pro call plus a retry (measured at ~89s / ~₹4.36 on one slide).
+// Only `type` and `title` are required; the diagram payload field
+// (svgCode / mermaidCode / imagenPrompt) is filled per render type.
+const DIAGRAM_BATCH_SCHEMA = {
+  type: "array",
+  items: {
+    type: "object",
+    properties: {
+      index: { type: "number" },
+      type: {
+        type: "string",
+        enum: [
+          "title",
+          "overview",
+          "concept",
+          "diagram",
+          "dual_visual",
+          "example",
+          "practice",
+          "summary",
+        ],
+      },
+      title: { type: "string" },
+      bullets: { type: "array", items: { type: "string" } },
+      svgCode: { type: "string" },
+      mermaidCode: { type: "string" },
+      imagenPrompt: { type: "string" },
+      diagramCaption: { type: "string" },
+      diagramRenderType: {
+        type: "string",
+        enum: ["svg", "mermaid", "imagen", "illustration", "dual"],
+      },
+    },
+    required: ["type", "title"],
+  },
+} as const;
+
 export async function POST(request: NextRequest) {
   try {
     console.log("[ppt/batch] POST request received");
@@ -204,6 +244,9 @@ export async function POST(request: NextRequest) {
           const ai = await routeAI(isDiagramBatch ? "ppt_diagram" : "ppt_gen", {
             messages: [{ role: "user", content: prompt }],
             maxTokens,
+            // Schema-constrain diagram batches only; content batches keep their
+            // existing free-form parsing (parseBatchContent).
+            ...(isDiagramBatch ? { responseSchema: DIAGRAM_BATCH_SCHEMA } : {}),
           });
           batchCostInr += ai.costInr;
 

@@ -4,6 +4,8 @@ import {
   BATCH_PROMPT_COMPLETENESS,
   BATCH_PROMPT_INDIAN_CONTEXT,
   BATCH_PROMPT_LAYOUT_VARIETY,
+  BATCH_PROMPT_MCQ_CONSISTENCY,
+  BATCH_PROMPT_NO_HEDGING,
   BATCH_PROMPT_NO_PLACEHOLDER_DIAGRAMS,
   OUTLINE_PROMPT_ACTIVITY_MANDATE,
   OUTLINE_PROMPT_DUAL_VISUAL_EXAMPLE,
@@ -12,6 +14,7 @@ import {
   OUTLINE_PROMPT_INDIAN_CONTEXT,
 } from "@/lib/ai/prompts";
 import { buildImagenPrompt, generateImagenImage } from "@/lib/ai/imagen";
+import { sanitizeMermaidCode } from "./mermaidSanitize";
 
 // ── TYPES ──────────────────────────────────────────────────
 
@@ -24,92 +27,6 @@ export type SlideType =
   | "example"
   | "practice"
   | "summary";
-
-function sanitizeMermaidCode(code: string): string {
-  if (!code?.trim()) return code;
-
-  const lines = code.split("\n").map((rawLine) => {
-    let line = rawLine;
-    const trimmed = line.trim();
-    if (!trimmed) return line;
-
-    // Skip diagram type declarations
-    if (
-      /^(graph|flowchart|sequenceDiagram|stateDiagram|classDiagram|gitGraph|pie|gantt|erDiagram|journey|mindmap|timeline)\b/i.test(
-        trimmed
-      )
-    ) {
-      return line;
-    }
-
-    // Rename reserved words used as node IDs (not in labels)
-    // Only rename when used as a standalone node ID before --> or a bracket
-    line = line.replace(
-      /\bend\b(?=\s*(?:-->|---|$|\[|\(|\{))/g,
-      "endNode"
-    );
-    line = line.replace(
-      /\bstart\b(?=\s*(?:-->|---|$|\[|\(|\{))/g,
-      "startNode"
-    );
-
-    // Clean content inside node labels [...], {...}, ((...))
-    // Strip everything except alphanumeric, spaces, basic punctuation
-    line = line.replace(/\[([^\]]*)\]/g, (_, inner) => {
-      const clean = inner
-        .replace(/[[\]{}()<>=!]/g, "")
-        .replace(/\s+/g, " ")
-        .trim();
-      return `[${clean}]`;
-    });
-    line = line.replace(/\{([^}]*)\}/g, (_, inner) => {
-      const clean = inner
-        .replace(/[[\]{}()<>=!]/g, "")
-        .replace(/\s+/g, " ")
-        .trim();
-      return `{${clean}}`;
-    });
-
-    // Clean edge label pipes |...|
-    line = line.replace(/\|([^|]*)\|/g, (_, inner) => {
-      const clean = inner
-        .replace(/[|{}[\]()<>=!:]/g, "")
-        .replace(/\s+/g, " ")
-        .trim();
-      return `|${clean}|`;
-    });
-
-    // Fix node IDs starting with digits.
-    // (Rewritten without negative lookbehind for ES2017 compat — captures the
-    // boundary char (start-of-line or any non-word/non-quote) and prepends `n`.)
-    line = line.replace(
-      /(^|[^"\w])(\d[\w]*)(?=\s*(?:[[({]|-->|---))/g,
-      "$1n$2"
-    );
-
-    return line;
-  });
-
-  // Truncate if too many nodes (prevents render timeout)
-  const sanitized = lines.join("\n");
-  const nodeCount = (sanitized.match(/\w+\s*[\[({]/g) || []).length;
-  if (nodeCount > 15) {
-    const header =
-      lines.find((l) =>
-        /^(graph|flowchart|sequenceDiagram|stateDiagram)\b/i.test(l.trim())
-      ) || "graph TD";
-    const rest = lines
-      .filter(
-        (l) =>
-          l.trim() &&
-          !/^(graph|flowchart|sequenceDiagram|stateDiagram)\b/i.test(l.trim())
-      )
-      .slice(0, 15);
-    return [header, ...rest].join("\n");
-  }
-
-  return sanitized;
-}
 
 export interface SlideContent {
   type: SlideType;
@@ -204,13 +121,6 @@ export function buildOutlinePrompt(options: {
     referenceBooks = "",
   } = options;
   const focusLabel = moduleName ?? customTopic ?? "the module";
-  const isModule = Boolean(moduleName);
-
-  const slideCountGuide = {
-    basic: isModule ? "16–20" : "14–18",
-    intermediate: isModule ? "20–26" : "18–24",
-    advanced: isModule ? "26–32" : "24–32",
-  }[depth];
 
   const syllabusContext = fullSyllabus.slice(0, 3000);
   const refInline =
@@ -223,10 +133,12 @@ Follow their notation and pedagogical sequence.
       : "";
 
   return `<persona>
-You are a senior academic curriculum designer with deep expertise in
-university-level education across all disciplines. You design slide outlines
-that expert lecturers actually use — structured for genuine learning,
-not just coverage.
+You are an expert Indian academic with deep pedagogical training, fluent in how
+Indian university curricula (GTU, AICTE-pattern, and similar) are actually
+structured, taught, and examined. You are also a senior curriculum designer with
+deep expertise in university-level education across all disciplines worldwide.
+You design slide outlines that expert lecturers actually use — structured for
+genuine learning, not just coverage.
 </persona>
 
 <context>
@@ -234,7 +146,6 @@ not just coverage.
 <focus_topic>${focusLabel}</focus_topic>
 ${moduleDescription.trim() ? `<module_description>${moduleDescription.trim()}</module_description>` : ""}
 <depth_level>${depth}</depth_level>
-<target_slide_count>${slideCountGuide}</target_slide_count>
 <domain_adaptation>
 Adapt entirely to this subject's domain:
 - STEM/Engineering: derivations, worked numericals, governing equations, precision diagrams
@@ -255,6 +166,12 @@ Design a complete slide OUTLINE (titles and types only — no content yet) for: 
 
 Use the full syllabus to understand prerequisites, avoid duplicating other modules,
 and add cross-references like "builds on Unit 2" where relevant.
+${customTopic ? `
+IMPORTANT — CUSTOM TOPIC DEPTH: This request is for a specific topic ("${customTopic}")
+rather than a full module. A specific topic request signals deliberate intent, not an
+abbreviated ask. Treat it with the same full depth you would give a complete module —
+do not shrink the slide count or treatment simply because it is "a topic" rather than
+"a module." The scope of the topic, not its label, should drive the deck size.` : ""}
 </task>
 
 <slide_count_rules>
@@ -272,12 +189,19 @@ For every significant concept in the syllabus, follow this sequence:
 4. EXAMPLE slide — domain-appropriate worked example with real parameters
 
 <slide_budget_guidance>
-Target: 30-40 slides for 60-90 minute lecture (adjust for module length)
+There is no target slide count — this presentation could reasonably be 15 slides or 70
+depending on the topic's actual scope. Let the syllabus content and the
+"one concept cluster per slide, never compress two distinct concepts together" rule
+be the only thing driving the count.
 
 Visual allocation strategy:
 - Reserve illustration slides for concepts where students ask "what does this mean?"
 - Reserve diagram slides for concepts where students ask "how does this work?"
-- Reserve dual_visual for concepts where both questions arise simultaneously
+- ACTIVE SEARCH — dual_visual: explicitly scan the syllabus for concepts that have
+  BOTH a common real-world analogy AND a precise technical mechanism. Require
+  identifying at least 2–3 such concepts per deck (more for longer or conceptual
+  subjects). Nearly every technical subject has several; failing to find any usually
+  means the search was not active enough, not that none exist.
 
 Indicators a concept needs illustration:
 - Abstract process (not physically observable)
@@ -488,6 +412,8 @@ THESE RULES ARE ABSOLUTE. VIOLATION CAUSES SYSTEM FAILURE.
     possible — correct labels, arrows, annotations.
 </output_rules>
 
+${BATCH_PROMPT_NO_HEDGING}
+
 ${BATCH_PROMPT_INDIAN_CONTEXT}
 
 <accuracy_mandate>
@@ -508,7 +434,7 @@ damage student understanding and institutional trust.
 ${BATCH_PROMPT_COMPLETENESS}
 </accuracy_mandate>
 
-You are an expert university lecturer creating detailed slide content for ${subjectName}.
+You are an expert Indian academic with deep pedagogical training, fluent in how Indian university curricula (GTU, AICTE-pattern, and similar) are actually structured, taught, and examined. You are also a senior university lecturer with deep expertise across all disciplines, creating detailed slide content for ${subjectName}.
 
 FULL SUBJECT SYLLABUS (for context and cross-referencing):
 ${syllabusContext}
@@ -800,10 +726,11 @@ VALIDATION CHECKS:
   of the correct answer — if your draft options have two options
   within ±15%, replace the closer one with a value further away.
   </example_accuracy_rules>
+${BATCH_PROMPT_MCQ_CONSISTENCY}
 - \"practice\" slides:
-PRACTICE ANSWER RULE: The correct answer and all wrong answer 
-options must only reference concepts, algorithms, or terms that 
-appear earlier in this presentation's outline. Never introduce 
+PRACTICE ANSWER RULE: The correct answer and all wrong answer
+options must only reference concepts, algorithms, or terms that
+appear earlier in this presentation's outline. Never introduce
 a new term in an answer option without it having been taught.
   - question.text: max 200 characters. Question + necessary data only.
   - question.options: 4 options, each max 40 characters.
@@ -950,28 +877,23 @@ function capTitle(text: string, max = 90): string {
 
 function capBullet(text: string): string {
   if (!text) return "";
-  const cleaned = stripMd(text);
-  // Hard cap at 130 chars for bullets to prevent overflow
-  return cleaned.length > 130 ? `${cleaned.slice(0, 127)}…` : cleaned;
+  return stripMd(text);
 }
 
 function capStep(text: string): string {
   if (!text) return "";
-  const cleaned = stripMd(text);
-  return cleaned.length > 110 ? `${cleaned.slice(0, 107)}…` : cleaned;
+  return stripMd(text);
 }
 
 function capAnswer(text: string): string {
   if (!text) return "";
-  const cleaned = stripMd(text);
-  return cleaned.length > 90 ? `${cleaned.slice(0, 87)}…` : cleaned;
+  return stripMd(text);
 }
 
-/** Practice explanation: strip markdown and cap for rendering (prompt allows up to 150). */
+/** Practice explanation: strip markdown; autoFit handles overflow. */
 function capExplanation(text: string): string {
   if (!text) return "";
-  const cleaned = stripMd(text);
-  return cleaned.length > 160 ? `${cleaned.slice(0, 157)}…` : cleaned;
+  return stripMd(text);
 }
 
 // 💡 callout text. Fixed-length reservation: cap at 120 chars, truncating at a
@@ -1215,23 +1137,6 @@ export async function generatePPTXBuffer(
           line: { color: C.dark },
         });
 
-        slide.addShape(pptx.ShapeType.rect, {
-          x: 8.5,
-          y: 0,
-          w: 1.5,
-          h: 0.06,
-          fill: { color: C.accent },
-          line: { color: C.accent },
-        });
-        slide.addShape(pptx.ShapeType.rect, {
-          x: 9.94,
-          y: 0,
-          w: 0.06,
-          h: 1.5,
-          fill: { color: C.accent },
-          line: { color: C.accent },
-        });
-
         slide.addText(capTitle(slideData.title, 80), {
           x: 0.6,
           y: 1.0,
@@ -1245,15 +1150,6 @@ export async function generatePPTXBuffer(
           valign: "middle",
           wrap: true,
           autoFit: true,
-        });
-
-        slide.addShape(pptx.ShapeType.rect, {
-          x: 2,
-          y: 3.5,
-          w: 6,
-          h: 0.04,
-          fill: { color: C.accent },
-          line: { color: C.accent },
         });
 
         slide.addText(capTitle(data.subject), {
@@ -1307,7 +1203,6 @@ export async function generatePPTXBuffer(
       case "overview": {
         const slide = pptx.addSlide();
         addHeader(pptx, slide, `Overview — ${data.topic}`, C.primary);
-        addAccentBar(slide, "60A5FA");
 
         const overviewBullets = splitToBullets(slideData.bullets ?? []);
         const half = Math.ceil(overviewBullets.length / 2);
@@ -1333,7 +1228,7 @@ export async function generatePPTXBuffer(
             w: 4.4,
             h: ZONE.body.h,
             fontFace: "Calibri",
-            valign: "top",
+            valign: "middle",
             wrap: true,
             autoFit: true,
           }
@@ -1351,7 +1246,7 @@ export async function generatePPTXBuffer(
               w: 4.6,
               h: ZONE.body.h,
               fontFace: "Calibri",
-              valign: "top",
+              valign: "middle",
               wrap: true,
               autoFit: true,
             }
@@ -1526,12 +1421,41 @@ export async function generatePPTXBuffer(
         // Guard: a blob under 5KB is a broken/empty render — stretched to
         // 9.3"×4.1" it shows as a broken icon. Skip embedding entirely (no
         // fallback image) and fall through to a text-only slide.
-        const imagenBytes = slideData.imageBase64
-          ? Math.floor((slideData.imageBase64.length * 3) / 4)
+
+        // Fallback: rebuild route calls generatePPTXBuffer() directly with no
+        // Imagen pre-pass, so imageBase64 may be absent even when imagenPrompt
+        // is present. Attempt inline generation for imagen/illustration slides.
+        let diagramImageBase64 = slideData.imageBase64?.trim() || null;
+        if (
+          !diagramImageBase64 &&
+          slideData.imagenPrompt?.trim() &&
+          (slideData.diagramRenderType === "imagen" ||
+            slideData.diagramRenderType === "illustration")
+        ) {
+          try {
+            const fullPrompt = buildImagenPrompt({
+              slideTitle: slideData.title,
+              subject: data.subject,
+              topic: data.topic,
+              imagenPrompt: slideData.imagenPrompt,
+              renderHint: slideData.diagramRenderType,
+            });
+            const generated = await generateImagenImage(fullPrompt);
+            if (generated) {
+              diagramImageBase64 = generated;
+              totalCostInr += 0.04 * 83.33;
+            }
+          } catch (err) {
+            console.warn("[ppt/diagram] Imagen fallback failed:", err);
+          }
+        }
+
+        const imagenBytes = diagramImageBase64
+          ? Math.floor((diagramImageBase64.length * 3) / 4)
           : 0;
-        if (slideData.imageBase64 && imagenBytes >= 5 * 1024) {
+        if (diagramImageBase64 && imagenBytes >= 5 * 1024) {
           slide.addImage({
-            data: `data:image/png;base64,${slideData.imageBase64}`,
+            data: `data:image/png;base64,${diagramImageBase64}`,
             x: ZONE.body.x,
             y: ZONE.body.y,
             w: ZONE.body.w,

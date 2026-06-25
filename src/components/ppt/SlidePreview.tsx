@@ -486,7 +486,7 @@ function DiagramSlide({
   }, [slideIndex]);
 
   const isImagen =
-    slide.renderHint === "imagen" &&
+    (slide.renderHint === "imagen" || slide.renderHint === "illustration") &&
     !slide.svg &&
     !slide.mermaid;
 
