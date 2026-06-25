@@ -196,7 +196,12 @@ function Combobox({
           setQuery(e.target.value);
           setOpen(true);
         }}
-        onFocus={() => setOpen(true)}
+        onFocus={(e) => {
+          setOpen(true);
+          if (debounceRef.current) clearTimeout(debounceRef.current);
+          setDebouncedQuery("");
+          e.currentTarget.select();
+        }}
         placeholder={disabled ? "Select a subject first" : placeholder}
         disabled={disabled}
         autoComplete="off"
@@ -227,6 +232,100 @@ function Combobox({
                   e.preventDefault();
                   onChange(opt.value);
                   setQuery(opt.label);
+                  setOpen(false);
+                }}
+              >
+                {opt.label}
+              </button>
+            ))
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Dropdown Select (click-to-reveal, no typing — for short module lists) ────
+
+function DropdownSelect({
+  options,
+  value,
+  onChange,
+  placeholder,
+  disabled,
+}: {
+  options: ComboboxOption[];
+  value: string;
+  onChange: (v: string) => void;
+  placeholder?: string;
+  disabled?: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const selected = options.find((o) => o.value === value);
+
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (!containerRef.current?.contains(e.target as Node)) {
+        setOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, []);
+
+  return (
+    <div ref={containerRef} className="relative">
+      <button
+        type="button"
+        onClick={() => !disabled && setOpen((p) => !p)}
+        disabled={disabled}
+        className={cn(
+          "w-full flex items-center justify-between rounded-md border border-input bg-background px-3 py-2 text-sm",
+          "ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2",
+          "disabled:cursor-not-allowed disabled:opacity-50",
+          !selected && "text-muted-foreground"
+        )}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+      >
+        <span className="truncate">
+          {selected
+            ? selected.label
+            : disabled
+            ? "Select a subject first"
+            : placeholder}
+        </span>
+        <ChevronDown
+          className={cn(
+            "size-4 shrink-0 ml-2 transition-transform duration-150",
+            open && "rotate-180"
+          )}
+        />
+      </button>
+      {open && !disabled && (
+        <div
+          role="listbox"
+          className="absolute z-50 top-full left-0 right-0 mt-1 bg-popover border rounded-md shadow-md max-h-52 overflow-auto"
+        >
+          {options.length === 0 ? (
+            <p className="px-3 py-2 text-sm text-muted-foreground">
+              No modules found
+            </p>
+          ) : (
+            options.map((opt) => (
+              <button
+                key={opt.value}
+                role="option"
+                aria-selected={opt.value === value}
+                type="button"
+                className={cn(
+                  "w-full text-left px-3 py-2 text-sm hover:bg-accent transition-colors",
+                  opt.value === value && "bg-accent font-medium"
+                )}
+                onMouseDown={(e) => {
+                  e.preventDefault();
+                  onChange(opt.value);
                   setOpen(false);
                 }}
               >
@@ -324,6 +423,13 @@ export default function FacultyGeneratePage() {
   const [showWhat, setShowWhat] = useState(false);
   const [showPanel, setShowPanel] = useState(false);
   const [conceptSlides, setConceptSlides] = useState<ConceptSlide[]>([]);
+  const [recentGeneration, setRecentGeneration] = useState<{
+    id: string;
+    title: string;
+    subject: string | null;
+    slideCount: number | null;
+    created_at: string;
+  } | null>(null);
 
   // Pipeline progress
   const [stageStatuses, setStageStatuses] =
@@ -424,6 +530,28 @@ export default function FacultyGeneratePage() {
   useEffect(() => {
     void loadResumable();
   }, [loadResumable]);
+
+  // Fetch the most recent completed generation for the context column.
+  useEffect(() => {
+    fetch("/api/generate/ppt/history")
+      .then((r) => r.json())
+      .then(
+        (data: {
+          rows: Array<{
+            id: string;
+            title: string;
+            subject: string | null;
+            slideCount: number | null;
+            created_at: string;
+            status: string;
+          }>;
+        }) => {
+          const first = (data.rows ?? []).find((r) => r.status === "completed");
+          setRecentGeneration(first ?? null);
+        }
+      )
+      .catch(() => {});
+  }, []);
 
   // Queue a checkpoint write onto the serialized chain. Merges the just-finished
   // batch's slides into the saved row and advances status. Best-effort: a failed
@@ -857,180 +985,277 @@ export default function FacultyGeneratePage() {
       <>
         {pageHeader}
 
-        {resumable && (
-          <div className="max-w-xl rounded-xl border border-amber-300 bg-amber-50 p-4 shadow-sm dark:border-amber-900 dark:bg-amber-950/40">
-            <div className="flex items-center gap-2">
-              <Wand2 className="size-4 text-amber-700 dark:text-amber-300" />
-              <p className="font-medium text-sm">Resume previous generation</p>
-            </div>
-            <p className="mt-1 text-sm text-amber-800 dark:text-amber-200">
-              &ldquo;{resumable.presentationTitle}&rdquo; was interrupted —{" "}
-              {resumable.slidesDone} of {resumable.slidesTotal} slides done.
-              Resume to finish only the remaining slides without re-spending on
-              completed ones.
-            </p>
-            <div className="mt-3 flex flex-col gap-2 sm:flex-row">
-              <Button onClick={handleResume} className="gap-2">
-                <Wand2 className="size-4" />
-                Resume ({resumable.slidesDone}/{resumable.slidesTotal})
-              </Button>
-              <Button variant="outline" onClick={() => setResumable(null)}>
-                Dismiss &amp; start fresh
-              </Button>
-            </div>
-          </div>
-        )}
+        <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,760px)_420px] gap-8 items-start">
+          {/* Form column */}
+          <div className="space-y-4">
+            {resumable && (
+              <div className="rounded-xl border border-amber-300 bg-amber-50 p-4 shadow-sm dark:border-amber-900 dark:bg-amber-950/40">
+                <div className="flex items-center gap-2">
+                  <Wand2 className="size-4 text-amber-700 dark:text-amber-300" />
+                  <p className="font-medium text-sm">Resume previous generation</p>
+                </div>
+                <p className="mt-1 text-sm text-amber-800 dark:text-amber-200">
+                  &ldquo;{resumable.presentationTitle}&rdquo; was interrupted —{" "}
+                  {resumable.slidesDone} of {resumable.slidesTotal} slides done.
+                  Resume to finish only the remaining slides without re-spending on
+                  completed ones.
+                </p>
+                <div className="mt-3 flex flex-col gap-2 sm:flex-row">
+                  <Button onClick={handleResume} className="gap-2">
+                    <Wand2 className="size-4" />
+                    Resume ({resumable.slidesDone}/{resumable.slidesTotal})
+                  </Button>
+                  <Button variant="outline" onClick={() => setResumable(null)}>
+                    Dismiss &amp; start fresh
+                  </Button>
+                </div>
+              </div>
+            )}
 
-        <div className="space-y-4 max-w-xl">
-          {/* Compact single-panel form */}
-          <div className="rounded-xl border bg-card shadow-sm divide-y">
-            {/* Subject */}
-            <div className="px-5 py-4 space-y-2">
-              <Label>Subject</Label>
-              <Combobox
-                options={subjectOptions}
-                value={selectedSubjectId}
-                onChange={(v) => {
-                  setSelectedSubjectId(v);
-                  setSelectedModuleId("");
-                }}
-                placeholder="Search subjects…"
-              />
-            </div>
-
-            {/* Source toggle + input */}
-            <div className="px-5 py-4 space-y-3">
-              <div className="flex gap-2">
-                <button
-                  type="button"
-                  onClick={() => setInputMode("module")}
-                  className={cn(
-                    "flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-sm font-medium transition-colors",
-                    inputMode === "module"
-                      ? "bg-primary text-primary-foreground border-primary"
-                      : "border-input hover:bg-muted"
-                  )}
-                >
-                  <BookOpen className="size-3.5" />
-                  From Module
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setInputMode("topic")}
-                  className={cn(
-                    "flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-sm font-medium transition-colors",
-                    inputMode === "topic"
-                      ? "bg-primary text-primary-foreground border-primary"
-                      : "border-input hover:bg-muted"
-                  )}
-                >
-                  ✏️ Custom Topic
-                </button>
+            {/* Compact single-panel form */}
+            <div className="rounded-xl border bg-card shadow-sm divide-y">
+              {/* Subject */}
+              <div className="px-5 py-4 space-y-2">
+                <Label>Subject</Label>
+                <Combobox
+                  options={subjectOptions}
+                  value={selectedSubjectId}
+                  onChange={(v) => {
+                    setSelectedSubjectId(v);
+                    setSelectedModuleId("");
+                  }}
+                  placeholder="Search subjects…"
+                />
               </div>
 
-              {inputMode === "module" ? (
-                <Combobox
-                  options={moduleOptions}
-                  value={selectedModuleId}
-                  onChange={setSelectedModuleId}
-                  placeholder="Search modules…"
-                  disabled={!selectedSubjectId}
-                  noOptionsText={
-                    selectedSubjectId
-                      ? "No modules found"
-                      : "Select a subject first"
-                  }
-                />
-              ) : (
-                <div className="space-y-1">
-                  <Input
-                    placeholder="e.g. Rankine Cycle, Organic Reactions…"
-                    value={customTopic}
-                    onChange={(e) => setCustomTopic(e.target.value)}
+              {/* Source toggle + input */}
+              <div className="px-5 py-4 space-y-3">
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setInputMode("module")}
+                    className={cn(
+                      "flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-sm font-medium transition-colors",
+                      inputMode === "module"
+                        ? "bg-primary text-primary-foreground border-primary"
+                        : "border-input hover:bg-muted"
+                    )}
+                  >
+                    <BookOpen className="size-3.5" />
+                    From Module
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setInputMode("topic")}
+                    className={cn(
+                      "flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-sm font-medium transition-colors",
+                      inputMode === "topic"
+                        ? "bg-primary text-primary-foreground border-primary"
+                        : "border-input hover:bg-muted"
+                    )}
+                  >
+                    ✏️ Custom Topic
+                  </button>
+                </div>
+
+                {inputMode === "module" ? (
+                  <DropdownSelect
+                    options={moduleOptions}
+                    value={selectedModuleId}
+                    onChange={setSelectedModuleId}
+                    placeholder="Select a module…"
+                    disabled={!selectedSubjectId}
                   />
-                  <p className="text-muted-foreground text-xs">
-                    AI will use your subject syllabus as the knowledge base
+                ) : (
+                  <div className="space-y-1">
+                    <Input
+                      placeholder="e.g. Rankine Cycle, Organic Reactions…"
+                      value={customTopic}
+                      onChange={(e) => setCustomTopic(e.target.value)}
+                    />
+                    <p className="text-muted-foreground text-xs">
+                      AI will use your subject syllabus as the knowledge base
+                    </p>
+                  </div>
+                )}
+              </div>
+
+              {/* Depth 3-segment control */}
+              <div className="px-5 py-4 space-y-2">
+                <Label>Depth</Label>
+                <DepthSelector value={depth} onChange={setDepth} />
+              </div>
+
+              {/* Collapsed "what gets generated" info line */}
+              <div>
+                <button
+                  type="button"
+                  onClick={() => setShowWhat((p) => !p)}
+                  className="flex w-full items-center justify-between px-5 py-3 text-sm text-muted-foreground hover:text-foreground transition-colors"
+                >
+                  <span className="text-left">
+                    Generates: title slide, concept slides, diagrams, worked
+                    examples, practice questions, summary
+                  </span>
+                  <ChevronDown
+                    className={cn(
+                      "size-4 shrink-0 ml-2 transition-transform duration-200",
+                      showWhat && "rotate-180"
+                    )}
+                  />
+                </button>
+                {showWhat && (
+                  <div className="px-5 pb-4 pt-2 border-t">
+                    <div className="grid grid-cols-2 gap-1.5 text-sm text-muted-foreground">
+                      {[
+                        "Title & overview",
+                        "Concept slides",
+                        "SVG diagrams",
+                        "Worked examples",
+                        "Practice questions",
+                        "Summary slide",
+                      ].map((item) => (
+                        <div key={item} className="flex items-center gap-1.5">
+                          <span className="text-green-600">✓</span>
+                          {item}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* University logo inline checkbox */}
+              {logoUrl && (
+                <div className="px-5 py-3 flex items-center gap-2.5">
+                  <Checkbox
+                    id="add-logo"
+                    checked={addLogo}
+                    onCheckedChange={(c) => setAddLogo(Boolean(c))}
+                  />
+                  <Label
+                    htmlFor="add-logo"
+                    className="cursor-pointer text-sm font-normal"
+                  >
+                    Add university logo to title slide
+                  </Label>
+                </div>
+              )}
+            </div>
+
+            <Button
+              className={cn(
+                "w-full h-11 text-base",
+                canGenerate
+                  ? "bg-primary text-primary-foreground shadow hover:bg-primary/90"
+                  : "bg-muted text-muted-foreground cursor-not-allowed opacity-50"
+              )}
+              size="lg"
+              disabled={!canGenerate}
+              onClick={handleGenerate}
+            >
+              Generate Presentation
+            </Button>
+          </div>
+
+          {/* Context column — visible only on xl+ viewports */}
+          <div className="hidden xl:flex flex-col gap-4">
+            {recentGeneration && (
+              <div className="rounded-xl border bg-card shadow-sm p-4 space-y-3">
+                <div className="flex items-center justify-between">
+                  <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                    Last Generated
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => setShowPanel(true)}
+                    className="text-xs text-primary hover:underline"
+                  >
+                    View all
+                  </button>
+                </div>
+                <div className="space-y-1">
+                  <p className="text-sm font-medium leading-tight line-clamp-2">
+                    {recentGeneration.title}
+                  </p>
+                  <div className="flex items-center gap-1.5 text-xs text-muted-foreground flex-wrap">
+                    {recentGeneration.subject && (
+                      <span>{recentGeneration.subject}</span>
+                    )}
+                    {recentGeneration.slideCount != null && (
+                      <>
+                        <span>·</span>
+                        <span>{recentGeneration.slideCount} slides</span>
+                      </>
+                    )}
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    {new Date(recentGeneration.created_at).toLocaleDateString(
+                      undefined,
+                      { month: "short", day: "numeric", year: "numeric" }
+                    )}
                   </p>
                 </div>
-              )}
-            </div>
-
-            {/* Depth 3-segment control */}
-            <div className="px-5 py-4 space-y-2">
-              <Label>Depth</Label>
-              <DepthSelector value={depth} onChange={setDepth} />
-            </div>
-
-            {/* Collapsed "what gets generated" info line */}
-            <div>
-              <button
-                type="button"
-                onClick={() => setShowWhat((p) => !p)}
-                className="flex w-full items-center justify-between px-5 py-3 text-sm text-muted-foreground hover:text-foreground transition-colors"
-              >
-                <span className="text-left">
-                  Generates: title slide, concept slides, diagrams, worked
-                  examples, practice questions, summary
-                </span>
-                <ChevronDown
-                  className={cn(
-                    "size-4 shrink-0 ml-2 transition-transform duration-200",
-                    showWhat && "rotate-180"
-                  )}
-                />
-              </button>
-              {showWhat && (
-                <div className="px-5 pb-4 pt-2 border-t">
-                  <div className="grid grid-cols-2 gap-1.5 text-sm text-muted-foreground">
-                    {[
-                      "Title & overview",
-                      "Concept slides",
-                      "SVG diagrams",
-                      "Worked examples",
-                      "Practice questions",
-                      "Summary slide",
-                    ].map((item) => (
-                      <div key={item} className="flex items-center gap-1.5">
-                        <span className="text-green-600">✓</span>
-                        {item}
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-            </div>
-
-            {/* University logo inline checkbox */}
-            {logoUrl && (
-              <div className="px-5 py-3 flex items-center gap-2.5">
-                <Checkbox
-                  id="add-logo"
-                  checked={addLogo}
-                  onCheckedChange={(c) => setAddLogo(Boolean(c))}
-                />
-                <Label
-                  htmlFor="add-logo"
-                  className="cursor-pointer text-sm font-normal"
+                <Link
+                  href={`/faculty/generate/refine/${recentGeneration.id}`}
+                  className="text-xs text-primary hover:underline inline-flex items-center gap-1"
                 >
-                  Add university logo to title slide
-                </Label>
+                  <Wand2 className="size-3" />
+                  Open in Refine
+                </Link>
               </div>
             )}
-          </div>
 
-          <Button
-            className={cn(
-              "w-full h-11 text-base",
-              canGenerate
-                ? "bg-primary text-primary-foreground shadow hover:bg-primary/90"
-                : "bg-muted text-muted-foreground cursor-not-allowed opacity-50"
-            )}
-            size="lg"
-            disabled={!canGenerate}
-            onClick={handleGenerate}
-          >
-            Generate Presentation
-          </Button>
+            <div className="rounded-xl border bg-card shadow-sm p-4 space-y-3">
+              <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                Tips
+              </p>
+              <ul className="space-y-2.5 text-sm text-muted-foreground">
+                <li className="flex gap-2">
+                  <span className="text-primary shrink-0 mt-0.5">•</span>
+                  <span>
+                    <strong className="text-foreground font-medium">
+                      Intermediate
+                    </strong>{" "}
+                    depth covers full derivations — best for lecture slides and
+                    exam prep.
+                  </span>
+                </li>
+                <li className="flex gap-2">
+                  <span className="text-primary shrink-0 mt-0.5">•</span>
+                  <span>
+                    Use{" "}
+                    <strong className="text-foreground font-medium">
+                      Module
+                    </strong>{" "}
+                    for full topic scope;{" "}
+                    <strong className="text-foreground font-medium">
+                      Custom Topic
+                    </strong>{" "}
+                    for a focused deep-dive within a subject.
+                  </span>
+                </li>
+                <li className="flex gap-2">
+                  <span className="text-primary shrink-0 mt-0.5">•</span>
+                  <span>
+                    Diagram slides use{" "}
+                    <strong className="text-foreground font-medium">SVG</strong>{" "}
+                    and render natively in PowerPoint — no image exports needed.
+                  </span>
+                </li>
+                <li className="flex gap-2">
+                  <span className="text-primary shrink-0 mt-0.5">•</span>
+                  <span>
+                    Content is grounded in your{" "}
+                    <strong className="text-foreground font-medium">
+                      uploaded syllabus
+                    </strong>{" "}
+                    — off-syllabus topics are automatically constrained.
+                  </span>
+                </li>
+              </ul>
+            </div>
+          </div>
         </div>
 
         <MyGenerationsPanel
