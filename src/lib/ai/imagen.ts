@@ -1,87 +1,83 @@
-import { GoogleGenerativeAI } from '@google/generative-ai'
+import { GoogleGenAI, Modality } from '@google/genai'
 
-const genAI = new GoogleGenerativeAI(
-  process.env.GOOGLE_GENERATIVE_AI_API_KEY!
-)
-const API_KEY = process.env.GOOGLE_GENERATIVE_AI_API_KEY!
-const BASE_URL = 'https://generativelanguage.googleapis.com/v1beta/models'
+// Migrated to the unified @google/genai SDK. gemini.ts still uses the legacy
+// @google/generative-ai SDK; both can coexist while that file is migrated
+// separately. The single shared client below is created lazily.
+let cachedClient: GoogleGenAI | null = null
+function getGenAI(): GoogleGenAI {
+  if (!cachedClient) {
+    cachedClient = new GoogleGenAI({
+      apiKey: process.env.GOOGLE_GENERATIVE_AI_API_KEY!,
+    })
+  }
+  return cachedClient
+}
+
+export type ImageComplexity = 'standard' | 'intricate'
 
 /**
- * PRIMARY: gemini-2.5-flash-image (generateContent API)
- * Same model family as existing Flash calls — cheapest, consistent.
- * FALLBACK: imagen-4.0-fast-generate-001 (predict API)
- * Higher quality photorealistic renders when Flash image isn't enough.
+ * Image-model tiers, selected by the diagram's diagramComplexity tag:
+ *  - standard  → gemini-2.5-flash-image (cheap, fast), fallback gemini-3.1-flash-image
+ *  - intricate → gemini-3-pro-image (higher fidelity),  fallback gemini-3.1-flash-image
+ *
+ * gemini-3.1-flash-image replaces the now-deprecated imagen-4.0-fast-generate-001
+ * fallback and serves as the universal safety net for both tiers.
+ */
+const IMAGE_MODEL_CHAIN: Record<ImageComplexity, string[]> = {
+  standard: ['gemini-2.5-flash-image', 'gemini-3.1-flash-image'],
+  intricate: ['gemini-3-pro-image', 'gemini-3.1-flash-image'],
+}
+
+export interface GenerateImageOptions {
+  aspectRatio?: '16:9' | '4:3' | '1:1'
+  /** Diagram intricacy tag from the outline — selects the image-model tier. */
+  complexity?: ImageComplexity
+}
+
+/**
+ * Generate a single image, returning base64 PNG bytes (no data-URI prefix) or
+ * null if every model in the tier's chain fails.
+ *
+ * `options` accepts an object; a bare aspect-ratio string is still accepted for
+ * backward compatibility with older positional callers.
  */
 export async function generateImagenImage(
   prompt: string,
-  aspectRatio: '16:9' | '4:3' | '1:1' = '16:9'
+  options: GenerateImageOptions | '16:9' | '4:3' | '1:1' = {}
 ): Promise<string | null> {
+  const opts: GenerateImageOptions =
+    typeof options === 'string' ? { aspectRatio: options } : options
+  const aspectRatio = opts.aspectRatio ?? '16:9'
+  const complexity: ImageComplexity = opts.complexity ?? 'standard'
+  const chain = IMAGE_MODEL_CHAIN[complexity]
 
-  // PRIMARY: gemini-2.5-flash-image
-  try {
-    const model = genAI.getGenerativeModel({
-      model: 'gemini-2.5-flash-image',
-    })
+  const ai = getGenAI()
 
-    const result = await model.generateContent({
-      contents: [{
-        role: 'user',
-        parts: [{ text: prompt }]
-      }],
-      generationConfig: {
-        responseModalities: ['image', 'text'] as any,
-      },
-    } as any)
+  for (const modelName of chain) {
+    try {
+      const result = await ai.models.generateContent({
+        model: modelName,
+        contents: prompt,
+        config: {
+          responseModalities: [Modality.IMAGE, Modality.TEXT],
+          imageConfig: { aspectRatio },
+        },
+      })
 
-    const parts = result.response.candidates?.[0]?.content?.parts ?? []
-    for (const part of parts) {
-      const inlineData = (part as any).inlineData
-      if (inlineData?.data && inlineData?.mimeType?.startsWith('image/')) {
-        console.log('[imagen] Generated via gemini-2.5-flash-image')
-        return inlineData.data
+      const parts = result.candidates?.[0]?.content?.parts ?? []
+      for (const part of parts) {
+        const inlineData = part.inlineData
+        if (inlineData?.data && inlineData?.mimeType?.startsWith('image/')) {
+          console.log(
+            `[imagen] Generated via ${modelName} (tier=${complexity})`
+          )
+          return inlineData.data
+        }
       }
+      console.warn(`[imagen] ${modelName}: no image parts in response`)
+    } catch (err: any) {
+      console.warn(`[imagen] ${modelName} failed:`, err?.message ?? err)
     }
-    console.warn('[imagen] Flash image: no image parts in response')
-  } catch (err: any) {
-    console.warn('[imagen] Flash image failed:', err?.message ?? err)
-  }
-
-  // FALLBACK: imagen-4.0-fast-generate-001
-  try {
-    console.log('[imagen] Trying imagen-4.0-fast fallback...')
-    const res = await fetch(
-      `${BASE_URL}/imagen-4.0-fast-generate-001:predict?key=${API_KEY}`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          instances: [{ prompt }],
-          parameters: {
-            sampleCount: 1,
-            aspectRatio,
-            safetyFilterLevel: 'block_some',
-            personGeneration: 'allow_adult',
-          },
-        }),
-        signal: AbortSignal.timeout(30000),
-      }
-    )
-
-    if (res.ok) {
-      const data = await res.json()
-      const imageBytes = data?.predictions?.[0]?.bytesBase64Encoded
-      if (imageBytes) {
-        console.log('[imagen] Generated via imagen-4.0-fast')
-        return imageBytes
-      }
-      console.warn('[imagen] imagen-4.0-fast: empty response')
-    } else {
-      const err = await res.text()
-      console.warn('[imagen] imagen-4.0-fast failed:', res.status,
-        err.slice(0, 200))
-    }
-  } catch (err: any) {
-    console.warn('[imagen] imagen-4.0-fast error:', err?.message ?? err)
   }
 
   return null

@@ -361,11 +361,15 @@ Example outline entry:
   "type": "dual_visual",
   "title": "Hashing: Direct Address Computation",
   "renderHint": "dual",
+  "diagramComplexity": "intricate",
   "leftVisual": "illustration",
   "rightVisual": "svg",
   "leftPrompt": "Post office sorting mail into numbered pigeonholes based on address",
   "rightPrompt": "Hash table with 7 buckets, keys mapping via h(key) = key % 7"
 }
+
+(diagramComplexity is "standard" or "intricate" — required on every diagram and
+dual_visual slide; see <diagram_complexity_rules>.)
 
 Intent:
 - Left 50%: Imagen illustration (conceptual metaphor) from leftPrompt

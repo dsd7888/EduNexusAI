@@ -36,6 +36,12 @@ export interface SlideContent {
   diagramCaption?: string;
   /** Render strategy for diagram slides */
   diagramRenderType?: "svg" | "mermaid" | "imagen" | "illustration" | "dual";
+  /**
+   * Diagram intricacy tag (diagram/dual_visual only), set at the outline stage.
+   * Drives text-model routing (standard→Flash, intricate→Pro for SVG) and the
+   * image-model tier (intricate→gemini-3-pro-image). See routeDiagramModel.
+   */
+  diagramComplexity?: "standard" | "intricate";
   /** For imagen slides: detailed generation prompt */
   imagenPrompt?: string;
   /** For mermaid slides: valid mermaid code */
@@ -84,6 +90,8 @@ export interface SlideOutline {
     type: SlideType;
     title: string;
     renderHint?: "svg" | "mermaid" | "imagen" | "illustration" | "dual" | null;
+    /** diagram/dual_visual only: "standard" | "intricate" — routes Flash vs Pro */
+    diagramComplexity?: "standard" | "intricate";
     /** dual_visual only: metaphor side (e.g. illustration) */
     leftVisual?: string;
     /** dual_visual only: technical side (e.g. svg) */
@@ -274,6 +282,40 @@ Use "illustration" for mandated metaphor primers per <illustration_mandate> — 
 Batch content will produce imagenPrompt (left/metaphor) + svgCode (right/technical) + one diagramCaption. Do not use renderHint "dual" on type "diagram".
 </renderhint_rules>
 
+<diagram_complexity_rules>
+EVERY slide of type "diagram" or "dual_visual" MUST carry a "diagramComplexity"
+field with value "standard" or "intricate". This tag controls which model renders
+the diagram — judge it by how hard the visual is to get RIGHT, not by how important
+the topic is.
+
+"standard" — a competent draughtsman draws it quickly and correctly:
+- A single curve or 2-3 curves on labelled axes (one supply-demand pair, one P-V
+  process, a single dose-response curve)
+- A simple labelled schematic or block diagram with fewer than ~10 components
+- A small data-structure snapshot (one array, a tree of ≤7 nodes, a short linked list)
+- A flow / state / decision diagram with ≤8 nodes and simple connections
+- A basic free-body diagram, a side-by-side A-vs-B comparison, a single labelled cell
+
+"intricate" — many interacting elements where geometry, ordering, or precise spatial
+relationships are easy to get wrong and reward stronger reasoning:
+- Multi-pass algorithm state diagrams (sorting shown pass-by-pass, pointer movement
+  across several steps, full tree-traversal ordering)
+- Quantitative graphs with multiple curves PLUS annotated regions / shaded areas /
+  intersection points / load lines
+- Detailed labelled cross-sections or schematics with many interacting parts (>~10),
+  circuits with several components, multi-region phase diagrams, titration curves
+- Multi-stage process flows / cascades where one wrong arrow breaks the explanation
+- Any diagram needing precise layout of ~15+ shapes, arrows, and labels together
+
+When genuinely borderline, prefer "intricate" — a slightly over-resourced diagram is
+cheaper than a wrong one going to a classroom.
+
+NOTE on render type: a "mermaid" diagram is rendered by a fixed-cost path regardless
+of this tag, so set "standard" for mermaid slides unless the logic is unusually dense.
+For "imagen"/"illustration" slides the tag still applies — it selects the image-model
+tier (intricate → the higher-fidelity image model).
+</diagram_complexity_rules>
+
 <practice_distribution>
 One practice question per major concept group, distributed across the deck.
 Test different cognitive levels: recall → application → analysis → synthesis.
@@ -314,17 +356,18 @@ Start your response with { and end with }
   "outline": [
     { "index": 0, "type": "title", "title": "string", "renderHint": null },
     { "index": 1, "type": "overview", "title": "string", "renderHint": null },
-    { "index": 3, "type": "diagram", "title": "ECG: P-QRS-T Waveform", "renderHint": "svg" },
-    { "index": 7, "type": "diagram", "title": "Heart: 3D Chamber Anatomy", "renderHint": "imagen" },
-    { "index": 12, "type": "diagram", "title": "Diagnostic Algorithm: Chest Pain", "renderHint": "mermaid" },
-    { "index": 14, "type": "diagram", "title": "Sequential Access: Like a Cassette Tape", "renderHint": "illustration" },
-    { "index": 16, "type": "dual_visual", "title": "Hashing: Metaphor and Mechanism", "renderHint": "dual", "leftVisual": "illustration", "rightVisual": "svg", "leftPrompt": "Post office sorting mail into numbered pigeonholes", "rightPrompt": "Hash table with buckets showing h(key) mapping" }
+    { "index": 3, "type": "diagram", "title": "ECG: P-QRS-T Waveform", "renderHint": "svg", "diagramComplexity": "intricate" },
+    { "index": 7, "type": "diagram", "title": "Heart: 3D Chamber Anatomy", "renderHint": "imagen", "diagramComplexity": "intricate" },
+    { "index": 12, "type": "diagram", "title": "Diagnostic Algorithm: Chest Pain", "renderHint": "mermaid", "diagramComplexity": "standard" },
+    { "index": 14, "type": "diagram", "title": "Sequential Access: Like a Cassette Tape", "renderHint": "illustration", "diagramComplexity": "standard" },
+    { "index": 16, "type": "dual_visual", "title": "Hashing: Metaphor and Mechanism", "renderHint": "dual", "diagramComplexity": "intricate", "leftVisual": "illustration", "rightVisual": "svg", "leftPrompt": "Post office sorting mail into numbered pigeonholes", "rightPrompt": "Hash table with buckets showing h(key) mapping" }
   ]
 }
 
 Rules:
 - renderHint is null for slides that do not use it (title, overview, concept, example, practice, summary)
 - renderHint is required for type "diagram" (svg | mermaid | imagen | illustration)
+- diagramComplexity ("standard" | "intricate") is REQUIRED for every "diagram" and "dual_visual" slide, and omitted on all other slide types (see <diagram_complexity_rules>)
 - For type "dual_visual": renderHint MUST be "dual" and leftVisual, rightVisual, leftPrompt, rightPrompt MUST be present
 - Indexes start at 0 and increment sequentially with no gaps
 </output_format>`;
@@ -340,6 +383,7 @@ export function buildBatchContentPrompt(options: {
     type: SlideType;
     title: string;
     renderHint?: "svg" | "mermaid" | "imagen" | "illustration" | "dual" | null;
+    diagramComplexity?: "standard" | "intricate";
     leftVisual?: string;
     rightVisual?: string;
     leftPrompt?: string;
@@ -385,6 +429,12 @@ Follow the pedagogical sequence and notation conventions from these books.
             ? "dual"
             : s.renderHint ?? (s.type === "diagram" ? "svg" : null),
       };
+      if (
+        (s.type === "diagram" || s.type === "dual_visual") &&
+        s.diagramComplexity
+      ) {
+        row.diagramComplexity = s.diagramComplexity;
+      }
       if (s.type === "dual_visual") {
         if (s.leftVisual != null) row.leftVisual = s.leftVisual;
         if (s.rightVisual != null) row.rightVisual = s.rightVisual;
@@ -813,8 +863,31 @@ function svgToBase64(svg: string): string {
   return `data:image/svg+xml;base64,${Buffer.from(withNs, "utf-8").toString("base64")}`;
 }
 
-function isValidSVG(svg: string): boolean {
+export function isValidSVG(svg: string): boolean {
   return Boolean(svg && svg.length > 100 && svg.includes("<svg") && svg.includes("viewBox"));
+}
+
+/** Count drawable SVG primitives (excludes <svg>, <defs>, <marker>, <style>). */
+export function svgElementCount(svg: string): number {
+  if (!svg) return 0;
+  const matches = svg.match(
+    /<(rect|circle|ellipse|line|polyline|polygon|path|text|image|use|tspan|g)\b/gi
+  );
+  return matches ? matches.length : 0;
+}
+
+/**
+ * Acceptance gate for a Flash-generated diagram SVG before it is allowed to
+ * stand without escalation. Rejects markup that is structurally invalid OR
+ * suspiciously sparse — a near-empty SVG (just the background rect plus a label
+ * or two) means Flash punted, and is the exact case worth a Pro retry.
+ *
+ * minElements default 6: the background <rect> is always element #1, so 6 means
+ * at least ~5 real shapes/labels of actual diagram content.
+ */
+export function isAcceptableDiagramSVG(svg: string, minElements = 6): boolean {
+  if (!isValidSVG(svg)) return false;
+  return svgElementCount(svg) >= minElements;
 }
 
 function addHeaderBar(
@@ -1066,6 +1139,7 @@ async function generateImagenForSlide(
     topic: string;
     slideTitle: string;
     imagenPrompt?: string | undefined | null;
+    complexity?: "standard" | "intricate" | undefined;
   }
 ): Promise<string | null> {
   const scene =
@@ -1083,7 +1157,7 @@ async function generateImagenForSlide(
       leftVisual === "illustration" ? "illustration" : "dual",
   });
 
-  return generateImagenImage(fullPrompt);
+  return generateImagenImage(fullPrompt, { complexity: ctx.complexity });
 }
 
 export async function generatePPTXBuffer(
@@ -1440,7 +1514,9 @@ export async function generatePPTXBuffer(
               imagenPrompt: slideData.imagenPrompt,
               renderHint: slideData.diagramRenderType,
             });
-            const generated = await generateImagenImage(fullPrompt);
+            const generated = await generateImagenImage(fullPrompt, {
+              complexity: slideData.diagramComplexity,
+            });
             if (generated) {
               diagramImageBase64 = generated;
               totalCostInr += 0.04 * 83.33;
@@ -1628,6 +1704,7 @@ export async function generatePPTXBuffer(
               topic: data.topic,
               slideTitle: slideData.title,
               imagenPrompt: slideData.imagenPrompt,
+              complexity: slideData.diagramComplexity,
             }
           );
           if (generated) {

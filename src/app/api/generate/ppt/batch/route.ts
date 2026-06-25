@@ -1,10 +1,16 @@
 import {
   buildBatchContentPrompt,
   parseBatchContent,
+  isAcceptableDiagramSVG,
+  svgElementCount,
   type SlideContent,
   type SlideType,
 } from "@/lib/ppt/generator";
-import { routeAI } from "@/lib/ai/router";
+import {
+  routeAI,
+  routeDiagramBatchModel,
+  type DiagramComplexity,
+} from "@/lib/ai/router";
 import {
   createAdminClient,
   createServerClient,
@@ -94,6 +100,7 @@ export async function POST(request: NextRequest) {
       type: SlideType;
       title: string;
       renderHint?: RenderHint | null;
+      diagramComplexity?: DiagramComplexity;
       leftVisual?: string;
       rightVisual?: string;
       leftPrompt?: string;
@@ -113,11 +120,21 @@ export async function POST(request: NextRequest) {
           if (type === "dual_visual") {
             renderHint = "dual";
           }
+          // Diagram intricacy tag from the outline. Missing/invalid → "standard"
+          // (cheap Flash path); the SVG escalation net catches anything Flash
+          // botches, so an absent tag never silently forces a costly Pro call.
+          const diagramComplexity: DiagramComplexity | undefined =
+            type === "diagram" || type === "dual_visual"
+              ? String(o?.diagramComplexity ?? "").toLowerCase() === "intricate"
+                ? "intricate"
+                : "standard"
+              : undefined;
           const base = {
             index: Number(o?.index ?? 0),
             type,
             title: String(o?.title ?? ""),
             renderHint,
+            diagramComplexity,
           };
           if (type !== "dual_visual") return base;
           return {
@@ -228,27 +245,99 @@ export async function POST(request: NextRequest) {
       moduleDescription,
     });
     let batchCostInr = 0;
-    async function generateBatchWithRetry(
+
+    const isDiagramBatch = slides.every(
+      (s) => s.type === "diagram" || s.type === "dual_visual"
+    );
+    // Does this batch ask the TEXT model to emit SVG markup? Only svg/dual (and
+    // a bare diagram, which defaults to svg) do — those are the slides the
+    // escalation net validates and, on sparse/invalid output, retries on Pro.
+    // mermaid/imagen/illustration produce no SVG here, so they never escalate.
+    const batchProducesSVG =
+      isDiagramBatch &&
+      slides.some(
+        (s) =>
+          s.renderHint === "svg" ||
+          s.renderHint === "dual" ||
+          s.type === "dual_visual" ||
+          (s.type === "diagram" && s.renderHint == null)
+      );
+
+    type RunResult =
+      | { kind: "ok"; slides: SlideContent[]; costInr: number; timeMs: number }
+      | { kind: "fallback"; slides: SlideContent[]; costInr: number; timeMs: number }
+      | { kind: "fail"; costInr: number; timeMs: number };
+
+    // Placeholder slides built from titles so a refused batch is never missing
+    // slides (preserves prior behaviour, now reusable across model attempts).
+    function buildRefusalFallback(): SlideContent[] {
+      return slides.map((s) => ({
+        type: s.type,
+        title: s.title,
+        bullets:
+          s.type === "concept" || s.type === "overview" || s.type === "summary"
+            ? [
+                `Content for "${s.title}" — please refer to your course materials for detailed notes on this topic.`,
+              ]
+            : undefined,
+        example:
+          s.type === "example"
+            ? {
+                problem: `Example problem for: ${s.title}`,
+                steps: [
+                  "Refer to course materials for worked examples on this topic.",
+                ],
+                answer: "See course notes",
+              }
+            : undefined,
+        question:
+          s.type === "practice"
+            ? {
+                text: `Practice question on: ${s.title}`,
+                answer: "See course notes",
+                explanation:
+                  "Refer to course materials for practice problems on this topic.",
+              }
+            : undefined,
+        ...(s.type === "dual_visual"
+          ? {
+              diagramRenderType: "dual" as const,
+              imagenPrompt: [s.leftPrompt, `Conceptual metaphor for: ${s.title}`]
+                .filter(Boolean)
+                .join(" "),
+              svgCode: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 400"><rect width="800" height="400" fill="#F8FAFC"/><text x="400" y="200" text-anchor="middle" font-size="16" fill="#64748B">Technical diagram — see course notes</text></svg>`,
+              diagramCaption:
+                "Left: metaphor; right: structure — refer to course materials.",
+            }
+          : {}),
+      }));
+    }
+
+    // One generation attempt on a SPECIFIC model, with transient-retry + refusal
+    // handling. Returns cost + wall-time so callers can attribute spend and
+    // latency to the path that actually ran (Task 5).
+    async function runBatchOnModel(
       prompt: string,
+      model: "flash" | "pro",
       maxRetries: number = 2
-    ): Promise<SlideContent[] | null> {
+    ): Promise<RunResult> {
+      let costInr = 0;
+      const start = Date.now();
       for (let attempt = 1; attempt <= maxRetries; attempt++) {
-        console.log(`[ppt/batch] Attempt ${attempt}/${maxRetries}`);
+        console.log(
+          `[ppt/batch] ${isDiagramBatch ? "diagram" : "content"} attempt ${attempt}/${maxRetries} on ${model}`
+        );
         try {
-          const isDiagramBatch = slides.every(
-            (s) => s.type === "diagram" || s.type === "dual_visual"
-          );
           const maxTokens = isDiagramBatch ? 8192 : 32768;
-          // Diagram-only batches go to Pro (better SVG/diagram code); mixed
-          // content batches stay on Flash.
           const ai = await routeAI(isDiagramBatch ? "ppt_diagram" : "ppt_gen", {
             messages: [{ role: "user", content: prompt }],
             maxTokens,
+            model, // explicit per-attempt model override (router honours it)
             // Schema-constrain diagram batches only; content batches keep their
             // existing free-form parsing (parseBatchContent).
             ...(isDiagramBatch ? { responseSchema: DIAGRAM_BATCH_SCHEMA } : {}),
           });
-          batchCostInr += ai.costInr;
+          costInr += ai.costInr;
 
           const text = String(ai.content ?? "");
 
@@ -264,71 +353,33 @@ export async function POST(request: NextRequest) {
 
           if (isRefusal) {
             console.warn(
-              "[ppt/batch] Gemini refused this batch. Generating fallback."
+              `[ppt/batch] Gemini (${model}) refused this batch. Generating fallback.`
             );
-
-            // Generate placeholder slides from the slide titles
-            // so the deck is never missing slides
-            const fallbackSlides: SlideContent[] = slides.map((s) => ({
-              type: s.type,
-              title: s.title,
-              bullets:
-                s.type === "concept" ||
-                s.type === "overview" ||
-                s.type === "summary"
-                  ? [
-                      `Content for "${s.title}" — please refer to your course materials for detailed notes on this topic.`,
-                    ]
-                  : undefined,
-              example:
-                s.type === "example"
-                  ? {
-                      problem: `Example problem for: ${s.title}`,
-                      steps: [
-                        "Refer to course materials for worked examples on this topic.",
-                      ],
-                      answer: "See course notes",
-                    }
-                  : undefined,
-              question:
-                s.type === "practice"
-                  ? {
-                      text: `Practice question on: ${s.title}`,
-                      answer: "See course notes",
-                      explanation:
-                        "Refer to course materials for practice problems on this topic.",
-                    }
-                  : undefined,
-              ...(s.type === "dual_visual"
-                ? {
-                    diagramRenderType: "dual" as const,
-                    imagenPrompt: [
-                      s.leftPrompt,
-                      `Conceptual metaphor for: ${s.title}`,
-                    ]
-                      .filter(Boolean)
-                      .join(" "),
-                    svgCode: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 400"><rect width="800" height="400" fill="#F8FAFC"/><text x="400" y="200" text-anchor="middle" font-size="16" fill="#64748B">Technical diagram — see course notes</text></svg>`,
-                    diagramCaption:
-                      "Left: metaphor; right: structure — refer to course materials.",
-                  }
-                : {}),
-            }));
-
-            return fallbackSlides;
+            return {
+              kind: "fallback",
+              slides: buildRefusalFallback(),
+              costInr,
+              timeMs: Date.now() - start,
+            };
           }
 
-          // If not a refusal, proceed with normal parsing
           const parsed = parseBatchContent(text);
           if (parsed && parsed.length > 0) {
-            console.log(`[ppt/batch] Success on attempt ${attempt}`);
-            return parsed;
+            console.log(
+              `[ppt/batch] Parsed ${parsed.length} slide(s) on attempt ${attempt} (${model})`
+            );
+            return {
+              kind: "ok",
+              slides: parsed,
+              costInr,
+              timeMs: Date.now() - start,
+            };
           }
           console.warn(
-            `[ppt/batch] Parse failed on attempt ${attempt}, retrying...`
+            `[ppt/batch] Parse failed on attempt ${attempt} (${model}), retrying...`
           );
         } catch (err) {
-          console.warn(`[ppt/batch] API error on attempt ${attempt}:`, err);
+          console.warn(`[ppt/batch] API error on attempt ${attempt} (${model}):`, err);
           if (attempt === maxRetries) throw err;
         }
         // Wait before retry (exponential backoff)
@@ -336,10 +387,92 @@ export async function POST(request: NextRequest) {
           await new Promise((r) => setTimeout(r, attempt * 1500));
         }
       }
-      return null;
+      return { kind: "fail", costInr, timeMs: Date.now() - start };
     }
 
-    const batchContent = await generateBatchWithRetry(batchPrompt);
+    // Did Flash return acceptable SVG for EVERY slide that should carry one?
+    // (isAcceptableDiagramSVG = valid markup AND not suspiciously sparse.)
+    function flashSvgIsAcceptable(out: SlideContent[]): boolean {
+      return slides.every((inp, i) => {
+        const wantsSvg =
+          inp.renderHint === "svg" ||
+          inp.renderHint === "dual" ||
+          inp.type === "dual_visual" ||
+          (inp.type === "diagram" && inp.renderHint == null);
+        if (!wantsSvg) return true;
+        return isAcceptableDiagramSVG(out[i]?.svgCode ?? "");
+      });
+    }
+
+    // Per-path cost/latency telemetry for the cost-summary (Task 5).
+    const pathStats: Record<string, { costInr: number; timeMs: number }> = {};
+    function recordPath(path: string, costInr: number, timeMs: number) {
+      const s = (pathStats[path] ??= { costInr: 0, timeMs: 0 });
+      s.costInr += costInr;
+      s.timeMs += timeMs;
+    }
+
+    let diagramPath: string | null = null;
+    let diagramModel: "flash" | "pro" | null = null;
+
+    async function generateBatch(prompt: string): Promise<SlideContent[] | null> {
+      // CONTENT batches: unchanged behaviour — Flash, no escalation.
+      if (!isDiagramBatch) {
+        const r = await runBatchOnModel(prompt, "flash");
+        batchCostInr += r.costInr;
+        recordPath("content-flash", r.costInr, r.timeMs);
+        return r.kind === "fail" ? null : r.slides;
+      }
+
+      // DIAGRAM batches: route by renderHint + diagramComplexity.
+      diagramModel = routeDiagramBatchModel(slides);
+
+      // pro-direct: intricate SVG/dual goes straight to Pro (no escalation step).
+      if (diagramModel === "pro") {
+        const r = await runBatchOnModel(prompt, "pro");
+        batchCostInr += r.costInr;
+        diagramPath = "pro-direct";
+        recordPath("pro-direct", r.costInr, r.timeMs);
+        return r.kind === "fail" ? null : r.slides;
+      }
+
+      // Flash first.
+      const flash = await runBatchOnModel(prompt, "flash");
+      batchCostInr += flash.costInr;
+
+      // A clean Flash result = parsed OK and (no SVG expected, or every SVG
+      // passes the acceptance gate). Anything else on an SVG batch escalates to
+      // Pro BEFORE any placeholder fallback is allowed to stand.
+      const flashSucceededClean =
+        flash.kind === "ok" &&
+        (!batchProducesSVG || flashSvgIsAcceptable(flash.slides));
+
+      if (!batchProducesSVG || flashSucceededClean) {
+        diagramPath = "flash-direct";
+        recordPath("flash-direct", flash.costInr, flash.timeMs);
+        return flash.kind === "fail" ? null : flash.slides;
+      }
+
+      console.warn(
+        `[ppt/batch] Flash SVG rejected (kind=${flash.kind}) — escalating single slide to Pro`
+      );
+      const pro = await runBatchOnModel(prompt, "pro");
+      batchCostInr += pro.costInr;
+      diagramPath = "flash-failed-escalated-to-pro";
+      diagramModel = "pro";
+      // Attribute BOTH the wasted Flash attempt and the Pro retry to this path.
+      recordPath(
+        "flash-failed-escalated-to-pro",
+        flash.costInr + pro.costInr,
+        flash.timeMs + pro.timeMs
+      );
+
+      if (pro.kind !== "fail") return pro.slides;
+      // Pro also failed: fall back to whatever Flash produced, else null.
+      return flash.kind === "fail" ? null : flash.slides;
+    }
+
+    const batchContent = await generateBatch(batchPrompt);
 
     if (!batchContent) {
       console.error(
@@ -355,19 +488,27 @@ export async function POST(request: NextRequest) {
       return Response.json({ slides: placeholders, partial: true, costInr: batchCostInr });
     }
 
-    // Annotate diagramRenderType from input renderHint so build route can identify imagen slides
+    // Annotate diagramRenderType from input renderHint so build route can identify imagen slides.
+    // Also propagate diagramComplexity onto diagram/dual_visual slides so the
+    // image-generation pre-pass (build route) can pick the intricate image tier.
     const annotated = batchContent.map((slide, i) => {
       const inputSlide = slides[i];
       if (slide.type === "diagram" && inputSlide?.renderHint) {
         return {
           ...slide,
           diagramRenderType: inputSlide.renderHint as SlideContent["diagramRenderType"],
+          ...(inputSlide.diagramComplexity
+            ? { diagramComplexity: inputSlide.diagramComplexity }
+            : {}),
         };
       }
       if (slide.type === "dual_visual") {
         return {
           ...slide,
           diagramRenderType: "dual" as const,
+          ...(inputSlide?.diagramComplexity
+            ? { diagramComplexity: inputSlide.diagramComplexity }
+            : {}),
           ...(inputSlide?.leftVisual != null
             ? { leftVisual: inputSlide.leftVisual }
             : {}),
@@ -385,8 +526,40 @@ export async function POST(request: NextRequest) {
       return slide;
     });
 
+    // ── Cost / latency summary, broken out by path (Task 5) ──────────────────
+    // Each diagram batch is a single slide, so the per-request lines below tally
+    // up across a deck: grep `[ppt/batch][diagram-path]` to see how many diagrams
+    // took each of the three paths and the real escalation rate.
+    for (const [path, s] of Object.entries(pathStats)) {
+      console.log(
+        `[ppt/batch][cost-summary] path=${path} costInr=₹${s.costInr.toFixed(4)} timeMs=${s.timeMs}`
+      );
+    }
+    if (isDiagramBatch) {
+      const maxSvgElements = annotated.reduce(
+        (m, sl) => Math.max(m, svgElementCount(sl.svgCode ?? "")),
+        0
+      );
+      const head = slides[0];
+      console.log(
+        `[ppt/batch][diagram-path] title="${head?.title ?? ""}" ` +
+          `renderHint=${head?.renderHint ?? "svg"} ` +
+          `complexity=${head?.diagramComplexity ?? "standard"} ` +
+          `model=${diagramModel} path=${diagramPath} ` +
+          `maxSvgElements=${maxSvgElements} costInr=₹${batchCostInr.toFixed(4)}`
+      );
+    }
+
     console.log(`[ppt/batch] Done. Generated ${annotated.length} slides`);
-    return Response.json({ slides: annotated, costInr: batchCostInr });
+    return Response.json({
+      slides: annotated,
+      costInr: batchCostInr,
+      // Telemetry so the frontend/build route can aggregate spend by path and
+      // attribute Pro spend correctly (instead of folding it into "Flash cost").
+      diagramPath,
+      diagramModel,
+      costByPath: pathStats,
+    });
   } catch (err) {
     console.error("[ppt/batch] Error:", err);
     const message =

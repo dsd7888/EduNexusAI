@@ -25,6 +25,58 @@ const TASK_TO_MODEL: Record<string, "flash" | "pro"> = {
 
 const DEFAULT_MODEL: "flash" | "pro" = "flash";
 
+export type DiagramRenderHint =
+  | "svg"
+  | "mermaid"
+  | "imagen"
+  | "illustration"
+  | "dual";
+export type DiagramComplexity = "standard" | "intricate";
+
+/**
+ * Text-model routing for ONE diagram/dual_visual slide's content generation.
+ *
+ * This is the diagram-tier policy, kept here next to TASK_TO_MODEL so all
+ * model-selection logic lives in one place:
+ *
+ *  - "mermaid"  → ALWAYS Flash. Mermaid is terse, well-structured markup that a
+ *                 fixed-cost renderer turns into the picture; Pro buys nothing
+ *                 here, so never spend it regardless of diagramComplexity.
+ *  - "svg" / "dual" → routed by diagramComplexity. "standard" SVGs (few elements,
+ *                 simple geometry) go to Flash; "intricate" SVGs (dense, geometry-
+ *                 critical) go to Pro, where the extra reasoning pays for itself.
+ *  - "imagen" / "illustration" → Flash. These slides only need a short text
+ *                 prompt from the LLM; the real work is the image-generation API
+ *                 (a separate path, tiered by diagramComplexity in imagen.ts), so
+ *                 the text model never needs to be Pro.
+ *
+ * Unknown/absent hints fall back to the SVG rule (the diagram default render type).
+ */
+export function routeDiagramModel(slide: {
+  renderHint?: DiagramRenderHint | null;
+  diagramComplexity?: DiagramComplexity | null;
+}): "flash" | "pro" {
+  const hint = slide.renderHint;
+  if (hint === "mermaid") return "flash";
+  if (hint === "imagen" || hint === "illustration") return "flash";
+  // "svg", "dual", or unknown → technical SVG path, gated on intricacy.
+  return slide.diagramComplexity === "intricate" ? "pro" : "flash";
+}
+
+/**
+ * Batch-level model for a set of diagram slides (diagram batches are normally a
+ * single slide, but stay correct if several are sent): take Pro if ANY slide in
+ * the batch needs Pro, else Flash.
+ */
+export function routeDiagramBatchModel(
+  slides: {
+    renderHint?: DiagramRenderHint | null;
+    diagramComplexity?: DiagramComplexity | null;
+  }[]
+): "flash" | "pro" {
+  return slides.some((s) => routeDiagramModel(s) === "pro") ? "pro" : "flash";
+}
+
 /**
  * Routes an AI task to the appropriate provider and model.
  * Sets params.model based on task mapping if not already set.

@@ -35,8 +35,11 @@ export async function POST(request: NextRequest) {
     const subject = String(body?.subject ?? "").trim();
     const topic = String(body?.topic ?? "").trim();
     // This route does not call routeAI directly (outline/batches are separate routes).
-    // To log a closer-to-true total here, the frontend can pass accumulated Flash costs.
-    const totalFlashCost =
+    // The frontend forwards the accumulated TEXT-MODEL spend from the outline +
+    // batch routes. NOTE: this number now includes Pro spend from intricate
+    // diagrams and Flash→Pro escalations — it is NOT Flash-only (see totalTextModelCost
+    // labelling below; the old "Flash cost" label under-counted real spend).
+    const totalTextModelCost =
       typeof body?.totalFlashCostInr === "number"
         ? Number(body.totalFlashCostInr)
         : Array.isArray(body?.batchCostsInr)
@@ -45,6 +48,13 @@ export async function POST(request: NextRequest) {
               .filter((n) => Number.isFinite(n))
               .reduce((a, b) => a + b, 0)
           : 0;
+    // Optional per-path breakdown forwarded from the batch route's costByPath
+    // telemetry (merged client-side). Logged when present so a deck's spend can
+    // be split flash-direct / flash-failed-escalated-to-pro / pro-direct.
+    const costByPath =
+      body?.costByPath && typeof body.costByPath === "object"
+        ? (body.costByPath as Record<string, { costInr?: number; timeMs?: number }>)
+        : null;
     const addLogo = Boolean(body?.addLogo);
     const logoUrl =
       typeof body?.logoUrl === "string" ? body.logoUrl : "";
@@ -115,15 +125,21 @@ export async function POST(request: NextRequest) {
                 ? "dual"
                 : slide.diagramRenderType ?? null,
           });
-          const imageBase64 = await generateImagenImage(fullPrompt);
+          // Intricate diagrams earn the higher-fidelity Pro image model; the
+          // diagramComplexity tag rides along on the slide from the batch route.
+          const complexity = slide.diagramComplexity ?? "standard";
+          const imageBase64 = await generateImagenImage(fullPrompt, {
+            complexity,
+          });
 
           if (imageBase64) {
-            // Imagen cost estimate: ~$0.04 per image (imagen-4.0-fast) or
-            // ~$0.02 (gemini-2.5-flash-image), use conservative estimate
-            const imagenCostInr = 0.04 * 83.33; // ~₹3.33 per image
+            // Image cost estimate: Pro image tier (~$0.10) costs more than the
+            // Flash tier (~$0.02–0.04); use a per-tier estimate, not one bucket.
+            const imagenCostInr =
+              (complexity === "intricate" ? 0.10 : 0.04) * 83.33;
             totalImagenCost += imagenCostInr;
             console.log(
-              `[ppt/imagen] Slide imagen cost: ₹${imagenCostInr.toFixed(2)}`
+              `[ppt/imagen] Slide image cost (tier=${complexity}): ₹${imagenCostInr.toFixed(2)}`
             );
           }
 
@@ -159,10 +175,17 @@ export async function POST(request: NextRequest) {
 
     const buffer = await generatePPTXBuffer(pptData);
     console.log("[ppt/build] PPTX buffer generated, uploading...");
-    if (totalFlashCost > 0 || totalImagenCost > 0) {
+    if (totalTextModelCost > 0 || totalImagenCost > 0) {
       console.log(
-        `[ppt] Generation complete — Flash cost: ₹${totalFlashCost.toFixed(4)}, Imagen cost: ₹${totalImagenCost.toFixed(2)}, TOTAL: ₹${(totalFlashCost + totalImagenCost).toFixed(2)}`
+        `[ppt] Generation complete — Text-model (Flash+Pro) cost: ₹${totalTextModelCost.toFixed(4)}, Image cost: ₹${totalImagenCost.toFixed(2)}, TOTAL: ₹${(totalTextModelCost + totalImagenCost).toFixed(2)}`
       );
+      if (costByPath) {
+        for (const [path, s] of Object.entries(costByPath)) {
+          console.log(
+            `[ppt][cost-by-path] path=${path} costInr=₹${Number(s?.costInr ?? 0).toFixed(4)} timeMs=${Number(s?.timeMs ?? 0)}`
+          );
+        }
+      }
     }
 
     const subjectSlug = (pptData.subject ?? "subject")
@@ -244,19 +267,21 @@ export async function POST(request: NextRequest) {
               topic,
               slides,
               expires_at: expiresAt,
-              // Prefer the server-accumulated Flash cost from checkpoints; fall
-              // back to the value the client passed if it is somehow larger.
+              // Prefer the server-accumulated text-model cost from checkpoints;
+              // fall back to the value the client passed if it is somehow larger.
+              // (Metadata key kept as totalFlashCostInr for resume compatibility,
+              // but the value is total text-model spend, Flash + Pro.)
               totalFlashCostInr: Math.max(
                 typeof prevMeta.totalFlashCostInr === "number"
                   ? prevMeta.totalFlashCostInr
                   : 0,
-                totalFlashCost
+                totalTextModelCost
               ),
               totalImagenCostInr: totalImagenCost,
               totalCostInr:
                 (typeof prevMeta.totalFlashCostInr === "number"
-                  ? Math.max(prevMeta.totalFlashCostInr, totalFlashCost)
-                  : totalFlashCost) + totalImagenCost,
+                  ? Math.max(prevMeta.totalFlashCostInr, totalTextModelCost)
+                  : totalTextModelCost) + totalImagenCost,
             },
             status: "completed",
           })
@@ -287,9 +312,9 @@ export async function POST(request: NextRequest) {
             topic,
             slides,
             expires_at: expiresAt,
-            totalFlashCostInr: totalFlashCost,
+            totalFlashCostInr: totalTextModelCost,
             totalImagenCostInr: totalImagenCost,
-            totalCostInr: totalFlashCost + totalImagenCost,
+            totalCostInr: totalTextModelCost + totalImagenCost,
           },
           generated_by: user.id,
           status: "completed",
