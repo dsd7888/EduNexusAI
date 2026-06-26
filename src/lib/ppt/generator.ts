@@ -420,26 +420,37 @@ Follow the pedagogical sequence and notation conventions from these books.
 
   const slidesJson = JSON.stringify(
     slides.map((s) => {
+      const isDual = s.type === "dual_visual";
       const row: Record<string, unknown> = {
         index: s.index,
         type: s.type,
+        // renderType default policy:
+        //  - dual_visual → always "dual" (renderHint is irrelevant for it).
+        //  - diagram with a missing renderHint → "svg" (the 2D-diagram default).
+        //  - everything else → null.
+        renderType: isDual
+          ? "dual"
+          : s.renderHint ?? (s.type === "diagram" ? "svg" : null),
         title: s.title,
-        renderType:
-          s.type === "dual_visual"
-            ? "dual"
-            : s.renderHint ?? (s.type === "diagram" ? "svg" : null),
       };
-      if (
-        (s.type === "diagram" || s.type === "dual_visual") &&
-        s.diagramComplexity
-      ) {
+      if ((s.type === "diagram" || isDual) && s.diagramComplexity) {
         row.diagramComplexity = s.diagramComplexity;
       }
-      if (s.type === "dual_visual") {
-        if (s.leftVisual != null) row.leftVisual = s.leftVisual;
-        if (s.rightVisual != null) row.rightVisual = s.rightVisual;
-        if (s.leftPrompt != null) row.leftPrompt = s.leftPrompt;
-        if (s.rightPrompt != null) row.rightPrompt = s.rightPrompt;
+      if (isDual) {
+        // Safety net mirroring the diagram→"svg" default: a dual_visual must
+        // always reach the batch model with BOTH a metaphor brief (leftPrompt →
+        // imagenPrompt) and a technical brief (rightPrompt → svgCode). If the
+        // outline dropped any of the quartet, synthesise a sensible fallback
+        // from the title so the slide still renders a real split-visual instead
+        // of silently degrading to a placeholder.
+        row.leftVisual = s.leftVisual ?? "illustration";
+        row.rightVisual = s.rightVisual ?? "svg";
+        row.leftPrompt =
+          s.leftPrompt ??
+          `A clear, familiar real-world metaphor that makes "${s.title}" intuitive`;
+        row.rightPrompt =
+          s.rightPrompt ??
+          `A precise, labelled technical diagram of "${s.title}"`;
       }
       return row;
     }),

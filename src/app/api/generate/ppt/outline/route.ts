@@ -14,145 +14,61 @@ type Depth = (typeof VALID_DEPTHS)[number];
 // (outline_done / generating_* / building / pending) is still resumable.
 const TERMINAL_STATUSES = ["completed", "failed", "abandoned"] as const;
 
-type OutlineSlide = SlideOutline["outline"][number];
-
-function parseOutlineRobust(raw: string): SlideOutline | null {
-  // Step 1: Clean markdown fences
-  let cleaned = raw
-    .replace(/```json\s*/gi, "")
-    .replace(/```\s*/gi, "")
-    .trim();
-
-  // Step 2: Fix common Gemini JSON corruption patterns
-  cleaned = cleaned
-    // Fix: "index = 13" → "index": 13
-    .replace(/"index\s*=\s*(\d+)"/g, '"index": $1')
-    // Fix trailing commas before } or ]
-    .replace(/,\s*}/g, "}")
-    .replace(/,\s*]/g, "]")
-    // Fix: missing comma between objects
-    .replace(/}\s*{/g, "},{")
-    // Fix: single quotes instead of double
-    .replace(/'/g, '"')
-    // Fix: unquoted keys like {index: 0} → {"index": 0}
-    .replace(/([{,]\s*)([a-zA-Z_][a-zA-Z0-9_]*)\s*:/g, '$1"$2":');
-
-  // Attempt 1: direct parse after cleaning
-  try {
-    const parsed = JSON.parse(cleaned) as SlideOutline;
-    if (parsed?.outline?.length >= 3) return parsed;
-  } catch {
-    /* continue */
-  }
-
-  // Attempt 2: extract JSON object between first { and last }
-  try {
-    const start = cleaned.indexOf("{");
-    const end = cleaned.lastIndexOf("}");
-    if (start !== -1 && end > start) {
-      const parsed = JSON.parse(cleaned.slice(start, end + 1)) as SlideOutline;
-      if (parsed?.outline?.length >= 3) return parsed;
-    }
-  } catch {
-    /* continue */
-  }
-
-  // Attempt 3: fix the specific "index = N" pattern more aggressively
-  try {
-    const fixed = cleaned.replace(/"index\s*[=:]\s*(\d+)"/g, '"index": $1');
-    const start = fixed.indexOf("{");
-    const end = fixed.lastIndexOf("}");
-    if (start !== -1 && end > start) {
-      const parsed = JSON.parse(fixed.slice(start, end + 1)) as SlideOutline;
-      if (parsed?.outline?.length >= 3) return parsed;
-    }
-  } catch {
-    /* continue */
-  }
-
-  // Attempt 4: extract slide objects one by one
-  // (handles truncation + any remaining malformed objects)
-  try {
-    const slides: OutlineSlide[] = [];
-    const titleMatch = cleaned.match(/"presentationTitle"\s*:\s*"([^"]+)"/);
-    const subjectMatch = cleaned.match(/"subject"\s*:\s*"([^"]+)"/);
-    const topicMatch = cleaned.match(/"topic"\s*:\s*"([^"]+)"/);
-
-    // Extract each slide with a regex that handles the known fields
-    const slidePattern =
-      /\{\s*"index[^"]*"\s*[=:]\s*(\d+)\s*,\s*"type"\s*:\s*"([^"]+)"\s*,\s*"title"\s*:\s*"([^"]+)"\s*\}/g;
-    let match: RegExpExecArray | null;
-    while ((match = slidePattern.exec(cleaned)) !== null) {
-      slides.push({
-        index: parseInt(match[1], 10),
-        type: match[2] as OutlineSlide["type"],
-        title: match[3],
-      });
-    }
-
-    if (slides.length >= 5) {
-      console.log(`[ppt/outline] Regex extracted ${slides.length} slides`);
-      return {
-        presentationTitle: titleMatch?.[1] ?? "Presentation",
-        subject: subjectMatch?.[1] ?? "",
-        topic: topicMatch?.[1] ?? "",
-        outline: slides.sort((a, b) => a.index - b.index),
-      };
-    }
-  } catch {
-    /* continue */
-  }
-
-  // Attempt 5: line-by-line object reconstruction
-  try {
-    const slides: OutlineSlide[] = [];
-    const titleMatch = cleaned.match(/"presentationTitle"\s*:\s*"([^"]+)"/);
-    const subjectMatch = cleaned.match(/"subject"\s*:\s*"([^"]+)"/);
-    const topicMatch = cleaned.match(/"topic"\s*:\s*"([^"]+)"/);
-
-    const lines = cleaned.split("\n");
-    let currentSlide: Partial<OutlineSlide> = {};
-
-    for (const line of lines) {
-      const indexMatch = line.match(/"index[^"]*"\s*[=:]\s*(\d+)/);
-      const typeMatch = line.match(/"type"\s*:\s*"([^"]+)"/);
-      const titleLineMatch = line.match(/"title"\s*:\s*"([^"]+)"/);
-
-      if (indexMatch) currentSlide.index = parseInt(indexMatch[1], 10);
-      if (typeMatch) currentSlide.type = typeMatch[1] as OutlineSlide["type"];
-      if (titleLineMatch) currentSlide.title = titleLineMatch[1];
-
-      if (
-        currentSlide.index !== undefined &&
-        currentSlide.type &&
-        currentSlide.title
-      ) {
-        slides.push({
-          index: currentSlide.index,
-          type: currentSlide.type,
-          title: currentSlide.title,
-        });
-        currentSlide = {};
-      }
-    }
-
-    if (slides.length >= 5) {
-      console.log(
-        `[ppt/outline] Line-by-line extracted ${slides.length} slides`
-      );
-      return {
-        presentationTitle: titleMatch?.[1] ?? "Presentation",
-        subject: subjectMatch?.[1] ?? "",
-        topic: topicMatch?.[1] ?? "",
-        outline: slides.sort((a, b) => a.index - b.index),
-      };
-    }
-  } catch {
-    /* continue */
-  }
-
-  return null;
-}
+// responseSchema for the outline call. Constraining the output guarantees
+// parseable, schema-conformant JSON on the first call — so the whole multi-tier
+// fallback parser this route used to carry is gone. Crucially the schema covers
+// EVERY field the happy path produces (not just index/type/title): renderHint,
+// diagramComplexity, and the dual_visual quartet. The old line-by-line fallback
+// silently dropped all of those whenever it fired, which is why dual_visual
+// slides never survived to the batch step.
+//
+// Optional fields are simply absent from `required`; the model omits them where
+// they don't apply (e.g. renderHint on a title slide) rather than emitting null.
+const OUTLINE_SCHEMA = {
+  type: "object",
+  properties: {
+    presentationTitle: { type: "string" },
+    subject: { type: "string" },
+    topic: { type: "string" },
+    outline: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          index: { type: "number" },
+          type: {
+            type: "string",
+            enum: [
+              "title",
+              "overview",
+              "concept",
+              "diagram",
+              "dual_visual",
+              "example",
+              "practice",
+              "summary",
+            ],
+          },
+          title: { type: "string" },
+          renderHint: {
+            type: "string",
+            enum: ["svg", "mermaid", "imagen", "illustration", "dual"],
+          },
+          diagramComplexity: {
+            type: "string",
+            enum: ["standard", "intricate"],
+          },
+          leftVisual: { type: "string" },
+          rightVisual: { type: "string" },
+          leftPrompt: { type: "string" },
+          rightPrompt: { type: "string" },
+        },
+        required: ["index", "type", "title"],
+      },
+    },
+  },
+  required: ["presentationTitle", "subject", "topic", "outline"],
+} as const;
 
 export async function POST(request: NextRequest) {
   try {
@@ -288,16 +204,29 @@ export async function POST(request: NextRequest) {
     });
     const outlineAi = await routeAI("ppt_gen", {
       messages: [{ role: "user", content: outlinePrompt }],
+      responseSchema: OUTLINE_SCHEMA,
     });
     const raw = String(outlineAi.content ?? "");
     console.log(`[ppt/outline] Raw response length: ${raw.length}`);
     console.log(`[ppt/outline] Raw preview: ${raw.slice(0, 300)}`);
 
-    const outline = parseOutlineRobust(raw);
+    // responseSchema guarantees schema-conformant JSON, so a single direct parse
+    // replaces the old five-tier fallback chain. A failure here means the model
+    // call itself failed (truncation/empty), not malformed JSON — surface it.
+    let outline: SlideOutline | null = null;
+    try {
+      const parsed = JSON.parse(raw) as SlideOutline;
+      if (parsed?.outline?.length >= 3) outline = parsed;
+    } catch (parseErr) {
+      console.error(
+        "[ppt/outline] JSON.parse failed despite responseSchema:",
+        parseErr instanceof Error ? parseErr.message : parseErr
+      );
+    }
 
     if (!outline) {
       console.error(
-        "[ppt/outline] All parse attempts failed. Raw:",
+        "[ppt/outline] Outline parse/validation failed. Raw:",
         raw.slice(0, 500)
       );
       return apiError("Failed to parse presentation outline", 500);
