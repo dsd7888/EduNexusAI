@@ -2,6 +2,7 @@ import {
   buildBatchContentPrompt,
   parseBatchContent,
   isAcceptableDiagramSVG,
+  isAcceptableDiagramMermaid,
   svgElementCount,
   type SlideContent,
   type SlideType,
@@ -119,6 +120,22 @@ export async function POST(request: NextRequest) {
               : null;
           if (type === "dual_visual") {
             renderHint = "dual";
+          }
+          // STRIP-AT-SOURCE: a renderHint only ever applies to a visual slide
+          // (type diagram / dual_visual). The outline routinely mis-hangs
+          // renderHint:"illustration" on text slides — concept, but also title,
+          // overview, example, practice, summary. Left in place, the content
+          // model obeys the illustration rule, emits an imagenPrompt and DROPS the
+          // slide's real text (bullets / example / question) → a blank slide.
+          // Dropping the spurious hint makes the model produce normal text content
+          // for that slide instead. Legitimate type:diagram illustrations are
+          // untouched (they keep their hint and flow through the diagram path).
+          if (
+            type !== "diagram" &&
+            type !== "dual_visual" &&
+            renderHint != null
+          ) {
+            renderHint = null;
           }
           // Diagram intricacy tag from the outline. Missing/invalid → "standard"
           // (cheap Flash path); the SVG escalation net catches anything Flash
@@ -252,7 +269,6 @@ export async function POST(request: NextRequest) {
     // Does this batch ask the TEXT model to emit SVG markup? Only svg/dual (and
     // a bare diagram, which defaults to svg) do — those are the slides the
     // escalation net validates and, on sparse/invalid output, retries on Pro.
-    // mermaid/imagen/illustration produce no SVG here, so they never escalate.
     const batchProducesSVG =
       isDiagramBatch &&
       slides.some(
@@ -262,6 +278,13 @@ export async function POST(request: NextRequest) {
           s.type === "dual_visual" ||
           (s.type === "diagram" && s.renderHint == null)
       );
+    // Does this batch ask the TEXT model to emit Mermaid markup? Mermaid gets the
+    // SAME escalation net as SVG now (Task 1): a sparse/invalid mermaid stub (a
+    // single node restating the title) is a Flash punt worth a Pro retry, not a
+    // silent success.
+    const batchProducesMermaid =
+      isDiagramBatch &&
+      slides.some((s) => s.type === "diagram" && s.renderHint === "mermaid");
 
     type RunResult =
       | { kind: "ok"; slides: SlideContent[]; costInr: number; timeMs: number }
@@ -363,7 +386,10 @@ export async function POST(request: NextRequest) {
             };
           }
 
-          const parsed = parseBatchContent(text);
+          const parsed = parseBatchContent(text, {
+            expectedSlides: slides.length,
+            isDiagramBatch,
+          });
           if (parsed && parsed.length > 0) {
             console.log(
               `[ppt/batch] Parsed ${parsed.length} slide(s) on attempt ${attempt} (${model})`
@@ -404,6 +430,18 @@ export async function POST(request: NextRequest) {
       });
     }
 
+    // Mermaid analogue of flashSvgIsAcceptable: did Flash return non-trivial
+    // mermaid for EVERY slide that should carry it? (isAcceptableDiagramMermaid =
+    // known diagram type with real connections, not a single title-restated node.)
+    function flashMermaidIsAcceptable(out: SlideContent[]): boolean {
+      return slides.every((inp, i) => {
+        const wantsMermaid =
+          inp.type === "diagram" && inp.renderHint === "mermaid";
+        if (!wantsMermaid) return true;
+        return isAcceptableDiagramMermaid(out[i]?.mermaidCode ?? "");
+      });
+    }
+
     // Per-path cost/latency telemetry for the cost-summary (Task 5).
     const pathStats: Record<string, { costInr: number; timeMs: number }> = {};
     function recordPath(path: string, costInr: number, timeMs: number) {
@@ -414,14 +452,43 @@ export async function POST(request: NextRequest) {
 
     let diagramPath: string | null = null;
     let diagramModel: "flash" | "pro" | null = null;
+    // Set when a CONTENT batch is still unparseable after BOTH runBatchOnModel's
+    // in-loop parse retries AND a fresh whole-batch regenerate (Task 1). Drives
+    // the loud, flagged failure response so build/route.ts can decide abort-vs-ship
+    // instead of a deck silently shipping placeholder title/overview slides.
+    let contentParseFailed = false;
 
     async function generateBatch(prompt: string): Promise<SlideContent[] | null> {
-      // CONTENT batches: unchanged behaviour — Flash, no escalation.
+      // CONTENT batches: Flash, no model escalation — but a TOTAL parse failure
+      // ("No JSON array found" / "All recovery attempts failed") must not drop
+      // straight to placeholders. runBatchOnModel already retried PARSING across
+      // its in-loop attempts on a single generation; here we regenerate the whole
+      // batch ONE more time from scratch (Task 1) — a fresh generation routinely
+      // parses where a malformed one did not.
       if (!isDiagramBatch) {
-        const r = await runBatchOnModel(prompt, "flash");
-        batchCostInr += r.costInr;
-        recordPath("content-flash", r.costInr, r.timeMs);
-        return r.kind === "fail" ? null : r.slides;
+        const first = await runBatchOnModel(prompt, "flash");
+        batchCostInr += first.costInr;
+        recordPath("content-flash", first.costInr, first.timeMs);
+        if (first.kind !== "fail") return first.slides;
+
+        console.warn(
+          "[ppt/batch][content-fail] content batch unparseable after in-loop retries — regenerating the whole batch once before giving up"
+        );
+        const retry = await runBatchOnModel(prompt, "flash");
+        batchCostInr += retry.costInr;
+        recordPath("content-flash-retry", retry.costInr, retry.timeMs);
+        if (retry.kind !== "fail") {
+          console.log(
+            "[ppt/batch][content-fail] whole-batch regenerate recovered the batch"
+          );
+          return retry.slides;
+        }
+
+        contentParseFailed = true;
+        console.error(
+          "[ppt/batch][content-fail] content batch STILL unparseable after whole-batch regenerate — flagging affected slides for build route"
+        );
+        return null;
       }
 
       // DIAGRAM batches: route by renderHint + diagramComplexity.
@@ -441,31 +508,57 @@ export async function POST(request: NextRequest) {
       batchCostInr += flash.costInr;
 
       // A clean Flash result = parsed OK and (no SVG expected, or every SVG
-      // passes the acceptance gate). Anything else on an SVG batch escalates to
-      // Pro BEFORE any placeholder fallback is allowed to stand.
-      const flashSucceededClean =
+      // passes the gate) and (no mermaid expected, or every mermaid passes it).
+      const flashParseFailed = flash.kind === "fail";
+      const svgSparse =
         flash.kind === "ok" &&
-        (!batchProducesSVG || flashSvgIsAcceptable(flash.slides));
+        batchProducesSVG &&
+        !flashSvgIsAcceptable(flash.slides);
+      const mermaidSparse =
+        flash.kind === "ok" &&
+        batchProducesMermaid &&
+        !flashMermaidIsAcceptable(flash.slides);
+      const flashSucceededClean =
+        flash.kind === "ok" && !svgSparse && !mermaidSparse;
 
-      if (!batchProducesSVG || flashSucceededClean) {
+      // Escalate to Pro whenever Flash did NOT cleanly succeed AND we have a Pro
+      // safety net for this batch. Triggers, treated identically:
+      //   (a) batchProducesSVG && SVG sparse/invalid — the original gate.
+      //   (b) batchProducesMermaid && mermaid sparse/invalid — Task 1 parity.
+      //   (c) flash failed to PARSE at all ("No JSON array found" / "All recovery
+      //       attempts failed"). A total parse failure is just as strong a "Flash
+      //       struggled" signal, so an imagen/illustration batch that won't parse
+      //       also gets the Pro retry instead of silently dropping to placeholders.
+      const shouldEscalate =
+        !flashSucceededClean &&
+        (batchProducesSVG || batchProducesMermaid || flashParseFailed);
+
+      if (!shouldEscalate) {
+        // Not escalating means Flash succeeded cleanly, or produced an
+        // imagen/illustration batch that parsed — a "fail" kind always escalates
+        // now, so flash.slides is always present here.
         diagramPath = "flash-direct";
         recordPath("flash-direct", flash.costInr, flash.timeMs);
-        return flash.kind === "fail" ? null : flash.slides;
+        return flash.slides;
       }
 
       console.warn(
-        `[ppt/batch] Flash SVG rejected (kind=${flash.kind}) — escalating single slide to Pro`
+        `[ppt/batch] Flash diagram rejected (kind=${flash.kind}, parseFailed=${flashParseFailed}, svgSparse=${svgSparse}, mermaidSparse=${mermaidSparse}) — escalating single slide to Pro`
       );
       const pro = await runBatchOnModel(prompt, "pro");
       batchCostInr += pro.costInr;
-      diagramPath = "flash-failed-escalated-to-pro";
+      // Distinguish escalation causes in telemetry so `[ppt/batch][diagram-path]`
+      // lets the failure modes be counted apart.
+      diagramPath = flashParseFailed
+        ? batchProducesSVG || batchProducesMermaid
+          ? "flash-failed-escalated-to-pro"
+          : "flash-parsefail-escalated-to-pro"
+        : mermaidSparse && !svgSparse
+          ? "flash-mermaid-escalated-to-pro"
+          : "flash-failed-escalated-to-pro";
       diagramModel = "pro";
       // Attribute BOTH the wasted Flash attempt and the Pro retry to this path.
-      recordPath(
-        "flash-failed-escalated-to-pro",
-        flash.costInr + pro.costInr,
-        flash.timeMs + pro.timeMs
-      );
+      recordPath(diagramPath, flash.costInr + pro.costInr, flash.timeMs + pro.timeMs);
 
       if (pro.kind !== "fail") return pro.slides;
       // Pro also failed: fall back to whatever Flash produced, else null.
@@ -475,8 +568,19 @@ export async function POST(request: NextRequest) {
     const batchContent = await generateBatch(batchPrompt);
 
     if (!batchContent) {
+      const failedIndices = slides.map((s) => s.index);
+      const failedTypes = slides.map((s) => s.type);
+      // A failed title/overview slide is the unacceptable case — a deck must
+      // never silently ship a "Content generation failed" title slide. This flag
+      // rides to the frontend → build route, which decides abort-vs-ship.
+      const hasCriticalSlide = slides.some(
+        (s) => s.type === "title" || s.type === "overview"
+      );
       console.error(
-        "[ppt/batch] All retries exhausted — returning placeholders"
+        `[ppt/batch][batch-fail] ${isDiagramBatch ? "diagram" : "content"} batch produced ZERO parseable slides after all retries` +
+          `${contentParseFailed ? " + whole-batch regenerate" : ""}. ` +
+          `affectedIndices=[${failedIndices.join(",")}] types=[${failedTypes.join(",")}] ` +
+          `criticalSlidePresent=${hasCriticalSlide} — returning flagged placeholders.`
       );
       const placeholders = slides.map((s) => ({
         type: s.type ?? "concept",
@@ -485,13 +589,21 @@ export async function POST(request: NextRequest) {
         note: "⚠️ Regenerate this slide using the Refine page.",
         _failed: true,
       }));
-      return Response.json({ slides: placeholders, partial: true, costInr: batchCostInr });
+      return Response.json({
+        slides: placeholders,
+        partial: true,
+        costInr: batchCostInr,
+        parseFailed: true,
+        failedSlideIndices: failedIndices,
+        hasCriticalSlide,
+      });
     }
 
-    // Annotate diagramRenderType from input renderHint so build route can identify imagen slides.
-    // Also propagate diagramComplexity onto diagram/dual_visual slides so the
-    // image-generation pre-pass (build route) can pick the intricate image tier.
-    const annotated = batchContent.map((slide, i) => {
+    // Annotate diagramRenderType from input renderHint so build route can identify
+    // imagen slides. Propagate diagramComplexity as-is from the outline — label-heavy
+    // slides have already been redirected to renderHint:"svg" at the outline stage, so
+    // no imagen-tier override is needed here.
+    const annotated: SlideContent[] = batchContent.map((slide, i) => {
       const inputSlide = slides[i];
       if (slide.type === "diagram" && inputSlide?.renderHint) {
         return {
@@ -525,6 +637,114 @@ export async function POST(request: NextRequest) {
       }
       return slide;
     });
+
+    // Compute stripped-hint list + index set in one pass:
+    //   strippedList → telemetry string; strippedIndices → gates the empty-content
+    //   retry below (slides whose hint was stripped had a different failure mode —
+    //   the strip itself fixed them; empty bullets there would be a separate issue
+    //   requiring a different look, so we leave them for now).
+    const strippedList: string[] = [];
+    const strippedIndices = new Set<number>();
+    for (const s of Array.isArray(slidesRaw) ? slidesRaw : []) {
+      const o = s as Record<string, unknown>;
+      const t = String(o?.type ?? "");
+      const h = String(o?.renderHint ?? "");
+      const idx = Number(o?.index ?? -1);
+      const isVisualHint = ["svg", "mermaid", "imagen", "illustration"].includes(h);
+      if (isVisualHint && t !== "diagram" && t !== "dual_visual") {
+        strippedList.push(`#${idx}(${t},${h})"${String(o?.title ?? "").slice(0, 40)}"`);
+        strippedIndices.add(idx);
+      }
+    }
+
+    // Single-retry guard for genuinely empty text content (model returned
+    // bullets:[] with no renderHint involved). One Flash attempt, no fallback.
+    // Same philosophy as the diagram escalation-retry: try once more before
+    // accepting an empty slide; never degrade to a placeholder.
+    if (!isDiagramBatch) {
+      const emptyContentSlides = annotated
+        .map((slide, arrIdx) => ({ slide, arrIdx }))
+        .filter(({ slide, arrIdx }) => {
+          if (slide.type === "diagram" || slide.type === "dual_visual") return false;
+          const inp = slides[arrIdx];
+          if (strippedIndices.has(inp?.index ?? -1)) return false;
+          const needsBullets = ["concept", "overview", "summary"].includes(
+            slide.type ?? ""
+          );
+          const needsExample = slide.type === "example";
+          const needsQuestion = slide.type === "practice";
+          if (
+            needsBullets &&
+            (!Array.isArray(slide.bullets) || slide.bullets.length === 0)
+          )
+            return true;
+          if (needsExample && !slide.example?.problem) return true;
+          if (needsQuestion && !slide.question?.text) return true;
+          return false;
+        });
+
+      if (emptyContentSlides.length > 0) {
+        console.warn(
+          `[ppt/batch][empty-bullets-retry] ${emptyContentSlides.length} text slide(s) with empty content — retrying each once`
+        );
+        for (const { slide, arrIdx } of emptyContentSlides) {
+          const inp = slides[arrIdx];
+          if (!inp) continue;
+          const retryPrompt = buildBatchContentPrompt({
+            subjectName,
+            fullSyllabus,
+            depth,
+            slides: [inp],
+            referenceBooks,
+            moduleName,
+            customTopic,
+            moduleDescription,
+          });
+          const retryResult = await runBatchOnModel(retryPrompt, "flash", 1);
+          batchCostInr += retryResult.costInr;
+          if (retryResult.kind === "ok" && retryResult.slides.length > 0) {
+            const recovered = retryResult.slides[0];
+            const needsBullets = ["concept", "overview", "summary"].includes(
+              slide.type ?? ""
+            );
+            const hasContent = needsBullets
+              ? Array.isArray(recovered.bullets) && recovered.bullets.length > 0
+              : slide.type === "example"
+              ? !!recovered.example?.problem
+              : !!recovered.question?.text;
+            if (hasContent) {
+              annotated[arrIdx] = {
+                ...recovered,
+                type: slide.type,
+                title: slide.title,
+              };
+              console.log(
+                `[ppt/batch][empty-bullets-retry] #${inp.index} "${slide.title.slice(0, 40)}" recovered (bullets=${Array.isArray(recovered.bullets) ? recovered.bullets.length : 0})`
+              );
+            } else {
+              console.warn(
+                `[ppt/batch][empty-bullets-retry] #${inp.index} "${slide.title.slice(0, 40)}" STILL empty after retry`
+              );
+            }
+          } else {
+            console.warn(
+              `[ppt/batch][empty-bullets-retry] #${inp.index} "${slide.title.slice(0, 40)}" retry kind=${retryResult.kind}`
+            );
+          }
+        }
+      }
+    }
+
+    // Outline mis-tag telemetry: grep `[ppt/batch][stripped-hint]` across a deck to
+    // sum how many slides the outline mis-tagged (visual renderHint on a text type)
+    // and had their spurious hint dropped at input so they kept their text content.
+    // A healthy outline trends this to 0; it stays harmless either way.
+    if (strippedList.length > 0) {
+      console.warn(
+        `[ppt/batch][stripped-hint] dropped visual renderHint from ${strippedList.length} text slide(s): ` +
+          strippedList.join(" | ")
+      );
+    }
 
     // ── Cost / latency summary, broken out by path (Task 5) ──────────────────
     // Each diagram batch is a single slide, so the per-request lines below tally

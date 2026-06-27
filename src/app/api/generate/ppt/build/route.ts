@@ -76,6 +76,36 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    // ── Failed-slide guard (Task 1) ──────────────────────────────────────────
+    // The batch route flags slides it could not generate (after in-loop parse
+    // retries AND a whole-batch regenerate) with `_failed: true`; the frontend
+    // stamps the same flag on placeholders when a batch request errors outright.
+    // Either way the flag arrives here. A deck must never SILENTLY ship with a
+    // failed TITLE slide — a "Content generation failed" title is a broken deck —
+    // so abort loudly in that case. Non-title failures (overview/concept/etc.)
+    // are recoverable via the Refine page, so warn loudly but proceed.
+    const failedSlides = slides
+      .map((s, idx) => ({ s: s as SlideContent & { _failed?: boolean }, idx }))
+      .filter(({ s }) => s?._failed === true);
+    if (failedSlides.length > 0) {
+      const failedDesc = failedSlides
+        .map(({ s, idx }) => `#${idx}(${s.type})"${String(s.title ?? "").slice(0, 40)}"`)
+        .join(" | ");
+      const titleFailed = failedSlides.some(({ s }) => s.type === "title");
+      if (titleFailed) {
+        console.error(
+          `[ppt/build][abort] Refusing to ship a deck with a failed TITLE slide. Failed slides: ${failedDesc}`
+        );
+        return apiError(
+          "Presentation generation failed on the title slide and was not shipped. Please regenerate.",
+          502
+        );
+      }
+      console.warn(
+        `[ppt/build] Shipping deck with ${failedSlides.length} failed placeholder slide(s) — regenerate via Refine: ${failedDesc}`
+      );
+    }
+
     // Post-process: generate Imagen images for slides that need it
     const imagenSlides = slides
       .map((slide, idx) => ({ slide, idx }))

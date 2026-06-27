@@ -1,4 +1,5 @@
 import { buildOutlinePrompt, type SlideOutline } from "@/lib/ppt/generator";
+import { outlineSlideIsLabelHeavy } from "@/lib/ai/imagen";
 import { routeAI } from "@/lib/ai/router";
 import {
   createAdminClient,
@@ -230,6 +231,26 @@ export async function POST(request: NextRequest) {
         raw.slice(0, 500)
       );
       return apiError("Failed to parse presentation outline", 500);
+    }
+
+    // Redirect label-heavy imagen/illustration slides to SVG at the outline stage
+    // so they never enter the imagen pipeline. These are 2D technical figures
+    // (component diagrams, A-vs-B comparisons) — SVG is both cheaper and more
+    // accurate for them.
+    for (const slide of outline.outline) {
+      if (
+        slide.type === "diagram" &&
+        (slide.renderHint === "imagen" || slide.renderHint === "illustration") &&
+        outlineSlideIsLabelHeavy(slide.title)
+      ) {
+        console.log(
+          `[ppt/outline] label-heavy→svg: "${slide.title.slice(0, 50)}" (was ${slide.renderHint})`
+        );
+        slide.renderHint = "svg";
+        if (!slide.diagramComplexity) {
+          slide.diagramComplexity = "intricate";
+        }
+      }
     }
 
     console.log(`[ppt/outline] Done. Slides planned: ${outline.outline.length}`);

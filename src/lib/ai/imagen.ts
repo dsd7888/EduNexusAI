@@ -83,6 +83,56 @@ export async function generateImagenImage(
   return null
 }
 
+/**
+ * Heuristic: does this imagen/illustration prompt describe a LABEL-HEAVY
+ * technical figure (multiple precise, named callouts) rather than an unlabeled
+ * scene/metaphor? Diffusion image models reliably mangle text, so label-heavy
+ * figures must NOT be left on the cheap "standard" tier — the caller upgrades
+ * them to the intricate (Pro) image model, where label fidelity is far better.
+ *
+ * Judged on CONTENT, not length: explicit label/annotation language, several
+ * quoted label strings the model wrote into the prompt, or an enumerated list of
+ * named technical parts. A short prose scene description trips none of these.
+ */
+export function imagenPromptIsLabelHeavy(prompt: string): boolean {
+  if (!prompt) return false;
+  const p = prompt.toLowerCase();
+  // Explicit instruction to label/annotate, or a known label-bearing figure kind.
+  const mentionsLabels =
+    /\b(label|labell?ed|labell?ing|annotat\w*|callout|call-out|legend|schematic|cross[- ]section|exploded view|cutaway|each part|name each|with arrows pointing)\b/.test(
+      p
+    );
+  // Quoted label strings the model placed in the prompt — e.g. ... "Piston", "Crankshaft".
+  const quotedLabels = (prompt.match(/["“”']([^"“”']{2,40})["“”']/g) || []).length;
+  // Enumerated named parts: a 4+ item comma list joined with "and" reads as a
+  // parts manifest ("piston, connecting rod, crankshaft, and flywheel").
+  const commas = (prompt.match(/,/g) || []).length;
+  const enumeratedParts = commas >= 4 && /\band\b/.test(p);
+  return mentionsLabels || quotedLabels >= 2 || enumeratedParts;
+}
+
+/**
+ * Outline-stage equivalent of imagenPromptIsLabelHeavy. At outline time there
+ * is no imagenPrompt yet — only the slide title. Returns true when the title
+ * signals a label-heavy 2D technical figure (component diagrams, A-vs-B
+ * comparisons, labeled schematics) that SVG renders far better than any image
+ * model. Slides that match are redirected renderHint:"imagen"→"svg" before they
+ * ever enter the imagen pipeline.
+ */
+export function outlineSlideIsLabelHeavy(title: string): boolean {
+  if (!title) return false;
+  const t = title.toLowerCase();
+  // Component / part-list diagrams → labeled SVG is always the right call
+  if (/\bcomponents?\b|\bparts?\s+of\b|\bpart\s+list\b/.test(t)) return true;
+  // A-vs-B / comparison → side-by-side SVG table, not an imagen scene
+  if (/\bvs\.?\b|\bversus\b|\bcompar(ison|ative)\b|\bdifferences?\s+(between|of)\b/.test(t)) return true;
+  // Labeled schematic / cross-section language in the title itself
+  if (/\bschematic\b|\bcross[- ]section\b|\bcutaway\b|\bexploded\b|\blabeled\s+(diagram|view)\b/.test(t)) return true;
+  // Block / state / structure diagrams are 2D precision, not 3D scenes
+  if (/\bblock\s+diagram\b|\bstate\s+diagram\b|\bstructure\s+(of|diagram)\b/.test(t)) return true;
+  return false;
+}
+
 export function buildImagenPrompt(options: {
   slideTitle: string
   subject: string

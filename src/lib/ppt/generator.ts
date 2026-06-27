@@ -366,6 +366,11 @@ Start your response with { and end with }
 
 Rules:
 - renderHint is null for slides that do not use it (title, overview, concept, example, practice, summary)
+- HARD RULE: renderHint MUST be null on a "concept" slide. A visual hint
+  (svg | mermaid | imagen | illustration) NEVER belongs on a concept. If a concept
+  needs an illustration, emit a SEPARATE type "diagram" slide with renderHint
+  "illustration" right before it — do not hang the hint on the concept. A concept
+  carries bullets; an illustration/diagram carries imagenPrompt/svgCode, never bullets.
 - renderHint is required for type "diagram" (svg | mermaid | imagen | illustration)
 - diagramComplexity ("standard" | "intricate") is REQUIRED for every "diagram" and "dual_visual" slide, and omitted on all other slide types (see <diagram_complexity_rules>)
 - For type "dual_visual": renderHint MUST be "dual" and leftVisual, rightVisual, leftPrompt, rightPrompt MUST be present
@@ -899,6 +904,58 @@ export function svgElementCount(svg: string): number {
 export function isAcceptableDiagramSVG(svg: string, minElements = 6): boolean {
   if (!isValidSVG(svg)) return false;
   return svgElementCount(svg) >= minElements;
+}
+
+/** Count node declarations and edge connectors in Mermaid source. */
+export function mermaidNodeEdgeCount(code: string): {
+  nodes: number;
+  edges: number;
+} {
+  if (!code) return { nodes: 0, edges: 0 };
+  // Edge connectors across flowchart/graph/sequence/class/state/er mermaid.
+  // We only need presence/count, so a generous union is fine (slight double
+  // counting never matters against a ">= 1" gate).
+  const edgeMatches = code.match(
+    /--+>?|==+>?|-\.-+>?|->>|-->>|<\|--|--\|>|\*--|o--|\.\.>|\|\|--|}o--|--o\{|\.\.\|>/g
+  );
+  const edges = edgeMatches ? edgeMatches.length : 0;
+  // Node declarations: an id immediately followed by a shape opener — A[..],
+  // B(..), C{..}, D((..)), E>..]. Dedupe by id so re-referenced nodes count once.
+  const nodeMatches = code.match(/\b[A-Za-z0-9_]+\s*[[({>]/g);
+  const nodes = nodeMatches
+    ? new Set(nodeMatches.map((m) => m.replace(/\s*[[({>]$/, ""))).size
+    : 0;
+  return { nodes, edges };
+}
+
+/**
+ * Acceptance gate for a Flash-generated Mermaid diagram, the mermaid analogue of
+ * isAcceptableDiagramSVG. Rejects code that is not real, non-trivial Mermaid —
+ * the classic Flash punt is a single node restating the slide title (or an empty
+ * stub), which has no connections and is worth a Pro retry rather than shipping
+ * as a silent "success".
+ *
+ * Acceptable = declares a known diagram type AND has at least one connection
+ * (covers every arrow-based type: flowchart/graph/sequence/class/state/er). For
+ * the rare connector-less types (pie/mindmap/journey/timeline/gantt) we instead
+ * require several content lines and >1 node, so a one-line stub still fails.
+ */
+export function isAcceptableDiagramMermaid(code: string): boolean {
+  const trimmed = (code ?? "").trim();
+  if (trimmed.length < 20) return false;
+  const hasHeader =
+    /^(flowchart|graph|sequenceDiagram|classDiagram|stateDiagram(-v2)?|erDiagram|gantt|pie|journey|mindmap|gitGraph|timeline|quadrantChart)\b/im.test(
+      trimmed
+    );
+  if (!hasHeader) return false;
+  const { nodes, edges } = mermaidNodeEdgeCount(trimmed);
+  if (edges >= 1) return true;
+  // Connector-less diagram types: fall back to a content-density check.
+  const contentLines = trimmed
+    .split(/\n/)
+    .map((l) => l.trim())
+    .filter(Boolean);
+  return contentLines.length >= 4 && nodes >= 2;
 }
 
 function addHeaderBar(
@@ -2209,7 +2266,10 @@ function recoverSVGJSON(raw: string): SlideContent[] | null {
   }
 }
 
-export function parseBatchContent(rawText: string): SlideContent[] | null {
+export function parseBatchContent(
+  rawText: string,
+  opts?: { expectedSlides?: number; isDiagramBatch?: boolean }
+): SlideContent[] | null {
   try {
     let cleaned = rawText.trim();
 
@@ -2258,6 +2318,7 @@ export function parseBatchContent(rawText: string): SlideContent[] | null {
       let inString = false;
       let escape = false;
       let lastCompleteIndex = 1; // after opening [
+      let completeObjectCount = 0; // top-level {...} fragments salvaged
 
       for (let i = 1; i < cleaned.length; i++) {
         const char = cleaned[i];
@@ -2279,8 +2340,23 @@ export function parseBatchContent(rawText: string): SlideContent[] | null {
         if (char === "{") depth++;
         if (char === "}") {
           depth--;
-          if (depth === 0) lastCompleteIndex = i + 1;
+          if (depth === 0) {
+            lastCompleteIndex = i + 1;
+            completeObjectCount++;
+          }
         }
+      }
+
+      // TASK 3 (log, don't fix): a single-diagram batch should yield ONE object.
+      // If truncation recovery had to stitch back many fragments, the generation
+      // was degenerate (the model emitted a long, repetitive/runaway response)
+      // even when the salvaged output happens to be usable — worth tracking.
+      const isSingleDiagram =
+        opts?.isDiagramBatch === true || (opts?.expectedSlides ?? Infinity) <= 1;
+      if (isSingleDiagram && completeObjectCount > 5) {
+        console.warn(
+          `[parseBatchContent][degenerate] truncation recovery stitched ${completeObjectCount} object fragments for a single-diagram batch (expected 1) — degenerate generation signal; output still used.`
+        );
       }
 
       if (lastCompleteIndex > 1) {

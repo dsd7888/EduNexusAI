@@ -485,10 +485,13 @@ function DiagramSlide({
     setImageError(null);
   }, [slideIndex]);
 
-  const isImagen =
-    (slide.renderHint === "imagen" || slide.renderHint === "illustration") &&
-    !slide.svg &&
-    !slide.mermaid;
+  // Declared image slide. When the slide's render hint is imagen/illustration we
+  // must prefer the generated image even if a stray svgCode/mermaidCode stub also
+  // rode along on the slide (build sometimes leaves a placeholder there) — those
+  // would otherwise win the render below and hide the real image.
+  const wantsImagen =
+    slide.renderHint === "imagen" || slide.renderHint === "illustration";
+  const isImagen = wantsImagen && !slide.svg && !slide.mermaid;
 
   // The slide may already have imageBase64 baked in from the build pipeline
   const inlineImage = slide.imageBase64 ?? null;
@@ -521,7 +524,13 @@ function DiagramSlide({
     <>
       <SlideHeader slide={slide} slideNumber={slideNumber} tone="diagram" />
       <div className="flex flex-1 items-center justify-center bg-slate-50 px-4 py-3">
-        {slide.svg ? (
+        {wantsImagen && displayImage ? (
+          <img
+            src={`data:image/png;base64,${displayImage}`}
+            alt={slide.title}
+            className="max-h-[180px] w-auto rounded object-contain"
+          />
+        ) : slide.svg ? (
           <div className="flex max-h-[180px] w-full items-center justify-center overflow-hidden [&_svg]:max-h-[180px] [&_svg]:w-auto [&>div]:my-0 [&>div]:border-0 [&>div]:bg-transparent [&>div]:p-0">
             <SVGDiagram svgCode={slide.svg} />
           </div>
@@ -529,12 +538,6 @@ function DiagramSlide({
           <div className="flex max-h-[180px] w-full items-center justify-center overflow-hidden [&_svg]:max-h-[180px] [&_svg]:w-auto [&>div]:my-0 [&>div]:border-0 [&>div]:bg-transparent [&>div]:p-0">
             <MermaidDiagram chart={slide.mermaid} />
           </div>
-        ) : isImagen && displayImage ? (
-          <img
-            src={`data:image/png;base64,${displayImage}`}
-            alt={slide.title}
-            className="max-h-[180px] w-auto rounded object-contain"
-          />
         ) : isImagen ? (
           <div className="flex flex-col items-center gap-2 text-slate-400">
             {imageLoading ? (

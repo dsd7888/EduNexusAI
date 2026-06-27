@@ -1,0 +1,149 @@
+
+Matching subjects:
+  [SECV1040] Basics of Civil & Mechanical Engineering  id=1ddca0e3-4366-49b4-b21b-c5779a37a9e3
+  [SEME1020] Engineering Workshop  id=c3f979f7-3f7b-4c83-a330-291ccbca2939
+  [SEME1040] Concepts of Engineering Drawing  id=ddb73db1-a41b-4628-bdff-693fec06d6b8
+  [SEIT3010] Software Engineering  id=b1d722a8-1784-482a-bd67-30af5304cc60
+
+======================================================================
+REGEN: "Basics of I.C. Engines"  |  SECV1040: Basics of Civil & Mechanical Engineering
+======================================================================
+
+[outline] Building prompt and calling routeAI...
+[routeAI] task=ppt_gen model=gemini-2.5-flash inputTokens=6061 outputTokens=2475 costInr=0.1995
+[outline] Raw response length: 8799
+[outline] Done. Slides planned: 34
+
+=== METRIC 1: OUTLINE MIS-TAG RATE ===
+  concept slides carrying a visual renderHint (the bug): 12
+  proper type:diagram renderHint:illustration slides: 0
+    mis-tag: #2 "Why are I.C. Engines so prevalent in India?" → renderHint=illustration
+    mis-tag: #3 "Introduction to Internal Combustion (I.C.) Engines" → renderHint=illustration
+    mis-tag: #5 "Working Principle: The Four Strokes of a Petrol Engine" → renderHint=illustration
+    mis-tag: #13 "Working Principle: The Four Strokes of a Diesel Engine" → renderHint=illustration
+    mis-tag: #19 "Working Principle: The Two Strokes of a Petrol Engine" → renderHint=illustration
+    mis-tag: #22 "Working Principle: The Two Strokes of a Diesel Engine" → renderHint=illustration
+    mis-tag: #25 "Comparison: 2-Stroke vs. 4-Stroke Engines" → renderHint=illustration
+    mis-tag: #26 "Comparison: Petrol (Spark Ignition) vs. Diesel (Compression Ignition) Engines" → renderHint=illustration
+    mis-tag: #27 "Efficiency of I.C. Engines: Key Performance Metrics" → renderHint=illustration
+    mis-tag: #28 "Thermal Efficiency: Definition and Calculation" → renderHint=illustration
+    mis-tag: #31 "Volumetric Efficiency: Definition and Importance" → renderHint=illustration
+    mis-tag: #32 "Mechanical Efficiency: Definition and Factors Affecting It" → renderHint=illustration
+
+[batch] 19 content slides → 4 batch(es)
+[ppt/batch][stripped-hint] dropped visual renderHint from 5 text slide(s): #0(title,illustration)"Basics of I.C. Engines" | #1(overview,illustration)"Module Overview: Understanding Internal " | #2(concept,illustration)"Why are I.C. Engines so prevalent in Ind" | #3(concept,illustration)"Introduction to Internal Combustion (I.C" | #5(concept,illustration)"Working Principle: The Four Strokes of a"
+[batch] content batch 1/4 (5 slides)...
+[routeAI] task=ppt_gen model=gemini-2.5-flash inputTokens=6888 outputTokens=802 costInr=0.1262
+[parseBatchContent] All recovery attempts failed
+[batch] content batch 1 → parsed 0 slide(s) from response
+[ppt/batch][stripped-hint] dropped visual renderHint from 5 text slide(s): #11(example,illustration)"Example: Calculating Compression Ratio f" | #12(practice,illustration)"Practice: Identifying Strokes in a 4-Str" | #13(concept,illustration)"Working Principle: The Four Strokes of a" | #19(concept,illustration)"Working Principle: The Two Strokes of a " | #22(concept,illustration)"Working Principle: The Two Strokes of a "
+[batch] content batch 2/4 (5 slides)...
+[routeAI] task=ppt_gen model=gemini-2.5-flash inputTokens=6899 outputTokens=1051 costInr=0.1388
+[batch] content batch 2 → parsed 5 slide(s) from response
+[ppt/batch][stripped-hint] dropped visual renderHint from 5 text slide(s): #25(concept,illustration)"Comparison: 2-Stroke vs. 4-Stroke Engine" | #26(concept,illustration)"Comparison: Petrol (Spark Ignition) vs. " | #27(concept,illustration)"Efficiency of I.C. Engines: Key Performa" | #28(concept,illustration)"Thermal Efficiency: Definition and Calcu" | #29(example,illustration)"Example: Calculating Thermal Efficiency "
+[batch] content batch 3/4 (5 slides)...
+[routeAI] task=ppt_gen model=gemini-2.5-flash inputTokens=6903 outputTokens=1057 costInr=0.1391
+[batch] content batch 3 → parsed 5 slide(s) from response
+[ppt/batch][stripped-hint] dropped visual renderHint from 4 text slide(s): #30(practice,illustration)"Activity: Comparing Efficiency of Two En" | #31(concept,illustration)"Volumetric Efficiency: Definition and Im" | #32(concept,illustration)"Mechanical Efficiency: Definition and Fa" | #33(summary,illustration)"Summary: Key Takeaways on I.C. Engines"
+[batch] content batch 4/4 (4 slides)...
+[routeAI] task=ppt_gen model=gemini-2.5-flash inputTokens=6850 outputTokens=881 costInr=0.1297
+[batch] content batch 4 → parsed 4 slide(s) from response
+
+=== METRIC 2: STRIPPED HINTS (spurious renderHint dropped at input) ===
+  stripped this run: 19
+  [#0(title,illustration)"Basics of I.C. Engines" | #1(overview,illustration)"Module Overview: Understanding Internal " | #2(concept,illustration)"Why are I.C. Engines so prevalent in Ind" | #3(concept,illustration)"Introduction to Internal Combustion (I.C" | #5(concept,illustration)"Working Principle: The Four Strokes of a" | #11(example,illustration)"Example: Calculating Compression Ratio f" | #12(practice,illustration)"Practice: Identifying Strokes in a 4-Str" | #13(concept,illustration)"Working Principle: The Four Strokes of a" | #19(concept,illustration)"Working Principle: The Two Strokes of a " | #22(concept,illustration)"Working Principle: The Two Strokes of a " | #25(concept,illustration)"Comparison: 2-Stroke vs. 4-Stroke Engine" | #26(concept,illustration)"Comparison: Petrol (Spark Ignition) vs. " | #27(concept,illustration)"Efficiency of I.C. Engines: Key Performa" | #28(concept,illustration)"Thermal Efficiency: Definition and Calcu" | #29(example,illustration)"Example: Calculating Thermal Efficiency " | #30(practice,illustration)"Activity: Comparing Efficiency of Two En" | #31(concept,illustration)"Volumetric Efficiency: Definition and Im" | #32(concept,illustration)"Mechanical Efficiency: Definition and Fa" | #33(summary,illustration)"Summary: Key Takeaways on I.C. Engines"]
+
+=== METRIC 3: TEXT-SLIDE CONTENT AFTER FIX ===
+  text slides evaluated: 14
+  blanks after all retries: 0
+  retried: 0, recovered by retry: 0
+
+  Previously-blank concept slides now:
+    #2 "Why are I.C. Engines so prevalent in India?" bullets=0
+    #3 "Introduction to Internal Combustion (I.C.) Engines" bullets=0
+    #5 "Working Principle: The Four Strokes of a Petrol Engine" bullets=0
+    #13 "Working Principle: The Four Strokes of a Diesel Engine" bullets=5
+    #19 "Working Principle: The Two Strokes of a Petrol Engine" bullets=5
+    #22 "Working Principle: The Two Strokes of a Diesel Engine" bullets=5
+    #25 "Comparison: 2-Stroke vs. 4-Stroke Engines" bullets=6
+    #26 "Comparison: Petrol (Spark Ignition) vs. Diesel (Compression Ignition) Engines" bullets=6
+    #27 "Efficiency of I.C. Engines: Key Performance Metrics" bullets=6
+    #28 "Thermal Efficiency: Definition and Calculation" bullets=6
+    #31 "Volumetric Efficiency: Definition and Importance" bullets=6
+    #32 "Mechanical Efficiency: Definition and Factors Affecting It" bullets=7
+
+[batch] 15 diagram slide(s) — 1 per batch
+[batch] diagram #4 "Key Components of a Reciprocating I.C. E" renderHint=imagen model=flash
+[routeAI] task=ppt_diagram model=gemini-2.5-flash inputTokens=6708 outputTokens=176 costInr=0.0926
+[batch] diagram #4 done — svgCode=none mermaidCode=none imagenPrompt=595ch
+[batch] diagram #6 "4-Stroke Petrol Engine: Suction Stroke" renderHint=svg model=flash
+[routeAI] task=ppt_diagram model=gemini-2.5-flash inputTokens=6704 outputTokens=1316 costInr=0.1496
+[batch] diagram #6 done — svgCode=2606ch mermaidCode=none imagenPrompt=none
+[batch] diagram #7 "4-Stroke Petrol Engine: Compression Stro" renderHint=svg model=flash
+[routeAI] task=ppt_diagram model=gemini-2.5-flash inputTokens=6703 outputTokens=2339 costInr=0.2007
+[batch] diagram #7 done — svgCode=2328ch mermaidCode=none imagenPrompt=none
+[batch] diagram #8 "4-Stroke Petrol Engine: Power (Expansion" renderHint=svg model=flash
+[routeAI] task=ppt_diagram model=gemini-2.5-flash inputTokens=6706 outputTokens=1274 costInr=0.1475
+[batch] diagram #8 done — svgCode=2423ch mermaidCode=none imagenPrompt=none
+[batch] diagram #9 "4-Stroke Petrol Engine: Exhaust Stroke" renderHint=svg model=flash
+[routeAI] task=ppt_diagram model=gemini-2.5-flash inputTokens=6703 outputTokens=2799 costInr=0.2237
+[parseBatchContent] No JSON array found
+[batch] diagram #9 parse returned nothing
+[batch] diagram #10 "Complete P-V Diagram for a 4-Stroke Petr" renderHint=svg model=flash
+[routeAI] task=ppt_diagram model=gemini-2.5-flash inputTokens=6712 outputTokens=978 costInr=0.1328
+[batch] diagram #10 done — svgCode=1803ch mermaidCode=none imagenPrompt=none
+[batch] diagram #14 "4-Stroke Diesel Engine: Suction Stroke" renderHint=svg model=flash
+[routeAI] task=ppt_diagram model=gemini-2.5-flash inputTokens=6705 outputTokens=1933 costInr=0.1805
+[batch] diagram #14 done — svgCode=1805ch mermaidCode=none imagenPrompt=none
+[batch] diagram #15 "4-Stroke Diesel Engine: Compression Stro" renderHint=svg model=flash
+[Gemini chat error] [GoogleGenerativeAI Error]: Error fetching from https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent: fetch failed
+[retryAI] attempt 1/3 failed (Gemini chat failed: [GoogleGenerativeAI Error]: Error fetching from https://gene), retrying in 3000ms...
+[Gemini chat error] [GoogleGenerativeAI Error]: Error fetching from https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent: fetch failed
+[retryAI] attempt 2/3 failed (Gemini chat failed: [GoogleGenerativeAI Error]: Error fetching from https://gene), retrying in 3000ms...
+[routeAI] task=ppt_diagram model=gemini-2.5-flash inputTokens=6704 outputTokens=1171 costInr=0.1423
+[batch] diagram #15 done — svgCode=2214ch mermaidCode=none imagenPrompt=none
+[batch] diagram #16 "4-Stroke Diesel Engine: Power (Expansion" renderHint=svg model=flash
+[routeAI] task=ppt_diagram model=gemini-2.5-flash inputTokens=6707 outputTokens=2035 costInr=0.1856
+[batch] diagram #16 done — svgCode=1971ch mermaidCode=none imagenPrompt=none
+[batch] diagram #17 "4-Stroke Diesel Engine: Exhaust Stroke" renderHint=svg model=flash
+[routeAI] task=ppt_diagram model=gemini-2.5-flash inputTokens=6704 outputTokens=2365 costInr=0.2020
+[batch] diagram #17 done — svgCode=2264ch mermaidCode=none imagenPrompt=none
+[batch] diagram #18 "Complete P-V Diagram for a 4-Stroke Dies" renderHint=svg model=flash
+[routeAI] task=ppt_diagram model=gemini-2.5-flash inputTokens=6712 outputTokens=4287 costInr=0.2982
+[parseBatchContent] No JSON array found
+[batch] diagram #18 parse returned nothing
+[batch] diagram #20 "2-Stroke Petrol Engine: Upward Stroke (C" renderHint=svg model=flash
+[Gemini chat error] [GoogleGenerativeAI Error]: Error fetching from https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent: fetch failed
+[retryAI] attempt 1/3 failed (Gemini chat failed: [GoogleGenerativeAI Error]: Error fetching from https://gene), retrying in 3000ms...
+[routeAI] task=ppt_diagram model=gemini-2.5-flash inputTokens=6710 outputTokens=2924 costInr=0.2301
+[batch] diagram #20 done — svgCode=3196ch mermaidCode=none imagenPrompt=none
+[batch] diagram #21 "2-Stroke Petrol Engine: Downward Stroke " renderHint=svg model=flash
+[routeAI] task=ppt_diagram model=gemini-2.5-flash inputTokens=6711 outputTokens=317 costInr=0.0997
+[parseBatchContent] All recovery attempts failed
+[batch] diagram #21 parse returned nothing
+[batch] diagram #23 "2-Stroke Diesel Engine: Upward Stroke (C" renderHint=svg model=flash
+[routeAI] task=ppt_diagram model=gemini-2.5-flash inputTokens=6707 outputTokens=917 costInr=0.1297
+[batch] diagram #23 done — svgCode=1802ch mermaidCode=none imagenPrompt=none
+[batch] diagram #24 "2-Stroke Diesel Engine: Downward Stroke " renderHint=svg model=flash
+[routeAI] task=ppt_diagram model=gemini-2.5-flash inputTokens=6711 outputTokens=2366 costInr=0.2022
+[batch] diagram #24 done — svgCode=2351ch mermaidCode=none imagenPrompt=none
+
+[imagen] Generating 1 image(s)
+[imagen] Generated via gemini-2.5-flash-image (tier=standard)
+[imagen] slide #4 "Key Components of a Reciprocating I.C. E" done
+
+[build] Building PPTX from 26 slides...
+[build] PPTX saved to: /Users/dhruvdakhara/Desktop/EduNexusAI/edunexus-ai/_regen2_output.pptx
+[build] Size: 1425 KB
+
+======================================================================
+SUMMARY
+======================================================================
+outline mis-tags (concept+visual renderHint): 12
+stripped at input: 19
+text-slide blanks after all retries: 0
+empty-bullets retried: 0, recovered: 0
+total slides generated: 26/34
+total cost: ₹6.6838 (text) + ₹3.33 (imagen)
+
+PPTX → /Users/dhruvdakhara/Desktop/EduNexusAI/edunexus-ai/_regen2_output.pptx

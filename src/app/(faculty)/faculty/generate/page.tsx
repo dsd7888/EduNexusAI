@@ -668,9 +668,16 @@ export default function FacultyGeneratePage() {
       setStage("planning", "done");
 
       // Populate slide checklist from outline; mark already-done ones on resume.
+      // Treat checkpointed `_failed` placeholders as NOT done so they regenerate
+      // on resume. Otherwise a resumed deck would re-ship the same broken slide
+      // (and the build route's failed-title abort would be undefeatable by resume).
       const allSlides: (SlideContent | null)[] = Array.from(
         { length: outline.outline.length },
-        (_, i) => (resume ? resume.slides[i] ?? null : null)
+        (_, i) => {
+          if (!resume) return null;
+          const s = resume.slides[i] ?? null;
+          return s && (s as { _failed?: boolean })._failed ? null : s;
+        }
       );
       setSlideChecklist(
         outline.outline.map((s) => ({

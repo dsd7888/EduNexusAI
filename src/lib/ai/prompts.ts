@@ -323,7 +323,13 @@ other CONCEPTUAL courses require visual metaphors.
 For every major concept introduction, ask:
 "What familiar object or process is this like?"
 
-Generate an ILLUSTRATION slide (renderHint="illustration") showing the metaphor:
+Generate an ILLUSTRATION slide showing the metaphor. CRITICAL: an illustration
+slide is its OWN, SEPARATE slide of type "diagram" with renderHint "illustration"
+— it is NEVER a renderHint hung on a "concept" slide. A "concept" slide ALWAYS has
+renderHint null and carries bullets; an illustration carries an imagenPrompt and no
+bullets. They are two distinct slides, never merged. Emit it exactly as:
+{ "type": "diagram", "renderHint": "illustration", "diagramComplexity": "standard",
+  "title": "<metaphor title>" }
 
 Sequential Files → "Sequential Access: Like a Cassette Tape"
   imagenPrompt: "Conveyor belt with labeled boxes moving in sequence,
@@ -340,8 +346,11 @@ B-trees → "B-Tree Growth: Like a Tree Branching"
   imagenPrompt: "Tree with root trunk splitting into branches as it grows,
   leaves at equal height"
 
-Place illustration slides BEFORE technical concept slides.
-Sequence: Illustration → Concept (bullets) → Diagram (SVG) → Example
+Place illustration slides BEFORE technical concept slides. Each arrow below is a
+SEPARATE slide — the illustration and the concept are never the same slide:
+Sequence: Illustration (type "diagram", renderHint "illustration", imagenPrompt, no
+bullets) → Concept (type "concept", renderHint null, bullets) → Diagram (type
+"diagram", renderHint "svg") → Example
 
 This applies to ALL courses with abstract systems concepts.
 </illustration_mandate>`;
