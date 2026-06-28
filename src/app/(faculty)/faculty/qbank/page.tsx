@@ -242,6 +242,7 @@ export default function QBankPage() {
           <TabsContent value="bank" className="mt-4">
             <MyBankTab
               subjectId={activeSubjectId}
+              modules={modules}
               courseOutcomes={courseOutcomes}
               stats={stats}
               statsLoading={statsLoading}

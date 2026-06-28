@@ -361,6 +361,14 @@ export function BankQuestionCard({
         )}
       </div>
 
+      {q.image_url && (
+        <img
+          src={q.image_url}
+          alt="Question illustration"
+          className="rounded-md max-h-48 w-auto object-contain border border-border/40"
+        />
+      )}
+
       <RichQuestionText text={q.question_text} className="text-sm" />
 
       {q.question_type === "mcq" && q.options && q.options.length > 0 && (

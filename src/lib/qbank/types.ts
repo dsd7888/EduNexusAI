@@ -47,6 +47,8 @@ export interface BankQuestion {
   last_used_at: string | null;
   created_at: string;
   updated_at: string;
+  /** Signed URL minted server-side per request; never stored in DB. */
+  image_url?: string | null;
 }
 
 /** A single requested batch of AI-generated questions. */

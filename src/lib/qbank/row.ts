@@ -32,6 +32,7 @@ export interface FqbRow {
   last_used_at: string | null;
   created_at: string;
   updated_at: string;
+  image_path: string | null;
 }
 
 export function rowToBankQuestion(row: FqbRow): BankQuestion {
@@ -55,5 +56,6 @@ export function rowToBankQuestion(row: FqbRow): BankQuestion {
     last_used_at: row.last_used_at,
     created_at: row.created_at,
     updated_at: row.updated_at,
+    // image_url is minted server-side per request and attached by the caller
   };
 }

@@ -11,6 +11,7 @@ import type {
   BankQuestion,
   Difficulty,
   GenerationSlot,
+  MCQOption,
   QuestionSource,
   QuestionType,
 } from "@/lib/qbank/types";
@@ -233,3 +234,34 @@ export async function importFile(
 
 /** Session key used to hand staged questions to the Q-paper builder. */
 export const STAGING_KEY = "qbank:staged";
+
+// ─── Manual question entry ────────────────────────────────────────────────────
+
+export interface ManualQuestionPayload {
+  subject_id: string;
+  question_text: string;
+  question_type: QuestionType;
+  marks: number;
+  options?: MCQOption[];
+  module_id?: string;
+  co_code?: string;
+  btl_level?: number;
+  difficulty?: Difficulty;
+  /** Base64-encoded image data (no data: prefix). */
+  image_base64?: string;
+  /** MIME type of the image, e.g. "image/jpeg". */
+  image_mime?: string;
+}
+
+export async function addManualQuestion(
+  payload: ManualQuestionPayload
+): Promise<BankQuestion> {
+  const res = await fetch("/api/qbank/add-manual", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) throw new Error(await res.text());
+  const data = (await res.json()) as { question: BankQuestion };
+  return data.question;
+}

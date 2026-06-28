@@ -1,6 +1,11 @@
 import { requireRole, apiError } from "@/lib/api/helpers";
 import { rowToBankQuestion, type FqbRow } from "@/lib/qbank/row";
+import { createQuestionImageSignedUrl } from "@/lib/qbank/image-storage";
 import type { NextRequest } from "next/server";
+
+// Signed URLs for question images expire after 1 hour — long enough to cover
+// any realistic browsing session on the bank page.
+const IMAGE_URL_TTL = 3600;
 
 const DEFAULT_PER_PAGE = 50;
 const MAX_PER_PAGE = 100;
@@ -152,7 +157,20 @@ export async function GET(request: NextRequest) {
       return apiError("Failed to load questions", 500);
     }
 
-    const questions = ((data ?? []) as FqbRow[]).map(rowToBankQuestion);
+    const rawRows = (data ?? []) as FqbRow[];
+    const questions = await Promise.all(
+      rawRows.map(async (r) => {
+        const q = rowToBankQuestion(r);
+        if (r.image_path) {
+          q.image_url = await createQuestionImageSignedUrl(
+            adminClient,
+            r.image_path,
+            IMAGE_URL_TTL
+          );
+        }
+        return q;
+      })
+    );
     const total = count ?? 0;
 
     return Response.json({

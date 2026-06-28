@@ -2,8 +2,9 @@
 
 /**
  * Tab 1 — "My Bank": stats, filters, search, an infinite-scroll question list
- * (50 per page via the list API), and a collapsible staging panel ("Paper
- * Builder") whose contents can be reordered and handed to the Q-paper builder.
+ * (50 per page via the list API), a collapsible staging panel ("Paper
+ * Builder") whose contents can be reordered and handed to the Q-paper builder,
+ * and an "Add Question" form for manual question entry with optional image.
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -30,6 +31,8 @@ import {
   GripVertical,
   Library,
   Loader2,
+  Pencil,
+  PlusCircle,
   Search,
   ShieldCheck,
   Sparkles,
@@ -41,6 +44,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import {
   Select,
   SelectContent,
@@ -49,13 +53,14 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
-import type { BankQuestion } from "@/lib/qbank/types";
+import type { BankQuestion, MCQOption } from "@/lib/qbank/types";
 import { BankQuestionCard } from "./BankQuestionCard";
 import {
   EMPTY_FILTERS,
   QUESTION_TYPES,
   SOURCE_LABELS,
   TYPE_LABELS,
+  addManualQuestion,
   bulkVerifyQuestions,
   formatCo,
   listQuestionIds,
@@ -63,13 +68,66 @@ import {
   type BankFilters,
   type BankStats,
   type CourseOutcomeRef,
+  type ManualQuestionPayload,
+  type ModuleRef,
   type StagedQuestion,
 } from "./shared";
 
 const PER_PAGE = 50;
 
+const ALLOWED_IMAGE_TYPES = [
+  "image/jpeg",
+  "image/png",
+  "image/gif",
+  "image/webp",
+];
+const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
+
+const OPT_LABELS: Array<"A" | "B" | "C" | "D"> = ["A", "B", "C", "D"];
+
+interface AddFormDraft {
+  question_text: string;
+  question_type: string;
+  marks: string;
+  co_code: string;
+  btl_level: string;
+  difficulty: string;
+  module_id: string;
+  model_answer: string;
+  options: MCQOption[];
+}
+
+const INIT_DRAFT: AddFormDraft = {
+  question_text: "",
+  question_type: "short_answer",
+  marks: "2",
+  co_code: "",
+  btl_level: "",
+  difficulty: "",
+  module_id: "",
+  model_answer: "",
+  options: OPT_LABELS.map((label, i) => ({
+    label,
+    text: "",
+    is_correct: i === 0,
+  })),
+};
+
+async function readFileAsBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = reader.result as string;
+      resolve(result.split(",")[1]);
+    };
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+
 export function MyBankTab({
   subjectId,
+  modules,
   courseOutcomes,
   stats,
   statsLoading,
@@ -83,6 +141,7 @@ export function MyBankTab({
   onGoImport,
 }: {
   subjectId: string;
+  modules: ModuleRef[];
   courseOutcomes: CourseOutcomeRef[];
   stats: BankStats | null;
   statsLoading: boolean;
@@ -104,6 +163,18 @@ export function MyBankTab({
   const [loadedOnce, setLoadedOnce] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [verifying, setVerifying] = useState(false);
+
+  // Add Question form state
+  const [showAddForm, setShowAddForm] = useState(false);
+
+  const handleAdded = useCallback(
+    (newQ: BankQuestion) => {
+      setItems((prev) => [newQ, ...prev]);
+      refreshStats();
+      setShowAddForm(false);
+    },
+    [refreshStats]
+  );
 
   // Debounce the search box into the filter set.
   useEffect(() => {
@@ -212,7 +283,6 @@ export function MyBankTab({
     setVerifying(true);
     try {
       const { verified, skipped } = await bulkVerifyQuestions([...selectedIds]);
-      // Update local items to reflect newly verified state.
       const verifiedSet = new Set([...selectedIds].filter(
         (id) => !skipped.find((s) => s.id === id)
       ));
@@ -255,26 +325,41 @@ export function MyBankTab({
   // ── Empty bank (no filters) → onboarding state ─────────────────────────
   if (!statsLoading && stats && stats.total === 0) {
     return (
-      <Card className="p-10 text-center space-y-4">
-        <Library className="size-10 mx-auto text-muted-foreground" />
-        <div className="space-y-1">
-          <h3 className="font-semibold">Your question bank is empty.</h3>
-          <p className="text-sm text-muted-foreground max-w-md mx-auto">
-            Generate questions from your syllabus or import your existing
-            questions to get started.
-          </p>
-        </div>
-        <div className="flex items-center justify-center gap-3">
-          <Button onClick={onGoGenerate}>
-            <Sparkles className="size-4 mr-2" />
-            Generate Questions
-          </Button>
-          <Button variant="outline" onClick={onGoImport}>
-            <Upload className="size-4 mr-2" />
-            Import Questions
-          </Button>
-        </div>
-      </Card>
+      <div className="space-y-4">
+        {showAddForm && (
+          <AddQuestionForm
+            subjectId={subjectId}
+            modules={modules}
+            courseOutcomes={courseOutcomes}
+            onAdded={handleAdded}
+            onClose={() => setShowAddForm(false)}
+          />
+        )}
+        <Card className="p-10 text-center space-y-4">
+          <Library className="size-10 mx-auto text-muted-foreground" />
+          <div className="space-y-1">
+            <h3 className="font-semibold">Your question bank is empty.</h3>
+            <p className="text-sm text-muted-foreground max-w-md mx-auto">
+              Generate questions from your syllabus, import your existing
+              questions, or add one manually to get started.
+            </p>
+          </div>
+          <div className="flex flex-wrap items-center justify-center gap-3">
+            <Button onClick={() => setShowAddForm(true)}>
+              <PlusCircle className="size-4 mr-2" />
+              Add Question
+            </Button>
+            <Button variant="outline" onClick={onGoGenerate}>
+              <Sparkles className="size-4 mr-2" />
+              Generate Questions
+            </Button>
+            <Button variant="outline" onClick={onGoImport}>
+              <Upload className="size-4 mr-2" />
+              Import Questions
+            </Button>
+          </div>
+        </Card>
+      </div>
     );
   }
 
@@ -282,6 +367,17 @@ export function MyBankTab({
     <div className="grid grid-cols-1 lg:grid-cols-[1fr_320px] gap-4">
       {/* ── Left: stats + filters + list ──────────────────────────────── */}
       <div className="space-y-3 min-w-0">
+        {/* Add Question form (inline, above stats when open) */}
+        {showAddForm && (
+          <AddQuestionForm
+            subjectId={subjectId}
+            modules={modules}
+            courseOutcomes={courseOutcomes}
+            onAdded={handleAdded}
+            onClose={() => setShowAddForm(false)}
+          />
+        )}
+
         {/* Stats */}
         <Card className="p-3">
           {statsLoading || !stats ? (
@@ -299,6 +395,25 @@ export function MyBankTab({
                 By Type: MCQ {stats.byType.mcq} · Short {stats.byType.short_answer} ·
                 Long {stats.byType.long_answer} · Num {stats.byType.numerical}
               </span>
+              <div className="ml-auto">
+                <Button
+                  size="sm"
+                  className="h-7 text-xs"
+                  onClick={() => setShowAddForm((v) => !v)}
+                >
+                  {showAddForm ? (
+                    <>
+                      <X className="size-3 mr-1" />
+                      Close Form
+                    </>
+                  ) : (
+                    <>
+                      <PlusCircle className="size-3 mr-1" />
+                      Add Question
+                    </>
+                  )}
+                </Button>
+              </div>
             </div>
           )}
         </Card>
@@ -467,6 +582,357 @@ export function MyBankTab({
   );
 }
 
+// ─── Add Question Form ───────────────────────────────────────────────────────
+
+function AddQuestionForm({
+  subjectId,
+  modules,
+  courseOutcomes,
+  onAdded,
+  onClose,
+}: {
+  subjectId: string;
+  modules: ModuleRef[];
+  courseOutcomes: CourseOutcomeRef[];
+  onAdded: (q: BankQuestion) => void;
+  onClose: () => void;
+}) {
+  const [draft, setDraft] = useState<AddFormDraft>(INIT_DRAFT);
+  const [adding, setAdding] = useState(false);
+  const [imageFile, setImageFile] = useState<File | null>(null);
+  const [imagePreviewUrl, setImagePreviewUrl] = useState<string | null>(null);
+  const [imageError, setImageError] = useState<string | null>(null);
+
+  const handleImageChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0] ?? null;
+    setImageError(null);
+    setImageFile(null);
+    if (imagePreviewUrl) URL.revokeObjectURL(imagePreviewUrl);
+    setImagePreviewUrl(null);
+
+    if (!file) return;
+
+    if (!ALLOWED_IMAGE_TYPES.includes(file.type)) {
+      setImageError("Only JPEG, PNG, GIF, and WebP images are accepted.");
+      e.target.value = "";
+      return;
+    }
+    if (file.size > MAX_IMAGE_BYTES) {
+      setImageError("Image must be under 5 MB.");
+      e.target.value = "";
+      return;
+    }
+
+    setImageFile(file);
+    setImagePreviewUrl(URL.createObjectURL(file));
+  };
+
+  const handleSubmit = async () => {
+    if (!draft.question_text.trim()) {
+      toast.error("Question text is required");
+      return;
+    }
+    const marks = Number(draft.marks);
+    if (!Number.isFinite(marks) || marks <= 0) {
+      toast.error("Marks must be a positive number");
+      return;
+    }
+
+    setAdding(true);
+    try {
+      const payload: ManualQuestionPayload = {
+        subject_id: subjectId,
+        question_text: draft.question_text.trim(),
+        question_type: draft.question_type as ManualQuestionPayload["question_type"],
+        marks,
+        co_code: draft.co_code.trim() || undefined,
+        btl_level: draft.btl_level ? Number(draft.btl_level) : undefined,
+        difficulty: (draft.difficulty || undefined) as ManualQuestionPayload["difficulty"],
+        module_id: draft.module_id || undefined,
+      };
+
+      if (draft.question_type === "mcq") {
+        payload.options = draft.options.filter((o) => o.text.trim());
+      }
+
+      if (imageFile) {
+        payload.image_base64 = await readFileAsBase64(imageFile);
+        payload.image_mime = imageFile.type;
+      }
+
+      const newQ = await addManualQuestion(payload);
+      onAdded(newQ);
+      toast.success("Question added");
+    } catch (err) {
+      console.error("[qbank add-manual]", err);
+      toast.error("Failed to add question");
+    } finally {
+      setAdding(false);
+    }
+  };
+
+  return (
+    <Card className="p-3 space-y-3 border-primary/40">
+      <div className="flex items-center justify-between">
+        <span className="text-sm font-semibold flex items-center gap-1.5">
+          <Pencil className="size-3.5" />
+          Add Question
+        </span>
+        <button type="button" onClick={onClose} className="text-muted-foreground hover:text-foreground">
+          <X className="size-4" />
+        </button>
+      </div>
+
+      {/* Question type selector — comes first so the MCQ options field knows when to show */}
+      <div>
+        <span className="text-[10px] text-muted-foreground">Type</span>
+        <Select
+          value={draft.question_type}
+          onValueChange={(v) => setDraft({ ...draft, question_type: v })}
+        >
+          <SelectTrigger className="h-7 text-xs mt-0.5">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {QUESTION_TYPES.map((t) => (
+              <SelectItem key={t} value={t}>
+                {TYPE_LABELS[t]}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
+
+      {/* Question text — same Textarea pattern as BankQuestionCard draft */}
+      <Textarea
+        value={draft.question_text}
+        onChange={(e) => setDraft({ ...draft, question_text: e.target.value })}
+        rows={3}
+        className="text-sm"
+        placeholder="Question text"
+      />
+
+      {/* MCQ options — same inline button + Input pattern as BankQuestionCard */}
+      {draft.question_type === "mcq" && (
+        <div className="space-y-1">
+          {draft.options.map((opt, i) => (
+            <div key={opt.label} className="flex items-center gap-2">
+              <button
+                type="button"
+                title="Mark correct"
+                onClick={() =>
+                  setDraft({
+                    ...draft,
+                    options: draft.options.map((o, j) => ({
+                      ...o,
+                      is_correct: j === i,
+                    })),
+                  })
+                }
+                className={cn(
+                  "size-5 shrink-0 rounded-full border text-[10px] font-bold",
+                  opt.is_correct
+                    ? "bg-emerald-500 text-white border-emerald-500"
+                    : "text-muted-foreground"
+                )}
+              >
+                {opt.label}
+              </button>
+              <Input
+                value={opt.text}
+                onChange={(e) =>
+                  setDraft({
+                    ...draft,
+                    options: draft.options.map((o, j) =>
+                      j === i ? { ...o, text: e.target.value } : o
+                    ),
+                  })
+                }
+                className="h-7 text-xs"
+                placeholder={`Option ${opt.label}`}
+              />
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Marks / CO / BTL / Difficulty — same grid pattern as BankQuestionCard */}
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+        <FormField label="Marks">
+          <Input
+            type="number"
+            value={draft.marks}
+            onChange={(e) => setDraft({ ...draft, marks: e.target.value })}
+            className="h-7 text-xs"
+          />
+        </FormField>
+
+        <FormField label="CO">
+          <Select
+            value={draft.co_code || "none"}
+            onValueChange={(v) =>
+              setDraft({ ...draft, co_code: v === "none" ? "" : v })
+            }
+          >
+            <SelectTrigger className="h-7 text-xs">
+              <SelectValue placeholder="—" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="none">—</SelectItem>
+              {courseOutcomes.map((c) => (
+                <SelectItem key={c.co_code} value={c.co_code}>
+                  {formatCo(c.co_code)}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </FormField>
+
+        <FormField label="BTL">
+          <Select
+            value={draft.btl_level || "none"}
+            onValueChange={(v) =>
+              setDraft({ ...draft, btl_level: v === "none" ? "" : v })
+            }
+          >
+            <SelectTrigger className="h-7 text-xs">
+              <SelectValue placeholder="—" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="none">—</SelectItem>
+              {[1, 2, 3, 4, 5, 6].map((n) => (
+                <SelectItem key={n} value={String(n)}>
+                  BTL {n}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </FormField>
+
+        <FormField label="Difficulty">
+          <Select
+            value={draft.difficulty || "none"}
+            onValueChange={(v) =>
+              setDraft({ ...draft, difficulty: v === "none" ? "" : v })
+            }
+          >
+            <SelectTrigger className="h-7 text-xs">
+              <SelectValue placeholder="—" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="none">—</SelectItem>
+              {["easy", "medium", "hard"].map((d) => (
+                <SelectItem key={d} value={d}>
+                  {d}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </FormField>
+      </div>
+
+      {/* Module (optional) */}
+      {modules.length > 0 && (
+        <FormField label="Module (optional)">
+          <Select
+            value={draft.module_id || "none"}
+            onValueChange={(v) =>
+              setDraft({ ...draft, module_id: v === "none" ? "" : v })
+            }
+          >
+            <SelectTrigger className="h-7 text-xs">
+              <SelectValue placeholder="—" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="none">—</SelectItem>
+              {modules.map((m) => (
+                <SelectItem key={m.id} value={m.id}>
+                  M{m.module_number} — {m.name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </FormField>
+      )}
+
+      {/* Image upload (optional) */}
+      <div className="space-y-1.5">
+        <span className="text-[10px] text-muted-foreground block">
+          Image (optional — JPEG, PNG, GIF, or WebP, max 5 MB)
+        </span>
+        <input
+          type="file"
+          accept="image/jpeg,image/png,image/gif,image/webp"
+          onChange={handleImageChange}
+          className="block w-full text-xs text-muted-foreground file:mr-3 file:py-1 file:px-2 file:rounded file:border file:border-border file:text-xs file:bg-muted file:text-foreground hover:file:bg-muted/80 cursor-pointer"
+        />
+        {imageError && (
+          <p className="text-xs text-destructive">{imageError}</p>
+        )}
+        {imagePreviewUrl && (
+          <div className="relative inline-block">
+            <img
+              src={imagePreviewUrl}
+              alt="Preview"
+              className="rounded-md max-h-40 object-contain border border-border/40"
+            />
+            <button
+              type="button"
+              onClick={() => {
+                URL.revokeObjectURL(imagePreviewUrl);
+                setImageFile(null);
+                setImagePreviewUrl(null);
+              }}
+              className="absolute top-1 right-1 rounded-full bg-background/80 p-0.5 text-muted-foreground hover:text-destructive"
+            >
+              <X className="size-3" />
+            </button>
+          </div>
+        )}
+      </div>
+
+      {/* Actions */}
+      <div className="flex items-center gap-2 pt-1">
+        <Button size="sm" className="h-7 text-xs" onClick={handleSubmit} disabled={adding}>
+          {adding ? (
+            <Loader2 className="size-3 mr-1 animate-spin" />
+          ) : (
+            <PlusCircle className="size-3 mr-1" />
+          )}
+          Add to Bank
+        </Button>
+        <Button
+          size="sm"
+          variant="ghost"
+          className="h-7 text-xs"
+          onClick={onClose}
+          disabled={adding}
+        >
+          <X className="size-3 mr-1" />
+          Cancel
+        </Button>
+      </div>
+    </Card>
+  );
+}
+
+// ─── Small helpers ───────────────────────────────────────────────────────────
+
+function FormField({
+  label,
+  children,
+}: {
+  label: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div>
+      <span className="text-[10px] text-muted-foreground">{label}</span>
+      <div className="mt-0.5">{children}</div>
+    </div>
+  );
+}
+
 function Stat({
   label,
   value,
@@ -558,7 +1024,7 @@ function StagingPanel({
         <>
           {staged.length === 0 ? (
             <p className="text-xs text-muted-foreground py-2">
-              Use “Save to Paper” on questions to stage them here, then export to
+              Use "Save to Paper" on questions to stage them here, then export to
               the Q-paper builder.
             </p>
           ) : (
