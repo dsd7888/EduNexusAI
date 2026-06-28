@@ -628,7 +628,9 @@ function AddQuestionForm({
   };
 
   const handleSubmit = async () => {
-    if (!draft.question_text.trim()) {
+    const isAiImageMode = imageFile !== null && !draft.question_text.trim();
+
+    if (!isAiImageMode && !draft.question_text.trim()) {
       toast.error("Question text is required");
       return;
     }
@@ -651,7 +653,7 @@ function AddQuestionForm({
         module_id: draft.module_id || undefined,
       };
 
-      if (draft.question_type === "mcq") {
+      if (draft.question_type === "mcq" && !isAiImageMode) {
         payload.options = draft.options.filter((o) => o.text.trim());
       }
 
@@ -662,7 +664,7 @@ function AddQuestionForm({
 
       const newQ = await addManualQuestion(payload);
       onAdded(newQ);
-      toast.success("Question added");
+      toast.success(isAiImageMode ? "Question generated and added" : "Question added");
     } catch (err) {
       console.error("[qbank add-manual]", err);
       toast.error("Failed to add question");
@@ -704,17 +706,31 @@ function AddQuestionForm({
       </div>
 
       {/* Question text — same Textarea pattern as BankQuestionCard draft */}
-      <Textarea
-        value={draft.question_text}
-        onChange={(e) => setDraft({ ...draft, question_text: e.target.value })}
-        rows={3}
-        className="text-sm"
-        placeholder="Question text"
-      />
+      <div className="space-y-1">
+        <Textarea
+          value={draft.question_text}
+          onChange={(e) => setDraft({ ...draft, question_text: e.target.value })}
+          rows={3}
+          className="text-sm"
+          placeholder="Question text"
+        />
+        {imageFile && !draft.question_text.trim() && (
+          <p className="text-xs text-muted-foreground flex items-center gap-1">
+            <Sparkles className="size-3 shrink-0 text-primary" />
+            AI will write this question from your image — or type it yourself to author it manually.
+          </p>
+        )}
+      </div>
 
       {/* MCQ options — same inline button + Input pattern as BankQuestionCard */}
       {draft.question_type === "mcq" && (
         <div className="space-y-1">
+          {imageFile && !draft.question_text.trim() && (
+            <p className="text-xs text-muted-foreground flex items-center gap-1">
+              <Sparkles className="size-3 shrink-0 text-primary" />
+              AI will generate the options — leave blank or fill in to override.
+            </p>
+          )}
           {draft.options.map((opt, i) => (
             <div key={opt.label} className="flex items-center gap-2">
               <button
@@ -893,14 +909,21 @@ function AddQuestionForm({
 
       {/* Actions */}
       <div className="flex items-center gap-2 pt-1">
-        <Button size="sm" className="h-7 text-xs" onClick={handleSubmit} disabled={adding}>
-          {adding ? (
-            <Loader2 className="size-3 mr-1 animate-spin" />
-          ) : (
-            <PlusCircle className="size-3 mr-1" />
-          )}
-          Add to Bank
-        </Button>
+        {(() => {
+          const isAiImageMode = imageFile !== null && !draft.question_text.trim();
+          return (
+            <Button size="sm" className="h-7 text-xs" onClick={handleSubmit} disabled={adding}>
+              {adding ? (
+                <Loader2 className="size-3 mr-1 animate-spin" />
+              ) : isAiImageMode ? (
+                <Sparkles className="size-3 mr-1" />
+              ) : (
+                <PlusCircle className="size-3 mr-1" />
+              )}
+              {isAiImageMode ? "Generate & Add" : "Add to Bank"}
+            </Button>
+          );
+        })()}
         <Button
           size="sm"
           variant="ghost"
