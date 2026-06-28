@@ -19,6 +19,7 @@ const TASK_TO_MODEL: Record<string, "flash" | "pro"> = {
   pyq_extract: "flash",
   qbank_generate: "flash",
   qbank_tag: "flash",
+  module_co_classify: "flash",
   explainer_ideate: "flash",
   explainer_extract: "pro",
 };

@@ -36,6 +36,7 @@ import {
   defaultSourcingMix,
   eseMetadata,
   eseStandardSections,
+  fromTemplateStructure,
   newQuestion,
   paperTotal,
   quizMetadata,
@@ -49,6 +50,7 @@ import {
   type PaperMetadata,
   type SourcingMixState,
 } from "./_components/shared";
+import type { PaperTemplateRow } from "@/lib/qpaper/templates";
 import type {
   CustomBtlWeights,
   DifficultyPreset,
@@ -495,6 +497,35 @@ export default function QpaperPage() {
     toast.message("Builder cleared");
   };
 
+  // ─── Template list refresh + load ──────────────────────────────────────
+  const [templateRefreshKey, setTemplateRefreshKey] = useState(0);
+
+  const handleTemplateSaved = useCallback(() => {
+    setTemplateRefreshKey((k) => k + 1);
+  }, []);
+
+  const handleLoadTemplate = useCallback(
+    (tpl: PaperTemplateRow) => {
+      const { sections: tplSections, meta: tplMeta, flatLayout: tplFlat, targetMarks: tplMarks } =
+        fromTemplateStructure(tpl.structure as unknown as Record<string, unknown>, {
+          university_name: tpl.university_name,
+          exam_title: tpl.exam_title,
+          duration_minutes: tpl.duration_minutes,
+          total_marks: tpl.total_marks,
+          instructions: tpl.instructions,
+        });
+      setSections(tplSections);
+      setMeta(tplMeta);
+      setFlatLayout(tplFlat);
+      setTargetMarks(tplMarks);
+      setPaper(null);
+      setDownloadUrl(null);
+      setAnswerKeyUrl(null);
+      toast.success(`Template "${tpl.name}" loaded`);
+    },
+    []
+  );
+
   // ─── Generate ──────────────────────────────────────────────────────────
   const handleGenerate = async () => {
     if (!selectedSubjectId) {
@@ -532,8 +563,8 @@ export default function QpaperPage() {
       const tplRes = await fetch("/api/qpaper/templates", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(
-          buildTemplatePayload(draftName, {
+        body: JSON.stringify({
+          ...buildTemplatePayload(draftName, {
             sections,
             modules,
             selectedModuleIds,
@@ -541,8 +572,9 @@ export default function QpaperPage() {
             totalMarksLive,
             selectedSubjectId,
             flatLayout,
-          })
-        ),
+          }),
+          is_snapshot: true,
+        }),
       });
       if (!tplRes.ok) throw new Error(await tplRes.text());
       const tplData = (await tplRes.json()) as {
@@ -698,7 +730,7 @@ export default function QpaperPage() {
         />
       </Card>
 
-      {/* ── Paper Details metadata + quick-start presets ─────────────── */}
+      {/* ── Paper Details metadata + quick-start presets + template browser */}
       <TemplateStructureStage
         selectedSubject={selectedSubject}
         meta={meta}
@@ -710,6 +742,8 @@ export default function QpaperPage() {
         onApplyEse={applyEse}
         onApplyQuiz={applyQuiz}
         onClearBuilder={clearBuilder}
+        refreshKey={templateRefreshKey}
+        onLoadTemplate={handleLoadTemplate}
       />
 
       {/* ── Drag-drop section/question builder ───────────────────────── */}
@@ -737,6 +771,7 @@ export default function QpaperPage() {
         progressMsg={progressMsg}
         onGenerate={handleGenerate}
         onFinalized={handleFinalized}
+        onTemplateSaved={handleTemplateSaved}
         sections={sections}
         modules={modules}
         selectedModuleIds={selectedModuleIds}

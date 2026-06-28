@@ -220,6 +220,33 @@ export async function POST(request: NextRequest) {
     const hasCoPoData =
       courseOutcomes.length > 0 && coPoMapping.length > 0;
 
+    // ── Step 1e-2: module ↔ CO mapping (per-module CO targeting) ──────────
+    // Maps each module_number → the CO codes that module teaches toward, so
+    // slots can target a module's real COs instead of the subject's whole CO
+    // list. Modules with no mapping rows simply aren't in the map, and the
+    // slot assignment falls back to allCoCodes for them.
+    const moduleNumberById = new Map(modules.map((m) => [m.id, m.module_number]));
+    const moduleCoMap = new Map<number, string[]>();
+    if (modules.length > 0) {
+      const { data: mcoRows } = await adminClient
+        .from("module_co_mapping")
+        .select("module_id, co_code")
+        .in(
+          "module_id",
+          modules.map((m) => m.id)
+        );
+      for (const r of (mcoRows ?? []) as Array<{
+        module_id: string;
+        co_code: string;
+      }>) {
+        const num = moduleNumberById.get(r.module_id);
+        if (num == null) continue;
+        const list = moduleCoMap.get(num) ?? [];
+        list.push(r.co_code);
+        moduleCoMap.set(num, list);
+      }
+    }
+
     // ── Step 1f: template ────────────────────────────────────────────────
     let template: PaperTemplateRow | null = null;
     if (templateId) {
@@ -347,7 +374,8 @@ export async function POST(request: NextRequest) {
         courseOutcomes,
         coPoMapping,
         difficultyPreset,
-        customBtlWeights
+        customBtlWeights,
+        moduleCoMap
       );
       const targets = new Map<string, SlotTarget>();
       for (const qs of qslots) {
@@ -470,6 +498,7 @@ export async function POST(request: NextRequest) {
           slotStyles: styleBySection[sIdx],
           difficultyPreset,
           customBtlWeights,
+          moduleCoMap,
         });
         return { questions, warnings, error: null as string | null };
       } catch (err) {

@@ -677,3 +677,101 @@ export function buildTemplatePayload(name: string, ctx: TemplatePayloadContext) 
     is_default: false,
   };
 }
+
+// ─── Template reverse (stored DB row → builder state) ───────────────────────
+
+function fromTemplateQuestion(q: TemplateQuestionBlockPayload): BuilderQuestion {
+  if (q.type === "pool") {
+    const pool = q as TemplatePoolQuestionPayload;
+    const n = poolTotalCount(pool.composition);
+    return newQuestion("pool", {
+      displayLabel: pool.display_label,
+      instruction: pool.instruction ?? defaultPoolInstruction(pool.attemptCount, n),
+      poolComposition: pool.composition.map((r) => ({ ...r, id: uid() })),
+      poolAttemptCount: pool.attemptCount,
+      poolMarksPerItem: pool.marksPerItem,
+    });
+  }
+
+  const tq = q as TemplateQuestionPayload;
+
+  if (tq.type === "mcq") {
+    return newQuestion("mcq", {
+      displayLabel: tq.display_label,
+      instruction: tq.instruction ?? "",
+      subPartsCount: tq.sub_parts ?? 5,
+      marksPerPart: tq.marks_per_part ?? 1,
+    });
+  }
+
+  if (tq.type === "descriptive_with_or") {
+    const parts = tq.parts ?? ["a", "b"];
+    const marksPerSub = tq.marks_per_part ?? Math.round(tq.total_marks / parts.length);
+    return newQuestion("long", {
+      displayLabel: tq.display_label,
+      instruction: tq.instruction ?? "",
+      hasOr: true,
+      partsCount: parts.length,
+      marksPerSubPart: marksPerSub,
+    });
+  }
+
+  if (tq.type === "attempt_any_one") {
+    const logic = tq.attempt_logic ?? "any_one";
+    const take = logic === "any_one" ? 1 : (parseInt(logic.replace("any_", ""), 10) || 1);
+    const ofTotal = tq.sub_parts ?? 2;
+    const marksEach = take > 0 ? Math.round(tq.total_marks / take) : tq.total_marks;
+    return newQuestion("long", {
+      displayLabel: tq.display_label,
+      instruction: tq.instruction ?? `Attempt any ${take} of ${ofTotal}.`,
+      hasAttemptAny: true,
+      attemptAnyTake: take,
+      attemptAnyOfTotal: ofTotal,
+      attemptAnyMarks: marksEach,
+    });
+  }
+
+  // "descriptive" (and any unknown future type)
+  return newQuestion(tq.has_numerical ? "numerical" : "long", {
+    displayLabel: tq.display_label,
+    instruction: tq.instruction ?? "",
+    marks: tq.total_marks,
+  });
+}
+
+/**
+ * Reverse of buildTemplatePayload: reconstruct builder state from a stored
+ * template row's `structure` jsonb and top-level header fields.
+ * Pass `structure` as the raw JSON value from the DB row (typed as unknown here
+ * so callers don't need to import the DB-side TemplateStructure type).
+ */
+export function fromTemplateStructure(
+  structure: Record<string, unknown>,
+  headers: {
+    university_name: string;
+    exam_title: string | null;
+    duration_minutes: number;
+    total_marks: number;
+    instructions: string[] | null;
+  }
+): { sections: BuilderSection[]; meta: PaperMetadata; flatLayout: boolean; targetMarks: number } {
+  const rawSections = (structure.sections as TemplateSectionPayload[] | undefined) ?? [];
+  const flatLayout = Boolean(structure.flatLayout);
+
+  const sections: BuilderSection[] = rawSections.map((s) => ({
+    id: uid(),
+    name: s.section_name,
+    questions: s.questions.map(fromTemplateQuestion),
+  }));
+
+  const meta: PaperMetadata = {
+    examTitle: headers.exam_title ?? "",
+    semester: headers.exam_title ?? "",
+    date: "",
+    time: `${headers.duration_minutes} Minutes`,
+    universityName: headers.university_name,
+    instructions: (headers.instructions ?? []).map(makeInstruction),
+  };
+
+  return { sections, meta, flatLayout, targetMarks: headers.total_marks };
+}

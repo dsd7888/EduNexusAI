@@ -55,6 +55,8 @@ interface FinalizeExportStageProps {
    * hasn't flushed yet when this fires.
    */
   onFinalized: (patch?: { docxPath?: string | null }) => void;
+  /** Called after a template is successfully saved so the template list can refresh. */
+  onTemplateSaved?: () => void;
   // ── Inputs needed to assemble the save-as-template payload ──
   sections: BuilderSection[];
   modules: ModuleRow[];
@@ -78,6 +80,7 @@ export function FinalizeExportStage({
   progressMsg,
   onGenerate,
   onFinalized,
+  onTemplateSaved,
   sections,
   modules,
   selectedModuleIds,
@@ -91,14 +94,12 @@ export function FinalizeExportStage({
 
   const [saveOpen, setSaveOpen] = useState(false);
   const [saveName, setSaveName] = useState("");
+  const [saveScope, setSaveScope] = useState<"personal" | "school">("personal");
+  const [saveIsDefault, setSaveIsDefault] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
 
   // ─── Save template (explicit) ──────────────────────────────────────────
   const saveTemplate = async () => {
-    if (!selectedSubjectId) {
-      toast.error("Select a subject first");
-      return;
-    }
     const name = saveName.trim();
     if (!name) {
       toast.error("Enter a template name");
@@ -106,24 +107,35 @@ export function FinalizeExportStage({
     }
     setIsSaving(true);
     try {
+      const payload = buildTemplatePayload(name, {
+        sections,
+        modules,
+        selectedModuleIds,
+        meta,
+        totalMarksLive,
+        selectedSubjectId,
+      });
       const res = await fetch("/api/qpaper/templates", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(
-          buildTemplatePayload(name, {
-            sections,
-            modules,
-            selectedModuleIds,
-            meta,
-            totalMarksLive,
-            selectedSubjectId,
-          })
-        ),
+        body: JSON.stringify({
+          ...payload,
+          scope: saveScope,
+          is_default: saveIsDefault,
+        }),
       });
+      if (res.status === 409) {
+        const err = await res.json() as { error?: string };
+        toast.error(err.error ?? "A template with that name already exists");
+        return;
+      }
       if (!res.ok) throw new Error(await res.text());
       toast.success(`Saved "${name}"`);
       setSaveOpen(false);
       setSaveName("");
+      setSaveScope("personal");
+      setSaveIsDefault(false);
+      onTemplateSaved?.();
     } catch (err) {
       console.error(err);
       toast.error("Failed to save template");
@@ -267,9 +279,10 @@ export function FinalizeExportStage({
           size="lg"
           onClick={() => {
             setSaveName("");
+            setSaveScope("personal");
+            setSaveIsDefault(false);
             setSaveOpen(true);
           }}
-          disabled={!selectedSubjectId}
         >
           <Save className="mr-2 size-4" />
           Save as template
@@ -379,21 +392,65 @@ export function FinalizeExportStage({
           <DialogHeader>
             <DialogTitle>Save as template</DialogTitle>
           </DialogHeader>
-          <div className="space-y-2">
-            <Label htmlFor="tpl-name" className="text-xs">
-              Template name
-            </Label>
-            <Input
-              id="tpl-name"
-              value={saveName}
-              onChange={(e) => setSaveName(e.target.value)}
-              placeholder="My ESE template"
-              className="h-9 text-sm"
-              autoFocus
-            />
+          <div className="space-y-4">
+            {/* Name */}
+            <div className="space-y-1.5">
+              <Label htmlFor="tpl-name" className="text-xs">
+                Template name
+              </Label>
+              <Input
+                id="tpl-name"
+                value={saveName}
+                onChange={(e) => setSaveName(e.target.value)}
+                placeholder="My ESE template"
+                className="h-9 text-sm"
+                autoFocus
+              />
+            </div>
+
+            {/* Scope */}
+            <div className="space-y-1.5">
+              <span className="text-xs font-medium">Visibility</span>
+              <div className="flex flex-col gap-2 pt-0.5">
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="radio"
+                    name="tpl-scope"
+                    value="personal"
+                    checked={saveScope === "personal"}
+                    onChange={() => setSaveScope("personal")}
+                    className="accent-primary"
+                  />
+                  <span className="text-sm">Personal — only visible to me</span>
+                </label>
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="radio"
+                    name="tpl-scope"
+                    value="school"
+                    checked={saveScope === "school"}
+                    onChange={() => setSaveScope("school")}
+                    className="accent-primary"
+                  />
+                  <span className="text-sm">Shared — visible to all faculty</span>
+                </label>
+              </div>
+            </div>
+
+            {/* Default checkbox */}
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={saveIsDefault}
+                onChange={(e) => setSaveIsDefault(e.target.checked)}
+                className="accent-primary"
+              />
+              <span className="text-sm">Set as my default template</span>
+            </label>
+
             <p className="text-[11px] text-muted-foreground">
-              Saves the current structure and metadata. Reuse later from the
-              templates list.
+              Saves the current structure and metadata. Load it later from the
+              templates panel above.
             </p>
           </div>
           <DialogFooter>

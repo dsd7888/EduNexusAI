@@ -7,7 +7,7 @@
  * stepper for walking the unverified questions one at a time.
  */
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   ArrowLeft,
   ArrowRight,
@@ -94,6 +94,22 @@ export function GenerateTab({
   const [generating, setGenerating] = useState(false);
   const [results, setResults] = useState<BankQuestion[] | null>(null);
   const [reviewOpen, setReviewOpen] = useState(false);
+
+  // When the subject changes, courseOutcomes is replaced with the new subject's
+  // COs. Any slot that still references an old co_code would desync Radix's
+  // item-aligned Select (controlled value with no matching item makes the
+  // dropdown fail to populate). Reset those slots to the "any" sentinel.
+  useEffect(() => {
+    if (!courseOutcomes.length) return;
+    const valid = new Set(courseOutcomes.map((c) => c.co_code));
+    setSlots((prev) => {
+      const next = prev.map((s) => ({
+        ...s,
+        co_code: valid.has(s.co_code) ? s.co_code : "",
+      }));
+      return next.some((s, i) => s.co_code !== prev[i].co_code) ? next : prev;
+    });
+  }, [courseOutcomes]);
 
   const total = useMemo(
     () => slots.reduce((sum, s) => sum + (s.count || 0), 0),

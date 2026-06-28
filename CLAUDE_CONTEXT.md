@@ -1,6 +1,6 @@
 # EduNexus AI — Complete Project Context
 
-*Last updated: June 7, 2026 | Solo developer: Dhruv | Stack: Next.js 16 + Supabase + Gemini*
+*Last updated: June 27, 2026 | Solo developer: Dhruv | Stack: Next.js 16 + Supabase + Gemini*
 *This document is the single source of truth for any Claude instance working on EduNexus AI.*
 
 ---
@@ -56,24 +56,35 @@ EduNexus AI is a **syllabus-locked, role-aware institutional intelligence platfo
 
 ```typescript
 const TASK_TO_MODEL = {
-  chat: "flash",              // maxTokens: 16384
-  quiz_gen: "flash",          // maxTokens: 8192
-  ppt_gen: "flash",           // maxTokens: 32768
-  ppt_diagram: "pro",         // maxTokens: 16384 — diagram-only batches
-  ppt_extract: "flash",       // maxTokens: 512 — topic/level detection
-  ppt_refine: "flash",        // maxTokens: 16384 — PPT content refinement batches
-  qpaper_gen: "pro",          // maxTokens: 8192 per section
-  answer_key_mcq: "flash",    // maxTokens: 2048
-  refine: "flash",            // maxTokens: 8192
-  placement_gen: "pro",       // maxTokens: 32768
-  syllabus_extract: "flash",  // maxTokens: 8192
-  pyq_extract: "flash",       // maxTokens: 4096
-  qbank_generate: "flash",    // maxTokens: 8192
-  qbank_tag: "flash",         // maxTokens: 2048
-  explainer_ideate: "flash",  // maxTokens: 8192, thinking ON (thinkingBudget: 2048 via ChatParams)
-  explainer_extract: "pro",   // maxTokens: 16384, thinkingBudget: 0 (structured JSON + responseSchema)
+  chat: "flash",                   // maxTokens: 16384
+  quiz_gen: "flash",               // maxTokens: 8192
+  placement_prep: "flash",         // maxTokens: 6000
+  ppt_gen: "flash",                // maxTokens: 32768
+  ppt_diagram: "flash"|"pro",      // maxTokens: 8192 — diagram-only batches; model is DYNAMIC
+  ppt_extract: "flash",            // maxTokens: 512 — topic/level detection (unused from router, inlined)
+  ppt_refine: "flash",             // maxTokens: 16384 — PPT content refinement batches
+  qpaper_gen: "pro",               // maxTokens: 8192 per section (estimateMaxOutputTokens in sectionGen)
+  qpaper_validate_tags: "flash",   // maxTokens: 512 per question — CO/BTL judge
+  answer_key_mcq: "flash",         // maxTokens: 2048
+  answer_key_descriptive: "pro",   // maxTokens: estimateMaxOutputTokens(..., "answer_key")
+  refine: "flash",                 // maxTokens: 8192
+  placement_gen: "pro",            // maxTokens: 32768
+  syllabus_extract: "flash",       // maxTokens: 8192
+  pyq_extract: "flash",            // maxTokens: 4096
+  qbank_generate: "flash",         // maxTokens: estimateMaxOutputTokens (via tokenBudget.ts)
+  qbank_tag: "flash",              // maxTokens: 2048
+  explainer_ideate: "flash",       // maxTokens: 8192, thinking ON (thinkingBudget: 2048 via ChatParams)
+  explainer_extract: "pro",        // maxTokens: 16384, thinkingBudget: 0 (structured JSON + responseSchema)
 }
 ```
+
+**`ppt_diagram` model routing (complexity-based, NOT a blanket Pro rule):**
+`routeDiagramModel(slide)` in router.ts decides per-slide:
+- `mermaid` → always Flash (terse structured markup, Pro buys nothing)
+- `imagen` / `illustration` → always Flash (text model only writes a prompt)
+- `svg` / `dual` or absent hint → Flash if `diagramComplexity === "standard"`, Pro if `"intricate"`
+
+`routeDiagramBatchModel(slides[])` takes Pro if ANY slide in the batch needs Pro. The batch route sets `maxTokens: 8192` explicitly for every diagram batch regardless of model choice.
 
 **CRITICAL:** `thinkingBudget: 0` for ALL structured JSON tasks. Gemini 2.5 Flash's thinking tokens consume `maxOutputTokens`, causing JSON truncation. Hard-won discovery.
 
@@ -86,7 +97,7 @@ const TASK_TO_MODEL = {
 - All other non-structured tasks: thinking uncapped (Flash default)
 - All structured JSON tasks (in `isStructuredTask` list): `thinkingBudget: 0`
 
-**Answer key generation:** 6 parallel calls per paper (2× Flash MCQ, 4× Pro main+alternatives).
+**Answer key generation:** 6 parallel calls per paper (2× Flash `answer_key_mcq`, 4× Pro `answer_key_descriptive`). Both tasks are in the `isStructuredTask` allowlist in gemini.ts — critical for Flash to set `thinkingBudget: 0` and avoid silent JSON truncation. `answer_key_descriptive` uses dynamic `estimateMaxOutputTokens(..., "answer_key")` which is then overridden to 32768 by the Pro ceiling in gemini.ts.
 
 **Fallback:** 429 rate limit → tries next in fallback chain.
 
@@ -154,8 +165,10 @@ role_scope: id, user_id, school, department (null = entire school), created_at
 - `exam_scheme`: id, subject_id (UNIQUE), theory_ce, theory_ese, practical_ce, practical_ese, tutorial_marks, total_marks, credits
 
 ### Q Paper Tables
-- `qpaper_templates`: id, subject_id, created_by, name, is_default, university_name, exam_title, duration_minutes, total_marks, instructions text[], structure jsonb
+- `qpaper_templates`: id, subject_id (nullable), created_by, name, is_default, university_name, exam_title, duration_minutes, total_marks, instructions text[], structure jsonb, **scope** text ('personal'/'school'/'department', default 'personal')
 - `pyq_questions`: id, document_id, subject_id, section_name, q_number, question_text, question_type, marks, co, btl, po, options jsonb, year
+- `qpaper_drafts`: id, faculty_id, subject_id, label, builder_state jsonb, generation_status ('idle'/'generating'/'complete'/'failed'), last_saved_at, created_at — faculty-private autosave scratch state (RLS: own + superadmin only; dean/hod intentionally excluded)
+- `qpaper_history`: id, faculty_id, subject_id, label, total_marks, structure_summary jsonb, pdf_path, docx_path, answer_key_path, created_at — finalized papers; paths are Storage paths (not URLs). RLS: own OR superadmin/dean/hod (oversight-visible)
 
 ### Q Bank Table
 - `faculty_question_bank`: id, subject_id, faculty_id, module_id, question_text, question_type (mcq/short_answer/long_answer/numerical/fill_blank), marks, model_answer, options jsonb, co_code, btl_level (1–6), po_codes text[], difficulty (easy/medium/hard), source (ai_generated/faculty_imported/pyq_inspired), is_verified bool, usage_count, last_used_at, created_at, updated_at
@@ -188,6 +201,10 @@ role_scope: id, user_id, school, department (null = entire school), created_at
 - Filter queries use `branch` only, never `department`
 - `subject_content.created_by` is nullable
 - RLS enabled on all tables. `get_my_role()` SECURITY DEFINER function breaks recursion in profiles policies
+- `documents.type` enum: `'syllabus' | 'notes' | 'pyq' | 'reference_material'`
+- `generated_content.type` enum: `'ppt' | 'visual_notes' | 'refined_notes' | 'qpaper' | 'answer_key'`
+- `generated_content.status` values: `'pending' | 'outline_done' | 'generating_content' | 'generating_diagrams' | 'building' | 'completed' | 'failed' | 'abandoned'`
+- `placement_question_bank` has `question_type` text ('mcq' | 'fill_code', default 'mcq') and `code_context` jsonb columns for fill-in-code questions — reflected in `src/types/placement.ts` line ~320
 
 ---
 
@@ -207,7 +224,17 @@ edunexus-ai/
 │   │   │   ├── dashboard/                          ✅
 │   │   │   ├── generate/                           ✅ PPT generation
 │   │   │   ├── generate/refine/[contentId]/        ✅ Per-slide PPT refinement
-│   │   │   ├── qpaper/                             ✅ Q paper builder
+│   │   │   ├── qpaper/                             ✅ Q paper builder (page.tsx + _components/)
+│   │   │   │   ├── _components/
+│   │   │   │   │   ├── TemplateStructureStage.tsx  ← stage 1: template/preset selection
+│   │   │   │   │   ├── ScopeAndDifficultyStage.tsx ← stage 2: module selection + BTL presets
+│   │   │   │   │   ├── SourcingStage.tsx           ← stage 3: Fresh/PYQ-style/Bank % mix
+│   │   │   │   │   ├── BuilderSectionsEditor.tsx   ← stage 4: drag-drop section builder
+│   │   │   │   │   ├── ReviewAndValidateStage.tsx  ← stage 5: review + CO/BTL validation
+│   │   │   │   │   ├── FinalizeExportStage.tsx     ← stage 6: generate + export + history
+│   │   │   │   │   ├── shared.tsx                  ← shared types + helpers
+│   │   │   │   │   └── useQpaperDraft.ts           ← autosave/resume hook (qpaper_drafts)
+│   │   │   │   └── history/                        ✅ Re-downloadable finalized papers
 │   │   │   ├── qbank/                              ✅ Q bank
 │   │   │   ├── explainer/                          ⚠️  UNDER DEVELOPMENT (UI shows placeholder)
 │   │   │   ├── refine/                             ✅ PPT + text refinement tabs
@@ -229,9 +256,12 @@ edunexus-ai/
 │   │       ├── chat/ + chat/session/ + suggestions/ + export/ ✅
 │   │       ├── quiz/generate/ + submit/ + hint/ + export/ ✅
 │   │       ├── notes/ + notes/export/              ✅
-│   │       ├── generate/ppt/outline/ + batch/ + build/ + content/[id]/ + image/[id]/[idx]/ + rebuild/ + refine/ ✅
+│   │       ├── generate/ppt/outline/ + batch/ + build/ + content/[id]/ + image/[id]/[idx]/  ✅
+│   │       │   + rebuild/ + refine/ + checkpoint/[contentId]/ + download/[contentId]/       ✅
+│   │       │   + history/ + resumable/                                                      ✅
 │   │       ├── generate/qpaper/ + answer-key/ + regenerate-question/ + export/ + export-docx/ ✅
 │   │       ├── qpaper/templates/ + templates/[id]/ ✅
+│   │       ├── qpaper/history/ + history/answer-key-link/                                  ✅
 │   │       ├── qbank/generate/ + import/ + list/ + [id]/ + questions/ + sample-csv/ ✅
 │   │       ├── ppt-refine/extract/ + refine/       ✅
 │   │       ├── refine/                             ✅
@@ -239,10 +269,12 @@ edunexus-ai/
 │   │       ├── placement/generate/ + submit/ + export/ ✅
 │   │       └── placement/practice/generate/ + submit/ + export/ ✅
 │   ├── components/ui/ + layout/ + chat/ + ppt/ + ErrorBoundary.tsx ✅
+│   ├── components/RichQuestionText.tsx             ✅ renders AI question text with table/list/bold support via markdownLite
 │   ├── hooks/useSupabaseData.ts                    ✅
 │   └── lib/
 │       ├── ai/providers/types.ts + gemini.ts       ✅ (responseSchema + thinkingBudget added to ChatParams)
-│       ├── ai/router.ts + prompts.ts + imagen.ts   ✅
+│       ├── ai/router.ts + prompts.ts + imagen.ts   ✅ (routeDiagramModel + routeDiagramBatchModel added)
+│       ├── ai/tokenBudget.ts                       ✅ estimateMaxOutputTokens() — dynamic maxTokens for qpaper/qbank/answer-key
 │       ├── api/helpers.ts                          ✅
 │       ├── db/supabase-browser.ts + server.ts + types.ts ✅
 │       ├── pdf/builder.ts                          ✅
@@ -255,7 +287,12 @@ edunexus-ai/
 │       │   ├── renderer.ts                         ← pattern-based renderers (8 patterns, UNDER DEVELOPMENT)
 │       │   ├── tts.ts                              ← Google Cloud TTS (optional)
 │       │   └── storage.ts                          ← short-code alloc + HTML upload/stream
-│       ├── qpaper/generator.ts + sectionGen.ts + moduleAssignment.ts + answerKeyGen.ts + templates.ts + builder.ts + bankFill.ts + docxBuilder.ts ✅
+│       ├── text/markdownLite.ts                    ✅ parseMarkdownLite() — pipe-table/list/bold/code parser for AI text
+│       ├── qpaper/generator.ts + sectionGen.ts + moduleAssignment.ts + answerKeyGen.ts ✅
+│       │   + templates.ts + builder.ts + bankFill.ts + docxBuilder.ts                  ✅
+│       │   + sourcing.ts (allocateSlotSources, Hamilton apportionment)                  ✅
+│       │   + poolRender.ts (pool block rendering helpers)                               ✅
+│       │   + validateTags.ts (validateQuestionTags — Flash CO/BTL judge)                ✅
 │       ├── syllabus/types.ts + prompts.ts + parser.ts + reconstruct.ts ✅
 │       ├── quiz/generator.ts                       ✅
 │       ├── placement/generator.ts + bankManager.ts + fallbackSyllabus.ts + modules.ts ✅
@@ -273,7 +310,15 @@ edunexus-ai/
 │   ├── 20260525000000_answer_key.sql               ✅ applied
 │   ├── 20260603000000_faculty_question_bank.sql    ✅ applied
 │   ├── 20260604000000_explainers.sql               ✅ applied
-│   └── 20260604000001_dean_hod_roles.sql           ✅ applied
+│   ├── 20260604000001_dean_hod_roles.sql           ✅ applied
+│   ├── 20260613000000_placement_fill_code.sql      ✅ applied — adds question_type + code_context to placement_question_bank
+│   ├── 20260620000000_qpaper_drafts.sql            ✅ applied — faculty-private autosave drafts
+│   ├── 20260620000001_qpaper_templates_scope.sql   ✅ applied — adds scope col to qpaper_templates
+│   ├── 20260620000002_documents_reference_material.sql ✅ applied — adds 'reference_material' to documents.type
+│   ├── 20260620000003_backfill_get_my_role.sql     ✅ applied — checkpoints get_my_role() into migrations
+│   ├── 20260621000000_qpaper_history.sql           ✅ applied — oversight-visible finalized paper history
+│   ├── 20260622000000_generated_content_answer_key_type.sql ✅ applied — adds 'answer_key' to generated_content.type
+│   └── 20260625000000_generated_content_generation_status.sql ✅ applied — expands status enum for PPT checkpoint/resume
 ├── supabase/seed_cse_sem1_4.sql                    ✅ 22 subjects Sem 1–4
 ├── supabase/seed_cse_sem5_7.sql                    ✅ 30 subjects Sem 5–7
 ├── vercel.json                                     ✅ maxDuration per route
@@ -314,12 +359,31 @@ edunexus-ai/
 - 4-stage UI: upload → configure → processing → results
 
 #### Q Paper Generation
-- Drag-drop builder, 3 presets, CO/PO/BTL mapping, module-weighted distribution (code-computed)
-- 4 source options: All Fresh | PYQ + Fresh Mix | PYQ Style Only | From Q Bank
-- PYQ structured RAG always fed regardless of mode
-- Per-question regeneration, inline edit, inline save-to-bank
-- Answer key generation (CONFIDENTIAL PDF, 6 parallel calls)
-- Word (.docx) export — exact structure match to PDF
+Six-stage builder (page split into stage components under `_components/`):
+1. **TemplateStructureStage** — preset selection (ESE Standard, Quiz, custom), section/question-block configuration
+2. **ScopeAndDifficultyStage** — module selection + BTL-tier presets (Foundational/Balanced/Application-Heavy) + Custom % mode; achievability capped by module weightage share
+3. **SourcingStage** — percentage mix allocator (Fresh / PYQ-style / Bank); deterministic Hamilton apportionment via `allocateSlotSources()` in `sourcing.ts`; staged Q-Bank questions guaranteed via `preferredQuestionIds` (unplaceable ones surfaced to faculty, not silently dropped)
+4. **BuilderSectionsEditor** — drag-drop section/block editor with live marks totals
+5. **ReviewAndValidateStage** — generated paper review; CO/BTL validation pass via `validateQuestionTags()` (Flash judge, flags mismatches with suggested relabel/regenerate action); `<RichQuestionText>` renders pipe-table/list/bold in question text
+6. **FinalizeExportStage** — generate button, PDF/Word/answer-key downloads, save-as-template, history log
+
+**Question block types:** `descriptive`, `descriptive_with_or`, `attempt_any_one`, `mcq`, `pool` (mixed MCQ/True-False/descriptive items; student attempts K of N). True/False modeled as an MCQ variant (`isPoolItemMcqLike` = true).
+
+**Difficulty:** BTL-tier presets (`foundational` {BTL 1–2 heavy}, `balanced` {BTL 3–4 focus}, `application_heavy` {BTL 4–6 heavy}) + Custom % sliders. Achievability ceiling = module's weightage share; `capTierWeightsToCeilings` + `renormalizeTierWeights` in `moduleAssignment.ts`.
+
+**Sourcing:** 3-category percentage mix replaces old 4-button exclusive modes. PYQ structured RAG always fed regardless of mix percentages.
+
+**Token budget:** `estimateMaxOutputTokens()` in `tokenBudget.ts` replaces hardcoded maxTokens across qpaper/qbank/answer-key calls. Separate calibration profiles for "generation" vs "answer_key".
+
+**CO/BTL/PO tagging:** confirmed consistent across web preview (`ReviewAndValidateStage`), PDF (`builder.ts`), and Word (`docxBuilder.ts`) for all question types including pool blocks.
+
+**Flat layout:** `flatLayout: true` on template (used by Quiz preset) flattens the section hierarchy in PDF and Word. **Known gap: web preview in ReviewAndValidateStage does not honor `flatLayout`.**
+
+**Draft autosave/resume:** `useQpaperDraft.ts` hook writes to `qpaper_drafts` (faculty-private). Stores full builder state including any generated paper content. Resume-from-draft flow on page mount.
+
+**Paper history:** `qpaper_history` table (oversight-visible). Stores Storage paths (not URLs) for durable re-download. Populated on finalize; matching draft is deleted.
+
+**Answer key:** CONFIDENTIAL PDF + Word export. 6 parallel calls (`answer_key_mcq` Flash × 2, `answer_key_descriptive` Pro × 4). Both tasks are in `isStructuredTask` allowlist (prevents Flash thinking from consuming output budget). Pool questions decomposed to per-item Flash/Pro calls in `splitQuestionsForBlocks`.
 
 #### Q Bank
 - Per-subject persistent question library
@@ -384,6 +448,21 @@ The infrastructure is built but the visual output quality is not acceptable yet.
 ### Architecture (3-route split for Vercel 60s timeout)
 outline → batch (5 slides/batch, 1 for diagrams) → build
 
+### Checkpoint / Resume
+The outline route now inserts a `generated_content` row immediately on success (`status: 'outline_done'`) and checkpoints status through `outline_done → generating_content → generating_diagrams → building → completed`. An interrupted generation (tab close, network drop) leaves a resumable record. The generate page surfaces it on mount via `GET /api/generate/ppt/resumable`. A stale-job cron marks abandoned rows (`status: 'abandoned'` after 20 min of no progress).
+
+New API routes supporting this:
+- `POST /api/generate/ppt/checkpoint/[contentId]` — batch writes checkpoint state
+- `GET /api/generate/ppt/resumable` — surfaces most recent non-terminal row
+- `GET /api/generate/ppt/history` — list of completed decks
+- `GET /api/generate/ppt/download/[contentId]` — signed download URL
+- `GET /api/cron/abandon-stale-generations` — marks rows with `updated_at` > 20 min ago as `abandoned` (threshold = 20 min, but cron schedule is `0 2 * * *` — once daily at 2am UTC; defense-in-depth only, not a real-time sweeper)
+
+The `generated_content_updated_at` trigger (defined in `20260207000000_initial_schema.sql`) bumps `updated_at` on every checkpoint write, so an actively progressing generation never trips the staleness check. The generate page's `_components/MyGenerationsList.tsx` renders history rows including abandoned-status UI.
+
+### Slide types and diagram routing
+Outline schema now includes `dual_visual` slide type (metaphor image + SVG side-by-side) and `diagramComplexity: "standard" | "intricate"` field. These drive the complexity-based model routing described in §3. The outline call uses `responseSchema` to guarantee parseable JSON — the old line-by-line fallback parser is removed (it silently dropped `renderHint`, `diagramComplexity`, and `dual_visual` fields whenever it fired).
+
 ### PPT Refinement Pipeline
 ```
 Faculty uploads .pptx
@@ -402,10 +481,10 @@ Faculty uploads .pptx
     → Upload refined .pptx to Supabase Storage, return signed URL
 ```
 
-**Known issues (pending fix):**
-- HTML tags (<b>, <i>) from Gemini appearing as literal text in new slides
-- Body text overflow on image-heavy slides
-- Empty title placeholder handling on slides with no original title
+**PPT refinement issues resolved:**
+- HTML tags (`<b>`, `<i>`, `<strong>`, `<em>` + generic tags): `stripHtml()` in `refiner.ts` (post-parse, sanitizes every `refined_title`/`refined_body` string) and `assembler.ts` (pre-XML-encode) — fixed
+- Empty title placeholder INSERT: `assemblePptx` injects text into originally-empty title placeholders (Bug 2 comment, line ~395 of assembler.ts) — fixed
+- Body overflow: two-layer fix — Bug 4 shrinks the body shape's `cy` when an image element sits inside the body box (prevents text rendering behind images); Bug 5 adds `<a:normAutofit/>` so text that still overflows auto-shrinks — fixed
 
 ---
 
@@ -424,25 +503,39 @@ Faculty uploads .pptx
 - is_verified=true only when faculty provided BOTH co_code AND btl_level
 
 ### Q Paper Integration
-- "From Q Bank": type+marks match (exact then ±0.5 tolerance)
+- Staging area → Q paper builder: `qbank/page.tsx` writes staged question IDs to `sessionStorage`; `qpaper/page.tsx` reads them on mount (hydrates as `preferredQuestionIds`). **Handoff is wired.**
+- "Bank" source in mix: per-slot module/CO/BTL targeting (`bankFill.ts`), preferred IDs placed first
 - Order: is_verified DESC, usage_count ASC, RANDOM()
 - Dedup via shared used_ids set, fallback to AI for unfilled slots
+- Unplaceable preferred questions: returned in API response as `unplaceablePreferred[]`, surfaced to faculty in UI (not silently dropped)
 
 ---
 
 ## 12. Question Paper Generation System
 
-### Question Sources
-1. All Fresh — pure AI from syllabus
-2. PYQ + Fresh Mix — AI with PYQ style reference
-3. PYQ Style Only — similar to PYQs (same concept, different values — NOT identical)
-4. From Q Bank — draws from faculty_question_bank, AI fills gaps
+### Sourcing Mix (replaces old 4-button exclusive modes)
+Faculty sets percentage weights for three source categories:
+- **fresh** — pure AI generation from syllabus
+- **pyq_style** — AI with PYQ style reference (same concept, different values — NOT identical)
+- **bank** — draw from `faculty_question_bank`; AI fills any gaps
+
+`allocateSlotSources(totalSlots, mix)` in `sourcing.ts` deterministically apportions slots via Hamilton largest-remainder method (no run-to-run drift). PYQ structured RAG is always fed regardless of mix percentages.
+
+### Question Block Types
+- `descriptive` — standard essay/problem question
+- `descriptive_with_or` — main question + OR alternative; split by `is_or_alternative` flag
+- `attempt_any_one` — answer one of two alternatives
+- `mcq` — single multiple-choice block
+- `pool` — N items (any mix of mcq/true_false/short_answer/long/numerical/fill_blank), student attempts K; `marksPerItem` shared; True/False is an MCQ variant (`isPoolItemMcqLike`)
+
+Template composition (defined at structure-stage) is authoritative over AI-returned item types for pool blocks.
 
 ### Key rules
 - Module assignment computed in code (moduleAssignment.ts) — AI never picks modules
+- BTL achievability capped by module weightage share — not treated as binary
 - Section-relative slot keys Q1–Q4 per section
-- PYQ RAG always fed regardless of source mode
 - CO normalization: "CO1", "CO 1", "01", "co1" all → "01"
+- `answer_key_descriptive` task added to `isStructuredTask` allowlist — prevents Flash thinking from silently truncating answer JSON
 
 ---
 
@@ -597,22 +690,24 @@ API routes:
 - CSE Sem 1–7 fully seeded (52 subjects, 285 modules, 228 COs)
 - RLS fully enabled, 5-tier role hierarchy (superadmin/dean/hod/faculty/student)
 - Dean/HOD as first-class roles — all 30 faculty-tier API routes updated
-- PPT Refinement — full pipeline with XML patching
-- Q Bank — bulk generation, CSV/TXT import, Q paper integration, Word export
-- Q paper Word (.docx) export
+- PPT Refinement — full pipeline with XML patching; HTML-tag stripping, empty-title INSERT, and normAutofit overflow fix all shipped
+- PPT Generation — checkpoint/resume pipeline; dual_visual slide type; complexity-based diagram routing (Flash vs Pro per intricacy); outline now uses responseSchema (old fallback parser removed)
+- Q Bank — bulk generation, CSV/TXT import, Q paper integration; sessionStorage handoff to Q paper builder wired
+- Q paper — six-stage builder (split from monolith into _components/); percentage-mix sourcing allocator; BTL-tier presets + Custom mode; mixed question pool blocks; CO/BTL validation pass; `<RichQuestionText>` markdown-lite rendering; draft autosave/resume (`qpaper_drafts`); paper history page (`qpaper_history`); answer key Word export wired; answer key `isStructuredTask` allowlist fix; Q3 OR/main split fixed; DB constraint for 'answer_key' type fixed; pool items answered in answer key
+- Dynamic token budgeting — `tokenBudget.ts` with `estimateMaxOutputTokens()` replacing hardcoded maxTokens across qpaper/qbank/answer-key
+- Template scope column — qpaper_templates now support personal/school/department scope
 - Animated Explainers infrastructure (pipeline + storage + routes built; UI under development)
 
 ### Priority Order (current)
 
 **Tier 1 — Fix before showing anyone (quick wins):**
-1. PPT refinement: HTML tags in new slides (strip <b>/<i> in refiner)
-2. PPT refinement: empty title placeholder INSERT logic
-3. PPT refinement: body overflow on image-heavy slides
-4. Q paper answer key Q3 main/OR swap (splitQuestionsForBlocks)
-5. Q bank sessionStorage handoff to Q paper page
-6. Resume builder PDF/Word export QA
-7. Expand interview prep bank to 30+ questions
-8. Test TPO dashboard with real student batch
+1. Q paper flat-layout web preview (ReviewAndValidateStage doesn't honor `flatLayout` — PDF/Word do)
+2. Per-option-marks cosmetic divergence in web preview vs PDF/Word
+3. Answer-key PDF spacing tighter than student paper
+4. Template save-but-no-browse/load gap (TemplateStructureStage has no "load a saved template" UI)
+5. Resume builder PDF/Word export QA
+6. Expand interview prep bank to 30+ questions
+7. Test TPO dashboard with real student batch
 
 **Tier 2 — Depth at PPSU:**
 9. Q bank UX simplification (too many steps for daily faculty use)
@@ -639,12 +734,11 @@ API routes:
 | Supabase India ISP DNS block | Ongoing | Cloudflare DNS or WARP VPN |
 | Supabase free tier pauses after 1 week | Ongoing | Keep active before demos |
 | Email confirmation disabled | Active | Re-enable before go-live |
-| Q paper answer key Q3 main/OR swap | Active | splitQuestionsForBlocks fix pending |
-| PPT refinement: HTML tags in new slides | Active | Strip <b>/<i> in refiner.ts parseRefineBatchResponse |
-| PPT refinement: body overflow on image slides | Active | Image-aware body height + normAutofit |
-| PPT refinement: empty title = "Click to add title" | Active | INSERT text logic for empty placeholders |
+| Q paper flat-layout web preview | Active | ReviewAndValidateStage ignores flatLayout; PDF/Word correct |
+| Per-option-marks cosmetic divergence | Active | Web preview vs PDF/Word rendering differs |
+| Answer-key PDF spacing tighter than student paper | Active | Cosmetic — tighten PDF builder spacing |
+| Template save-but-no-browse/load gap | Active | TemplateStructureStage has no "load saved template" UI |
 | Q bank UX too complex | Active | Simplification needed |
-| Q bank sessionStorage handoff | Active | qpaper page not wired to consume staged questions |
 | CO-PO/PSO column alignment Sem 1–4 | Active | Fix via superadmin UI before accreditation |
 | CO-PO/PSO missing Sem 5–7 electives | Active | Add via superadmin UI before accreditation |
 | Animated explainer visuals broken | Shelved | Full renderer rewrite in dedicated session |
@@ -669,7 +763,9 @@ API routes:
 | PYQ via Gemini Flash direct | LlamaParse returns raw text; Flash extracts structured data |
 | Section-relative slot keys Q1–Q4 | Prevents Section II naming mismatch |
 | Module assignment computed in code | Guarantees weightage compliance, AI never picks modules |
-| Answer key Pro: maxTokens 12288 | Full answers exceed 8192 |
+| Pro model maxOutputTokens always 32768 in gemini.ts | These are two different layers, not contradictory: `estimateMaxOutputTokens()` in tokenBudget.ts produces a value ≤ 24000 (its CEILING) and is passed as the per-call `maxTokens` param. For Flash tasks (qbank_generate, answer_key_mcq) that computed value IS what Gemini uses. For Pro tasks (answer_key_descriptive, qpaper_gen) gemini.ts ignores the passed `maxTokens` and always uses 32768 — the dynamic budget only materially constrains Flash calls. |
+| `answer_key_descriptive` in isStructuredTask | Flash Pro-escalation path: if Flash is used, thinkingBudget 0 prevents truncation; Pro overrides maxTokens to 32768 anyway |
+| Hamilton apportionment for sourcing mix | Guarantees per-run determinism; random sampling drifts from the configured % |
 | adm-zip NOT unzipper | Turbopack build failure with unzipper |
 | XML patching for PPT refinement | Round-trip parse/rebuild re-encodes nodes, breaks PowerPoint |
 | get_my_role() SECURITY DEFINER for RLS | Breaks profiles→profiles recursion |
@@ -678,6 +774,10 @@ API routes:
 | responseSchema on structured AI calls | Guarantees valid JSON, eliminates parse retry loops |
 | thinkingBudget: 2048 for explainer_ideate | Caps thinking, reserves ~6k tokens for narrative output |
 | Explainer renderer = pattern library | AI classifies content type, code renders it -- not AI specifying pixel coords |
+| markdownLite not a full Markdown parser | Only the constructs Gemini actually leaks (pipe tables, bold, code, bullets) — a full parser would add complexity with no benefit |
+| qpaper_history stores Storage paths not URLs | Signed URLs expire; paths are stable — re-sign on demand for confidential answer key |
+| qpaper_drafts: no dean/hod read | Drafts are private scratch state, not a reviewable artifact — nothing to oversee until finalized |
+| Template `scope` column (personal/school/dept) | Enables future cross-subject template sharing without a separate table |
 
 ---
 
@@ -751,3 +851,7 @@ logs/screenshots, you verify before proceeding.
 - Faculty access follows `faculty_assignments`, not school hierarchy
 - `responseSchema` on all structured AI calls — eliminates parse retry loops
 - Explainer renderer = pattern library, not AI-specified coordinates
+- `answer_key_descriptive` task must stay in `isStructuredTask` list in gemini.ts
+- Pro model in gemini.ts always gets `maxOutputTokens: 32768` — dynamic budget from `tokenBudget.ts` only constrains Flash calls
+- `qpaper_history` stores Storage paths, not URLs — never store signed URLs in DB
+- `ppt_diagram` model is complexity-based (Flash/Pro per `routeDiagramBatchModel`) — not a blanket Pro rule

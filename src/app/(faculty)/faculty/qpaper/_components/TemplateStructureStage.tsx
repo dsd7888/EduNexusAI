@@ -2,10 +2,12 @@
 
 /**
  * Stage — "Template & Structure": the collapsible Paper Details metadata form
- * (header fields + drag-sortable instructions) and the quick-start preset row
- * (ESE Standard / Quiz / start-from-scratch).
+ * (header fields + drag-sortable instructions), the quick-start preset row
+ * (ESE Standard / Quiz / start-from-scratch), and the saved template browser
+ * (My Templates + Shared Templates, each with a Load action).
  */
 
+import { useEffect, useState } from "react";
 import {
   DndContext,
   closestCenter,
@@ -23,12 +25,13 @@ import {
   verticalListSortingStrategy,
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import { ChevronDown, ChevronRight, GripVertical, Plus, Trash2 } from "lucide-react";
+import { ChevronDown, ChevronRight, GripVertical, Loader2, Plus, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import type { SubjectRow } from "@/hooks/useSupabaseData";
+import type { PaperTemplateRow, SharedTemplateRow } from "@/lib/qpaper/templates";
 import { makeInstruction, type InstructionItem, type PaperMetadata } from "./shared";
 
 // ─── Sortable instruction row ───────────────────────────────────────────────
@@ -158,6 +161,40 @@ function CourseHeaderRow({
   );
 }
 
+// ─── Template card ──────────────────────────────────────────────────────────
+
+function TemplateCard({
+  tpl,
+  byLine,
+  onLoad,
+}: {
+  tpl: PaperTemplateRow;
+  byLine?: string;
+  onLoad: () => void;
+}) {
+  return (
+    <div className="flex items-center justify-between gap-3 py-2 px-3 rounded-md border bg-card hover:bg-accent/30 transition-colors">
+      <div className="min-w-0">
+        <p className="text-sm font-medium truncate">
+          {tpl.name}
+          {tpl.is_default && (
+            <span className="ml-2 text-[10px] text-primary font-semibold uppercase tracking-wide">
+              default
+            </span>
+          )}
+        </p>
+        <p className="text-[11px] text-muted-foreground">
+          {tpl.duration_minutes} min · {tpl.total_marks} marks
+          {byLine ? ` · ${byLine}` : ""}
+        </p>
+      </div>
+      <Button size="sm" variant="outline" className="shrink-0 h-7 text-xs px-2" onClick={onLoad}>
+        Load
+      </Button>
+    </div>
+  );
+}
+
 // ─── Stage ──────────────────────────────────────────────────────────────────
 
 interface TemplateStructureStageProps {
@@ -171,6 +208,10 @@ interface TemplateStructureStageProps {
   onApplyEse: () => void;
   onApplyQuiz: () => void;
   onClearBuilder: () => void;
+  /** Increment to trigger a template list refetch (e.g. after saving). */
+  refreshKey?: number;
+  /** Called when the user clicks Load on a template row. */
+  onLoadTemplate: (tpl: PaperTemplateRow) => void;
 }
 
 export function TemplateStructureStage({
@@ -184,6 +225,8 @@ export function TemplateStructureStage({
   onApplyEse,
   onApplyQuiz,
   onClearBuilder,
+  refreshKey,
+  onLoadTemplate,
 }: TemplateStructureStageProps) {
   const sensors = useSensors(
     useSensor(PointerSensor),
@@ -191,6 +234,33 @@ export function TemplateStructureStage({
       coordinateGetter: sortableKeyboardCoordinates,
     })
   );
+
+  // ─── Template list ────────────────────────────────────────────────────
+  const [myTemplates, setMyTemplates] = useState<PaperTemplateRow[]>([]);
+  const [sharedTemplates, setSharedTemplates] = useState<SharedTemplateRow[]>([]);
+  const [loadingTpl, setLoadingTpl] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoadingTpl(true);
+    fetch("/api/qpaper/templates")
+      .then((r) => (r.ok ? r.json() : Promise.reject(r)))
+      .then((data: { myTemplates?: PaperTemplateRow[]; sharedTemplates?: SharedTemplateRow[] }) => {
+        if (!cancelled) {
+          setMyTemplates(data.myTemplates ?? []);
+          setSharedTemplates(data.sharedTemplates ?? []);
+        }
+      })
+      .catch(() => {
+        /* silently ignore — templates are not critical path */
+      })
+      .finally(() => {
+        if (!cancelled) setLoadingTpl(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [refreshKey]);
 
   const handleInstructionDragEnd = (event: DragEndEvent) => {
     const { active, over } = event;
@@ -315,6 +385,57 @@ export function TemplateStructureStage({
         >
           Start from scratch
         </button>
+      </div>
+
+      {/* ── My Templates ─────────────────────────────────────────────── */}
+      <div className="space-y-2">
+        <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
+          My Templates
+        </h3>
+        {loadingTpl ? (
+          <div className="flex items-center gap-2 text-xs text-muted-foreground py-2">
+            <Loader2 className="size-3 animate-spin" /> Loading…
+          </div>
+        ) : myTemplates.length === 0 ? (
+          <p className="text-xs text-muted-foreground py-1">
+            No saved templates yet. Use &ldquo;Save as template&rdquo; below after building a structure.
+          </p>
+        ) : (
+          <div className="space-y-1">
+            {myTemplates.map((tpl) => (
+              <TemplateCard
+                key={tpl.id}
+                tpl={tpl}
+                onLoad={() => onLoadTemplate(tpl)}
+              />
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* ── Shared Templates ─────────────────────────────────────────── */}
+      <div className="space-y-2">
+        <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
+          Shared Templates
+        </h3>
+        {loadingTpl ? (
+          <div className="flex items-center gap-2 text-xs text-muted-foreground py-2">
+            <Loader2 className="size-3 animate-spin" /> Loading…
+          </div>
+        ) : sharedTemplates.length === 0 ? (
+          <p className="text-xs text-muted-foreground py-1">No shared templates yet.</p>
+        ) : (
+          <div className="space-y-1">
+            {sharedTemplates.map((tpl) => (
+              <TemplateCard
+                key={tpl.id}
+                tpl={tpl}
+                byLine={`by ${tpl.creator_name ?? "Built-in"}`}
+                onLoad={() => onLoadTemplate(tpl)}
+              />
+            ))}
+          </div>
+        )}
       </div>
     </>
   );

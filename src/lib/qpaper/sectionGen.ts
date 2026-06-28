@@ -101,6 +101,12 @@ export interface SectionGenInput {
   difficultyPreset?: DifficultyPreset;
   /** Tier weights to use when difficultyPreset === "custom". */
   customBtlWeights?: CustomBtlWeights | null;
+  /**
+   * module_number → CO codes that module teaches toward (from module_co_mapping).
+   * When absent (or empty for a given module), slots fall back to the subject's
+   * full CO list.
+   */
+  moduleCoMap?: Map<number, string[]>;
 }
 
 export interface SectionGenResult {
@@ -1114,7 +1120,8 @@ function buildSlotCtx(
   courseOutcomes: CourseOutcomeInfo[],
   coPoMapping: CoPoMappingInfo[],
   difficultyPreset?: DifficultyPreset,
-  customBtlWeights?: CustomBtlWeights | null
+  customBtlWeights?: CustomBtlWeights | null,
+  moduleCoMap?: Map<number, string[]>
 ): SlotAssignmentContext {
   const coPoMap = new Map<string, Array<{ po_code: string; strength: number }>>();
   for (const m of coPoMapping) {
@@ -1127,6 +1134,12 @@ function buildSlotCtx(
     allCoCodes: courseOutcomes.map((c) => c.co_code),
     difficultyPreset,
     customBtlWeights,
+    // Per-module COs (from module_co_mapping) when available. Returning [] for a
+    // module with no mapping rows is intentional — SlotAssignmentContext.cosFor
+    // already falls back to allCoCodes on an empty result.
+    moduleCosFn: moduleCoMap
+      ? (moduleNumber: number) => moduleCoMap.get(moduleNumber) ?? []
+      : undefined,
   };
 }
 
@@ -1154,12 +1167,19 @@ export function buildSectionSlotsAssignment(
   courseOutcomes: CourseOutcomeInfo[],
   coPoMapping: CoPoMappingInfo[],
   difficultyPreset?: DifficultyPreset,
-  customBtlWeights?: CustomBtlWeights | null
+  customBtlWeights?: CustomBtlWeights | null,
+  moduleCoMap?: Map<number, string[]>
 ): QuestionSlot[] {
   return assignModulesToSlots(
     modulesToData(modulesInSection),
     sectionTemplate,
-    buildSlotCtx(courseOutcomes, coPoMapping, difficultyPreset, customBtlWeights)
+    buildSlotCtx(
+      courseOutcomes,
+      coPoMapping,
+      difficultyPreset,
+      customBtlWeights,
+      moduleCoMap
+    )
   );
 }
 
@@ -1207,7 +1227,8 @@ export async function generateSection(
       input.courseOutcomes,
       input.coPoMapping,
       input.difficultyPreset,
-      input.customBtlWeights
+      input.customBtlWeights,
+      input.moduleCoMap
     )
   );
   if (input.slotStyles && input.slotStyles.size > 0) {

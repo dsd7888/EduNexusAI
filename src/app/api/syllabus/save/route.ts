@@ -1,6 +1,7 @@
 import type { NextRequest } from "next/server";
 import { apiError, requireRole } from "@/lib/api/helpers";
 import { reconstructSyllabusText } from "@/lib/syllabus/reconstruct";
+import { classifyModulesForSubject } from "@/lib/qpaper/moduleCoClassifier";
 import type { ExtractedSyllabus } from "@/lib/syllabus/types";
 
 export async function POST(request: NextRequest) {
@@ -195,6 +196,11 @@ export async function POST(request: NextRequest) {
         if (error) warnings.push(`subject_content insert: ${error.message}`);
       }
     }
+
+    // 7. Module ↔ CO mapping — now that modules and course_outcomes are saved,
+    // infer which COs each module teaches toward. This NEVER throws (logs and
+    // returns on any failure), so it can't compromise the save we just did.
+    await classifyModulesForSubject(subjectId);
 
     return Response.json({ saved: true, warnings });
   } catch (err) {

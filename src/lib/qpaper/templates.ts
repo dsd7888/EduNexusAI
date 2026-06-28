@@ -198,6 +198,9 @@ export interface PaperTemplateRow {
   created_by: string | null;
   name: string;
   is_default: boolean;
+  is_snapshot: boolean;
+  is_preset: boolean;
+  scope: "personal" | "school" | "department";
   university_name: string;
   exam_title: string | null;
   duration_minutes: number;
@@ -205,6 +208,12 @@ export interface PaperTemplateRow {
   instructions: string[] | null;
   structure: TemplateStructure;
   created_at: string;
+}
+
+/** Shared template row — like PaperTemplateRow but with the creator's display name joined in. */
+export interface SharedTemplateRow extends PaperTemplateRow {
+  /** null when created_by IS NULL (built-in preset rows). Display as "Built-in". */
+  creator_name: string | null;
 }
 
 export const PPSU_DEFAULT_INSTRUCTIONS: string[] = [
