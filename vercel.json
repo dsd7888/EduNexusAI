@@ -30,7 +30,8 @@
     "src/app/api/syllabus/save/route.ts": { "maxDuration": 60 },
     "src/app/api/ppt-refine/extract/route.ts": { "maxDuration": 60 },
     "src/app/api/ppt-refine/refine/route.ts": { "maxDuration": 300 },
-    "src/app/api/generate/ppt/rebuild/route.ts": { "maxDuration": 60 }
+    "src/app/api/generate/ppt/rebuild/route.ts": { "maxDuration": 60 },
+    "src/app/api/admin/classify-module-co/route.ts": { "maxDuration": 300 }
   },
   "crons": [
     {
