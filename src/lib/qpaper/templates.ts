@@ -200,6 +200,8 @@ export interface PaperTemplateRow {
   is_default: boolean;
   is_snapshot: boolean;
   is_preset: boolean;
+  /** Computed server-side: true when created_by === the requesting user's id. */
+  is_owner: boolean;
   scope: "personal" | "school" | "department";
   university_name: string;
   exam_title: string | null;

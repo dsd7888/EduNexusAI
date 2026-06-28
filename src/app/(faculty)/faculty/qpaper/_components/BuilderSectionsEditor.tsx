@@ -31,6 +31,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { NumericField } from "./NumericField";
 import { Switch } from "@/components/ui/switch";
 import {
   Select,
@@ -233,22 +234,17 @@ function SortableQuestion({
                     </Select>
                     <div className="flex items-center gap-1">
                       <span className="text-muted-foreground">Count</span>
-                      <Input
-                        type="number"
+                      <NumericField
                         min={1}
                         max={50}
                         value={row.count}
-                        onChange={(e) => {
-                          const count = Math.max(
-                            1,
-                            parseInt(e.target.value, 10) || 1
-                          );
+                        onChange={(n) =>
                           updatePoolComposition(
                             question.poolComposition.map((r) =>
-                              r.id === row.id ? { ...r, count } : r
+                              r.id === row.id ? { ...r, count: n } : r
                             )
-                          );
-                        }}
+                          )
+                        }
                         className="h-7 w-16 text-center text-xs"
                       />
                     </div>
@@ -288,19 +284,12 @@ function SortableQuestion({
               <div className="flex flex-wrap items-center gap-3 pt-1">
                 <div className="flex items-center gap-1">
                   <span className="text-muted-foreground">Marks per item</span>
-                  <Input
-                    type="number"
+                  <NumericField
                     min={1}
                     max={50}
                     value={question.poolMarksPerItem}
-                    onChange={(e) =>
-                      onUpdate({
-                        ...question,
-                        poolMarksPerItem: Math.max(
-                          1,
-                          parseInt(e.target.value, 10) || 1
-                        ),
-                      })
+                    onChange={(n) =>
+                      onUpdate({ ...question, poolMarksPerItem: n })
                     }
                     className="h-7 w-16 text-center text-xs"
                   />
@@ -309,25 +298,17 @@ function SortableQuestion({
 
               <div className="flex flex-wrap items-center gap-3">
                 <span className="text-muted-foreground">Attempt any</span>
-                <Input
-                  type="number"
+                <NumericField
                   min={1}
                   max={Math.max(1, poolN)}
                   value={question.poolAttemptCount}
-                  onChange={(e) => {
-                    const k = Math.max(
-                      1,
-                      Math.min(
-                        Math.max(1, poolN),
-                        parseInt(e.target.value, 10) || 1
-                      )
-                    );
+                  onChange={(k) =>
                     onUpdate({
                       ...question,
                       poolAttemptCount: k,
                       instruction: defaultPoolInstruction(k, poolN),
-                    });
-                  }}
+                    })
+                  }
                   className="h-7 w-16 text-center text-xs"
                 />
                 <span className="text-muted-foreground">of</span>
@@ -347,39 +328,21 @@ function SortableQuestion({
             <div className="flex flex-wrap items-center gap-3">
               <div className="flex items-center gap-1">
                 <span className="text-muted-foreground">Sub-parts</span>
-                <Input
-                  type="number"
+                <NumericField
                   min={1}
                   max={50}
                   value={question.subPartsCount}
-                  onChange={(e) =>
-                    onUpdate({
-                      ...question,
-                      subPartsCount: Math.max(
-                        1,
-                        parseInt(e.target.value, 10) || 1
-                      ),
-                    })
-                  }
+                  onChange={(n) => onUpdate({ ...question, subPartsCount: n })}
                   className="h-7 w-16 text-center text-xs"
                 />
               </div>
               <div className="flex items-center gap-1">
                 <span className="text-muted-foreground">Marks / part</span>
-                <Input
-                  type="number"
+                <NumericField
                   min={1}
                   max={20}
                   value={question.marksPerPart}
-                  onChange={(e) =>
-                    onUpdate({
-                      ...question,
-                      marksPerPart: Math.max(
-                        1,
-                        parseInt(e.target.value, 10) || 1
-                      ),
-                    })
-                  }
+                  onChange={(n) => onUpdate({ ...question, marksPerPart: n })}
                   className="h-7 w-16 text-center text-xs"
                 />
               </div>
@@ -387,58 +350,32 @@ function SortableQuestion({
           ) : question.hasAttemptAny ? (
             <div className="flex flex-wrap items-center gap-3">
               <span className="text-muted-foreground">Attempt any</span>
-              <Input
-                type="number"
+              <NumericField
                 min={1}
                 max={question.attemptAnyOfTotal}
                 value={question.attemptAnyTake}
-                onChange={(e) =>
-                  onUpdate({
-                    ...question,
-                    attemptAnyTake: Math.max(
-                      1,
-                      Math.min(
-                        question.attemptAnyOfTotal,
-                        parseInt(e.target.value, 10) || 1
-                      )
-                    ),
-                  })
-                }
+                onChange={(n) => onUpdate({ ...question, attemptAnyTake: n })}
                 className="h-7 w-16 text-center text-xs"
               />
               <span className="text-muted-foreground">of</span>
-              <Input
-                type="number"
+              <NumericField
                 min={Math.max(2, question.attemptAnyTake)}
                 max={10}
                 value={question.attemptAnyOfTotal}
-                onChange={(e) =>
-                  onUpdate({
-                    ...question,
-                    attemptAnyOfTotal: Math.max(
-                      Math.max(2, question.attemptAnyTake),
-                      parseInt(e.target.value, 10) || 2
-                    ),
-                  })
+                onChange={(n) =>
+                  onUpdate({ ...question, attemptAnyOfTotal: n })
                 }
                 className="h-7 w-16 text-center text-xs"
               />
               <span className="text-muted-foreground ml-2">
                 Marks / option
               </span>
-              <Input
-                type="number"
+              <NumericField
                 min={1}
                 max={50}
                 value={question.attemptAnyMarks}
-                onChange={(e) =>
-                  onUpdate({
-                    ...question,
-                    attemptAnyMarks: Math.max(
-                      1,
-                      parseInt(e.target.value, 10) || 1
-                    ),
-                  })
+                onChange={(n) =>
+                  onUpdate({ ...question, attemptAnyMarks: n })
                 }
                 className="h-7 w-16 text-center text-xs"
               />
@@ -446,36 +383,20 @@ function SortableQuestion({
           ) : question.hasOr ? (
             <div className="flex flex-wrap items-center gap-3">
               <span className="text-muted-foreground">Parts</span>
-              <Input
-                type="number"
+              <NumericField
                 min={1}
                 max={6}
                 value={question.partsCount}
-                onChange={(e) =>
-                  onUpdate({
-                    ...question,
-                    partsCount: Math.max(
-                      1,
-                      Math.min(6, parseInt(e.target.value, 10) || 1)
-                    ),
-                  })
-                }
+                onChange={(n) => onUpdate({ ...question, partsCount: n })}
                 className="h-7 w-16 text-center text-xs"
               />
               <span className="text-muted-foreground">Marks / part</span>
-              <Input
-                type="number"
+              <NumericField
                 min={1}
                 max={50}
                 value={question.marksPerSubPart}
-                onChange={(e) =>
-                  onUpdate({
-                    ...question,
-                    marksPerSubPart: Math.max(
-                      1,
-                      parseInt(e.target.value, 10) || 1
-                    ),
-                  })
+                onChange={(n) =>
+                  onUpdate({ ...question, marksPerSubPart: n })
                 }
                 className="h-7 w-16 text-center text-xs"
               />
@@ -483,17 +404,11 @@ function SortableQuestion({
           ) : (
             <div className="flex flex-wrap items-center gap-3">
               <span className="text-muted-foreground">Marks</span>
-              <Input
-                type="number"
+              <NumericField
                 min={1}
                 max={100}
                 value={question.marks}
-                onChange={(e) =>
-                  onUpdate({
-                    ...question,
-                    marks: Math.max(1, parseInt(e.target.value, 10) || 1),
-                  })
-                }
+                onChange={(n) => onUpdate({ ...question, marks: n })}
                 className="h-7 w-20 text-center text-xs"
               />
             </div>

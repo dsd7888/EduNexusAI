@@ -8,7 +8,7 @@
 
 import { useMemo } from "react";
 import { Label } from "@/components/ui/label";
-import { Input } from "@/components/ui/input";
+import { NumericField } from "./NumericField";
 import {
   Select,
   SelectContent,
@@ -155,14 +155,11 @@ export function ScopeAndDifficultyStage({
         </div>
         <div>
           <Label className="text-xs mb-1 block">Target Marks</Label>
-          <Input
-            type="number"
+          <NumericField
             min={1}
             max={500}
             value={targetMarks}
-            onChange={(e) =>
-              onTargetMarksChange(Math.max(1, parseInt(e.target.value, 10) || 1))
-            }
+            onChange={onTargetMarksChange}
             className="h-9 text-sm font-semibold"
           />
         </div>
@@ -288,12 +285,11 @@ export function ScopeAndDifficultyStage({
                     </div>
                   </div>
                   <div className="flex items-center gap-1">
-                    <Input
-                      type="number"
+                    <NumericField
                       min={0}
                       max={100}
                       value={customBtlWeights[key]}
-                      onChange={(e) => setCustomWeight(key, e.target.value)}
+                      onChange={(n) => setCustomWeight(key, String(n))}
                       className="h-8 w-16 text-sm text-right"
                     />
                     <span className="text-xs text-muted-foreground">%</span>

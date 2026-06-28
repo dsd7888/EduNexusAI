@@ -10,7 +10,7 @@
  */
 
 import { Label } from "@/components/ui/label";
-import { Input } from "@/components/ui/input";
+import { NumericField } from "./NumericField";
 import { cn } from "@/lib/utils";
 import {
   SOURCE_CATEGORY_META,
@@ -90,13 +90,12 @@ export function SourcingStage({
                 <div className="text-[11px] text-muted-foreground">{note}</div>
               </div>
               <div className="flex items-center gap-1">
-                <Input
-                  type="number"
+                <NumericField
                   min={0}
                   max={100}
                   value={rowDisabled ? 0 : mix[key]}
                   disabled={rowDisabled}
-                  onChange={(e) => setPercent(key, e.target.value)}
+                  onChange={(n) => setPercent(key, String(n))}
                   className="h-8 w-16 text-sm text-right"
                 />
                 <span className="text-xs text-muted-foreground">%</span>

@@ -46,7 +46,7 @@ export async function GET(_request: NextRequest) {
     }
 
     // My templates: own rows that are not snapshots.
-    const { data: myTemplates, error: myErr } = await adminClient
+    const { data: myTemplatesRaw, error: myErr } = await adminClient
       .from("qpaper_templates")
       .select("*")
       .eq("created_by", user.id)
@@ -58,6 +58,11 @@ export async function GET(_request: NextRequest) {
       console.error("[qpaper/templates GET my]", myErr.message);
       return apiError("Failed to load templates", 500);
     }
+
+    const myTemplates = (myTemplatesRaw ?? []).map((row) => ({
+      ...row,
+      is_owner: (row as Record<string, unknown>).created_by === user.id,
+    }));
 
     // Shared templates: school-scoped, not snapshots, with creator name joined.
     const { data: sharedRaw, error: sharedErr } = await adminClient
@@ -79,6 +84,7 @@ export async function GET(_request: NextRequest) {
       };
       return {
         ...rest,
+        is_owner: rest.created_by === user.id,
         creator_name:
           rest.created_by == null
             ? null
@@ -86,7 +92,7 @@ export async function GET(_request: NextRequest) {
       };
     });
 
-    return apiSuccess({ myTemplates: myTemplates ?? [], sharedTemplates });
+    return apiSuccess({ myTemplates, sharedTemplates });
   } catch (err) {
     console.error("[qpaper/templates GET error]", err);
     return apiError("Failed to load templates", 500);
