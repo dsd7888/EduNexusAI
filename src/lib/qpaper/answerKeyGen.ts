@@ -25,6 +25,7 @@ import type {
 import { isPoolItemMcqLike, type PoolItem } from "./templates";
 import { poolItemLabel, poolMarksPerItem } from "./poolRender";
 import { mcqSubSlotKey } from "./moduleAssignment";
+import { imageDisplaySize, type PaperImageMap } from "./qpaperImages";
 
 // ─── Public types ───────────────────────────────────────────────────────────
 
@@ -96,6 +97,8 @@ export interface AnswerKeyGenSectionResult {
 export interface AnswerKeyPDFInput {
   paper: AssembledPaper;
   sections: AnswerKeyGenSectionResult[];
+  /** Decoded question images from loadPaperImages — used to embed bank-question images into the PDF. */
+  images?: PaperImageMap;
 }
 
 // ─── System prompt ──────────────────────────────────────────────────────────
@@ -850,6 +853,19 @@ export async function buildAnswerKeyPDF(
   const { paper, sections } = input;
   const { builder } = await createPDFBuilder();
 
+  const imageMap = input.images;
+  const renderImageByPath = async (path: string | null | undefined): Promise<void> => {
+    if (!path || !imageMap) return;
+    const asset = imageMap.get(path);
+    if (!asset) return;
+    const dims = imageDisplaySize(asset.width, asset.height);
+    await builder.image(
+      asset.bytes,
+      asset.format === "png" ? "image/png" : "image/jpeg",
+      dims
+    );
+  };
+
   const FONT_BOLD = builder.getFont("bold");
   const FONT_REGULAR = builder.getFont("regular");
   const FONT_ITALIC = builder.getFont("italic");
@@ -946,7 +962,7 @@ export async function buildAnswerKeyPDF(
         entry.display_label ??
         entry.slotKey ??
         `Q - ${i + 1}`;
-      drawAnswerEntry(builder, label, entry);
+      await drawAnswerEntry(builder, label, entry, orig, renderImageByPath);
     }
   }
 
@@ -971,6 +987,14 @@ export async function buildAnswerKeyPDF(
 
 // Local alias for the builder type so helper signatures stay narrow.
 type Builder = Awaited<ReturnType<typeof createPDFBuilder>>["builder"];
+type ImageRenderer = (path: string | null | undefined) => Promise<void>;
+
+function labelsMatch(a: string | null | undefined, b: string | null | undefined): boolean {
+  const clean = (s: string | null | undefined) =>
+    String(s ?? "").replace(/[()]/g, "").trim().toLowerCase();
+  const ca = clean(a);
+  return ca !== "" && ca === clean(b);
+}
 
 // ─── Markdown stripping (render-time only) ────────────────────────────────
 //
@@ -1046,37 +1070,41 @@ function coerceToText(value: unknown): string {
 
 // ─── Entry-type dispatch ─────────────────────────────────────────────────
 
-function drawAnswerEntry(
+async function drawAnswerEntry(
   builder: Builder,
   label: string,
-  entry: AnswerKeyEntry
-): void {
+  entry: AnswerKeyEntry,
+  origQ?: GeneratedQuestion,
+  renderImage?: ImageRenderer
+): Promise<void> {
   switch ((entry.type ?? "").toLowerCase()) {
     case "mcq":
-      drawMCQ(builder, label, entry);
+      await drawMCQ(builder, label, entry, origQ, renderImage);
       break;
     case "descriptive_with_or":
-      drawDescriptiveWithOr(builder, label, entry);
+      await drawDescriptiveWithOr(builder, label, entry, origQ, renderImage);
       break;
     case "attempt_any_one":
-      drawAttemptAnyOne(builder, label, entry);
+      await drawAttemptAnyOne(builder, label, entry, origQ, renderImage);
       break;
     case "pool":
-      drawPoolAnswer(builder, label, entry);
+      await drawPoolAnswer(builder, label, entry, origQ, renderImage);
       break;
     default:
-      drawDescriptive(builder, label, entry);
+      await drawDescriptive(builder, label, entry, origQ, renderImage);
   }
 }
 
 // Pool block: render a header, then iterate the items and reuse the existing
 // MCQ / descriptive drawers per item (the same reuse the student-paper pool
 // renderer uses) — each child entry is an ordinary "mcq"/"descriptive" entry.
-function drawPoolAnswer(
+async function drawPoolAnswer(
   builder: Builder,
   label: string,
-  entry: AnswerKeyEntry
-): void {
+  entry: AnswerKeyEntry,
+  origQ?: GeneratedQuestion,
+  renderImage?: ImageRenderer
+): Promise<void> {
   builder.space(6);
   builder.ensureSpace(40);
   builder.text(`${label}   (Pool - model answers for all listed items)`, {
@@ -1084,17 +1112,24 @@ function drawPoolAnswer(
     size: 10.5,
     color: COLORS.text,
   });
-  for (const item of entry.pool_items ?? []) {
+  for (let idx = 0; idx < (entry.pool_items ?? []).length; idx++) {
+    const item = entry.pool_items![idx];
     const itemLabel = item.display_label ?? item.slotKey ?? "";
-    drawAnswerEntry(builder, itemLabel, item);
+    // Pool items carry image_path on the original PoolItem; render it before
+    // the per-item answer so the evaluator sees the image in context.
+    const origItem = origQ?.items?.[idx] as { image_path?: string | null } | undefined;
+    if (origItem?.image_path && renderImage) await renderImage(origItem.image_path);
+    await drawAnswerEntry(builder, itemLabel, item, undefined, renderImage);
   }
 }
 
-function drawMCQ(
+async function drawMCQ(
   builder: Builder,
   label: string,
-  entry: AnswerKeyEntry
-): void {
+  entry: AnswerKeyEntry,
+  origQ?: GeneratedQuestion,
+  renderImage?: ImageRenderer
+): Promise<void> {
   const note =
     entry.marking_note ?? "1 mark per correct answer, no negative marking";
   builder.space(6);
@@ -1108,6 +1143,13 @@ function drawMCQ(
 
   for (const a of entry.answers ?? []) {
     builder.ensureSpace(24);
+    // Render the sub-question's attached image before its answer line.
+    if (renderImage) {
+      const sub = origQ?.sub_parts?.find((s) =>
+        labelsMatch(s.label, a.label)
+      );
+      if (sub?.image_path) await renderImage(sub.image_path);
+    }
     const head =
       a.correct_text && a.correct_text.trim().length > 0
         ? `${a.label}  Correct Answer: (${a.correct_option})  ${stripInline(a.correct_text)}`
@@ -1135,11 +1177,13 @@ function drawMCQ(
   }
 }
 
-function drawDescriptive(
+async function drawDescriptive(
   builder: Builder,
   label: string,
-  entry: AnswerKeyEntry
-): void {
+  entry: AnswerKeyEntry,
+  origQ?: GeneratedQuestion,
+  renderImage?: ImageRenderer
+): Promise<void> {
   const marks = entry.total_marks ?? 0;
   builder.space(6);
   builder.ensureSpace(40);
@@ -1148,6 +1192,13 @@ function drawDescriptive(
     size: 10.5,
     color: COLORS.text,
   });
+  // Render images from all original question parts so the evaluator has visual
+  // context when reading the combined model answer.
+  if (renderImage) {
+    for (const p of origQ?.parts ?? []) {
+      if (p.image_path) await renderImage(p.image_path);
+    }
+  }
   if (entry.marking_scheme) {
     builder.text(`Marking Scheme: ${stripInline(entry.marking_scheme)}`, {
       font: builder.getFont("regular"),
@@ -1180,11 +1231,13 @@ function drawDescriptive(
   }
 }
 
-function drawDescriptivePart(
+async function drawDescriptivePart(
   builder: Builder,
   parentLabel: string,
-  part: AnswerKeyDescriptive
-): void {
+  part: AnswerKeyDescriptive,
+  imagePath?: string | null,
+  renderImage?: ImageRenderer
+): Promise<void> {
   const partLabel = part.label ? `${parentLabel} ${part.label}` : parentLabel;
   builder.space(5);
   builder.ensureSpace(40);
@@ -1193,6 +1246,9 @@ function drawDescriptivePart(
     size: 10.5,
     color: COLORS.text,
   });
+  // Render the part's attached image above the marking scheme so evaluators
+  // see it in the same visual position as on the question paper.
+  if (imagePath && renderImage) await renderImage(imagePath);
   if (part.marking_scheme) {
     builder.text(`Marking Scheme: ${stripInline(part.marking_scheme)}`, {
       font: builder.getFont("regular"),
@@ -1225,11 +1281,13 @@ function drawDescriptivePart(
   }
 }
 
-function drawDescriptiveWithOr(
+async function drawDescriptiveWithOr(
   builder: Builder,
   label: string,
-  entry: AnswerKeyEntry
-): void {
+  entry: AnswerKeyEntry,
+  origQ?: GeneratedQuestion,
+  renderImage?: ImageRenderer
+): Promise<void> {
   builder.space(6);
   builder.ensureSpace(40);
   builder.text(`${label}   (Main set)`, {
@@ -1237,8 +1295,10 @@ function drawDescriptiveWithOr(
     size: 10.5,
     color: COLORS.text,
   });
+  const mainParts = origQ?.parts?.filter((p) => !p.is_or_alternative) ?? [];
   for (const part of entry.main ?? []) {
-    drawDescriptivePart(builder, label, part);
+    const origPart = mainParts.find((p) => labelsMatch(p.label, part.label));
+    await drawDescriptivePart(builder, label, part, origPart?.image_path, renderImage);
   }
   builder.space(6);
   builder.ensureSpace(24);
@@ -1254,16 +1314,20 @@ function drawDescriptiveWithOr(
     size: 10.5,
     color: COLORS.text,
   });
+  const altParts = origQ?.parts?.filter((p) => p.is_or_alternative) ?? [];
   for (const part of entry.or_alternative ?? []) {
-    drawDescriptivePart(builder, label, part);
+    const origPart = altParts.find((p) => labelsMatch(p.label, part.label));
+    await drawDescriptivePart(builder, label, part, origPart?.image_path, renderImage);
   }
 }
 
-function drawAttemptAnyOne(
+async function drawAttemptAnyOne(
   builder: Builder,
   label: string,
-  entry: AnswerKeyEntry
-): void {
+  entry: AnswerKeyEntry,
+  origQ?: GeneratedQuestion,
+  renderImage?: ImageRenderer
+): Promise<void> {
   builder.space(6);
   builder.ensureSpace(40);
   builder.text(
@@ -1277,6 +1341,10 @@ function drawAttemptAnyOne(
   const opts = entry.options ?? [];
   for (let i = 0; i < opts.length; i++) {
     if (i > 0) builder.space(4);
-    drawDescriptivePart(builder, label, opts[i]);
+    // Match by label first, fall back to positional alignment.
+    const origPart =
+      origQ?.parts?.find((p) => labelsMatch(p.label, opts[i].label)) ??
+      origQ?.parts?.[i];
+    await drawDescriptivePart(builder, label, opts[i], origPart?.image_path, renderImage);
   }
 }

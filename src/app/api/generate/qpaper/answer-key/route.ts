@@ -27,6 +27,7 @@ import type {
   AssembledPaper,
   GeneratedSection,
 } from "@/lib/qpaper/builder";
+import { loadPaperImages } from "@/lib/qpaper/qpaperImages";
 import type { NextRequest } from "next/server";
 
 interface ModuleRow {
@@ -158,9 +159,12 @@ export async function POST(request: NextRequest) {
     }
 
     // ── PDF + upload ──────────────────────────────────────────────────────
+    // Load bank-question images so they appear alongside their answers in the PDF.
+    const paperImages = await loadPaperImages(adminClient, paper);
     const pdfBuffer = await buildAnswerKeyPDF({
       paper,
       sections: sectionResults,
+      images: paperImages,
     });
     const timestamp = Date.now();
     const fileName = `ak_${timestamp}_${user.id.slice(0, 8)}.pdf`;

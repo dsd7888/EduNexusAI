@@ -3,9 +3,8 @@
 /**
  * "Add Questions" tab — three sub-modes:
  *   CSV Import  — existing drag-drop CSV/TXT flow, untouched
- *   Single      — AddQuestionForm (one question, optional AI image)
- *   Bulk Images — pick ≤20 images, get independent AI-generated cards,
- *                 edit metadata per card, then "Add All to Bank"
+ *   Single      — one question, optional AI draft from image (two-step: Generate Draft → Add to Bank)
+ *   Bulk Images — pick ≤20 images; per-card textarea + tag selects; Generate All Drafts then Add All to Bank
  */
 
 import { useRef, useState } from "react";
@@ -39,6 +38,7 @@ import type { BankQuestion, MCQOption } from "@/lib/qbank/types";
 import { BankQuestionCard } from "./BankQuestionCard";
 import {
   addManualQuestion,
+  draftImageQuestion,
   formatCo,
   importFile,
   QUESTION_TYPES,
@@ -196,9 +196,12 @@ function AddQuestionForm({
 }) {
   const [draft, setDraft] = useState<AddFormDraft>(INIT_DRAFT);
   const [adding, setAdding] = useState(false);
+  const [generatingDraft, setGeneratingDraft] = useState(false);
   const [imageFile, setImageFile] = useState<File | null>(null);
   const [imagePreviewUrl, setImagePreviewUrl] = useState<string | null>(null);
   const [imageError, setImageError] = useState<string | null>(null);
+  // Set after draft-image returns — used by commit step to avoid re-uploading.
+  const [draftImagePath, setDraftImagePath] = useState<string | null>(null);
 
   const handleImageChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0] ?? null;
@@ -206,6 +209,7 @@ function AddQuestionForm({
     setImageFile(null);
     if (imagePreviewUrl) URL.revokeObjectURL(imagePreviewUrl);
     setImagePreviewUrl(null);
+    setDraftImagePath(null);
     if (!file) return;
     if (!ALLOWED_IMAGE_TYPES.includes(file.type)) {
       setImageError("Only JPEG, PNG, GIF, and WebP images are accepted.");
@@ -221,9 +225,40 @@ function AddQuestionForm({
     setImagePreviewUrl(URL.createObjectURL(file));
   };
 
+  const handleGenerateDraft = async () => {
+    if (!imageFile) return;
+    setGeneratingDraft(true);
+    try {
+      const base64 = await readFileAsBase64(imageFile);
+      const marks = Number(draft.marks);
+      const result = await draftImageQuestion({
+        subject_id: subjectId,
+        question_type: draft.question_type as ManualQuestionPayload["question_type"],
+        marks: Number.isFinite(marks) && marks > 0 ? marks : 2,
+        module_id: draft.module_id || undefined,
+        image_base64: base64,
+        image_mime: imageFile.type,
+      });
+      // Fill the form with AI result — all fields remain editable.
+      const updated: AddFormDraft = { ...draft, question_text: result.question_text };
+      if (result.co_code) updated.co_code = result.co_code;
+      if (result.btl_level != null) updated.btl_level = String(result.btl_level);
+      if (result.difficulty) updated.difficulty = result.difficulty;
+      if (result.model_answer) updated.model_answer = result.model_answer;
+      if (result.options && result.options.length > 0) updated.options = result.options;
+      setDraft(updated);
+      setDraftImagePath(result.image_path);
+      toast.success("Draft ready — review and edit before adding");
+    } catch (err) {
+      console.error("[qbank single draft]", err);
+      toast.error("Failed to generate draft from image");
+    } finally {
+      setGeneratingDraft(false);
+    }
+  };
+
   const handleSubmit = async () => {
-    const isAiImageMode = imageFile !== null && !draft.question_text.trim();
-    if (!isAiImageMode && !draft.question_text.trim()) {
+    if (!draft.question_text.trim()) {
       toast.error("Question text is required");
       return;
     }
@@ -243,17 +278,23 @@ function AddQuestionForm({
         btl_level: draft.btl_level ? Number(draft.btl_level) : undefined,
         difficulty: (draft.difficulty || undefined) as ManualQuestionPayload["difficulty"],
         module_id: draft.module_id || undefined,
+        model_answer: draft.model_answer.trim() || undefined,
       };
-      if (draft.question_type === "mcq" && !isAiImageMode) {
+      if (draft.question_type === "mcq") {
         payload.options = draft.options.filter((o) => o.text.trim());
       }
-      if (imageFile) {
+      if (draftImagePath) {
+        // Image was already uploaded during draft — reuse the path.
+        payload.image_path = draftImagePath;
+        payload.source = "ai_generated";
+      } else if (imageFile) {
+        // Faculty chose an image but typed their own text — upload now.
         payload.image_base64 = await readFileAsBase64(imageFile);
         payload.image_mime = imageFile.type;
       }
       const newQ = await addManualQuestion(payload);
       onAdded(newQ);
-      toast.success(isAiImageMode ? "Question generated and added" : "Question added");
+      toast.success("Question added");
     } catch (err) {
       console.error("[qbank add-manual]", err);
       toast.error("Failed to add question");
@@ -261,6 +302,11 @@ function AddQuestionForm({
       setAdding(false);
     }
   };
+
+  const hasImage = imageFile !== null;
+  const hasText = draft.question_text.trim() !== "";
+  // Draft step needed when image is attached, text is empty, and no draft generated yet.
+  const needsDraftStep = hasImage && !hasText && !draftImagePath;
 
   return (
     <Card className="p-3 space-y-3 border-primary/40">
@@ -292,22 +338,22 @@ function AddQuestionForm({
           className="text-sm"
           placeholder="Question text"
         />
-        {imageFile && !draft.question_text.trim() && (
+        {needsDraftStep && (
           <p className="text-xs text-muted-foreground flex items-center gap-1">
             <Sparkles className="size-3 shrink-0 text-primary" />
-            AI will write this question from your image — or type it yourself to author it manually.
+            Click &quot;Generate Draft&quot; to have AI write from the image, or type the question yourself.
+          </p>
+        )}
+        {draftImagePath && (
+          <p className="text-xs text-primary/70 flex items-center gap-1">
+            <Sparkles className="size-3 shrink-0" />
+            Draft ready — all fields are editable before you add to bank.
           </p>
         )}
       </div>
 
       {draft.question_type === "mcq" && (
         <div className="space-y-1">
-          {imageFile && !draft.question_text.trim() && (
-            <p className="text-xs text-muted-foreground flex items-center gap-1">
-              <Sparkles className="size-3 shrink-0 text-primary" />
-              AI will generate the options — leave blank or fill in to override.
-            </p>
-          )}
           {draft.options.map((opt, i) => (
             <div key={opt.label} className="flex items-center gap-2">
               <button
@@ -389,28 +435,42 @@ function AddQuestionForm({
         {imagePreviewUrl && (
           <div className="relative inline-block">
             <img src={imagePreviewUrl} alt="Preview" className="rounded-md max-h-40 object-contain border border-border/40" />
-            <button
-              type="button"
-              onClick={() => { URL.revokeObjectURL(imagePreviewUrl); setImageFile(null); setImagePreviewUrl(null); }}
-              className="absolute top-1 right-1 rounded-full bg-background/80 p-0.5 text-muted-foreground hover:text-destructive"
-            >
-              <X className="size-3" />
-            </button>
+            {/* Only show remove button before a draft is generated (image is still replaceable). */}
+            {!draftImagePath && (
+              <button
+                type="button"
+                onClick={() => {
+                  URL.revokeObjectURL(imagePreviewUrl);
+                  setImageFile(null);
+                  setImagePreviewUrl(null);
+                  setDraftImagePath(null);
+                }}
+                className="absolute top-1 right-1 rounded-full bg-background/80 p-0.5 text-muted-foreground hover:text-destructive"
+              >
+                <X className="size-3" />
+              </button>
+            )}
           </div>
         )}
       </div>
 
       <div className="flex items-center gap-2 pt-1">
-        {(() => {
-          const isAiImageMode = imageFile !== null && !draft.question_text.trim();
-          return (
-            <Button size="sm" className="h-7 text-xs" onClick={handleSubmit} disabled={adding}>
-              {adding ? <Loader2 className="size-3 mr-1 animate-spin" /> : isAiImageMode ? <Sparkles className="size-3 mr-1" /> : <PlusCircle className="size-3 mr-1" />}
-              {isAiImageMode ? "Generate & Add" : "Add to Bank"}
-            </Button>
-          );
-        })()}
-        <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={onClose} disabled={adding}>
+        {needsDraftStep ? (
+          <Button size="sm" className="h-7 text-xs" onClick={handleGenerateDraft} disabled={generatingDraft || adding}>
+            {generatingDraft
+              ? <Loader2 className="size-3 mr-1 animate-spin" />
+              : <Sparkles className="size-3 mr-1" />}
+            {generatingDraft ? "Generating…" : "Generate Draft"}
+          </Button>
+        ) : (
+          <Button size="sm" className="h-7 text-xs" onClick={handleSubmit} disabled={adding || generatingDraft}>
+            {adding
+              ? <Loader2 className="size-3 mr-1 animate-spin" />
+              : <PlusCircle className="size-3 mr-1" />}
+            Add to Bank
+          </Button>
+        )}
+        <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={onClose} disabled={adding || generatingDraft}>
           <X className="size-3 mr-1" />
           Cancel
         </Button>
@@ -439,12 +499,20 @@ interface BulkCardMeta {
   module_id: string;
 }
 
+type BulkCardStatus = "idle" | "generating" | "drafted" | "committing" | "done" | "error";
+
 interface BulkCard {
   id: string;
   file: File;
   previewUrl: string;
   meta: BulkCardMeta;
-  status: "idle" | "loading" | "done" | "error";
+  status: BulkCardStatus;
+  // Question content (blank = not yet typed or drafted)
+  draftText: string;
+  draftModelAnswer: string;
+  draftOptions: MCQOption[] | null;
+  // Storage path returned by draft-image; null until draft succeeds.
+  draftImagePath: string | null;
   result?: BankQuestion;
   errorMsg?: string;
 }
@@ -490,6 +558,10 @@ function BulkImagesMode({
         previewUrl: URL.createObjectURL(file),
         meta: { ...DEFAULT_BULK_META },
         status: "idle",
+        draftText: "",
+        draftModelAnswer: "",
+        draftOptions: null,
+        draftImagePath: null,
       });
     });
     if (skipped > 0) toast.warning(`${skipped} file(s) skipped — must be JPEG/PNG/GIF/WebP under 5 MB`);
@@ -509,58 +581,166 @@ function BulkImagesMode({
     setCards((prev) => prev.map((c) => c.id === id ? { ...c, meta: { ...c.meta, ...patch } } : c));
   };
 
-  const idleCards = cards.filter((c) => c.status === "idle");
-  const anyLoading = cards.some((c) => c.status === "loading");
+  const updateDraftText = (id: string, text: string) => {
+    setCards((prev) => prev.map((c) => c.id === id ? { ...c, draftText: text } : c));
+  };
 
-  const handleAddAll = async () => {
-    if (idleCards.length === 0) return;
+  // Cards waiting for AI draft: idle with no typed text.
+  const draftableCards = cards.filter(
+    (c) => c.status === "idle" && !c.draftText.trim()
+  );
+  // Cards ready to commit: AI-drafted OR idle with faculty-typed text.
+  const committableCards = cards.filter(
+    (c) => c.status === "drafted" || (c.status === "idle" && c.draftText.trim())
+  );
 
-    // Mark all idle cards as loading immediately
-    setCards((prev) => prev.map((c) => c.status === "idle" ? { ...c, status: "loading" } : c));
+  const anyBusy = cards.some(
+    (c) => c.status === "generating" || c.status === "committing"
+  );
+  const doneCount = cards.filter((c) => c.status === "done").length;
+
+  const handleGenerateAllDrafts = async () => {
+    if (draftableCards.length === 0) return;
+
+    setCards((prev) =>
+      prev.map((c) =>
+        draftableCards.find((d) => d.id === c.id)
+          ? { ...c, status: "generating" }
+          : c
+      )
+    );
+
+    await Promise.all(
+      draftableCards.map(async (card) => {
+        try {
+          const base64 = await readFileAsBase64(card.file);
+          const marks = Number(card.meta.marks);
+          const result = await draftImageQuestion({
+            subject_id: subjectId,
+            question_type: card.meta.question_type as ManualQuestionPayload["question_type"],
+            marks: Number.isFinite(marks) && marks > 0 ? marks : 2,
+            module_id: card.meta.module_id || undefined,
+            image_base64: base64,
+            image_mime: card.file.type,
+          });
+          setCards((prev) =>
+            prev.map((c) =>
+              c.id === card.id
+                ? {
+                    ...c,
+                    status: "drafted",
+                    draftText: result.question_text,
+                    draftModelAnswer: result.model_answer ?? "",
+                    draftOptions: result.options,
+                    draftImagePath: result.image_path,
+                    meta: {
+                      ...c.meta,
+                      co_code: result.co_code ?? c.meta.co_code,
+                      btl_level:
+                        result.btl_level != null
+                          ? String(result.btl_level)
+                          : c.meta.btl_level,
+                      difficulty: result.difficulty ?? c.meta.difficulty,
+                    },
+                  }
+                : c
+            )
+          );
+        } catch (err) {
+          console.error("[qbank bulk draft]", card.file.name, err);
+          setCards((prev) =>
+            prev.map((c) =>
+              c.id === card.id
+                ? { ...c, status: "error", errorMsg: "Draft generation failed" }
+                : c
+            )
+          );
+        }
+      })
+    );
+  };
+
+  const handleAddAllToBank = async () => {
+    if (committableCards.length === 0) return;
+
+    // Snapshot committable ids before marking committing (state may update mid-loop).
+    const toCommit = committableCards;
+    setCards((prev) =>
+      prev.map((c) =>
+        toCommit.find((d) => d.id === c.id)
+          ? { ...c, status: "committing" }
+          : c
+      )
+    );
 
     let successCount = 0;
 
     await Promise.all(
-      idleCards.map(async (card) => {
+      toCommit.map(async (card) => {
         try {
-          const base64 = await readFileAsBase64(card.file);
           const marks = Number(card.meta.marks);
           const payload: ManualQuestionPayload = {
             subject_id: subjectId,
-            question_text: "",
+            question_text: card.draftText.trim(),
             question_type: card.meta.question_type as ManualQuestionPayload["question_type"],
             marks: Number.isFinite(marks) && marks > 0 ? marks : 2,
             co_code: card.meta.co_code || undefined,
             btl_level: card.meta.btl_level ? Number(card.meta.btl_level) : undefined,
             difficulty: (card.meta.difficulty || undefined) as ManualQuestionPayload["difficulty"],
             module_id: card.meta.module_id || undefined,
-            image_base64: base64,
-            image_mime: card.file.type,
+            model_answer: card.draftModelAnswer || undefined,
           };
+
+          if (card.draftImagePath) {
+            // Image already uploaded during draft — reuse path.
+            payload.image_path = card.draftImagePath;
+            payload.source = "ai_generated";
+            if (card.meta.question_type === "mcq" && card.draftOptions) {
+              payload.options = card.draftOptions;
+            }
+          } else {
+            // Faculty typed their own text — upload image at commit time.
+            const base64 = await readFileAsBase64(card.file);
+            payload.image_base64 = base64;
+            payload.image_mime = card.file.type;
+          }
+
           const q = await addManualQuestion(payload);
-          setCards((prev) => prev.map((c) => c.id === card.id ? { ...c, status: "done", result: q } : c));
+          setCards((prev) =>
+            prev.map((c) =>
+              c.id === card.id ? { ...c, status: "done", result: q } : c
+            )
+          );
           successCount++;
         } catch (err) {
-          console.error("[qbank bulk]", card.file.name, err);
-          setCards((prev) => prev.map((c) => c.id === card.id ? { ...c, status: "error", errorMsg: "Generation failed" } : c));
+          console.error("[qbank bulk commit]", card.file.name, err);
+          setCards((prev) =>
+            prev.map((c) =>
+              c.id === card.id
+                ? { ...c, status: "error", errorMsg: "Failed to add to bank" }
+                : c
+            )
+          );
         }
       })
     );
 
     if (successCount > 0) {
       onImported();
-      toast.success(`${successCount} question${successCount === 1 ? "" : "s"} added to bank`);
+      toast.success(
+        `${successCount} question${successCount === 1 ? "" : "s"} added to bank`
+      );
     }
   };
 
   const clearDone = () => {
     setCards((prev) => {
-      prev.filter((c) => c.status === "done").forEach((c) => URL.revokeObjectURL(c.previewUrl));
+      prev.filter((c) => c.status === "done").forEach((c) =>
+        URL.revokeObjectURL(c.previewUrl)
+      );
       return prev.filter((c) => c.status !== "done");
     });
   };
-
-  const doneCount = cards.filter((c) => c.status === "done").length;
 
   return (
     <div className="space-y-4">
@@ -569,13 +749,15 @@ function BulkImagesMode({
         <div className="flex items-center justify-between flex-wrap gap-2">
           <div>
             <p className="text-sm font-medium">Select images</p>
-            <p className="text-xs text-muted-foreground">JPEG, PNG, GIF, or WebP · max 5 MB each · up to {MAX_BULK_IMAGES} per batch</p>
+            <p className="text-xs text-muted-foreground">
+              JPEG, PNG, GIF, or WebP · max 5 MB each · up to {MAX_BULK_IMAGES} per batch
+            </p>
           </div>
           <Button
             variant="outline"
             size="sm"
             onClick={() => fileInputRef.current?.click()}
-            disabled={anyLoading || cards.length >= MAX_BULK_IMAGES}
+            disabled={anyBusy || cards.length >= MAX_BULK_IMAGES}
           >
             <ImageIcon className="size-4 mr-2" />
             {cards.length === 0 ? "Choose Images" : "Add More"}
@@ -608,6 +790,7 @@ function BulkImagesMode({
               courseOutcomes={courseOutcomes}
               onRemove={() => removeCard(card.id)}
               onMetaChange={(patch) => updateMeta(card.id, patch)}
+              onTextChange={(text) => updateDraftText(card.id, text)}
             />
           ))}
         </div>
@@ -616,18 +799,33 @@ function BulkImagesMode({
       {/* Actions */}
       {cards.length > 0 && (
         <div className="flex items-center gap-3 flex-wrap">
-          <Button
-            onClick={handleAddAll}
-            disabled={idleCards.length === 0 || anyLoading}
-          >
-            {anyLoading ? (
-              <Loader2 className="size-4 mr-2 animate-spin" />
-            ) : (
-              <PlusCircle className="size-4 mr-2" />
-            )}
-            Add All to Bank
-            {idleCards.length > 0 && ` (${idleCards.length})`}
-          </Button>
+          {draftableCards.length > 0 && (
+            <Button
+              variant="outline"
+              onClick={handleGenerateAllDrafts}
+              disabled={anyBusy}
+            >
+              {anyBusy ? (
+                <Loader2 className="size-4 mr-2 animate-spin" />
+              ) : (
+                <Sparkles className="size-4 mr-2" />
+              )}
+              Generate All Drafts ({draftableCards.length})
+            </Button>
+          )}
+          {committableCards.length > 0 && (
+            <Button
+              onClick={handleAddAllToBank}
+              disabled={anyBusy}
+            >
+              {anyBusy ? (
+                <Loader2 className="size-4 mr-2 animate-spin" />
+              ) : (
+                <PlusCircle className="size-4 mr-2" />
+              )}
+              Add All to Bank ({committableCards.length})
+            </Button>
+          )}
           {doneCount > 0 && (
             <Button variant="outline" size="sm" onClick={clearDone}>
               Clear Done ({doneCount})
@@ -645,17 +843,34 @@ function BulkCardRow({
   courseOutcomes,
   onRemove,
   onMetaChange,
+  onTextChange,
 }: {
   card: BulkCard;
   modules: ModuleRef[];
   courseOutcomes: CourseOutcomeRef[];
   onRemove: () => void;
   onMetaChange: (patch: Partial<BulkCardMeta>) => void;
+  onTextChange: (text: string) => void;
 }) {
-  const isEditable = card.status === "idle";
+  const canRemove =
+    card.status !== "generating" &&
+    card.status !== "committing" &&
+    card.status !== "done";
+  // Type and marks are frozen once a draft exists (question was generated for those settings).
+  const canEditType = card.status === "idle";
+  // Text and tag fields remain editable through the drafted state.
+  const canEditContent =
+    card.status === "idle" || card.status === "drafted";
 
   return (
-    <Card className={cn("p-3 space-y-3", card.status === "done" && "border-emerald-500/30", card.status === "error" && "border-rose-500/30")}>
+    <Card
+      className={cn(
+        "p-3 space-y-3",
+        card.status === "done" && "border-emerald-500/30",
+        card.status === "error" && "border-rose-500/30",
+        card.status === "drafted" && "border-primary/30"
+      )}
+    >
       <div className="flex gap-3">
         {/* Thumbnail */}
         <div className="shrink-0">
@@ -670,7 +885,7 @@ function BulkCardRow({
         <div className="flex-1 min-w-0 space-y-2">
           <div className="flex items-start justify-between gap-2">
             <p className="text-xs text-muted-foreground truncate">{card.file.name}</p>
-            {(card.status === "idle" || card.status === "error") && (
+            {canRemove && (
               <button
                 type="button"
                 onClick={onRemove}
@@ -686,11 +901,13 @@ function BulkCardRow({
               <Select
                 value={card.meta.question_type}
                 onValueChange={(v) => onMetaChange({ question_type: v })}
-                disabled={!isEditable}
+                disabled={!canEditType}
               >
                 <SelectTrigger className="h-7 text-xs"><SelectValue /></SelectTrigger>
                 <SelectContent>
-                  {QUESTION_TYPES.map((t) => <SelectItem key={t} value={t}>{TYPE_LABELS[t]}</SelectItem>)}
+                  {QUESTION_TYPES.map((t) => (
+                    <SelectItem key={t} value={t}>{TYPE_LABELS[t]}</SelectItem>
+                  ))}
                 </SelectContent>
               </Select>
             </FormField>
@@ -701,7 +918,7 @@ function BulkCardRow({
                 value={card.meta.marks}
                 onChange={(e) => onMetaChange({ marks: e.target.value })}
                 className="h-7 text-xs"
-                disabled={!isEditable}
+                disabled={!canEditType}
               />
             </FormField>
 
@@ -709,12 +926,14 @@ function BulkCardRow({
               <Select
                 value={card.meta.co_code || "none"}
                 onValueChange={(v) => onMetaChange({ co_code: v === "none" ? "" : v })}
-                disabled={!isEditable}
+                disabled={!canEditContent}
               >
                 <SelectTrigger className="h-7 text-xs"><SelectValue placeholder="—" /></SelectTrigger>
                 <SelectContent>
                   <SelectItem value="none">—</SelectItem>
-                  {courseOutcomes.map((c) => <SelectItem key={c.co_code} value={c.co_code}>{formatCo(c.co_code)}</SelectItem>)}
+                  {courseOutcomes.map((c) => (
+                    <SelectItem key={c.co_code} value={c.co_code}>{formatCo(c.co_code)}</SelectItem>
+                  ))}
                 </SelectContent>
               </Select>
             </FormField>
@@ -723,12 +942,14 @@ function BulkCardRow({
               <Select
                 value={card.meta.btl_level || "none"}
                 onValueChange={(v) => onMetaChange({ btl_level: v === "none" ? "" : v })}
-                disabled={!isEditable}
+                disabled={!canEditContent}
               >
                 <SelectTrigger className="h-7 text-xs"><SelectValue placeholder="—" /></SelectTrigger>
                 <SelectContent>
                   <SelectItem value="none">—</SelectItem>
-                  {[1, 2, 3, 4, 5, 6].map((n) => <SelectItem key={n} value={String(n)}>BTL {n}</SelectItem>)}
+                  {[1, 2, 3, 4, 5, 6].map((n) => (
+                    <SelectItem key={n} value={String(n)}>BTL {n}</SelectItem>
+                  ))}
                 </SelectContent>
               </Select>
             </FormField>
@@ -737,12 +958,14 @@ function BulkCardRow({
               <Select
                 value={card.meta.difficulty || "none"}
                 onValueChange={(v) => onMetaChange({ difficulty: v === "none" ? "" : v })}
-                disabled={!isEditable}
+                disabled={!canEditContent}
               >
                 <SelectTrigger className="h-7 text-xs"><SelectValue placeholder="—" /></SelectTrigger>
                 <SelectContent>
                   <SelectItem value="none">—</SelectItem>
-                  {["easy", "medium", "hard"].map((d) => <SelectItem key={d} value={d}>{d}</SelectItem>)}
+                  {["easy", "medium", "hard"].map((d) => (
+                    <SelectItem key={d} value={d}>{d}</SelectItem>
+                  ))}
                 </SelectContent>
               </Select>
             </FormField>
@@ -752,12 +975,14 @@ function BulkCardRow({
                 <Select
                   value={card.meta.module_id || "none"}
                   onValueChange={(v) => onMetaChange({ module_id: v === "none" ? "" : v })}
-                  disabled={!isEditable}
+                  disabled={!canEditContent}
                 >
                   <SelectTrigger className="h-7 text-xs"><SelectValue placeholder="—" /></SelectTrigger>
                   <SelectContent>
                     <SelectItem value="none">—</SelectItem>
-                    {modules.map((m) => <SelectItem key={m.id} value={m.id}>M{m.module_number} — {m.name}</SelectItem>)}
+                    {modules.map((m) => (
+                      <SelectItem key={m.id} value={m.id}>M{m.module_number} — {m.name}</SelectItem>
+                    ))}
                   </SelectContent>
                 </Select>
               </FormField>
@@ -766,11 +991,42 @@ function BulkCardRow({
         </div>
       </div>
 
+      {/* Per-card question textarea */}
+      {(canEditContent || card.status === "committing") && (
+        <div className="space-y-1">
+          <span className="text-[10px] text-muted-foreground">Question text</span>
+          <Textarea
+            value={card.draftText}
+            onChange={(e) => onTextChange(e.target.value)}
+            rows={3}
+            className="text-xs"
+            placeholder={
+              card.status === "idle"
+                ? "Leave blank to generate from AI, or type your own question here"
+                : ""
+            }
+            disabled={!canEditContent}
+          />
+        </div>
+      )}
+
       {/* Status row */}
-      {card.status === "loading" && (
+      {card.status === "generating" && (
         <div className="flex items-center gap-2 text-xs text-muted-foreground pt-1 border-t border-border/30">
           <Loader2 className="size-3.5 animate-spin" />
-          Generating question from image…
+          Generating draft from image…
+        </div>
+      )}
+      {card.status === "drafted" && (
+        <div className="flex items-center gap-1.5 text-xs text-primary/70 pt-1 border-t border-border/30">
+          <Sparkles className="size-3 shrink-0" />
+          Draft ready — edit text or tags, then hit &quot;Add All to Bank&quot;
+        </div>
+      )}
+      {card.status === "committing" && (
+        <div className="flex items-center gap-2 text-xs text-muted-foreground pt-1 border-t border-border/30">
+          <Loader2 className="size-3.5 animate-spin" />
+          Adding to bank…
         </div>
       )}
       {card.status === "done" && card.result && (
@@ -779,22 +1035,15 @@ function BulkCardRow({
             <CheckCircle2 className="size-3.5" />
             Added to bank
           </div>
-          <p className="text-xs text-foreground leading-relaxed">{card.result.question_text}</p>
-          {card.result.options && card.result.options.length > 0 && (
-            <div className="space-y-0.5">
-              {card.result.options.map((opt) => (
-                <p key={opt.label} className={cn("text-xs pl-2", opt.is_correct ? "text-emerald-400 font-medium" : "text-muted-foreground")}>
-                  {opt.label}. {opt.text}
-                </p>
-              ))}
-            </div>
-          )}
+          <p className="text-xs text-foreground leading-relaxed">
+            {card.result.question_text}
+          </p>
         </div>
       )}
       {card.status === "error" && (
         <div className="flex items-center gap-2 text-xs text-rose-400 pt-1 border-t border-border/30">
           <FileWarning className="size-3.5 shrink-0" />
-          {card.errorMsg ?? "Failed to generate — remove and try again"}
+          {card.errorMsg ?? "Failed — remove and try again"}
         </div>
       )}
     </Card>

@@ -16,6 +16,39 @@ import type {
   QuestionType,
 } from "@/lib/qbank/types";
 
+// ─── Draft image types ────────────────────────────────────────────────────────
+
+export interface DraftImagePayload {
+  subject_id: string;
+  question_type: QuestionType;
+  marks: number;
+  module_id?: string;
+  image_base64: string;
+  image_mime: string;
+}
+
+export interface DraftImageResponse {
+  image_path: string;
+  question_text: string;
+  options: MCQOption[] | null;
+  model_answer: string | null;
+  co_code: string | null;
+  btl_level: number | null;
+  difficulty: Difficulty | null;
+}
+
+export async function draftImageQuestion(
+  payload: DraftImagePayload
+): Promise<DraftImageResponse> {
+  const res = await fetch("/api/qbank/draft-image", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) throw new Error(await res.text());
+  return (await res.json()) as DraftImageResponse;
+}
+
 // ─── Label maps ─────────────────────────────────────────────────────────────
 
 export const TYPE_LABELS: Record<QuestionType, string> = {
@@ -242,12 +275,17 @@ export interface ManualQuestionPayload {
   question_text: string;
   question_type: QuestionType;
   marks: number;
+  model_answer?: string;
   options?: MCQOption[];
   module_id?: string;
   co_code?: string;
   btl_level?: number;
   difficulty?: Difficulty;
-  /** Base64-encoded image data (no data: prefix). */
+  /** Source to record in faculty_question_bank; defaults to "faculty_imported". */
+  source?: "ai_generated" | "faculty_imported";
+  /** Pre-uploaded image storage path (from draft-image) — skips re-upload. */
+  image_path?: string;
+  /** Base64-encoded image data (no data: prefix) — used when image_path is absent. */
   image_base64?: string;
   /** MIME type of the image, e.g. "image/jpeg". */
   image_mime?: string;

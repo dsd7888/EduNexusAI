@@ -340,6 +340,31 @@ export class PDFBuilder {
     this.y += 8;
   }
 
+  /**
+   * Embed and draw an image at the current cursor position with exact dimensions.
+   * Mirrors qpaper/builder.ts's format-detection (png vs jpg). Advances cursor
+   * by the image height afterward, matching how text() advances after each line.
+   */
+  async image(
+    bytes: Uint8Array,
+    mimeType: string,
+    dims: { width: number; height: number }
+  ): Promise<void> {
+    const { width, height } = dims;
+    this.checkNewPage(height + 4);
+    const img =
+      mimeType === "image/png" || mimeType === "png"
+        ? await this.doc.embedPng(bytes)
+        : await this.doc.embedJpg(bytes);
+    this.currentPage.drawImage(img, {
+      x: MARGIN,
+      y: this.py(this.y) - height,
+      width,
+      height,
+    });
+    this.y += height + 4;
+  }
+
   async addImage(pngBytes: Uint8Array, caption?: string): Promise<void> {
     const img = await this.doc.embedPng(pngBytes);
     const { width, height } = img.scale(1);
