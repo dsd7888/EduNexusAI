@@ -176,6 +176,8 @@ export interface SubQuestion {
   from_bank?: boolean;
   bank_id?: string;
   model_answer?: string | null;
+  image_path?: string | null;
+  image_url?: string | null;
   validation?: TagValidation;
 }
 
@@ -190,6 +192,8 @@ export interface QuestionPart {
   from_bank?: boolean;
   bank_id?: string;
   model_answer?: string | null;
+  image_path?: string | null;
+  image_url?: string | null;
   validation?: TagValidation;
 }
 
@@ -248,6 +252,8 @@ export interface PoolItem {
   co?: string | null;
   btl?: number | null;
   po?: string | null;
+  image_path?: string | null;
+  image_url?: string | null;
 }
 
 export interface TemplateQuestionPayload {

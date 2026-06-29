@@ -396,6 +396,8 @@ function bankToPoolItem(
     btl: b.btl_level,
     po: bankPo(b),
     model_answer: b.model_answer,
+    image_path: b.image_path ?? null,
+    image_url: b.image_url ?? null,
   };
   if (isPoolItemMcqLike(itemType)) {
     item.options =
@@ -420,6 +422,8 @@ function bankToSubQuestion(b: BankQuestion, idx: number): SubQuestion {
     from_bank: true,
     bank_id: b.id,
     model_answer: b.model_answer,
+    image_path: b.image_path ?? null,
+    image_url: b.image_url ?? null,
   };
 }
 
@@ -439,6 +443,8 @@ function bankToPart(
     from_bank: true,
     bank_id: b.id,
     model_answer: b.model_answer,
+    image_path: b.image_path ?? null,
+    image_url: b.image_url ?? null,
   };
 }
 

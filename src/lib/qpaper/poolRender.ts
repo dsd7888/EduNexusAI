@@ -22,6 +22,8 @@ export function poolItemToSubQuestion(item: PoolItem, idx: number): SubQuestion 
     btl: item.btl,
     po: item.po,
     model_answer: item.model_answer,
+    image_path: item.image_path ?? null,
+    image_url: item.image_url ?? null,
   };
 }
 
@@ -38,6 +40,8 @@ export function poolItemToPart(
     btl: item.btl,
     po: item.po,
     model_answer: item.model_answer,
+    image_path: item.image_path ?? null,
+    image_url: item.image_url ?? null,
   };
 }
 

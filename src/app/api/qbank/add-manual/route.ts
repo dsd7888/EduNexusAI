@@ -6,7 +6,8 @@ import {
   resolveImageExt,
 } from "@/lib/qbank/image-storage";
 import { routeAI } from "@/lib/ai/router";
-import type { MCQOption } from "@/lib/qbank/types";
+import { tagQuestions } from "@/lib/qbank/tagger";
+import type { MCQOption, QuestionType } from "@/lib/qbank/types";
 import type { NextRequest } from "next/server";
 
 const VALID_TYPES = new Set([
@@ -361,6 +362,58 @@ export async function POST(request: NextRequest) {
     }
 
     // ── Normal faculty-authored path ─────────────────────────────────────────
+    // When faculty omits CO or BTL, infer them via AI (same path as CSV import).
+    let finalCoCode = coCode;
+    let finalBtlLevel = btlLevel;
+    let finalDifficultyManual = difficulty;
+    const needsTagging = !coCode || btlLevel == null;
+
+    if (needsTagging) {
+      const [subjectRes, moduleRows, coRows] = await Promise.all([
+        adminClient.from("subjects").select("name").eq("id", subjectId).single(),
+        adminClient
+          .from("modules")
+          .select("id, name, description")
+          .eq("subject_id", subjectId)
+          .order("module_number"),
+        adminClient
+          .from("course_outcomes")
+          .select("co_code, description")
+          .eq("subject_id", subjectId),
+      ]);
+
+      if (!subjectRes.error && subjectRes.data) {
+        const modules = (moduleRows.data ?? []) as {
+          id: string;
+          name: string;
+          description: string | null;
+        }[];
+        const tagged = await tagQuestions(
+          [{ question_text: questionText, question_type: questionType as QuestionType, marks }],
+          {
+            subject_name: (subjectRes.data as { name: string }).name,
+            modules: modules.map((m) => ({
+              id: m.id,
+              name: m.name,
+              description: m.description ?? "",
+            })),
+            course_outcomes: (coRows.data ?? []) as {
+              co_code: string;
+              description: string;
+            }[],
+          }
+        );
+        if (tagged.length > 0) {
+          finalCoCode = coCode ?? tagged[0].inferred_co_code;
+          finalBtlLevel = btlLevel ?? tagged[0].inferred_btl_level;
+          finalDifficultyManual =
+            difficulty ?? tagged[0].inferred_difficulty ?? null;
+        }
+      }
+    }
+
+    const isVerified = Boolean(coCode) && btlLevel != null;
+
     const { data: inserted, error: insertError } = await adminClient
       .from("faculty_question_bank")
       .insert({
@@ -371,11 +424,11 @@ export async function POST(request: NextRequest) {
         question_type: questionType,
         marks,
         options: options ?? null,
-        co_code: coCode,
-        btl_level: btlLevel,
-        difficulty,
+        co_code: finalCoCode,
+        btl_level: finalBtlLevel,
+        difficulty: finalDifficultyManual,
         source: "faculty_imported",
-        is_verified: true,
+        is_verified: isVerified,
         image_path: imagePath,
         usage_count: 0,
         po_codes: [],

@@ -1,5 +1,6 @@
 import { PDFDocument, rgb, StandardFonts } from "pdf-lib";
-import type { PDFFont, PDFPage } from "pdf-lib";
+import type { PDFFont, PDFImage, PDFPage } from "pdf-lib";
+import { imageDisplaySize, type PaperImageMap } from "./qpaperImages";
 import { BLOOMS_LEGEND } from "./templates";
 import type { PoolItem } from "./templates";
 import { isPoolItemMcqLike } from "./templates";
@@ -29,6 +30,10 @@ export interface SubQuestion {
   bank_id?: string;
   /** Model answer (bank-sourced or faculty-edited); shown in answer-key exports. */
   model_answer?: string | null;
+  /** Storage path of an attached image (bank-sourced); used by PDF/Word export. */
+  image_path?: string | null;
+  /** Signed URL for the attached image; minted server-side for the web preview. */
+  image_url?: string | null;
   /** CO/BTL tag-validation verdict; present only on a genuine mismatch. */
   validation?: TagValidation;
 }
@@ -47,6 +52,10 @@ export interface QuestionPart {
   bank_id?: string;
   /** Model answer (bank-sourced or faculty-edited); shown in answer-key exports. */
   model_answer?: string | null;
+  /** Storage path of an attached image (bank-sourced); used by PDF/Word export. */
+  image_path?: string | null;
+  /** Signed URL for the attached image; minted server-side for the web preview. */
+  image_url?: string | null;
   /** CO/BTL tag-validation verdict; present only on a genuine mismatch. */
   validation?: TagValidation;
 }
@@ -207,6 +216,13 @@ function wrapWords(
   return lines;
 }
 
+/** A question image already embedded into the document, with its natural size. */
+interface EmbeddedPdfImage {
+  img: PDFImage;
+  width: number;
+  height: number;
+}
+
 interface Ctx {
   doc: PDFDocument;
   page: PDFPage;
@@ -217,6 +233,8 @@ interface Ctx {
     bold: PDFFont;
     italic: PDFFont;
   };
+  /** Question images embedded up-front, keyed by storage path (may be empty). */
+  images: Map<string, EmbeddedPdfImage>;
 }
 
 /**
@@ -638,12 +656,41 @@ function drawQuestionText(
   return { startY };
 }
 
+/**
+ * Draw a question's attached image (bank-sourced) below its text, scaled by the
+ * shared sizing rule so it matches the Word export. Page-breaks before drawing
+ * when it would overflow — the same overflow strategy ensureSpace uses
+ * everywhere else. No-op when the unit has no image or it wasn't embeddable.
+ */
+function drawUnitImage(
+  ctx: Ctx,
+  unit: { image_path?: string | null },
+  indentX: number
+): Ctx {
+  const path = unit.image_path;
+  if (!path) return ctx;
+  const entry = ctx.images.get(path);
+  if (!entry) return ctx;
+  const { width, height } = imageDisplaySize(entry.width, entry.height);
+  ctx.y -= 4;
+  ctx = ensureSpace(ctx, height + 6);
+  ctx.page.drawImage(entry.img, {
+    x: indentX,
+    y: ctx.y - height,
+    width,
+    height,
+  });
+  ctx.y -= height + 6;
+  return ctx;
+}
+
 /** One MCQ / true-false sub-row (label + text + CO/BTL/PO + optional options). */
 function drawTaggedSubRow(ctx: Ctx, sub: SubQuestion, hasCoPo: boolean): Ctx {
   ctx = ensureSpace(ctx, LINE_H * 4);
   const subText = sanitize(`${sub.label} ${sub.question}`);
   const r = drawQuestionText(ctx, subText, MARGIN_LEFT + 16, 10);
   drawRightCols(ctx, r.startY, null, sub.co, sub.btl, sub.po, hasCoPo);
+  ctx = drawUnitImage(ctx, sub, MARGIN_LEFT + 16);
 
   if (sub.options) {
     const opts = sub.options;
@@ -690,6 +737,7 @@ function drawTaggedOptionRow(
   });
   const r = drawQuestionText(ctx, part.question, MARGIN_LEFT + 50, 10);
   drawRightCols(ctx, r.startY, null, part.co, part.btl, part.po, hasCoPo);
+  ctx = drawUnitImage(ctx, part, MARGIN_LEFT + 50);
   ctx.y -= 4;
   return ctx;
 }
@@ -762,6 +810,7 @@ function drawSinglePart(
 
   const r = drawQuestionText(ctx, part.question, MARGIN_LEFT + 50, 10);
   drawRightCols(ctx, r.startY, part.marks, part.co, part.btl, part.po, hasCoPo);
+  ctx = drawUnitImage(ctx, part, MARGIN_LEFT + 50);
   ctx.y -= 4;
   return ctx;
 }
@@ -1041,13 +1090,38 @@ function drawFooter(ctx: Ctx, paper: AssembledPaper) {
 
 // ── Main entrypoint ────────────────────────────────────────────────────────
 
+export interface PdfBuildOptions {
+  /** Decoded question images keyed by storage path (from loadPaperImages). */
+  images?: PaperImageMap;
+}
+
 export async function generatePPSUPaperPDF(
-  paper: AssembledPaper
+  paper: AssembledPaper,
+  options: PdfBuildOptions = {}
 ): Promise<Buffer> {
   const doc = await PDFDocument.create();
   const regular = await doc.embedFont(StandardFonts.TimesRoman);
   const bold = await doc.embedFont(StandardFonts.TimesRomanBold);
   const italic = await doc.embedFont(StandardFonts.TimesRomanItalic);
+
+  // Embed every decoded image once up-front so the synchronous draw helpers can
+  // look them up by path (pdf-lib's embed calls are async; drawing isn't).
+  const images = new Map<string, EmbeddedPdfImage>();
+  for (const [path, asset] of options.images ?? []) {
+    try {
+      const img =
+        asset.format === "png"
+          ? await doc.embedPng(asset.bytes)
+          : await doc.embedJpg(asset.bytes);
+      images.set(path, { img, width: asset.width, height: asset.height });
+    } catch (err) {
+      console.warn(
+        `[qpaper/builder] could not embed image ${path}: ${
+          err instanceof Error ? err.message : "unknown"
+        }`
+      );
+    }
+  }
 
   const ctx: Ctx = {
     doc,
@@ -1055,6 +1129,7 @@ export async function generatePPSUPaperPDF(
     y: PAGE_HEIGHT - MARGIN_TOP,
     pageNo: 1,
     fonts: { regular, bold, italic },
+    images,
   };
 
   drawHeader(ctx, paper);

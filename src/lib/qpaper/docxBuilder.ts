@@ -19,6 +19,7 @@ import {
   Document,
   Footer,
   Header,
+  ImageRun,
   LevelFormat,
   Packer,
   PageNumber,
@@ -46,6 +47,11 @@ import {
   poolItemToSubQuestion,
   poolMarksPerItem,
 } from "./poolRender";
+import {
+  imageDisplaySize,
+  PT_TO_PX,
+  type PaperImageMap,
+} from "./qpaperImages";
 
 /** Block-level docx node: a paragraph or a table. */
 type Block = Paragraph | Table;
@@ -53,6 +59,10 @@ type Block = Paragraph | Table;
 const ORDERED_LIST_REF = "rich-ordered";
 // Each ordered list needs its own numbering instance so it restarts at 1.
 let orderedInstanceSeq = 0;
+// Decoded question images for the current document, keyed by storage path. Set
+// per call in generateQpaperDocx (mirrors the orderedInstanceSeq pattern) so the
+// per-unit renderers can reach it without threading it through every signature.
+let imageMap: PaperImageMap | null = null;
 
 const GREEN = "1B7F3A";
 const RED = "B00020";
@@ -63,6 +73,8 @@ const RULE = {
 export interface DocxOptions {
   answerKey?: boolean;
   department?: string;
+  /** Decoded question images keyed by storage path (from loadPaperImages). */
+  images?: PaperImageMap;
 }
 
 // ─── small helpers ──────────────────────────────────────────────────────────
@@ -106,6 +118,36 @@ function answerPara(text: string, indent = 360): Paragraph {
 
 function blank(): Paragraph {
   return new Paragraph({ children: [new TextRun({ text: "", size: 12 })] });
+}
+
+/**
+ * A question's attached image (bank-sourced) as its own paragraph, sized by the
+ * shared rule so it matches the PDF export. Returns null when the unit has no
+ * embeddable image. `indent` aligns the image under the question text.
+ */
+function imageBlock(
+  unit: { image_path?: string | null },
+  indent = 360
+): Paragraph | null {
+  const path = unit.image_path;
+  if (!path || !imageMap) return null;
+  const asset = imageMap.get(path);
+  if (!asset) return null;
+  const { width, height } = imageDisplaySize(asset.width, asset.height);
+  return new Paragraph({
+    indent: { left: indent },
+    spacing: { before: 60, after: 60 },
+    children: [
+      new ImageRun({
+        type: asset.format,
+        data: asset.bytes,
+        transformation: {
+          width: Math.round(width * PT_TO_PX),
+          height: Math.round(height * PT_TO_PX),
+        },
+      }),
+    ],
+  });
 }
 
 /** Italic question-level instruction line (e.g. "Answer any two parts"). */
@@ -289,6 +331,8 @@ function renderSubPart(
     ...segs.slice(1),
   ];
   out.push(...blocksFromSegments(tail, { size: 22 }, 360));
+  const subImage = imageBlock(sub, 720);
+  if (subImage) out.push(subImage);
   if (sub.options) {
     for (const k of ["a", "b", "c", "d"] as const) {
       const v = sub.options[k];
@@ -322,6 +366,8 @@ function renderPart(
   const out: Block[] = [];
   out.push(questionLine(label, tag({ marks: part.marks, co: part.co, btl: part.btl, po: part.po })));
   out.push(...richBody(part.question, { size: 22 }, 360));
+  const partImage = imageBlock(part, 360);
+  if (partImage) out.push(partImage);
   if (answerKey && part.model_answer) out.push(...richAnswer(part.model_answer));
   return out;
 }
@@ -357,6 +403,8 @@ function renderTaggedOption(
     ...segs.slice(1),
   ];
   out.push(...blocksFromSegments(tail, { size: 22 }, 360));
+  const optImage = imageBlock(part, 720);
+  if (optImage) out.push(optImage);
   if (answerKey && part.model_answer) out.push(...richAnswer(part.model_answer, 720));
   return out;
 }
@@ -488,6 +536,7 @@ export async function generateQpaperDocx(
   const examType = paper.examTitle ?? "Examination";
   const dateStr = paper.date ?? "____________";
   orderedInstanceSeq = 0; // restart ordered-list numbering per document
+  imageMap = options.images ?? null; // question images for this document
 
   // ── per-page header: Subject | Exam | Date ────────────────────────────
   const headerChildren: Paragraph[] = [];

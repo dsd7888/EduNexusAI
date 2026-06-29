@@ -40,6 +40,10 @@ export interface PoolItem {
   co?: string | null;
   btl?: number | null;
   po?: string | null;
+  /** Storage path of an attached image (bank-sourced); used by PDF/Word export. */
+  image_path?: string | null;
+  /** Signed URL for the attached image; minted server-side for the web preview. */
+  image_url?: string | null;
 }
 
 export type PresetKey = "PPSU_ESE" | "CE_QUIZ" | "CUSTOM";

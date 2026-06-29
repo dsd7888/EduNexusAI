@@ -78,17 +78,24 @@ export default function QBankPage() {
   useEffect(() => {
     if (!activeSubjectId) return;
     const supabase = createBrowserClient();
+    console.log("[qbank] fetching for", activeSubjectId);
     supabase
       .from("modules")
       .select("id, name, module_number")
       .eq("subject_id", activeSubjectId)
       .order("module_number")
-      .then(({ data }) => setModules((data ?? []) as ModuleRef[]));
+      .then(({ data, error }) => {
+        if (error) console.error("[qbank modules]", error);
+        setModules((data ?? []) as ModuleRef[]);
+      });
     supabase
       .from("course_outcomes")
       .select("co_code, description")
       .eq("subject_id", activeSubjectId)
-      .then(({ data }) => setCourseOutcomes((data ?? []) as CourseOutcomeRef[]));
+      .then(({ data, error }) => {
+        console.log("[qbank co] data:", data, "error:", error);
+        setCourseOutcomes((data ?? []) as CourseOutcomeRef[]);
+      });
   }, [activeSubjectId]);
 
   // Bank stats — read directly via the RLS-scoped browser client. setState
@@ -236,7 +243,7 @@ export default function QBankPage() {
               )}
             </TabsTrigger>
             <TabsTrigger value="generate">Generate Questions</TabsTrigger>
-            <TabsTrigger value="import">Import Questions</TabsTrigger>
+            <TabsTrigger value="import">Add Questions</TabsTrigger>
           </TabsList>
 
           <TabsContent value="bank" className="mt-4">
@@ -267,7 +274,12 @@ export default function QBankPage() {
           </TabsContent>
 
           <TabsContent value="import" className="mt-4">
-            <ImportTab subjectId={activeSubjectId} onImported={refreshStats} />
+            <ImportTab
+              subjectId={activeSubjectId}
+              modules={modules}
+              courseOutcomes={courseOutcomes}
+              onImported={refreshStats}
+            />
           </TabsContent>
         </Tabs>
       ) : (

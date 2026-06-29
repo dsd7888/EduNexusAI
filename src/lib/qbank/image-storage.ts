@@ -74,3 +74,25 @@ export async function createQuestionImageSignedUrl(
   }
   return data.signedUrl;
 }
+
+/**
+ * Download a stored question image as raw bytes (for server-side embedding into
+ * exported PDF/Word papers). Returns null and logs a warning on failure so the
+ * export can proceed without the image rather than aborting.
+ */
+export async function downloadQuestionImage(
+  admin: AdminClient,
+  storagePath: string
+): Promise<Uint8Array | null> {
+  const { data, error } = await admin.storage
+    .from(QUESTION_IMAGES_BUCKET)
+    .download(storagePath);
+
+  if (error || !data) {
+    console.warn(
+      `[qbank/image-storage] download failed for ${storagePath}: ${error?.message ?? "missing"}`
+    );
+    return null;
+  }
+  return new Uint8Array(await data.arrayBuffer());
+}

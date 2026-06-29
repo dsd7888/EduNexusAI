@@ -170,6 +170,18 @@ function ValidationFlag({
   );
 }
 
+/** Attached question image (bank-sourced); mirrors the PDF/Word export surfaces. */
+function QuestionImage({ url }: { url?: string | null }) {
+  if (!url) return null;
+  return (
+    <img
+      src={url}
+      alt="Question illustration"
+      className="mt-1 ml-3 rounded-md max-h-48 w-auto object-contain border border-border/40"
+    />
+  );
+}
+
 /** Read-only MCQ / true-false sub-part row (shared by MCQ blocks and pool items). */
 function SubPartDisplay({ sub }: { sub: SubQuestion }) {
   return (
@@ -218,6 +230,7 @@ function SubPartDisplay({ sub }: { sub: SubQuestion }) {
           )}
         </div>
       )}
+      <QuestionImage url={sub.image_url} />
     </div>
   );
 }
@@ -228,40 +241,43 @@ function PartDisplay({ part }: { part: QuestionPart }) {
     ? String(part.label).replace(/^\(/, "").replace(/\)$/, "")
     : null;
   return (
-    <div className="ml-3 flex items-start justify-between gap-3">
-      <div className="flex-1">
-        {labelClean && (
-          <span className="font-semibold mr-1">({labelClean})</span>
+    <div>
+      <div className="ml-3 flex items-start justify-between gap-3">
+        <div className="flex-1">
+          {labelClean && (
+            <span className="font-semibold mr-1">({labelClean})</span>
+          )}
+          <RichQuestionText text={part.question} />
+        </div>
+        <Badge variant="outline" className="text-[10px] shrink-0">
+          [{String(part.marks).padStart(2, "0")}]
+        </Badge>
+        {part.co && (
+          <Badge
+            variant="outline"
+            className="text-[10px] shrink-0 border-blue-300 bg-blue-50 text-blue-700"
+          >
+            {part.co}
+          </Badge>
         )}
-        <RichQuestionText text={part.question} />
+        {part.btl != null && (
+          <Badge
+            variant="outline"
+            className="text-[10px] shrink-0 border-violet-300 bg-violet-50 text-violet-700"
+          >
+            BTL-{part.btl}
+          </Badge>
+        )}
+        {part.po && (
+          <Badge
+            variant="outline"
+            className="text-[10px] shrink-0 border-amber-300 bg-amber-50 text-amber-700"
+          >
+            {part.po}
+          </Badge>
+        )}
       </div>
-      <Badge variant="outline" className="text-[10px] shrink-0">
-        [{String(part.marks).padStart(2, "0")}]
-      </Badge>
-      {part.co && (
-        <Badge
-          variant="outline"
-          className="text-[10px] shrink-0 border-blue-300 bg-blue-50 text-blue-700"
-        >
-          {part.co}
-        </Badge>
-      )}
-      {part.btl != null && (
-        <Badge
-          variant="outline"
-          className="text-[10px] shrink-0 border-violet-300 bg-violet-50 text-violet-700"
-        >
-          BTL-{part.btl}
-        </Badge>
-      )}
-      {part.po && (
-        <Badge
-          variant="outline"
-          className="text-[10px] shrink-0 border-amber-300 bg-amber-50 text-amber-700"
-        >
-          {part.po}
-        </Badge>
-      )}
+      <QuestionImage url={part.image_url} />
     </div>
   );
 }
@@ -797,6 +813,7 @@ export function ReviewAndValidateStage({
                             )}
                           </div>
                         )}
+                        <QuestionImage url={sub.image_url} />
                       </>
                     )}
                   </div>
@@ -958,6 +975,7 @@ export function ReviewAndValidateStage({
                         </div>
                       </div>
                     )}
+                    {!isEditing && <QuestionImage url={part.image_url} />}
                   </div>
                 );
               })}

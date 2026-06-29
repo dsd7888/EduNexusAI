@@ -37,6 +37,10 @@ import {
   type SourceCategory,
 } from "@/lib/qpaper/sourcing";
 import { attachTagValidations } from "@/lib/qpaper/validateTags";
+import {
+  attachQuestionImageUrls,
+  loadPaperImages,
+} from "@/lib/qpaper/qpaperImages";
 import { rowToBankQuestion, type FqbRow } from "@/lib/qbank/row";
 import type { BankQuestion } from "@/lib/qbank/types";
 import type { NextRequest } from "next/server";
@@ -647,7 +651,12 @@ export async function POST(request: NextRequest) {
     };
 
     // ── Step 4: render PDF + upload ──────────────────────────────────────
-    const pdfBuffer = await generatePPSUPaperPDF(paper);
+    // Bank-sourced questions may carry an attached image: download the bytes
+    // once for the PDF, and mint signed URLs on the returned paper so the web
+    // preview shows the same images. Both are best-effort (never block export).
+    const paperImages = await loadPaperImages(adminClient, paper);
+    await attachQuestionImageUrls(adminClient, paper);
+    const pdfBuffer = await generatePPSUPaperPDF(paper, { images: paperImages });
     const fileName = `qpaper_${Date.now()}_${user.id.slice(0, 8)}.pdf`;
     const filePath = `qpapers/${fileName}`;
 

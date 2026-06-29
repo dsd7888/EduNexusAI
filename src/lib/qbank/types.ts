@@ -47,6 +47,8 @@ export interface BankQuestion {
   last_used_at: string | null;
   created_at: string;
   updated_at: string;
+  /** Storage path of an optional attached image (`question-images` bucket). */
+  image_path?: string | null;
   /** Signed URL minted server-side per request; never stored in DB. */
   image_url?: string | null;
 }

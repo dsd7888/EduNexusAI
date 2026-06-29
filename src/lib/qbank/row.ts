@@ -56,6 +56,7 @@ export function rowToBankQuestion(row: FqbRow): BankQuestion {
     last_used_at: row.last_used_at,
     created_at: row.created_at,
     updated_at: row.updated_at,
+    image_path: row.image_path,
     // image_url is minted server-side per request and attached by the caller
   };
 }
