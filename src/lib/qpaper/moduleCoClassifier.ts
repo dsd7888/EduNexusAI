@@ -30,6 +30,7 @@ interface CourseOutcomeRow {
 
 interface ClassifiedModule {
   module_number?: number;
+  reasoning?: string;
   co_codes?: string[];
   confidence?: string;
 }
@@ -46,7 +47,14 @@ const SYSTEM_PROMPT =
   "confidence ONLY when the connection is unambiguous from the description text " +
   "alone. A module may legitimately map to more than one CO. When forced to pick " +
   "despite a weak match, mark that assignment confidence: 'low' rather than " +
-  "declining to assign at all.";
+  "declining to assign at all. " +
+  "The 'always assign at least one CO' rule is a FLOOR, not license to relax " +
+  "conservatism elsewhere — every CO beyond the required minimum of one must " +
+  "independently meet the same high bar. Confidence rubric: 'high' = the module's " +
+  "content is essentially a restatement of what the CO describes; 'medium' = the " +
+  "module clearly contributes to building that CO's ability but isn't its primary " +
+  "source; 'low' = this is the closest available CO under the floor rule, but the " +
+  "genuine connection is weak.";
 
 // Schema-constrained output — Gemini guarantees the shape, so no parse salvage.
 // confidence is left as a plain string and normalised in code (matches the
@@ -56,6 +64,11 @@ const RESPONSE_SCHEMA = {
   items: {
     type: "object",
     properties: {
+      reasoning: {
+        type: "string",
+        description:
+          "Briefly justify the CO choice(s) by referencing specific module content against the CO description — write this before deciding co_codes.",
+      },
       module_number: {
         type: "integer",
         description: "The module number being classified.",
@@ -73,7 +86,7 @@ const RESPONSE_SCHEMA = {
           "high | medium | low — overall confidence in this module's CO assignment.",
       },
     },
-    required: ["module_number", "co_codes", "confidence"],
+    required: ["reasoning", "module_number", "co_codes", "confidence"],
   },
 };
 
@@ -117,6 +130,14 @@ array. Output one object per module: { module_number, co_codes, confidence }.`;
 function normaliseConfidence(v: unknown): "high" | "medium" | "low" {
   const s = String(v ?? "").toLowerCase().trim();
   return s === "high" || s === "medium" || s === "low" ? s : "medium";
+}
+
+function lowerConfidence(
+  a: "high" | "medium" | "low",
+  b: "high" | "medium" | "low"
+): "high" | "medium" | "low" {
+  const rank: Record<string, number> = { high: 2, medium: 1, low: 0 };
+  return rank[a] <= rank[b] ? a : b;
 }
 
 // ─── Public entrypoint ─────────────────────────────────────────────────────
@@ -170,11 +191,11 @@ export async function classifyModulesForSubject(
 
   let parsed: ClassifiedModule[];
   try {
-    const result = await routeAI("module_co_classify", {
-      model: "flash",
+    const aiParams = {
+      model: "flash" as const,
       messages: [
         {
-          role: "user",
+          role: "user" as const,
           content: buildUserPrompt(subjectName, modules, outcomes),
         },
       ],
@@ -183,15 +204,63 @@ export async function classifyModulesForSubject(
       thinkingBudget: 0,
       maxTokens: 2048,
       responseSchema: RESPONSE_SCHEMA,
-    });
-    const raw = JSON.parse(String(result.content ?? ""));
-    if (!Array.isArray(raw)) {
-      console.warn(
-        `[classifyModulesForSubject] non-array response for ${subjectId}`
-      );
+    };
+
+    const [resultA, resultB] = await Promise.all([
+      routeAI("module_co_classify", aiParams),
+      routeAI("module_co_classify", aiParams),
+    ]);
+
+    const parsePass = (result: typeof resultA, label: string): ClassifiedModule[] => {
+      const raw = JSON.parse(String(result.content ?? ""));
+      if (!Array.isArray(raw)) {
+        console.warn(`[classifyModulesForSubject] non-array response (${label}) for ${subjectId}`);
+        return [];
+      }
+      return raw as ClassifiedModule[];
+    };
+
+    const passA = parsePass(resultA, "passA");
+    const passB = parsePass(resultB, "passB");
+
+    if (passA.length === 0 && passB.length === 0) {
+      console.warn(`[classifyModulesForSubject] both passes returned empty for ${subjectId}`);
       return;
     }
-    parsed = raw as ClassifiedModule[];
+
+    const passAMap = new Map<number, ClassifiedModule>();
+    const passBMap = new Map<number, ClassifiedModule>();
+    for (const e of passA) { if (typeof e.module_number === "number") passAMap.set(e.module_number, e); }
+    for (const e of passB) { if (typeof e.module_number === "number") passBMap.set(e.module_number, e); }
+
+    const allModuleNumbers = new Set([...passAMap.keys(), ...passBMap.keys()]);
+    parsed = [];
+    for (const modNum of allModuleNumbers) {
+      const a = passAMap.get(modNum);
+      const b = passBMap.get(modNum);
+      if (a && !b) { parsed.push(a); continue; }
+      if (b && !a) { parsed.push(b); continue; }
+      if (a && b) {
+        const sortedA = [...(a.co_codes ?? [])].sort();
+        const sortedB = [...(b.co_codes ?? [])].sort();
+        const sameSet =
+          sortedA.length === sortedB.length &&
+          sortedA.every((c, i) => c === sortedB[i]);
+        if (sameSet) {
+          parsed.push({
+            module_number: modNum,
+            co_codes: sortedA,
+            confidence: lowerConfidence(
+              normaliseConfidence(a.confidence),
+              normaliseConfidence(b.confidence)
+            ),
+          });
+        } else {
+          const unionCodes = [...new Set([...sortedA, ...sortedB])];
+          parsed.push({ module_number: modNum, co_codes: unionCodes, confidence: "low" });
+        }
+      }
+    }
   } catch (err) {
     console.warn(
       `[classifyModulesForSubject] AI call/parse failed for ${subjectId}:`,
