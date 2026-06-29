@@ -246,6 +246,7 @@ function AddQuestionForm({
       if (result.difficulty) updated.difficulty = result.difficulty;
       if (result.model_answer) updated.model_answer = result.model_answer;
       if (result.options && result.options.length > 0) updated.options = result.options;
+      if (result.module_id) updated.module_id = result.module_id;
       setDraft(updated);
       setDraftImagePath(result.image_path);
       toast.success("Draft ready — review and edit before adding");
@@ -641,6 +642,7 @@ function BulkImagesMode({
                           ? String(result.btl_level)
                           : c.meta.btl_level,
                       difficulty: result.difficulty ?? c.meta.difficulty,
+                      module_id: result.module_id ?? c.meta.module_id,
                     },
                   }
                 : c

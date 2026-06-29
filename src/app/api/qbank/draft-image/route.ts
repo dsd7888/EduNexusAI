@@ -25,8 +25,10 @@ const IMAGE_QUESTION_SYSTEM_PROMPT =
   "on a graph, a concrete step illustrated in a diagram, or other content uniquely visible in the " +
   "image. Do NOT write a generic question that could appear without the image. The student must " +
   "actually look at what is shown to answer correctly. " +
-  "When assigning a CO code, always pick the NEAREST match from the provided list — never return null. " +
-  "Every image-based question maps to some CO; if the fit is not perfect, pick the closest one, " +
+  "When assigning a module, first identify which module the image's content most belongs to from " +
+  "the provided list, THEN choose the CO that module maps toward — pick module before CO, not independently. " +
+  "Always pick the NEAREST match for both module and CO — never return null for either. " +
+  "Every image-based question maps to some module and CO; if the fit is not perfect, pick the closest ones, " +
   "because the content is taught in this course and carries weightage either way.";
 
 function buildImageQuestionSchema(questionType: string): object {
@@ -54,8 +56,9 @@ function buildImageQuestionSchema(questionType: string): object {
       co_code: { type: "string" },
       btl_level: { type: "integer" },
       difficulty: { type: "string" },
+      module_number: { type: "integer" },
     },
-    required: ["question_text", "model_answer", "co_code", "btl_level", "difficulty"],
+    required: ["question_text", "model_answer", "co_code", "btl_level", "difficulty", "module_number"],
   };
 }
 
@@ -63,17 +66,15 @@ function buildImageQuestionPrompt(params: {
   questionType: string;
   marks: number;
   subjectName: string;
-  moduleName: string | null;
-  moduleDescription: string | null;
+  modules: { id: string; name: string; description: string | null; module_number: number }[];
   courseOutcomes: { co_code: string; description: string }[];
 }): string {
   const lines: string[] = [`Subject: ${params.subjectName}`];
-  if (params.moduleName) {
-    lines.push(`Module: ${params.moduleName}`);
-    if (params.moduleDescription) {
-      lines.push(
-        `Module content: ${params.moduleDescription.slice(0, 300).trim()}`
-      );
+  if (params.modules.length > 0) {
+    lines.push("Modules (identify which best fits this image's content, return its module_number):");
+    for (const m of params.modules) {
+      const desc = m.description ? ` — ${m.description.slice(0, 200).trim()}` : "";
+      lines.push(`  ${m.module_number}: ${m.name}${desc}`);
     }
   }
   if (params.courseOutcomes.length > 0) {
@@ -89,8 +90,9 @@ function buildImageQuestionPrompt(params: {
     params.questionType === "mcq"
       ? "Provide exactly 4 options (labels A, B, C, D), exactly one is_correct: true, with plausible distractors."
       : "Provide a detailed model answer.",
+    "First identify which module this image's content most belongs to from the list above, then choose the CO that module maps toward. Return module_number as an integer matching one of the listed modules — always pick the closest one, never return null.",
     "Assign the CLOSEST co_code from the list above — always pick one, never return null. The content is taught in this course so every question maps to some CO even if the fit is not perfect.",
-    "Also assign a Bloom's Taxonomy btl_level (1-6) and a difficulty (easy/medium/hard)."
+    "Assign btl_level using this rule: if the question only asks to execute a known procedure on the given data (compute, identify, find a value) — that's BTL 3 (Apply). Only use BTL 4 or higher if the question requires comparing multiple approaches, justifying a choice, or breaking down why something works — not just running the procedure once. Also assign a difficulty (easy/medium/hard)."
   );
   return lines.join("\n");
 }
@@ -189,7 +191,7 @@ export async function POST(request: NextRequest) {
       mimeType
     );
 
-    const [subjectRes, coRes, moduleRes] = await Promise.all([
+    const [subjectRes, coRes, modulesRes] = await Promise.all([
       adminClient
         .from("subjects")
         .select("name")
@@ -199,13 +201,11 @@ export async function POST(request: NextRequest) {
         .from("course_outcomes")
         .select("co_code, description")
         .eq("subject_id", subjectId),
-      moduleId
-        ? adminClient
-            .from("modules")
-            .select("name, description")
-            .eq("id", moduleId)
-            .single()
-        : Promise.resolve({ data: null, error: null }),
+      adminClient
+        .from("modules")
+        .select("id, name, description, module_number")
+        .eq("subject_id", subjectId)
+        .order("module_number"),
     ]);
 
     if (subjectRes.error || !subjectRes.data) {
@@ -217,17 +217,18 @@ export async function POST(request: NextRequest) {
       co_code: string;
       description: string;
     }[];
-    const moduleData = moduleRes.data as {
+    const allModules = (modulesRes.data ?? []) as {
+      id: string;
       name: string;
       description: string | null;
-    } | null;
+      module_number: number;
+    }[];
 
     const prompt = buildImageQuestionPrompt({
       questionType,
       marks,
       subjectName: subject.name,
-      moduleName: moduleData?.name ?? null,
-      moduleDescription: moduleData?.description ?? null,
+      modules: allModules,
       courseOutcomes,
     });
 
@@ -238,7 +239,9 @@ export async function POST(request: NextRequest) {
       attachments: [{ mediaType: mimeType, data: body.image_base64 }],
       responseSchema: buildImageQuestionSchema(questionType),
       thinkingBudget: 0,
-      temperature: 0.6,
+      // Each call has a distinct image as its real source of variation; randomness isn't needed here,
+      // and CO/BTL/difficulty tagging should be as consistent as every other tagging task (all near 0).
+      temperature: 0.1,
       maxTokens: 2048,
     });
 
@@ -249,6 +252,7 @@ export async function POST(request: NextRequest) {
       co_code?: string;
       btl_level?: unknown;
       difficulty?: string;
+      module_number?: unknown;
     };
     try {
       aiQuestion = JSON.parse(aiResult.content) as typeof aiQuestion;
@@ -265,6 +269,16 @@ export async function POST(request: NextRequest) {
       return apiError("AI returned an empty question", 502);
     }
 
+    const aiModuleNumber =
+      typeof aiQuestion.module_number === "number"
+        ? Math.trunc(aiQuestion.module_number)
+        : null;
+    const inferredModule =
+      aiModuleNumber !== null
+        ? (allModules.find((m) => m.module_number === aiModuleNumber) ?? null)
+        : null;
+    const resolvedModuleId = inferredModule?.id ?? moduleId ?? null;
+
     return Response.json({
       image_path: imagePath,
       question_text: aiText,
@@ -276,6 +290,7 @@ export async function POST(request: NextRequest) {
       difficulty: VALID_DIFFICULTY.has(aiQuestion.difficulty ?? "")
         ? (aiQuestion.difficulty as "easy" | "medium" | "hard")
         : null,
+      module_id: resolvedModuleId,
     });
   } catch (err) {
     console.error("[qbank draft-image] Error:", err);

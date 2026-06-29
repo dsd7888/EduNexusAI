@@ -35,6 +35,7 @@ export interface DraftImageResponse {
   co_code: string | null;
   btl_level: number | null;
   difficulty: Difficulty | null;
+  module_id: string | null;
 }
 
 export async function draftImageQuestion(

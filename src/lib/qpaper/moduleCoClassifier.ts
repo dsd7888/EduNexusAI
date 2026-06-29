@@ -44,7 +44,9 @@ const SYSTEM_PROMPT =
   "content described, never from superficial keyword overlap. Be conservative: " +
   "assign a CO only when the module plausibly develops it, and use 'high' " +
   "confidence ONLY when the connection is unambiguous from the description text " +
-  "alone. A module may legitimately map to more than one CO.";
+  "alone. A module may legitimately map to more than one CO. When forced to pick " +
+  "despite a weak match, mark that assignment confidence: 'low' rather than " +
+  "declining to assign at all.";
 
 // Schema-constrained output — Gemini guarantees the shape, so no parse salvage.
 // confidence is left as a plain string and normalised in code (matches the
@@ -61,6 +63,7 @@ const RESPONSE_SCHEMA = {
       co_codes: {
         type: "array",
         items: { type: "string" },
+        minItems: 1,
         description:
           "One or more CO codes (from the provided list) this module teaches toward.",
       },
@@ -104,8 +107,11 @@ ${moduleBlock}
 
 For EACH module above, list every CO it genuinely teaches toward. Only assign a
 CO when the module's content plausibly develops that outcome — ignore shallow
-keyword overlap. A module can map to several COs, or (if truly unrelated to all)
-to none. Output one object per module: { module_number, co_codes, confidence }.`;
+keyword overlap. Every module maps to at least one CO — if no clean match exists,
+assign the single CLOSEST one rather than leaving it empty, since the content is
+taught in this course and carries exam weightage regardless of fit. A module may
+map to several COs when genuinely warranted, but co_codes must never be an empty
+array. Output one object per module: { module_number, co_codes, confidence }.`;
 }
 
 function normaliseConfidence(v: unknown): "high" | "medium" | "low" {
