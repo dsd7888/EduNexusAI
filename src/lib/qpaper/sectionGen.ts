@@ -164,6 +164,17 @@ function summariseCoPoTable(mapping: CoPoMappingInfo[]): string {
     .join("\n");
 }
 
+function difficultyDirective(d: "easy" | "medium" | "hard"): string {
+  switch (d) {
+    case "easy":
+      return "straightforward recall or single-step application; a student who has attended lectures should be able to answer confidently";
+    case "medium":
+      return "requires understanding of the concept and a multi-step approach; a well-prepared student should manage with some thought";
+    case "hard":
+      return "requires synthesis, non-obvious problem-setup, or a multi-concept connection; designed to differentiate top performers";
+  }
+}
+
 function buildSlotsBlock(
   slots: QuestionSlot[],
   templates: TemplateQuestionBlock[]
@@ -218,6 +229,16 @@ ${formatLine}
   Allowed BTL levels for this module: [${s.allowedBtlLevels.join(", ")}]
   Target BTL range for this question type: ${s.targetBtlRange[0]}–${s.targetBtlRange[1]}
   Relevant Course Outcomes: ${s.cos.length > 0 ? s.cos.join(", ") : "(any)"}
+${
+  s.targetCo
+    ? `  Target CO for this slot: ${s.targetCo} — write a question that primarily develops this outcome`
+    : ""
+}
+${
+  s.targetDifficulty
+    ? `  Difficulty target: ${s.targetDifficulty} — ${difficultyDirective(s.targetDifficulty)}`
+    : ""
+}
   Relevant Program Outcomes: ${s.pos.length > 0 ? s.pos.join(", ") : "(any)"}
 ${styleLine}`;
     })
@@ -524,7 +545,7 @@ BTL 5 — Evaluate: student assesses quality, justifies a design choice, or crit
 BTL 6 — Create: student designs a new algorithm, constructs a novel solution, or produces something original.
   Verbs: design, construct, formulate, propose, develop.
 
-HARD CONSTRAINT: The assigned BTL MUST fall within the allowed BTL levels for the question's assigned module (listed in Part B). If your question naturally demands a BTL outside the allowed range, revise the question — do not exceed the module's BTL boundary.
+HARD CONSTRAINT: The assigned BTL MUST fall within the allowed BTL levels for the question's assigned module (listed in Part B). If your question naturally demands a BTL outside the allowed range, revise the question — do not exceed the module's BTL boundary. When a Difficulty target is specified for a slot, honor it — calibrate the cognitive demand and problem complexity accordingly, not just the BTL verb.
 
 ━━ PO ASSIGNMENT RULES ━━
 From the CO-PO mapping above, identify all POs mapped to the assigned CO. Assign the PO with the highest strength value.

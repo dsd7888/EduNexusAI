@@ -103,6 +103,10 @@ export default function QpaperPage() {
   }>(defaultDifficultyTargets());
   // Course outcomes for the selected subject — feeds the CO% picker.
   const [courseOutcomes, setCourseOutcomes] = useState<CourseOutcomeRef[]>([]);
+  // module_number → CO codes it supports — feeds the CO-coverage preview.
+  const [moduleCoMap, setModuleCoMap] = useState<Map<number, string[]>>(
+    new Map()
+  );
   // IDs guaranteed-included from the Q Bank (set when arriving via staging).
   const [preferredBankQuestionIds, setPreferredBankQuestionIds] = useState<
     string[]
@@ -258,6 +262,49 @@ export default function QpaperPage() {
         if (error) console.error("[qpaper course_outcomes]", error);
         setCourseOutcomes((data ?? []) as CourseOutcomeRef[]);
       });
+  }, [selectedSubjectId]);
+
+  // ─── Module→CO mapping load (feeds the CO-coverage preview) ─────────────
+  useEffect(() => {
+    setModuleCoMap(new Map());
+    if (!selectedSubjectId) return;
+    let cancelled = false;
+    const supabase = createBrowserClient();
+    supabase
+      .from("modules")
+      .select("id, module_number")
+      .eq("subject_id", selectedSubjectId)
+      .then(async ({ data: subjectModules, error: modulesError }) => {
+        if (cancelled) return;
+        if (modulesError) {
+          console.error("[qpaper module_co_mapping] modules", modulesError);
+          return;
+        }
+        const rows = subjectModules ?? [];
+        if (rows.length === 0) return;
+        const idToNumber = new Map(rows.map((m) => [m.id, m.module_number]));
+        const { data: mappings, error: mappingError } = await supabase
+          .from("module_co_mapping")
+          .select("module_id, co_code")
+          .in("module_id", rows.map((m) => m.id));
+        if (cancelled) return;
+        if (mappingError) {
+          console.error("[qpaper module_co_mapping]", mappingError);
+          return;
+        }
+        const map = new Map<number, string[]>();
+        for (const row of mappings ?? []) {
+          const moduleNumber = idToNumber.get(row.module_id);
+          if (moduleNumber == null) continue;
+          const codes = map.get(moduleNumber) ?? [];
+          codes.push(row.co_code);
+          map.set(moduleNumber, codes);
+        }
+        setModuleCoMap(map);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [selectedSubjectId]);
 
   // ─── Verified Q Bank availability for the selected subject ──────────────
@@ -765,6 +812,7 @@ export default function QpaperPage() {
           difficultyTargets={difficultyTargets}
           onDifficultyTargetsChange={setDifficultyTargets}
           courseOutcomes={courseOutcomes}
+          moduleCoMap={moduleCoMap}
         />
         <SourcingStage
           mix={sourcingMix}

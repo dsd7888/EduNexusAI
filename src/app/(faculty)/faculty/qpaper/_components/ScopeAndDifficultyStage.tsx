@@ -72,6 +72,8 @@ interface ScopeAndDifficultyStageProps {
   difficultyTargets: { easy: number; medium: number; hard: number };
   onDifficultyTargetsChange: (t: { easy: number; medium: number; hard: number }) => void;
   courseOutcomes: CourseOutcomeRef[];
+  /** module_number → CO codes it supports. Optional — preview is omitted when absent. */
+  moduleCoMap?: Map<number, string[]>;
 }
 
 export function ScopeAndDifficultyStage({
@@ -91,6 +93,7 @@ export function ScopeAndDifficultyStage({
   difficultyTargets,
   onDifficultyTargetsChange,
   courseOutcomes,
+  moduleCoMap,
 }: ScopeAndDifficultyStageProps) {
   // ─── Modules grouped by section_number ──────────────────────────────────
   const moduleGroups = useMemo(() => {
@@ -103,6 +106,27 @@ export function ScopeAndDifficultyStage({
     }
     return Array.from(groups.entries()).sort(([a], [b]) => a - b);
   }, [modules]);
+
+  // ─── CO-coverage preview — is each targeted CO actually reachable from the
+  // selected modules? ────────────────────────────────────────────────────────
+  const coAchievability = useMemo(() => {
+    if (!moduleCoMap || selectedModuleIds.length === 0) return null;
+    const selectedModules = modules.filter((m) =>
+      selectedModuleIds.includes(m.id)
+    );
+    return courseOutcomes
+      .map((co) => {
+        const supporting = selectedModules.filter((m) =>
+          (moduleCoMap.get(m.module_number) ?? []).includes(co.co_code)
+        );
+        return {
+          co_code: co.co_code,
+          supporting: supporting.length,
+          total: selectedModules.length,
+        };
+      })
+      .filter((r) => coTargetsPct[r.co_code] > 0);
+  }, [moduleCoMap, selectedModuleIds, modules, courseOutcomes, coTargetsPct]);
 
   // ─── BTL range handlers — keep min ≤ max regardless of which end moved ───
   const setBtlMin = (raw: number) => {
@@ -310,6 +334,24 @@ export function ScopeAndDifficultyStage({
               ))}
             </div>
             <RunningTotal total={coTotal} />
+            {coAchievability && coAchievability.length > 0 && (
+              <div className="space-y-1">
+                {coAchievability.map((r) => (
+                  <p
+                    key={r.co_code}
+                    className={cn(
+                      "text-[11px]",
+                      r.supporting > 0 ? "text-emerald-600" : "text-amber-700"
+                    )}
+                  >
+                    {r.co_code} — {r.supporting} of {r.total} selected modules
+                    supply it
+                    {r.supporting === 0 &&
+                      " — your target may not be achievable"}
+                  </p>
+                ))}
+              </div>
+            )}
           </div>
         )}
       </div>
@@ -350,8 +392,6 @@ export function ScopeAndDifficultyStage({
           </div>
         </div>
         <RunningTotal total={diffTotal} />
-        {/* TODO: once moduleCoMap is threaded down to this stage, restore a
-            live "COx (y%) — n of m selected modules supply it" summary here. */}
       </div>
     </>
   );
