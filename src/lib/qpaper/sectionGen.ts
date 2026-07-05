@@ -37,12 +37,13 @@ import {
   orPrimarySlotKey,
   type CustomBtlWeights,
   type DifficultyPreset,
+  type DifficultyTarget,
   type ModuleData,
   type QuestionSlot,
   type SlotAssignmentContext,
 } from "./moduleAssignment";
 
-export type { CustomBtlWeights, DifficultyPreset };
+export type { CustomBtlWeights, DifficultyPreset, DifficultyTarget };
 
 // ─── Public input/output types (kept stable for callers) ───────────────────
 
@@ -101,6 +102,12 @@ export interface SectionGenInput {
   difficultyPreset?: DifficultyPreset;
   /** Tier weights to use when difficultyPreset === "custom". */
   customBtlWeights?: CustomBtlWeights | null;
+  /** Paper-wide BTL eligibility filter [min, max] (secondary to weightage). */
+  btlRange?: [number, number];
+  /** CO code → target marks for THIS section (prorated from paper-wide CO%). */
+  coTargets?: Map<string, number>;
+  /** Per-slot difficulty% directives for this section. */
+  difficultyTargets?: DifficultyTarget[];
   /**
    * module_number → CO codes that module teaches toward (from module_co_mapping).
    * When absent (or empty for a given module), slots fall back to the subject's
@@ -1121,7 +1128,10 @@ function buildSlotCtx(
   coPoMapping: CoPoMappingInfo[],
   difficultyPreset?: DifficultyPreset,
   customBtlWeights?: CustomBtlWeights | null,
-  moduleCoMap?: Map<number, string[]>
+  moduleCoMap?: Map<number, string[]>,
+  btlRange?: [number, number],
+  coTargets?: Map<string, number>,
+  difficultyTargets?: DifficultyTarget[]
 ): SlotAssignmentContext {
   const coPoMap = new Map<string, Array<{ po_code: string; strength: number }>>();
   for (const m of coPoMapping) {
@@ -1134,6 +1144,9 @@ function buildSlotCtx(
     allCoCodes: courseOutcomes.map((c) => c.co_code),
     difficultyPreset,
     customBtlWeights,
+    btlRange,
+    coTargets,
+    difficultyTargets,
     // Per-module COs (from module_co_mapping) when available. Returning [] for a
     // module with no mapping rows is intentional — SlotAssignmentContext.cosFor
     // already falls back to allCoCodes on an empty result.
@@ -1168,7 +1181,10 @@ export function buildSectionSlotsAssignment(
   coPoMapping: CoPoMappingInfo[],
   difficultyPreset?: DifficultyPreset,
   customBtlWeights?: CustomBtlWeights | null,
-  moduleCoMap?: Map<number, string[]>
+  moduleCoMap?: Map<number, string[]>,
+  btlRange?: [number, number],
+  coTargets?: Map<string, number>,
+  difficultyTargets?: DifficultyTarget[]
 ): QuestionSlot[] {
   return assignModulesToSlots(
     modulesToData(modulesInSection),
@@ -1178,7 +1194,10 @@ export function buildSectionSlotsAssignment(
       coPoMapping,
       difficultyPreset,
       customBtlWeights,
-      moduleCoMap
+      moduleCoMap,
+      btlRange,
+      coTargets,
+      difficultyTargets
     )
   );
 }
@@ -1228,7 +1247,10 @@ export async function generateSection(
       input.coPoMapping,
       input.difficultyPreset,
       input.customBtlWeights,
-      input.moduleCoMap
+      input.moduleCoMap,
+      input.btlRange,
+      input.coTargets,
+      input.difficultyTargets
     )
   );
   if (input.slotStyles && input.slotStyles.size > 0) {

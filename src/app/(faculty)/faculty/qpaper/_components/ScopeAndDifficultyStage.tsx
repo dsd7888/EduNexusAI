@@ -1,9 +1,11 @@
 "use client";
 
 /**
- * Stage — "Scope & Difficulty": subject selection, target marks, and the
- * per-section module picker. The difficulty controls are a deliberate
- * placeholder for now; the real difficulty UI lands in a later part.
+ * Stage — "Scope & Difficulty": subject selection, target marks, the
+ * per-section module picker, and the three secondary generation directives
+ * (BTL range, CO% distribution, difficulty% distribution). Weightage from the
+ * syllabus stays the PRIMARY criterion for module assignment throughout —
+ * these three only bias BTL/CO/difficulty within that constraint.
  */
 
 import { useMemo } from "react";
@@ -18,33 +20,39 @@ import {
 } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
 import type { SubjectRow } from "@/hooks/useSupabaseData";
-import {
-  BTL_TIER,
-  previewBtlDistribution,
-  resolveTierWeights,
-  type CustomBtlWeights,
-  type DifficultyPreset,
-} from "@/lib/qpaper/moduleAssignment";
-import type { ModuleRow } from "./shared";
+import type { CourseOutcomeRef, ModuleRow } from "./shared";
 
-const PRESET_OPTIONS: { value: DifficultyPreset; label: string; subtitle: string }[] = [
-  { value: "foundational",      label: "Foundational",      subtitle: "BTL 1–2 heavy" },
-  { value: "balanced",          label: "Balanced",          subtitle: "BTL 3–4 focus" },
-  { value: "application_heavy", label: "Application-Heavy", subtitle: "BTL 4–6 heavy" },
-  { value: "custom",            label: "Custom",            subtitle: "Set your own tier mix" },
-];
+/** Green/amber/red running-total chip, shared by the CO% and difficulty% editors. */
+function runningTotalStatus(total: number) {
+  const diff = total - 100;
+  if (diff === 0) {
+    return { label: "On target", tone: "text-emerald-600 bg-emerald-50 border-emerald-200", bar: "bg-emerald-500" };
+  }
+  if (diff < 0) {
+    return { label: `${Math.abs(diff)}% left`, tone: "text-amber-700 bg-amber-50 border-amber-200", bar: "bg-amber-500" };
+  }
+  return { label: `${diff}% over`, tone: "text-rose-700 bg-rose-50 border-rose-200", bar: "bg-rose-500" };
+}
 
-/** One editor row per tier, mapping the custom-weight key to its tier index. */
-const CUSTOM_TIER_ROWS: { key: keyof CustomBtlWeights; tier: number }[] = [
-  { key: "tier1", tier: 0 },
-  { key: "tier2", tier: 1 },
-  { key: "tier3", tier: 2 },
-];
-
-/** "BTL 1–2" style label for a tier index, derived from the shared BTL_TIER. */
-function tierLabel(tier: number): string {
-  const [lo, hi] = BTL_TIER[tier];
-  return `BTL ${lo}–${hi}`;
+function RunningTotal({ total }: { total: number }) {
+  const status = runningTotalStatus(total);
+  const pct = Math.min(100, total);
+  return (
+    <div className="rounded-lg border bg-background/95 p-3">
+      <div className="flex items-center justify-between gap-3 mb-1.5">
+        <div className="flex items-baseline gap-2">
+          <span className="text-xl font-bold tabular-nums">{total}</span>
+          <span className="text-xs text-muted-foreground">of 100%</span>
+        </div>
+        <span className={cn("text-[11px] font-medium px-2 py-0.5 rounded-full border", status.tone)}>
+          {status.label}
+        </span>
+      </div>
+      <div className="h-1.5 rounded-full bg-muted overflow-hidden">
+        <div className={cn("h-full transition-all", status.bar)} style={{ width: `${pct}%` }} />
+      </div>
+    </div>
+  );
 }
 
 interface ScopeAndDifficultyStageProps {
@@ -57,10 +65,13 @@ interface ScopeAndDifficultyStageProps {
   modules: ModuleRow[];
   selectedModuleIds: string[];
   setSelectedModuleIds: React.Dispatch<React.SetStateAction<string[]>>;
-  difficultyPreset: DifficultyPreset;
-  onDifficultyPresetChange: (preset: DifficultyPreset) => void;
-  customBtlWeights: CustomBtlWeights;
-  onCustomBtlWeightsChange: React.Dispatch<React.SetStateAction<CustomBtlWeights>>;
+  btlRange: [number, number];
+  onBtlRangeChange: (r: [number, number]) => void;
+  coTargetsPct: Record<string, number>;
+  onCoTargetsPctChange: (t: Record<string, number>) => void;
+  difficultyTargets: { easy: number; medium: number; hard: number };
+  onDifficultyTargetsChange: (t: { easy: number; medium: number; hard: number }) => void;
+  courseOutcomes: CourseOutcomeRef[];
 }
 
 export function ScopeAndDifficultyStage({
@@ -73,10 +84,13 @@ export function ScopeAndDifficultyStage({
   modules,
   selectedModuleIds,
   setSelectedModuleIds,
-  difficultyPreset,
-  onDifficultyPresetChange,
-  customBtlWeights,
-  onCustomBtlWeightsChange,
+  btlRange,
+  onBtlRangeChange,
+  coTargetsPct,
+  onCoTargetsPctChange,
+  difficultyTargets,
+  onDifficultyTargetsChange,
+  courseOutcomes,
 }: ScopeAndDifficultyStageProps) {
   // ─── Modules grouped by section_number ──────────────────────────────────
   const moduleGroups = useMemo(() => {
@@ -90,37 +104,30 @@ export function ScopeAndDifficultyStage({
     return Array.from(groups.entries()).sort(([a], [b]) => a - b);
   }, [modules]);
 
-  // ─── Live BTL preview for the currently selected modules + active mix ────
-  // Uses the SAME renormalization the real generation path uses (via
-  // previewBtlDistribution), so what faculty see here matches what they get.
-  const preview = useMemo(() => {
-    const selected = modules.filter((m) => selectedModuleIds.includes(m.id));
-    if (selected.length === 0) return null;
-    const weights = resolveTierWeights(difficultyPreset, customBtlWeights);
-    return previewBtlDistribution(
-      selected.map((m) => ({
-        btl_levels: m.btl_levels,
-        weightage_percent: m.weightage_percent,
-      })),
-      weights
-    );
-  }, [modules, selectedModuleIds, difficultyPreset, customBtlWeights]);
+  // ─── BTL range handlers — keep min ≤ max regardless of which end moved ───
+  const setBtlMin = (raw: number) => {
+    const min = Math.max(1, Math.min(6, Math.round(raw) || 1));
+    const max = Math.max(min, btlRange[1]);
+    onBtlRangeChange([min, max]);
+  };
+  const setBtlMax = (raw: number) => {
+    const max = Math.max(1, Math.min(6, Math.round(raw) || 1));
+    const min = Math.min(btlRange[0], max);
+    onBtlRangeChange([min, max]);
+  };
 
-  // ─── Custom allocator running total (mirrors SourcingStage's pattern) ────
-  const customTotal =
-    customBtlWeights.tier1 + customBtlWeights.tier2 + customBtlWeights.tier3;
-  const customDiff = customTotal - 100;
-  const customStatus =
-    customDiff === 0
-      ? { label: "On target", tone: "text-emerald-600 bg-emerald-50 border-emerald-200" }
-      : customDiff < 0
-        ? { label: `${Math.abs(customDiff)}% left`, tone: "text-amber-700 bg-amber-50 border-amber-200" }
-        : { label: `${customDiff}% over`, tone: "text-rose-700 bg-rose-50 border-rose-200" };
-  const customPct = Math.min(100, customTotal);
+  // ─── CO% distribution ────────────────────────────────────────────────────
+  const coTotal = Object.values(coTargetsPct).reduce((s, v) => s + (v || 0), 0);
+  const setCoPct = (co_code: string, raw: number) => {
+    const n = Math.max(0, Math.min(100, Math.round(raw) || 0));
+    onCoTargetsPctChange({ ...coTargetsPct, [co_code]: n });
+  };
 
-  const setCustomWeight = (key: keyof CustomBtlWeights, raw: string) => {
-    const n = Math.max(0, Math.min(100, Math.round(Number(raw) || 0)));
-    onCustomBtlWeightsChange((prev) => ({ ...prev, [key]: n }));
+  // ─── Difficulty% distribution ────────────────────────────────────────────
+  const diffTotal = difficultyTargets.easy + difficultyTargets.medium + difficultyTargets.hard;
+  const setDiffPct = (key: keyof typeof difficultyTargets, raw: number) => {
+    const n = Math.max(0, Math.min(100, Math.round(raw) || 0));
+    onDifficultyTargetsChange({ ...difficultyTargets, [key]: n });
   };
 
   return (
@@ -241,55 +248,60 @@ export function ScopeAndDifficultyStage({
         </div>
       )}
 
+      {/* ── BTL Range — paper-wide eligibility filter (secondary to weightage) ── */}
       <div className="space-y-1.5">
-        <Label className="text-xs">Difficulty</Label>
-        <div className="flex flex-wrap gap-1.5">
-          {PRESET_OPTIONS.map((opt) => {
-            const active = difficultyPreset === opt.value;
-            return (
-              <button
-                key={opt.value}
-                type="button"
-                onClick={() => onDifficultyPresetChange(opt.value)}
-                className={cn(
-                  "px-2.5 py-0.5 rounded-full text-[11px] font-medium border transition-colors",
-                  active
-                    ? "bg-primary text-primary-foreground border-primary"
-                    : "bg-background text-muted-foreground border-border hover:border-primary/50"
-                )}
-                title={opt.subtitle}
-              >
-                {opt.label}
-              </button>
-            );
-          })}
+        <Label className="text-xs">BTL Range</Label>
+        <div className="flex items-center gap-2">
+          <NumericField
+            min={1}
+            max={6}
+            value={btlRange[0]}
+            onChange={setBtlMin}
+            className="h-8 w-16 text-sm text-right"
+          />
+          <span className="text-xs text-muted-foreground">to</span>
+          <NumericField
+            min={1}
+            max={6}
+            value={btlRange[1]}
+            onChange={setBtlMax}
+            className="h-8 w-16 text-sm text-right"
+          />
         </div>
+        <p className="text-[10px] text-muted-foreground">
+          Questions will draw from BTL {btlRange[0]} to {btlRange[1]} (Bloom&apos;s Taxonomy: 1 Remember … 6 Create), wherever a module&apos;s allowed levels permit it.
+        </p>
+      </div>
 
-        {/* ── Custom tier allocator — same running-total pattern as Sourcing ── */}
-        {difficultyPreset === "custom" && (
+      {/* ── CO Distribution — secondary bias on top of weightage ─────────── */}
+      <div className="space-y-1.5">
+        <Label className="text-xs">CO Distribution</Label>
+        {courseOutcomes.length === 0 ? (
+          <p className="text-[11px] text-muted-foreground bg-muted/40 border rounded-md px-3 py-2">
+            CO targets will be applied after subject selection.
+          </p>
+        ) : (
           <div className="space-y-1.5">
             <div className="space-y-1.5">
-              {CUSTOM_TIER_ROWS.map(({ key, tier }) => (
+              {courseOutcomes.map((co) => (
                 <div
-                  key={key}
+                  key={co.co_code}
                   className="flex items-center gap-3 rounded-md border px-3 py-2"
                 >
                   <div className="flex-1 min-w-0">
-                    <div className="text-sm font-medium">{tierLabel(tier)}</div>
-                    <div className="text-[11px] text-muted-foreground">
-                      {tier === 0
-                        ? "Remember / Understand"
-                        : tier === 1
-                          ? "Apply / Analyze"
-                          : "Evaluate / Create"}
+                    <div className="text-sm font-medium">{co.co_code}</div>
+                    <div className="text-[11px] text-muted-foreground truncate">
+                      {co.description.length > 60
+                        ? `${co.description.slice(0, 60)}…`
+                        : co.description}
                     </div>
                   </div>
                   <div className="flex items-center gap-1">
                     <NumericField
                       min={0}
                       max={100}
-                      value={customBtlWeights[key]}
-                      onChange={(n) => setCustomWeight(key, String(n))}
+                      value={coTargetsPct[co.co_code] ?? 0}
+                      onChange={(n) => setCoPct(co.co_code, n)}
                       className="h-8 w-16 text-sm text-right"
                     />
                     <span className="text-xs text-muted-foreground">%</span>
@@ -297,61 +309,49 @@ export function ScopeAndDifficultyStage({
                 </div>
               ))}
             </div>
-
-            {/* Running total — same progress-bar pattern as the marks tracker. */}
-            <div className="rounded-lg border bg-background/95 p-3">
-              <div className="flex items-center justify-between gap-3 mb-1.5">
-                <div className="flex items-baseline gap-2">
-                  <span className="text-xl font-bold tabular-nums">
-                    {customTotal}
-                  </span>
-                  <span className="text-xs text-muted-foreground">of 100%</span>
-                </div>
-                <span
-                  className={cn(
-                    "text-[11px] font-medium px-2 py-0.5 rounded-full border",
-                    customStatus.tone
-                  )}
-                >
-                  {customStatus.label}
-                </span>
-              </div>
-              <div className="h-1.5 rounded-full bg-muted overflow-hidden">
-                <div
-                  className={cn(
-                    "h-full transition-all",
-                    customDiff === 0
-                      ? "bg-emerald-500"
-                      : customDiff < 0
-                        ? "bg-amber-500"
-                        : "bg-rose-500"
-                  )}
-                  style={{ width: `${customPct}%` }}
-                />
-              </div>
-            </div>
+            <RunningTotal total={coTotal} />
           </div>
         )}
+      </div>
 
-        {/* ── Live achievable-breakdown preview for the selected modules ──── */}
-        {preview && preview.span && (
-          <p className="text-[11px] text-muted-foreground bg-muted/40 border rounded-md px-3 py-2">
-            <span className="font-medium text-foreground">
-              Selected modules {preview.tiers.length < 3 ? "only support" : "support"}{" "}
-              BTL {preview.span[0]}–{preview.span[1]}:
-            </span>{" "}
-            {preview.tiers
-              .map(
-                (t, i) => `~${Math.round(preview.percents[i])}% ${tierLabel(t)}`
-              )
-              .join(", ")}
-            .
-          </p>
-        )}
-
-        <p className="text-[10px] text-muted-foreground">
-          Maps to Bloom&apos;s Taxonomy tiers (1: Remember … 6: Create) — biases how BTL levels are spread across questions.
-        </p>
+      {/* ── Difficulty Distribution — per-slot generation directive ──────── */}
+      <div className="space-y-1.5">
+        <Label className="text-xs">Difficulty Distribution</Label>
+        <div className="grid grid-cols-3 gap-2">
+          <div>
+            <Label className="text-[10px] text-muted-foreground mb-1 block">Easy %</Label>
+            <NumericField
+              min={0}
+              max={100}
+              value={difficultyTargets.easy}
+              onChange={(n) => setDiffPct("easy", n)}
+              className="h-8 text-sm text-right"
+            />
+          </div>
+          <div>
+            <Label className="text-[10px] text-muted-foreground mb-1 block">Medium %</Label>
+            <NumericField
+              min={0}
+              max={100}
+              value={difficultyTargets.medium}
+              onChange={(n) => setDiffPct("medium", n)}
+              className="h-8 text-sm text-right"
+            />
+          </div>
+          <div>
+            <Label className="text-[10px] text-muted-foreground mb-1 block">Hard %</Label>
+            <NumericField
+              min={0}
+              max={100}
+              value={difficultyTargets.hard}
+              onChange={(n) => setDiffPct("hard", n)}
+              className="h-8 text-sm text-right"
+            />
+          </div>
+        </div>
+        <RunningTotal total={diffTotal} />
+        {/* TODO: once moduleCoMap is threaded down to this stage, restore a
+            live "COx (y%) — n of m selected modules supply it" summary here. */}
       </div>
     </>
   );

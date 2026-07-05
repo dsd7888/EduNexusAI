@@ -16,6 +16,7 @@ import {
   buildSectionSlotsAssignment,
   type CustomBtlWeights,
   type DifficultyPreset,
+  type DifficultyTarget,
   type ModuleInfo,
   type CourseOutcomeInfo,
   type CoPoMappingInfo,
@@ -173,6 +174,56 @@ export async function POST(request: NextRequest) {
         customBtlWeights = { tier1, tier2, tier3 };
       }
     }
+
+    // ── Secondary directives (weightage stays primary): BTL range, CO%, difficulty% ──
+    // btlRange: [min, max], both integers 1-6, min <= max.
+    let btlRange: [number, number] | undefined;
+    if (Array.isArray(body.btlRange) && body.btlRange.length === 2) {
+      const lo = Math.max(1, Math.min(6, Math.trunc(Number(body.btlRange[0]))));
+      const hi = Math.max(lo, Math.min(6, Math.trunc(Number(body.btlRange[1]))));
+      if (Number.isFinite(lo) && Number.isFinite(hi)) btlRange = [lo, hi];
+    }
+
+    // coTargets: [{co_code, pct}] summing to ~100 — kept as % here, prorated to
+    // marks per-section below (paper-wide → section share).
+    const coTargetsPct = new Map<string, number>();
+    if (Array.isArray(body.coTargets)) {
+      for (const item of body.coTargets as Array<Record<string, unknown>>) {
+        const co = String(item?.co_code ?? "").trim();
+        const pct = Number(item?.pct ?? 0);
+        if (co && Number.isFinite(pct) && pct > 0) coTargetsPct.set(co, pct);
+      }
+    }
+
+    // difficultyTargets: {easy, medium, hard} as percentages.
+    let difficultyTargets: DifficultyTarget[] | undefined;
+    if (body.difficultyTargets && typeof body.difficultyTargets === "object") {
+      const dt = body.difficultyTargets as Record<string, unknown>;
+      const easy = Math.max(0, Number(dt.easy ?? 0));
+      const medium = Math.max(0, Number(dt.medium ?? 0));
+      const hard = Math.max(0, Number(dt.hard ?? 0));
+      if (easy + medium + hard > 0) {
+        difficultyTargets = [
+          { difficulty: "easy", pct: easy },
+          { difficulty: "medium", pct: medium },
+          { difficulty: "hard", pct: hard },
+        ];
+      }
+    }
+
+    // Prorate paper-wide CO% to a section's mark share → CO code → target marks.
+    // Since section share cancels the paper total, this reduces to pct% of the
+    // section's own marks; computed lazily per section at each call site.
+    const sectionCoTargetsFor = (
+      section: TemplateSection
+    ): Map<string, number> | undefined => {
+      if (coTargetsPct.size === 0) return undefined;
+      const sm = section.total_marks || 0;
+      return new Map(
+        [...coTargetsPct.entries()].map(([co, pct]) => [co, (pct / 100) * sm])
+      );
+    };
+
     // Load the bank when the mix sources from it OR there are guaranteed-include
     // preferred questions (those are included regardless of the bank percentage).
     const wantBank =
@@ -379,7 +430,10 @@ export async function POST(request: NextRequest) {
         coPoMapping,
         difficultyPreset,
         customBtlWeights,
-        moduleCoMap
+        moduleCoMap,
+        btlRange,
+        sectionCoTargetsFor(section),
+        difficultyTargets
       );
       const targets = new Map<string, SlotTarget>();
       for (const qs of qslots) {
@@ -503,6 +557,9 @@ export async function POST(request: NextRequest) {
           difficultyPreset,
           customBtlWeights,
           moduleCoMap,
+          btlRange,
+          coTargets: sectionCoTargetsFor(section),
+          difficultyTargets,
         });
         return { questions, warnings, error: null as string | null };
       } catch (err) {

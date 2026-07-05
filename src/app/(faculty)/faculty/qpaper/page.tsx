@@ -31,7 +31,8 @@ import {
 } from "../qbank/_components/shared";
 import {
   buildTemplatePayload,
-  defaultCustomBtlWeights,
+  defaultBtlRange,
+  defaultDifficultyTargets,
   defaultMetadata,
   defaultSourcingMix,
   eseMetadata,
@@ -46,15 +47,12 @@ import {
   uid,
   type AssembledPaper,
   type BuilderSection,
+  type CourseOutcomeRef,
   type ModuleRow,
   type PaperMetadata,
   type SourcingMixState,
 } from "./_components/shared";
 import type { PaperTemplateRow } from "@/lib/qpaper/templates";
-import type {
-  CustomBtlWeights,
-  DifficultyPreset,
-} from "@/lib/qpaper/moduleAssignment";
 import { useQpaperDraft, type BuilderSnapshot } from "./_components/useQpaperDraft";
 import { ScopeAndDifficultyStage } from "./_components/ScopeAndDifficultyStage";
 import { SourcingStage } from "./_components/SourcingStage";
@@ -94,11 +92,17 @@ export default function QpaperPage() {
   const [sourcingMix, setSourcingMix] = useState<SourcingMixState>(
     defaultSourcingMix()
   );
-  const [difficultyPreset, setDifficultyPreset] =
-    useState<DifficultyPreset>("balanced");
-  const [customBtlWeights, setCustomBtlWeights] = useState<CustomBtlWeights>(
-    defaultCustomBtlWeights()
-  );
+  const [btlRange, setBtlRange] = useState<[number, number]>(defaultBtlRange());
+  // CO targets: CO code → percentage of total marks (0-100 each, should sum to 100).
+  const [coTargetsPct, setCoTargetsPct] = useState<Record<string, number>>({});
+  // Difficulty: easy/medium/hard as % of total marks (should sum to 100).
+  const [difficultyTargets, setDifficultyTargets] = useState<{
+    easy: number;
+    medium: number;
+    hard: number;
+  }>(defaultDifficultyTargets());
+  // Course outcomes for the selected subject — feeds the CO% picker.
+  const [courseOutcomes, setCourseOutcomes] = useState<CourseOutcomeRef[]>([]);
   // IDs guaranteed-included from the Q Bank (set when arriving via staging).
   const [preferredBankQuestionIds, setPreferredBankQuestionIds] = useState<
     string[]
@@ -239,6 +243,23 @@ export default function QpaperPage() {
       });
   }, [selectedSubjectId]);
 
+  // ─── Course outcomes load (feeds the CO% distribution picker) ───────────
+  useEffect(() => {
+    if (!selectedSubjectId) {
+      setCourseOutcomes([]);
+      return;
+    }
+    const supabase = createBrowserClient();
+    supabase
+      .from("course_outcomes")
+      .select("co_code, description")
+      .eq("subject_id", selectedSubjectId)
+      .then(({ data, error }) => {
+        if (error) console.error("[qpaper course_outcomes]", error);
+        setCourseOutcomes((data ?? []) as CourseOutcomeRef[]);
+      });
+  }, [selectedSubjectId]);
+
   // ─── Verified Q Bank availability for the selected subject ──────────────
   useEffect(() => {
     if (!selectedSubjectId) {
@@ -296,8 +317,9 @@ export default function QpaperPage() {
       flatLayout,
       targetMarks,
       sourcingMix,
-      difficultyPreset,
-      customBtlWeights,
+      btlRange,
+      coTargetsPct,
+      difficultyTargets,
       preferredBankQuestionIds,
       paper,
       downloadUrl,
@@ -311,8 +333,9 @@ export default function QpaperPage() {
       flatLayout,
       targetMarks,
       sourcingMix,
-      difficultyPreset,
-      customBtlWeights,
+      btlRange,
+      coTargetsPct,
+      difficultyTargets,
       preferredBankQuestionIds,
       paper,
       downloadUrl,
@@ -345,8 +368,9 @@ export default function QpaperPage() {
     setFlatLayout(s.flatLayout ?? false);
     setTargetMarks(s.targetMarks ?? 60);
     setSourcingMix(s.sourcingMix ?? defaultSourcingMix());
-    setDifficultyPreset(s.difficultyPreset ?? "balanced");
-    setCustomBtlWeights(s.customBtlWeights ?? defaultCustomBtlWeights());
+    setBtlRange(s.btlRange ?? defaultBtlRange());
+    setCoTargetsPct(s.coTargetsPct ?? {});
+    setDifficultyTargets(s.difficultyTargets ?? defaultDifficultyTargets());
     setPreferredBankQuestionIds(s.preferredBankQuestionIds ?? []);
     // Restore generated output — null is fine; it just means builder view.
     setPaper(s.paper ?? null);
@@ -506,18 +530,28 @@ export default function QpaperPage() {
 
   const handleLoadTemplate = useCallback(
     (tpl: PaperTemplateRow) => {
-      const { sections: tplSections, meta: tplMeta, flatLayout: tplFlat, targetMarks: tplMarks } =
-        fromTemplateStructure(tpl.structure as unknown as Record<string, unknown>, {
-          university_name: tpl.university_name,
-          exam_title: tpl.exam_title,
-          duration_minutes: tpl.duration_minutes,
-          total_marks: tpl.total_marks,
-          instructions: tpl.instructions,
-        });
+      const {
+        sections: tplSections,
+        meta: tplMeta,
+        flatLayout: tplFlat,
+        targetMarks: tplMarks,
+        btlRange: tplBtlRange,
+        coTargetsPct: tplCoTargetsPct,
+        difficultyTargets: tplDifficultyTargets,
+      } = fromTemplateStructure(tpl.structure as unknown as Record<string, unknown>, {
+        university_name: tpl.university_name,
+        exam_title: tpl.exam_title,
+        duration_minutes: tpl.duration_minutes,
+        total_marks: tpl.total_marks,
+        instructions: tpl.instructions,
+      });
       setSections(tplSections);
       setMeta(tplMeta);
       setFlatLayout(tplFlat);
       setTargetMarks(tplMarks);
+      setBtlRange(tplBtlRange);
+      setCoTargetsPct(tplCoTargetsPct);
+      setDifficultyTargets(tplDifficultyTargets);
       setPaper(null);
       setDownloadUrl(null);
       setAnswerKeyUrl(null);
@@ -572,6 +606,9 @@ export default function QpaperPage() {
             totalMarksLive,
             selectedSubjectId,
             flatLayout,
+            btlRange,
+            coTargetsPct,
+            difficultyTargets,
           }),
           is_snapshot: true,
         }),
@@ -596,8 +633,12 @@ export default function QpaperPage() {
           templateId,
           sourcingMix: sourcingMixToApi(sourcingMix),
           preferredQuestionIds: preferredBankQuestionIds,
-          difficultyPreset,
-          ...(difficultyPreset === "custom" ? { customBtlWeights } : {}),
+          btlRange,
+          coTargets: Object.entries(coTargetsPct).map(([co_code, pct]) => ({
+            co_code,
+            pct,
+          })),
+          difficultyTargets,
         }),
       });
       if (!res.ok) throw new Error(await res.text());
@@ -717,10 +758,13 @@ export default function QpaperPage() {
           modules={modules}
           selectedModuleIds={selectedModuleIds}
           setSelectedModuleIds={setSelectedModuleIds}
-          difficultyPreset={difficultyPreset}
-          onDifficultyPresetChange={setDifficultyPreset}
-          customBtlWeights={customBtlWeights}
-          onCustomBtlWeightsChange={setCustomBtlWeights}
+          btlRange={btlRange}
+          onBtlRangeChange={setBtlRange}
+          coTargetsPct={coTargetsPct}
+          onCoTargetsPctChange={setCoTargetsPct}
+          difficultyTargets={difficultyTargets}
+          onDifficultyTargetsChange={setDifficultyTargets}
+          courseOutcomes={courseOutcomes}
         />
         <SourcingStage
           mix={sourcingMix}

@@ -18,9 +18,9 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createBrowserClient } from "@/lib/db/supabase-browser";
-import type { CustomBtlWeights, DifficultyPreset } from "@/lib/qpaper/moduleAssignment";
 import {
-  defaultCustomBtlWeights,
+  defaultBtlRange,
+  defaultDifficultyTargets,
   defaultMetadata,
   defaultSourcingMix,
   eseStandardSections,
@@ -40,8 +40,12 @@ export interface BuilderSnapshot {
   flatLayout: boolean;
   targetMarks: number;
   sourcingMix: SourcingMixState;
-  difficultyPreset: DifficultyPreset;
-  customBtlWeights: CustomBtlWeights;
+  /** Paper-wide BTL eligibility filter [min, max] (secondary to weightage). */
+  btlRange: [number, number];
+  /** CO code → percentage of total marks. */
+  coTargetsPct: Record<string, number>;
+  /** Easy/medium/hard % split. */
+  difficultyTargets: { easy: number; medium: number; hard: number };
   preferredBankQuestionIds: string[];
   // ── Post-generation output (null until the first successful generation) ───
   paper: AssembledPaper | null;
@@ -80,8 +84,9 @@ function meaningfulFingerprint(s: BuilderSnapshot): string {
     flatLayout: s.flatLayout,
     targetMarks: s.targetMarks,
     sourcingMix: s.sourcingMix,
-    difficultyPreset: s.difficultyPreset,
-    customBtlWeights: s.customBtlWeights,
+    btlRange: s.btlRange,
+    coTargetsPct: s.coTargetsPct,
+    difficultyTargets: s.difficultyTargets,
     preferredBankQuestionIds: s.preferredBankQuestionIds,
   });
 }
@@ -94,8 +99,9 @@ const PRISTINE_FINGERPRINT = meaningfulFingerprint({
   flatLayout: false,
   targetMarks: 60,
   sourcingMix: defaultSourcingMix(),
-  difficultyPreset: "balanced",
-  customBtlWeights: defaultCustomBtlWeights(),
+  btlRange: defaultBtlRange(),
+  coTargetsPct: {},
+  difficultyTargets: defaultDifficultyTargets(),
   preferredBankQuestionIds: [],
   paper: null,
   downloadUrl: null,

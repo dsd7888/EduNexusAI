@@ -39,6 +39,12 @@ export interface CustomBtlWeights {
   tier3: number;
 }
 
+/** A single difficulty bucket target (percentage of the section's slots). */
+export interface DifficultyTarget {
+  difficulty: "easy" | "medium" | "hard";
+  pct: number;
+}
+
 export interface ModuleData {
   module_number: number;
   name: string;
@@ -75,6 +81,13 @@ export interface QuestionSlot {
   style?: "fresh" | "pyq_style";
   /** Set on atomic slots inside a pool block — drives per-item prompt directives. */
   poolItemType?: QuestionType;
+  /** Generation difficulty directive for this slot (from difficultyTargets). */
+  targetDifficulty?: "easy" | "medium" | "hard";
+  /**
+   * The CO this slot primarily serves — set when coTargets is active and the
+   * slot's module can supply an under-served CO. Secondary to weightage.
+   */
+  targetCo?: string;
 }
 
 export interface SlotAssignmentContext {
@@ -91,6 +104,19 @@ export interface SlotAssignmentContext {
   difficultyPreset?: DifficultyPreset;
   /** Tier weights to use when difficultyPreset === "custom". */
   customBtlWeights?: CustomBtlWeights | null;
+  /**
+   * Paper-wide BTL eligibility filter [min, max]. When set, overrides the
+   * per-question-type TYPE_BTL_RANGE as each slot's targetBtlRange (clamped to
+   * the module's allowed levels) and suppresses apportionBtlTiers.
+   */
+  btlRange?: [number, number];
+  /**
+   * CO code → target marks for THIS section (already prorated from the
+   * paper-wide CO% by the route). Used as a secondary module-picker bias.
+   */
+  coTargets?: Map<string, number>;
+  /** Per-slot difficulty directives, distributed across the section's slots. */
+  difficultyTargets?: DifficultyTarget[];
 }
 
 // ─── Constants ─────────────────────────────────────────────────────────────
@@ -398,6 +424,57 @@ function apportionBtlTiers(
   }
 }
 
+/**
+ * Distributes `easy`/`medium`/`hard` difficulty labels across the section's
+ * slots per the requested percentages, setting slot.targetDifficulty. Mirrors
+ * apportionBtlTiers: Hamilton largest-remainder for the per-bucket counts, then
+ * a greedy-deficit sweep so labels are spread evenly rather than clustered.
+ *
+ * Unlike BTL tiers, difficulty is not gated by a module's allowed levels — it's
+ * a generation directive — so every slot participates.
+ */
+function apportionDifficulty(
+  slots: QuestionSlot[],
+  targets: DifficultyTarget[]
+): void {
+  if (slots.length === 0 || targets.length === 0) return;
+  const totalPct = targets.reduce((s, t) => s + t.pct, 0);
+  if (totalPct <= 0) return;
+
+  const n = slots.length;
+  const labels = targets.map((t) => t.difficulty);
+  const weights = targets.map((t) => (t.pct / totalPct) * 100);
+
+  // Largest-remainder apportionment across the difficulty buckets.
+  const exact = weights.map((w) => (n * w) / 100);
+  const counts = exact.map((e) => Math.floor(e));
+  let remainder = n - counts.reduce((a, b) => a + b, 0);
+  const order = weights
+    .map((w, i) => ({ i, f: exact[i] - counts[i], w }))
+    .sort((a, b) => b.f - a.f || b.w - a.w || a.i - b.i);
+  for (let k = 0; remainder > 0; k++, remainder--) {
+    counts[order[k % order.length].i] += 1;
+  }
+
+  // Spread evenly: greedy deficit picks whichever bucket has the highest
+  // remaining fraction of its budget.
+  const remaining = [...counts];
+  const bucketTargets = [...counts];
+  for (let i = 0; i < n; i++) {
+    let best = -1;
+    let bestScore = -Infinity;
+    for (let j = 0; j < labels.length; j++) {
+      if (remaining[j] > 0) {
+        const score = bucketTargets[j] > 0 ? remaining[j] / bucketTargets[j] : 0;
+        if (score > bestScore) { bestScore = score; best = j; }
+      }
+    }
+    if (best === -1) break;
+    slots[i].targetDifficulty = labels[best];
+    remaining[best]--;
+  }
+}
+
 // ─── Helpers ───────────────────────────────────────────────────────────────
 
 function normaliseBtl(raw: ModuleData["btl_levels"]): number[] {
@@ -501,7 +578,11 @@ function distributeMcqsAcrossModules(
 
 function makePicker(
   weighted: Array<{ module: ModuleData; weight: number }>,
-  sectionMarks: number
+  sectionMarks: number,
+  options?: {
+    coTargets?: Map<string, number>;
+    moduleCosFn?: (moduleNumber: number) => string[];
+  }
 ) {
   const total = weighted.reduce((s, w) => s + w.weight, 0) || 1;
   const target = new Map<number, number>(
@@ -517,19 +598,45 @@ function makePicker(
     weighted.map((w) => [w.module.module_number, w.module])
   );
 
+  // CO bias state — only active when the caller passes coTargets. coAssigned
+  // tracks marks credited to each targeted CO so far; every commit splits the
+  // slot's marks equally across the COs its module supplies.
+  const coTargets = options?.coTargets;
+  const moduleCosFn = options?.moduleCosFn;
+  const coAssigned = new Map<string, number>();
+  if (coTargets) for (const co of coTargets.keys()) coAssigned.set(co, 0);
+
+  const cosForModule = (moduleNumber: number): string[] =>
+    moduleCosFn ? moduleCosFn(moduleNumber) : [];
+
+  // Sum of remaining demand across the targeted COs this module can serve.
+  const coScoreFor = (moduleNumber: number): number => {
+    if (!coTargets) return 0;
+    let score = 0;
+    for (const co of cosForModule(moduleNumber)) {
+      const remaining = (coTargets.get(co) ?? 0) - (coAssigned.get(co) ?? 0);
+      if (remaining > 0) score += remaining;
+    }
+    return score;
+  };
+
   function pickModule(exclude: Set<number> = new Set()): ModuleData {
-    // Sort by largest shortfall; tie-break by lower module number.
+    // Weightage (shortfall) is the PRIMARY criterion: a shortfall gap wider
+    // than 5% of the section wins unconditionally. Only within that band does
+    // CO demand break the tie, then lower module number.
     const candidates = Array.from(byNumber.values())
       .filter((m) => !exclude.has(m.module_number))
       .map((m) => ({
         module: m,
         shortfall: (target.get(m.module_number) ?? 0) -
           (assigned.get(m.module_number) ?? 0),
+        coScore: coScoreFor(m.module_number),
       }))
       .sort((a, b) => {
-        if (Math.abs(b.shortfall - a.shortfall) > 1e-9) {
+        if (Math.abs(a.shortfall - b.shortfall) > sectionMarks * 0.05) {
           return b.shortfall - a.shortfall;
         }
+        if (b.coScore !== a.coScore) return b.coScore - a.coScore;
         return a.module.module_number - b.module.module_number;
       });
     return (
@@ -544,9 +651,36 @@ function makePicker(
       module.module_number,
       (assigned.get(module.module_number) ?? 0) + marks
     );
+    if (coTargets) {
+      const mCos = cosForModule(module.module_number);
+      if (mCos.length > 0) {
+        const per = marks / mCos.length;
+        for (const co of mCos) {
+          coAssigned.set(co, (coAssigned.get(co) ?? 0) + per);
+        }
+      }
+    }
   }
 
-  return { pickModule, commit };
+  // The targeted CO this module is best placed to serve — the one with the
+  // highest remaining demand among the module's COs. Undefined when CO
+  // targeting is off or the module has no under-served CO.
+  function targetCoFor(moduleNumber: number): string | undefined {
+    if (!coTargets) return undefined;
+    let best: string | undefined;
+    let bestRemaining = 0;
+    for (const co of cosForModule(moduleNumber)) {
+      if (!coTargets.has(co)) continue;
+      const remaining = (coTargets.get(co) ?? 0) - (coAssigned.get(co) ?? 0);
+      if (remaining > 0 && remaining > bestRemaining) {
+        bestRemaining = remaining;
+        best = co;
+      }
+    }
+    return best;
+  }
+
+  return { pickModule, commit, targetCoFor };
 }
 
 // ─── Public entry point ────────────────────────────────────────────────────
@@ -567,7 +701,6 @@ export function assignModulesToSlots(
         ) || 30;
 
   const weighted = computeEffectiveWeights(modules);
-  const { pickModule, commit } = makePicker(weighted, sectionMarks);
 
   const slots: QuestionSlot[] = [];
 
@@ -592,6 +725,14 @@ export function assignModulesToSlots(
     return Array.from(seen);
   };
 
+  // Picker is hoisted here so buildSlot can read its CO-bias state
+  // (targetCoFor). The module CO lookup fed to the picker mirrors cosFor.
+  const picker = makePicker(weighted, sectionMarks, {
+    coTargets: ctx.coTargets,
+    moduleCosFn: cosFor,
+  });
+  const { pickModule, commit } = picker;
+
   const buildSlot = (params: {
     slotKey: string;
     display: string;
@@ -602,11 +743,14 @@ export function assignModulesToSlots(
     poolItemType?: QuestionType;
   }): QuestionSlot => {
     const allowed = normaliseBtl(params.module.btl_levels);
+    // A paper-wide btlRange takes precedence over the per-type default range;
+    // both are clamped to the module's allowed levels.
     const target = clampRangeToAllowed(
-      TYPE_BTL_RANGE[params.qType] ?? [2, 3],
+      ctx.btlRange ?? TYPE_BTL_RANGE[params.qType] ?? [2, 3],
       allowed
     );
     const cos = cosFor(params.module.module_number);
+    const targetCo = picker.targetCoFor(params.module.module_number);
     return {
       slotKey: params.slotKey,
       display: params.display,
@@ -619,6 +763,7 @@ export function assignModulesToSlots(
       pos: posFor(cos),
       isOrAlternative: params.isOr ?? false,
       ...(params.poolItemType ? { poolItemType: params.poolItemType } : {}),
+      ...(targetCo ? { targetCo } : {}),
     };
   };
 
@@ -759,11 +904,20 @@ export function assignModulesToSlots(
     }
   });
 
-  if (ctx.difficultyPreset) {
+  // BTL apportionment: an explicit btlRange already set each slot's
+  // targetBtlRange in buildSlot, so skip the preset-based tier apportionment.
+  // The old preset path stays for backward compat while the UI still uses it.
+  if (ctx.difficultyPreset && !ctx.btlRange) {
     apportionBtlTiers(
       slots,
       resolveTierWeights(ctx.difficultyPreset, ctx.customBtlWeights)
     );
+  }
+
+  // Difficulty% directives are independent of BTL — distribute them whenever
+  // supplied.
+  if (ctx.difficultyTargets && ctx.difficultyTargets.length > 0) {
+    apportionDifficulty(slots, ctx.difficultyTargets);
   }
 
   return slots;

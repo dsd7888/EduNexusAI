@@ -9,9 +9,12 @@
  * the stage components and the parent orchestrator.
  */
 
-import type { CustomBtlWeights } from "@/lib/qpaper/moduleAssignment";
-
 // ─── Types ──────────────────────────────────────────────────────────────────
+
+export interface CourseOutcomeRef {
+  co_code: string;
+  description: string;
+}
 
 export type ContentType = "mcq" | "truefalse" | "short" | "long" | "numerical" | "pool";
 
@@ -118,9 +121,18 @@ export function defaultSourcingMix(): SourcingMixState {
   return { fresh: 80, pyq_style: 20, bank: 0 };
 }
 
-/** Starting point for the "Custom" difficulty allocator (mirrors Balanced). */
-export function defaultCustomBtlWeights(): CustomBtlWeights {
-  return { tier1: 25, tier2: 50, tier3: 25 };
+/** Default paper-wide BTL eligibility filter. */
+export function defaultBtlRange(): [number, number] {
+  return [1, 4];
+}
+
+/** Default easy/medium/hard split for the difficulty-distribution control. */
+export function defaultDifficultyTargets(): {
+  easy: number;
+  medium: number;
+  hard: number;
+} {
+  return { easy: 40, medium: 40, hard: 20 };
 }
 
 export function sourcingMixTotal(m: SourcingMixState): number {
@@ -651,11 +663,27 @@ export interface TemplatePayloadContext {
   totalMarksLive: number;
   selectedSubjectId: string;
   flatLayout?: boolean;
+  /** Paper-wide BTL eligibility filter [min, max]. Persisted into `structure`. */
+  btlRange?: [number, number];
+  /** CO code → percentage of total marks. Persisted into `structure`. */
+  coTargetsPct?: Record<string, number>;
+  /** Easy/medium/hard % split. Persisted into `structure`. */
+  difficultyTargets?: { easy: number; medium: number; hard: number };
 }
 
 export function buildTemplatePayload(name: string, ctx: TemplatePayloadContext) {
-  const { sections, modules, selectedModuleIds, meta, totalMarksLive, selectedSubjectId, flatLayout } =
-    ctx;
+  const {
+    sections,
+    modules,
+    selectedModuleIds,
+    meta,
+    totalMarksLive,
+    selectedSubjectId,
+    flatLayout,
+    btlRange,
+    coTargetsPct,
+    difficultyTargets,
+  } = ctx;
   let qCounter = 0;
   const apiSections: TemplateSectionPayload[] = sections.map((s, sIdx) => {
     const range = moduleRangeForSection(sIdx, modules, selectedModuleIds);
@@ -679,7 +707,13 @@ export function buildTemplatePayload(name: string, ctx: TemplatePayloadContext) 
     duration_minutes: Number(meta.time.replace(/\D+/g, "")) || 150,
     total_marks: totalMarksLive,
     instructions: meta.instructions.map((i) => i.text.trim()).filter(Boolean),
-    structure: { sections: apiSections, ...(flatLayout ? { flatLayout: true } : {}) },
+    structure: {
+      sections: apiSections,
+      ...(flatLayout ? { flatLayout: true } : {}),
+      ...(btlRange ? { btlRange } : {}),
+      ...(coTargetsPct && Object.keys(coTargetsPct).length > 0 ? { coTargetsPct } : {}),
+      ...(difficultyTargets ? { difficultyTargets } : {}),
+    },
     is_default: false,
   };
 }
@@ -760,7 +794,15 @@ export function fromTemplateStructure(
     total_marks: number;
     instructions: string[] | null;
   }
-): { sections: BuilderSection[]; meta: PaperMetadata; flatLayout: boolean; targetMarks: number } {
+): {
+  sections: BuilderSection[];
+  meta: PaperMetadata;
+  flatLayout: boolean;
+  targetMarks: number;
+  btlRange: [number, number];
+  coTargetsPct: Record<string, number>;
+  difficultyTargets: { easy: number; medium: number; hard: number };
+} {
   const rawSections = (structure.sections as TemplateSectionPayload[] | undefined) ?? [];
   const flatLayout = Boolean(structure.flatLayout);
 
@@ -779,5 +821,24 @@ export function fromTemplateStructure(
     instructions: (headers.instructions ?? []).map(makeInstruction),
   };
 
-  return { sections, meta, flatLayout, targetMarks: headers.total_marks };
+  // Older templates predate btlRange/coTargetsPct/difficultyTargets (some may
+  // carry the retired difficultyPreset/customBtlWeights instead) — degrade to
+  // sensible defaults rather than crashing on the missing keys.
+  const btlRange = (structure.btlRange as [number, number] | undefined) ?? defaultBtlRange();
+  const coTargetsPct =
+    (structure.coTargetsPct as Record<string, number> | undefined) ?? {};
+  const difficultyTargets =
+    (structure.difficultyTargets as
+      | { easy: number; medium: number; hard: number }
+      | undefined) ?? defaultDifficultyTargets();
+
+  return {
+    sections,
+    meta,
+    flatLayout,
+    targetMarks: headers.total_marks,
+    btlRange,
+    coTargetsPct,
+    difficultyTargets,
+  };
 }
