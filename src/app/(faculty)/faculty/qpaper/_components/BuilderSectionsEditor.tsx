@@ -56,6 +56,7 @@ import {
   type BuilderQuestion,
   type BuilderSection,
   type ContentType,
+  type ModuleRow,
   type PoolItemType,
 } from "./shared";
 
@@ -64,12 +65,14 @@ import {
 function SortableQuestion({
   question,
   qNumber,
+  modules,
   onUpdate,
   onRemove,
   onDuplicate,
 }: {
   question: BuilderQuestion;
   qNumber: number;
+  modules: ModuleRow[];
   onUpdate: (q: BuilderQuestion) => void;
   onRemove: () => void;
   onDuplicate: () => void;
@@ -449,6 +452,36 @@ function SortableQuestion({
               </label>
             </div>
           )}
+
+          {/* ── Module pin (optional, advanced) — basic descriptive/MCQ only ── */}
+          {!isPool && !question.hasAttemptAny && !question.hasOr && (
+            <div className="flex items-center gap-2 pt-1">
+              <span className="text-muted-foreground">Module (optional)</span>
+              <Select
+                value={question.pinnedModuleId ?? "auto"}
+                onValueChange={(val) =>
+                  onUpdate({
+                    ...question,
+                    pinnedModuleId: val === "auto" ? null : val,
+                  })
+                }
+              >
+                <SelectTrigger className="h-7 w-52 text-xs text-muted-foreground">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="auto" className="text-xs">
+                    — Auto
+                  </SelectItem>
+                  {modules.map((m) => (
+                    <SelectItem key={m.id} value={m.id} className="text-xs">
+                      {`M${m.module_number}: ${m.name}`}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          )}
         </div>
 
         {/* ── OR alternative mirror block (visual indicator) ──────────── */}
@@ -486,6 +519,7 @@ interface BuilderSectionsEditorProps {
   targetMarks: number;
   totalMarksLive: number;
   flatLayout?: boolean;
+  modules: ModuleRow[];
 }
 
 export function BuilderSectionsEditor({
@@ -494,6 +528,7 @@ export function BuilderSectionsEditor({
   targetMarks,
   totalMarksLive,
   flatLayout = false,
+  modules,
 }: BuilderSectionsEditorProps) {
   const sensors = useSensors(
     useSensor(PointerSensor),
@@ -700,6 +735,7 @@ export function BuilderSectionsEditor({
                     key={q.id}
                     question={q}
                     qNumber={qIdx + 1}
+                    modules={modules}
                     onUpdate={(updated) => updateQuestion(section.id, updated)}
                     onRemove={() => removeQuestion(section.id, q.id)}
                     onDuplicate={() => duplicateQuestion(section.id, q.id)}

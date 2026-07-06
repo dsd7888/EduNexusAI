@@ -48,6 +48,8 @@ export type { CustomBtlWeights, DifficultyPreset, DifficultyTarget };
 // ─── Public input/output types (kept stable for callers) ───────────────────
 
 export interface ModuleInfo {
+  /** DB module id — needed to resolve a per-question pinnedModuleId. */
+  id?: string;
   module_number: number;
   name: string;
   description?: string | null;
@@ -1179,6 +1181,7 @@ function buildSlotCtx(
 
 function modulesToData(modules: ModuleInfo[]): ModuleData[] {
   return modules.map((m) => ({
+    id: m.id,
     module_number: m.module_number,
     name: m.name,
     description: m.description,

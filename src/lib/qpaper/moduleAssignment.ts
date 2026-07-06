@@ -46,6 +46,8 @@ export interface DifficultyTarget {
 }
 
 export interface ModuleData {
+  /** DB module id — needed to resolve a per-question pinnedModuleId. */
+  id?: string;
   module_number: number;
   name: string;
   description?: string | null;
@@ -683,6 +685,25 @@ function makePicker(
   return { pickModule, commit, targetCoFor };
 }
 
+/**
+ * Resolve a per-question pinnedModuleId against this section's modules. Falls
+ * back to null (→ automatic pickModule) with a warning when the module was
+ * deselected/removed after being pinned.
+ */
+function resolvePinnedModule(
+  pinnedModuleId: string,
+  modules: ModuleData[]
+): ModuleData | null {
+  const found = modules.find((m) => m.id === pinnedModuleId);
+  if (!found) {
+    console.warn(
+      `[moduleAssignment] pinned module ${pinnedModuleId} not found in section modules — falling back to automatic assignment`
+    );
+    return null;
+  }
+  return found;
+}
+
 // ─── Public entry point ────────────────────────────────────────────────────
 
 export function assignModulesToSlots(
@@ -777,7 +798,12 @@ export function assignModulesToSlots(
     if (q.type === "mcq") {
       const subCount = q.sub_parts ?? 0;
       const marksPer = q.marks_per_part ?? 1;
-      const mcqModules = distributeMcqsAcrossModules(subCount, weighted);
+      const pinnedModule = q.pinnedModuleId
+        ? resolvePinnedModule(q.pinnedModuleId, modules)
+        : null;
+      const mcqModules = pinnedModule
+        ? Array.from({ length: subCount }, () => pinnedModule)
+        : distributeMcqsAcrossModules(subCount, weighted);
       for (let i = 0; i < subCount; i++) {
         const mod = mcqModules[i] ?? pickModule();
         commit(mod, marksPer);
@@ -795,7 +821,10 @@ export function assignModulesToSlots(
     }
 
     if (q.type === "descriptive") {
-      const mod = pickModule();
+      const pinnedModule = q.pinnedModuleId
+        ? resolvePinnedModule(q.pinnedModuleId, modules)
+        : null;
+      const mod = pinnedModule ?? pickModule();
       commit(mod, q.total_marks);
       slots.push(
         buildSlot({

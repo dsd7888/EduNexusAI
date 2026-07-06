@@ -83,6 +83,7 @@ export function BuilderView({
         targetMarks={targetMarks}
         totalMarksLive={totalMarksLive}
         flatLayout={flatLayout}
+        modules={modules.filter((m) => selectedModuleIds.includes(m.id))}
       />
 
       <div className="space-y-2">

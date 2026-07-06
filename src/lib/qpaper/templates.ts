@@ -63,6 +63,10 @@ interface TemplateQuestionBlockShared {
 
 export interface TemplateQuestion extends TemplateQuestionBlockShared {
   type: TemplateQuestionType;
+  /** Pinned module id — basic mcq/descriptive rows only. When set,
+   *  assignModulesToSlots uses this module directly instead of pickModule.
+   *  null/absent = automatic weightage-based assignment (default). */
+  pinnedModuleId?: string | null;
 }
 
 /**

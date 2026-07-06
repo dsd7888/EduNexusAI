@@ -79,6 +79,7 @@ function modulesForSection(
   return modules
     .filter((m) => m.module_number >= lo && m.module_number <= hi)
     .map((m) => ({
+      id: m.id,
       module_number: m.module_number,
       name: m.name,
       description: m.description,

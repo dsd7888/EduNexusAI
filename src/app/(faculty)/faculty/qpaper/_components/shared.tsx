@@ -62,6 +62,9 @@ export interface BuilderQuestion {
   poolAttemptCount: number;
   /** Pool-only: marks awarded per attempted item. */
   poolMarksPerItem: number;
+  /** Pinned module id — when set, assignModulesToSlots skips pickModule
+   *  for this slot and uses this module directly. null = auto (default). */
+  pinnedModuleId?: string | null;
 }
 
 export interface BuilderSection {
@@ -280,6 +283,8 @@ export interface TemplateQuestionPayload {
   parts?: string[];
   has_numerical?: boolean;
   attempt_logic: string | null;
+  /** Pinned module id — basic mcq/descriptive rows only. null = auto. */
+  pinnedModuleId?: string | null;
 }
 
 /**
@@ -436,6 +441,7 @@ export function newQuestion(
     poolComposition,
     poolAttemptCount: poolK,
     poolMarksPerItem: 1,
+    pinnedModuleId: null,
     ...defaults[contentType],
     ...patch,
   };
@@ -512,6 +518,7 @@ export function toTemplateQuestion(
       sub_parts: q.subPartsCount,
       marks_per_part: q.marksPerPart,
       attempt_logic: null,
+      pinnedModuleId: q.pinnedModuleId ?? null,
     };
   }
 
@@ -550,6 +557,7 @@ export function toTemplateQuestion(
     total_marks: q.marks,
     has_numerical: q.contentType === "numerical",
     attempt_logic: null,
+    pinnedModuleId: q.pinnedModuleId ?? null,
   };
 }
 
@@ -742,6 +750,7 @@ function fromTemplateQuestion(q: TemplateQuestionBlockPayload): BuilderQuestion 
       instruction: tq.instruction ?? "",
       subPartsCount: tq.sub_parts ?? 5,
       marksPerPart: tq.marks_per_part ?? 1,
+      pinnedModuleId: tq.pinnedModuleId ?? null,
     });
   }
 
@@ -777,6 +786,7 @@ function fromTemplateQuestion(q: TemplateQuestionBlockPayload): BuilderQuestion 
     displayLabel: tq.display_label,
     instruction: tq.instruction ?? "",
     marks: tq.total_marks,
+    pinnedModuleId: tq.pinnedModuleId ?? null,
   });
 }
 
