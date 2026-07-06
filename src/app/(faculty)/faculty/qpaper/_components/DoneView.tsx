@@ -10,7 +10,15 @@
  */
 
 import { useState } from "react";
-import { Download, FileText, Loader2, Lock, RefreshCw, Save } from "lucide-react";
+import {
+  AlertTriangle,
+  Download,
+  FileText,
+  Loader2,
+  Lock,
+  RefreshCw,
+  Save,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
 import { ReviewAndValidateStage } from "./ReviewAndValidateStage";
@@ -48,6 +56,7 @@ interface DoneViewProps {
   /** True once the paper has been edited (inline edit / relabel / regen) since
    *  it was generated — Regenerate confirms before discarding those edits. */
   paperEditedSinceGeneration: boolean;
+  onPdfUpdated: () => void;
   /** Scroll target for the resume-with-paper flow, owned by the page. */
   reviewRef: React.RefObject<HTMLDivElement | null>;
 
@@ -79,6 +88,7 @@ export function DoneView({
   onSavedToBank,
   onGenerate,
   paperEditedSinceGeneration,
+  onPdfUpdated,
   reviewRef,
   bankFallbackCount,
   answerKeyWarnings,
@@ -201,6 +211,7 @@ export function DoneView({
       const data = (await res.json()) as { downloadUrl: string; filePath?: string };
       setDownloadUrl(data.downloadUrl);
       setPdfPath(data.filePath ?? null);
+      onPdfUpdated();
       toast.success("Updated PDF ready");
     } catch (err) {
       console.error(err);
@@ -288,11 +299,30 @@ export function DoneView({
       </div>
 
       {/* ── Export actions ───────────────────────────────────────────── */}
+      {paperEditedSinceGeneration && (
+        <div className="flex items-start gap-2 rounded-md border border-amber-500/40 bg-amber-50 dark:bg-amber-950/20 px-3 py-2.5 text-sm">
+          <AlertTriangle className="size-4 text-amber-500 mt-0.5 shrink-0" />
+          <p className="text-amber-800 dark:text-amber-200">
+            You&apos;ve edited questions since the PDF was built.
+            <button
+              type="button"
+              onClick={reExportPdf}
+              disabled={isReExporting}
+              className="ml-1 underline font-medium hover:no-underline"
+            >
+              Update PDF
+            </button>
+            {" "}
+            before downloading, or your download will not reflect the changes.
+          </p>
+        </div>
+      )}
       <div className="rounded-lg border bg-card p-4 space-y-4">
         {/* Primary row */}
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <Button
             size="lg"
+            variant={paperEditedSinceGeneration ? "outline" : "default"}
             disabled={!downloadUrl}
             onClick={() => {
               if (!downloadUrl) return;
@@ -301,7 +331,9 @@ export function DoneView({
             }}
           >
             <Download className="mr-2 size-4" />
-            Download PDF
+            {paperEditedSinceGeneration
+              ? "Download PDF (outdated)"
+              : "Download PDF"}
           </Button>
           <Button
             size="lg"
@@ -370,19 +402,35 @@ export function DoneView({
 
         {/* Tertiary row */}
         <div className="flex items-center gap-3 border-t pt-3">
-          <button
-            type="button"
-            onClick={reExportPdf}
-            disabled={isReExporting}
-            className="text-xs text-muted-foreground hover:text-foreground inline-flex items-center gap-1"
-          >
-            {isReExporting ? (
-              <Loader2 className="size-3 animate-spin" />
-            ) : (
-              <RefreshCw className="size-3" />
-            )}
-            Update PDF
-          </button>
+          {paperEditedSinceGeneration ? (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={reExportPdf}
+              disabled={isReExporting}
+            >
+              {isReExporting ? (
+                <Loader2 className="mr-2 size-3.5 animate-spin" />
+              ) : (
+                <RefreshCw className="mr-2 size-3.5" />
+              )}
+              Update PDF
+            </Button>
+          ) : (
+            <button
+              type="button"
+              onClick={reExportPdf}
+              disabled={isReExporting}
+              className="text-xs text-muted-foreground hover:text-foreground inline-flex items-center gap-1"
+            >
+              {isReExporting ? (
+                <Loader2 className="size-3 animate-spin" />
+              ) : (
+                <RefreshCw className="size-3" />
+              )}
+              Update PDF
+            </button>
+          )}
           <span className="text-muted-foreground text-xs">·</span>
           <SaveTemplateAction
             sections={sections}

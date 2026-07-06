@@ -31,6 +31,7 @@ import {
   type QuestionPart,
   type SubQuestion,
   type TagValidation,
+  type TemplateQuestionPayload,
 } from "./shared";
 import {
   isPoolItemMcqLike,
@@ -305,6 +306,7 @@ export function ReviewAndValidateStage({
   onSavedToBank,
 }: ReviewAndValidateStageProps) {
   const [regenKey, setRegenKey] = useState<string | null>(null);
+  const [regenSubKey, setRegenSubKey] = useState<string | null>(null);
   const [editingKey, setEditingKey] = useState<string | null>(null);
   const [editDraft, setEditDraft] = useState<EditDraft | null>(null);
   const [savingBankKey, setSavingBankKey] = useState<string | null>(null);
@@ -376,6 +378,88 @@ export function ReviewAndValidateStage({
       toast.error("Failed to regenerate question");
     } finally {
       setRegenKey(null);
+    }
+  };
+
+  // ─── Regenerate a single MCQ sub-part ───────────────────────────────────
+  // Reuses the same route as regenerateQuestion, but asks for a single
+  // sub_part (sub_parts: 1) and splices only that one item back in — the
+  // other 5 sub-items and the question's own instruction/marks are untouched.
+  const regenerateSubPart = async (
+    sIdx: number,
+    qIdx: number,
+    subIdx: number
+  ) => {
+    if (!paper) return;
+    const tplQ = sections[sIdx]?.questions[qIdx];
+    const question = paper.sections[sIdx]?.questions[qIdx];
+    if (!tplQ || !question || question.type !== "mcq") return;
+    const sub = question.sub_parts?.[subIdx];
+    if (!sub) return;
+
+    const baseTemplate = toTemplateQuestion(tplQ, qIdx + 1) as TemplateQuestionPayload;
+    const templateQuestion: TemplateQuestionPayload = {
+      ...baseTemplate,
+      sub_parts: 1,
+      total_marks: baseTemplate.marks_per_part ?? baseTemplate.total_marks,
+    };
+    const sectionRange = moduleRangeForSection(
+      sIdx,
+      modules,
+      selectedModuleIds
+    );
+    const sectionModulesForServer = modules
+      .filter(
+        (m) =>
+          m.module_number >= sectionRange[0] &&
+          m.module_number <= sectionRange[1]
+      )
+      .map((m) => ({
+        module_number: m.module_number,
+        name: m.name,
+      }));
+
+    const key = `${sIdx}-${qIdx}-${subIdx}`;
+    setRegenSubKey(key);
+
+    try {
+      const res = await fetch("/api/generate/qpaper/regenerate-question", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          template_question: templateQuestion,
+          section_modules: sectionModulesForServer,
+          pyq_context: "",
+          co_po_data: { courseOutcomes: paper.courseOutcomes ?? [] },
+          question_context: JSON.stringify(question),
+        }),
+      });
+      if (!res.ok) throw new Error(await res.text());
+      const data = (await res.json()) as { question: GeneratedQuestion };
+      const newSub = data.question.sub_parts?.[0];
+      if (!newSub) throw new Error("No sub-question returned");
+      setPaper((prev) => {
+        if (!prev) return prev;
+        const next = { ...prev, sections: prev.sections.map((s) => ({ ...s })) };
+        const q = { ...next.sections[sIdx].questions[qIdx] };
+        if (q.sub_parts) {
+          // Keep this sub-item's original label (i)/(ii)/… — the route
+          // always numbers a freshly generated sub_parts array from (i).
+          q.sub_parts = q.sub_parts.map((s, i) =>
+            i === subIdx ? { ...newSub, label: s.label } : s
+          );
+        }
+        next.sections[sIdx].questions = next.sections[sIdx].questions.map(
+          (orig, i) => (i === qIdx ? q : orig)
+        );
+        return next;
+      });
+      toast.success("Sub-question regenerated");
+    } catch (err) {
+      console.error(err);
+      toast.error("Failed to regenerate sub-question");
+    } finally {
+      setRegenSubKey(null);
     }
   };
 
@@ -797,6 +881,22 @@ export function ReviewAndValidateStage({
                                 <Loader2 className="size-3 animate-spin" />
                               ) : (
                                 <Library className="size-3" />
+                              )}
+                            </Button>
+                            <Button
+                              size="icon"
+                              variant="ghost"
+                              className="size-6"
+                              title="Regenerate this sub-question"
+                              disabled={regenSubKey === `${sIdx}-${qIdx}-${si}`}
+                              onClick={() =>
+                                regenerateSubPart(sIdx, qIdx, si)
+                              }
+                            >
+                              {regenSubKey === `${sIdx}-${qIdx}-${si}` ? (
+                                <Loader2 className="size-3 animate-spin" />
+                              ) : (
+                                <RefreshCw className="size-3" />
                               )}
                             </Button>
                           </div>

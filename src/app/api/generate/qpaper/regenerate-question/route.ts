@@ -92,7 +92,9 @@ Do NOT repeat the previous question text below. Generate a genuinely different q
 ${avoidText.slice(0, 1500)}
 </avoid>${targetBlock}
 
-Output a SINGLE JSON object (not an array) with the same structure as the template type. For "mcq": use "sub_parts" (6 entries). For all other types: use "parts". Assign CO (number only), BTL (1-6) and PO (number) to each sub_part/part. No markdown, no prose.`;
+Output a SINGLE JSON object (not an array) with the same structure as the template type. For "mcq": use "sub_parts" (${
+      templateQuestion.type === "mcq" ? templateQuestion.sub_parts ?? 6 : 6
+    } entries). For all other types: use "parts". Assign CO (number only), BTL (1-6) and PO (number) to each sub_part/part. No markdown, no prose.`;
 
     const result = await routeAI("qpaper_gen", {
       messages: [{ role: "user", content: prompt }],

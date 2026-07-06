@@ -102,7 +102,7 @@ export function MyBankTab({
   onGoImport: () => void;
 }) {
   const [filters, setFilters] = useState<BankFilters>(EMPTY_FILTERS);
-  const [searchInput, setSearchInput] = useState("");
+  const [searchQuery, setSearchQuery] = useState("");
   const [items, setItems] = useState<BankQuestion[]>([]);
   const [page, setPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
@@ -114,15 +114,22 @@ export function MyBankTab({
   );
   const [deleting, setDeleting] = useState(false);
 
-  // Debounce the search box into the filter set.
-  useEffect(() => {
-    const t = setTimeout(() => {
-      setFilters((f) => (f.search === searchInput ? f : { ...f, search: searchInput }));
-    }, 350);
-    return () => clearTimeout(t);
-  }, [searchInput]);
-
   const filterKey = useMemo(() => JSON.stringify(filters), [filters]);
+
+  // Client-side text search — only filters already-loaded pages (see PER_PAGE).
+  const filteredItems = useMemo(
+    () =>
+      items.filter(
+        (q) =>
+          !searchQuery.trim() ||
+          q.question_text.toLowerCase().includes(searchQuery.trim().toLowerCase())
+      ),
+    [items, searchQuery]
+  );
+
+  useEffect(() => {
+    setSearchQuery("");
+  }, [subjectId]);
 
   const load = useCallback(
     async (pageNum: number, replace: boolean) => {
@@ -194,7 +201,7 @@ export function MyBankTab({
   };
 
   const selectAllVisible = () => {
-    const allVisibleIds = items.map((it) => it.id);
+    const allVisibleIds = filteredItems.map((it) => it.id);
     const allSelected = allVisibleIds.every((id) => selectedIds.has(id));
     if (allSelected) {
       setSelectedIds((prev) => {
@@ -309,8 +316,7 @@ export function MyBankTab({
     !!filters.co_code ||
     !!filters.btl_level ||
     !!filters.source ||
-    filters.needs_review ||
-    !!filters.search;
+    filters.needs_review;
 
   // ── Empty bank (no filters) → onboarding state ─────────────────────────
   if (!statsLoading && stats && stats.total === 0) {
@@ -426,24 +432,12 @@ export function MyBankTab({
             {hasActiveFilters && (
               <button
                 type="button"
-                onClick={() => {
-                  setFilters(EMPTY_FILTERS);
-                  setSearchInput("");
-                }}
+                onClick={() => setFilters(EMPTY_FILTERS)}
                 className="text-xs text-primary hover:underline"
               >
                 Clear
               </button>
             )}
-          </div>
-          <div className="relative">
-            <Search className="absolute left-2 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground" />
-            <Input
-              value={searchInput}
-              onChange={(e) => setSearchInput(e.target.value)}
-              placeholder="Search question text…"
-              className="h-8 pl-7 text-sm"
-            />
           </div>
           {/* Selection toolbar — shown once questions are loaded */}
           {loadedOnce && items.length > 0 && (
@@ -454,9 +448,11 @@ export function MyBankTab({
                 className="flex items-center gap-1 px-2 py-1 rounded-md border text-xs font-medium text-muted-foreground hover:bg-muted transition-colors"
               >
                 <CheckSquare className="size-3.5" />
-                {items.every((it) => selectedIds.has(it.id)) && selectedIds.size > 0
+                {filteredItems.every((it) => selectedIds.has(it.id)) &&
+                filteredItems.length > 0 &&
+                selectedIds.size > 0
                   ? "Deselect visible"
-                  : `Select visible (${items.length})`}
+                  : `Select visible (${filteredItems.length})`}
               </button>
               {page < totalPages && (
                 <button
@@ -514,9 +510,40 @@ export function MyBankTab({
           )}
         </Card>
 
+        {/* Client-side text search (loaded pages only — bank paginates at PER_PAGE) */}
+        {loadedOnce && items.length > 0 && (
+          <div className="space-y-1">
+            <div className="relative">
+              <Search className="absolute left-2 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground pointer-events-none" />
+              <Input
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                placeholder="Search questions..."
+                className="h-8 pl-7 pr-8 text-sm"
+              />
+              {searchQuery && (
+                <button
+                  type="button"
+                  onClick={() => setSearchQuery("")}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                  aria-label="Clear search"
+                >
+                  <X className="size-3.5" />
+                </button>
+              )}
+            </div>
+            {searchQuery.trim() && (
+              <p className="text-[11px] text-muted-foreground">
+                {filteredItems.length} of {items.length} question
+                {items.length === 1 ? "" : "s"}
+              </p>
+            )}
+          </div>
+        )}
+
         {/* List */}
         <div className="space-y-2">
-          {items.map((q) => (
+          {filteredItems.map((q) => (
             <BankQuestionCard
               key={q.id}
               question={q}
@@ -529,9 +556,11 @@ export function MyBankTab({
             />
           ))}
 
-          {loadedOnce && items.length === 0 && !loading && (
+          {loadedOnce && filteredItems.length === 0 && !loading && (
             <Card className="p-6 text-center text-sm text-muted-foreground">
-              No questions match these filters.
+              {searchQuery.trim()
+                ? `No questions match "${searchQuery.trim()}"`
+                : "No questions match these filters."}
             </Card>
           )}
 

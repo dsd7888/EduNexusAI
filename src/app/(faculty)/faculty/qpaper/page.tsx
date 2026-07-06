@@ -981,6 +981,7 @@ export default function QpaperPage() {
               }
               onGenerate={handleGenerate}
               paperEditedSinceGeneration={paperEditedSinceGeneration}
+              onPdfUpdated={() => setPaperEditedSinceGeneration(false)}
               reviewRef={reviewRef}
               bankFallbackCount={bankFallbackCount}
               answerKeyWarnings={answerKeyWarnings}
