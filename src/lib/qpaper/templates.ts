@@ -28,6 +28,8 @@ export type QuestionType =
 export interface PoolCompositionEntry {
   itemType: QuestionType;
   count: number;
+  /** Pinned module id for this composition row. null/absent = auto. */
+  pinnedModuleId?: string | null;
 }
 
 /** One generated item inside a pool block (populated after generation). */

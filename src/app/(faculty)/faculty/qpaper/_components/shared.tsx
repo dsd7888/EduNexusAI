@@ -31,6 +31,8 @@ export interface BuilderPoolCompositionRow {
   id: string;
   itemType: QuestionType;
   count: number;
+  /** Pinned module id for this composition row. null/absent = auto. */
+  pinnedModuleId?: string | null;
 }
 
 export interface BuilderQuestion {
@@ -256,6 +258,8 @@ export interface AssembledPaper {
 export interface PoolCompositionEntry {
   itemType: QuestionType;
   count: number;
+  /** Pinned module id for this composition row. null/absent = auto. */
+  pinnedModuleId?: string | null;
 }
 
 /** One generated item inside a pool block (populated after generation). */
@@ -493,9 +497,10 @@ export function toTemplateQuestion(
       display_label,
       type: "pool",
       total_marks: q.poolAttemptCount * q.poolMarksPerItem,
-      composition: q.poolComposition.map(({ itemType, count }) => ({
+      composition: q.poolComposition.map(({ itemType, count, pinnedModuleId }) => ({
         itemType,
         count,
+        ...(pinnedModuleId ? { pinnedModuleId } : {}),
       })),
       attemptCount: q.poolAttemptCount,
       marksPerItem: q.poolMarksPerItem,
@@ -736,7 +741,11 @@ function fromTemplateQuestion(q: TemplateQuestionBlockPayload): BuilderQuestion 
     return newQuestion("pool", {
       displayLabel: pool.display_label,
       instruction: pool.instruction ?? defaultPoolInstruction(pool.attemptCount, n),
-      poolComposition: pool.composition.map((r) => ({ ...r, id: uid() })),
+      poolComposition: pool.composition.map((r) => ({
+        ...r,
+        id: uid(),
+        pinnedModuleId: r.pinnedModuleId ?? null,
+      })),
       poolAttemptCount: pool.attemptCount,
       poolMarksPerItem: pool.marksPerItem,
     });

@@ -908,13 +908,15 @@ export function assignModulesToSlots(
       for (const row of q.composition) {
         const count = Math.max(0, row.count);
         const qType = poolItemAssignmentQType(row.itemType);
-        const mcqModules = isPoolItemMcqLike(row.itemType)
+        const pinnedModule = row.pinnedModuleId
+          ? resolvePinnedModule(row.pinnedModuleId, modules)
+          : null;
+        const mcqModules = !pinnedModule && isPoolItemMcqLike(row.itemType)
           ? distributeMcqsAcrossModules(count, weighted)
           : null;
         for (let i = 0; i < count; i++) {
-          const mod = mcqModules
-            ? (mcqModules[i] ?? pickModule())
-            : pickModule();
+          const mod =
+            pinnedModule ?? (mcqModules ? (mcqModules[i] ?? pickModule()) : pickModule());
           commit(mod, marksPer);
           slots.push(
             buildSlot({

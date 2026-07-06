@@ -251,6 +251,32 @@ function SortableQuestion({
                         className="h-7 w-16 text-center text-xs"
                       />
                     </div>
+                    <Select
+                      value={row.pinnedModuleId ?? "auto"}
+                      onValueChange={(val) => {
+                        updatePoolComposition(
+                          question.poolComposition.map((r) =>
+                            r.id === row.id
+                              ? { ...r, pinnedModuleId: val === "auto" ? null : val }
+                              : r
+                          )
+                        );
+                      }}
+                    >
+                      <SelectTrigger className="h-7 w-44 text-xs text-muted-foreground">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="auto" className="text-xs">
+                          — Auto
+                        </SelectItem>
+                        {modules.map((m) => (
+                          <SelectItem key={m.id} value={m.id} className="text-xs">
+                            {`M${m.module_number}: ${m.name}`}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
                     <button
                       type="button"
                       onClick={() => {
