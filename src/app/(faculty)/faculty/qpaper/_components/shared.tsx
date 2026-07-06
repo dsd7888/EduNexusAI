@@ -175,6 +175,7 @@ export interface TagValidation {
   suggestedCO?: string;
   suggestedBTL?: number;
   reasoning: string;
+  confidence?: number;
 }
 
 export interface SubQuestion {

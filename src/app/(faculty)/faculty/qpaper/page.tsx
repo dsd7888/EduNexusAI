@@ -9,7 +9,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
-import { FileText, History } from "lucide-react";
+import { ArrowLeft, FileText, History } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   AlertDialog,
@@ -70,6 +70,13 @@ function pathFromPublicUrl(url: string | null): string | null {
   if (i === -1) return null;
   return url.slice(i + marker.length).split("?")[0];
 }
+
+// Single source of truth for which phase the page is in. Mirrors the PPT
+// generator's view machine (src/app/(faculty)/faculty/generate/page.tsx):
+//   form       → two-column setup + builder
+//   generating → full-page takeover, no sidebar
+//   done       → full-width review + export, no sidebar
+type View = "form" | "generating" | "done";
 
 export default function QpaperPage() {
   const { subjects, isLoading: isLoadingSubjects } = useFacultySubjects();
@@ -145,7 +152,11 @@ export default function QpaperPage() {
   const [pdfPath, setPdfPath] = useState<string | null>(null);
   const [docxPath, setDocxPath] = useState<string | null>(null);
   const [answerKeyPath, setAnswerKeyPath] = useState<string | null>(null);
-  const [isGenerating, setIsGenerating] = useState(false);
+  // View state machine. `isGenerating` stays as a derived alias so the existing
+  // effects and child-component props (which think in terms of a generating
+  // boolean) don't have to change.
+  const [view, setView] = useState<View>("form");
+  const isGenerating = view === "generating";
   const [progressMsg, setProgressMsg] = useState("");
 
   // Whether this page load came from a Q Bank staging hand-off. Read once on
@@ -339,15 +350,28 @@ export default function QpaperPage() {
     }
   }, [verifiedBankCount, sourcingMix.bank]);
 
-  // ─── Beforeunload during generation ─────────────────────────────────────
+  // ─── Block navigation during generation ─────────────────────────────────
+  // Copied from the PPT generator: a back-button press is swallowed (the
+  // history entry is re-pushed) and a tab close/reload warns. Generation can't
+  // be aborted mid-flight, so leaving would strand a half-finished request.
   useEffect(() => {
     if (!isGenerating) return;
-    const warn = (e: BeforeUnloadEvent) => {
+    const handlePopState = (e: PopStateEvent) => {
+      e.preventDefault();
+      window.history.pushState(null, "", window.location.href);
+    };
+    window.history.pushState(null, "", window.location.href);
+    window.addEventListener("popstate", handlePopState);
+    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
       e.preventDefault();
       e.returnValue = "Question paper is being generated. Please wait.";
+      return e.returnValue;
     };
-    window.addEventListener("beforeunload", warn);
-    return () => window.removeEventListener("beforeunload", warn);
+    window.addEventListener("beforeunload", handleBeforeUnload);
+    return () => {
+      window.removeEventListener("popstate", handlePopState);
+      window.removeEventListener("beforeunload", handleBeforeUnload);
+    };
   }, [isGenerating]);
 
   // ─── Live total ─────────────────────────────────────────────────────────
@@ -434,7 +458,10 @@ export default function QpaperPage() {
       // if finalized (its prior history row, if any, was written before).
       historyRowIdRef.current = null;
       applySnapshot(s);
-      toast.success(s.paper ? "Draft restored — scroll to review your paper" : "Draft restored");
+      // A restored paper lands straight in the done view; otherwise back to the
+      // builder to keep editing the setup.
+      setView(s.paper ? "done" : "form");
+      toast.success(s.paper ? "Draft restored — review your paper" : "Draft restored");
     }
   };
 
@@ -626,7 +653,7 @@ export default function QpaperPage() {
       toast.error("Sourcing mix must total 100%");
       return;
     }
-    setIsGenerating(true);
+    setView("generating");
     setPaper(null);
     setDownloadUrl(null);
     setAnswerKeyUrl(null);
@@ -703,14 +730,16 @@ export default function QpaperPage() {
       setPdfPath(data.filePath ?? null);
       setBankFallbackCount(data.bankFallbackCount ?? 0);
       setUnplaceablePreferred(data.unplaceablePreferred ?? []);
+      setView("done");
       void markComplete();
       toast.success("Question paper generated!");
     } catch (err) {
       console.error(err);
+      // Failed run drops back to the builder so the setup can be retried.
+      setView("form");
       void markFailed();
       toast.error("Failed to generate. Please try again.");
     } finally {
-      setIsGenerating(false);
       setProgressMsg("");
     }
   };
@@ -736,23 +765,52 @@ export default function QpaperPage() {
 
   return (
     <div className="flex flex-col -m-6 h-screen overflow-hidden">
-      <div className="px-6 pt-6 pb-4 shrink-0">
+      {/* ── Header — contextual per view. In "done" it becomes a sticky-style
+          bar (it lives in the non-scrolling shrink-0 region, so it stays put
+          while the review below scrolls) with a Back-to-Setup affordance. ── */}
+      <div className="px-6 pt-6 pb-4 shrink-0 border-b bg-background">
         <div className="flex items-start justify-between gap-4">
-          <div>
-            <h1 className="text-2xl font-bold flex items-center gap-2">
-              <FileText className="size-6" />
-              Question Paper Generator
-            </h1>
-            <p className="text-muted-foreground text-sm mt-1">
-              Build your paper structure — AI generates the questions
-            </p>
-          </div>
-          <Button variant="outline" size="sm" asChild>
-            <Link href="/faculty/qpaper/history">
-              <History className="mr-2 size-4" />
-              Past papers
-            </Link>
-          </Button>
+          {view === "done" ? (
+            <div className="flex items-center gap-3 min-w-0">
+              <Button
+                variant="ghost"
+                size="sm"
+                className="-ml-2 shrink-0"
+                onClick={() => setView("form")}
+              >
+                <ArrowLeft className="mr-1.5 size-4" />
+                Back to Setup
+              </Button>
+              <div className="min-w-0">
+                <p className="text-sm font-semibold truncate">
+                  {selectedSubject
+                    ? `${selectedSubject.code} — ${selectedSubject.name}`
+                    : "Question Paper"}
+                </p>
+                <p className="text-xs text-muted-foreground">Question Paper</p>
+              </div>
+            </div>
+          ) : (
+            <div>
+              <h1 className="text-2xl font-bold flex items-center gap-2">
+                <FileText className="size-6" />
+                Question Paper Generator
+              </h1>
+              <p className="text-muted-foreground text-sm mt-1">
+                Build your paper structure — AI generates the questions
+              </p>
+            </div>
+          )}
+          {/* Hidden during the generating takeover so nothing invites navigation
+              away from an in-flight request. */}
+          {view !== "generating" && (
+            <Button variant="outline" size="sm" asChild>
+              <Link href="/faculty/qpaper/history">
+                <History className="mr-2 size-4" />
+                Past papers
+              </Link>
+            </Button>
+          )}
         </div>
       </div>
 
@@ -792,41 +850,42 @@ export default function QpaperPage() {
         </AlertDialogContent>
       </AlertDialog>
 
-      <div className="flex md:flex-row flex-col gap-6 flex-1 min-h-0 overflow-hidden">
-        <aside className="md:w-80 w-full md:h-full shrink-0 overflow-y-auto h-full md:border-r md:border-b-0 border-b bg-card pl-6 pr-6 pb-6">
-          <SetupPanel
-            lastSavedAt={lastSavedAt}
-            subjects={subjects}
-            isLoadingSubjects={isLoadingSubjects}
-            selectedSubjectId={selectedSubjectId}
-            onSelectSubject={setSelectedSubjectId}
-            targetMarks={targetMarks}
-            onTargetMarksChange={setTargetMarks}
-            meta={meta}
-            setMeta={setMeta}
-            sections={sections}
-            modules={modules}
-            selectedModuleIds={selectedModuleIds}
-            setSelectedModuleIds={setSelectedModuleIds}
-            btlRange={btlRange}
-            onBtlRangeChange={setBtlRange}
-            coTargetsPct={coTargetsPct}
-            onCoTargetsPctChange={setCoTargetsPct}
-            difficultyTargets={difficultyTargets}
-            onDifficultyTargetsChange={setDifficultyTargets}
-            courseOutcomes={courseOutcomes}
-            moduleCoMap={moduleCoMap}
-            sourcingMix={sourcingMix}
-            setSourcingMix={setSourcingMix}
-            verifiedBankCount={verifiedBankCount}
-            preferredBankQuestionIds={preferredBankQuestionIds}
-            templateRefreshKey={templateRefreshKey}
-            onLoadTemplate={handleLoadTemplate}
-          />
-        </aside>
+      {/* ── VIEW: form — two-column setup sidebar + builder ──────────────── */}
+      {view === "form" && (
+        <div className="flex md:flex-row flex-col gap-6 flex-1 min-h-0 overflow-hidden">
+          <aside className="md:w-80 w-full md:h-full shrink-0 overflow-y-auto h-full md:border-r md:border-b-0 border-b bg-card pl-6 pr-6 pb-6">
+            <SetupPanel
+              lastSavedAt={lastSavedAt}
+              subjects={subjects}
+              isLoadingSubjects={isLoadingSubjects}
+              selectedSubjectId={selectedSubjectId}
+              onSelectSubject={setSelectedSubjectId}
+              targetMarks={targetMarks}
+              onTargetMarksChange={setTargetMarks}
+              meta={meta}
+              setMeta={setMeta}
+              sections={sections}
+              modules={modules}
+              selectedModuleIds={selectedModuleIds}
+              setSelectedModuleIds={setSelectedModuleIds}
+              btlRange={btlRange}
+              onBtlRangeChange={setBtlRange}
+              coTargetsPct={coTargetsPct}
+              onCoTargetsPctChange={setCoTargetsPct}
+              difficultyTargets={difficultyTargets}
+              onDifficultyTargetsChange={setDifficultyTargets}
+              courseOutcomes={courseOutcomes}
+              moduleCoMap={moduleCoMap}
+              sourcingMix={sourcingMix}
+              setSourcingMix={setSourcingMix}
+              verifiedBankCount={verifiedBankCount}
+              preferredBankQuestionIds={preferredBankQuestionIds}
+              templateRefreshKey={templateRefreshKey}
+              onLoadTemplate={handleLoadTemplate}
+            />
+          </aside>
 
-        <div className="flex-1 min-w-0 overflow-y-auto h-full p-6">
-          {paper === null && !isGenerating && (
+          <div className="flex-1 min-w-0 overflow-y-auto h-full p-6">
             <BuilderView
               selectedSubject={selectedSubject}
               meta={meta}
@@ -848,18 +907,28 @@ export default function QpaperPage() {
               isGenerating={isGenerating}
               onGenerate={handleGenerate}
             />
-          )}
+          </div>
+        </div>
+      )}
 
-          {isGenerating && (
+      {/* ── VIEW: generating — full-page takeover, centered, no sidebar ──── */}
+      {view === "generating" && (
+        <div className="flex-1 min-h-0 overflow-y-auto flex items-start justify-center">
+          <div className="w-full max-w-lg px-6 py-10">
             <GeneratingView
               selectedSubject={selectedSubject}
               meta={meta}
               targetMarks={targetMarks}
               progressMsg={progressMsg}
             />
-          )}
+          </div>
+        </div>
+      )}
 
-          {paper !== null && !isGenerating && (
+      {/* ── VIEW: done — full-width review + export, no sidebar ──────────── */}
+      {view === "done" && paper !== null && (
+        <div className="flex-1 min-w-0 overflow-y-auto h-full">
+          <div className="p-6 max-w-5xl mx-auto">
             <DoneView
               paper={paper}
               setPaper={setPaperAndClearKey}
@@ -889,9 +958,9 @@ export default function QpaperPage() {
               answerKeyWarnings={answerKeyWarnings}
               unplaceablePreferred={unplaceablePreferred}
             />
-          )}
+          </div>
         </div>
-      </div>
+      )}
     </div>
   );
 }

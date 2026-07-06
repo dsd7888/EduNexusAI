@@ -26,6 +26,8 @@ export interface TagValidation {
   suggestedBTL?: number;
   /** One-or-two sentence justification (shown to faculty on the flag). */
   reasoning: string;
+  /** Judge confidence 1–100; only mismatches at ≥60 should be reported. */
+  confidence?: number;
 }
 
 export interface QuestionTagInput {
@@ -49,7 +51,10 @@ const SYSTEM_PROMPT =
   "matter and cognitive demand genuinely match its claimed Course Outcome (CO) " +
   "and Bloom's Taxonomy Level (BTL) — never whether the labels merely look " +
   "well-formatted. Be conservative: report a mismatch only when the question " +
-  "clearly tests a different outcome or a clearly different cognitive level.";
+  "clearly tests a different outcome or a clearly different cognitive level. " +
+  "Only set matches:false when you are genuinely confident (confidence >= 60). " +
+  "Do not flag questions where the CO/BTL is defensible even if not the absolute " +
+  "best choice — flag only clear mismatches.";
 
 // Schema-constrained output — Gemini guarantees the shape, so no parse retry.
 const RESPONSE_SCHEMA = {
@@ -74,8 +79,16 @@ const RESPONSE_SCHEMA = {
       type: "string",
       description: "One or two sentences justifying the verdict",
     },
+    confidence: {
+      type: "integer",
+      description:
+        "How confident are you this is a genuine mismatch? " +
+        "100 = absolutely certain (e.g. claimed CO2 but question is clearly " +
+        "about CO4's topic), 50 = plausible mismatch but debatable, " +
+        "1 = extremely borderline. Only report matches:false when you are at least 60 confident.",
+    },
   },
-  required: ["matches", "reasoning"],
+  required: ["matches", "reasoning", "confidence"],
 };
 
 function bloomName(level: number | null): string {
@@ -152,7 +165,7 @@ Decide:
 1. CO — does the question's subject matter genuinely fall under the claimed CO? If a different CO from the list fits clearly better, set suggestedCO to that CO code.
 2. BTL — does the verb/task genuinely demand the claimed cognitive level? A question that only asks to recall a definition is BTL 1 even if labelled BTL 4; one requiring real analysis is BTL 4 even if labelled BTL 2. If the true level differs, set suggestedBTL (1-6).
 
-Set matches=false ONLY when the CO or the BTL is clearly wrong. When matches=true, omit suggestedCO and suggestedBTL. Keep reasoning to one or two sentences.`;
+Set matches=false ONLY when the CO or the BTL is clearly wrong and your confidence is at least 60. When matches=true, omit suggestedCO and suggestedBTL. Always set confidence (1-100). Keep reasoning to one or two sentences.`;
 
   try {
     const result = await routeAI("qpaper_validate_tags", {
@@ -168,10 +181,18 @@ Set matches=false ONLY when the CO or the BTL is clearly wrong. When matches=tru
       String(result.content ?? "")
     ) as Partial<TagValidation>;
     const matches = parsed.matches !== false; // default to pass if absent
+    const rawConfidence = Number(parsed.confidence);
+    const confidence =
+      Number.isInteger(rawConfidence) &&
+      rawConfidence >= 1 &&
+      rawConfidence <= 100
+        ? rawConfidence
+        : undefined;
     const out: TagValidation = {
       matches,
       reasoning:
         typeof parsed.reasoning === "string" ? parsed.reasoning : "",
+      ...(confidence != null ? { confidence } : {}),
     };
     if (!matches) {
       // Only surface suggestions that actually differ from the claimed tags.
@@ -264,8 +285,18 @@ export async function attachTagValidations(
         },
         moduleContent
       );
-      // Invisible when fine: only attach on a real mismatch.
-      if (!validation.matches) unit.validation = validation;
+      if (!validation.matches) {
+        const confidence = validation.confidence ?? 50;
+        const hasSuggestion =
+          validation.suggestedCO != null || validation.suggestedBTL != null;
+        if (confidence >= 90 && hasSuggestion) {
+          // High confidence: auto-apply silently — no flag shown to faculty.
+          if (validation.suggestedCO != null) unit.co = validation.suggestedCO;
+          if (validation.suggestedBTL != null) unit.btl = validation.suggestedBTL;
+        } else {
+          unit.validation = validation;
+        }
+      }
     })
   );
 }

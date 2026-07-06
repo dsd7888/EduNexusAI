@@ -766,6 +766,7 @@ function drawMCQRow(ctx: Ctx, q: GeneratedQuestion, hasCoPo: boolean): Ctx {
       size: 10,
       font: regular,
       color: rgb(0, 0, 0),
+      maxWidth: COL_MARKS_X - (MARGIN_LEFT + 50) - 12,
     });
   }
 
@@ -779,8 +780,6 @@ function drawMCQRow(ctx: Ctx, q: GeneratedQuestion, hasCoPo: boolean): Ctx {
     null,
     false
   );
-  // Q label + marks → rule → sub-parts (same padding rhythm as the instructions box).
-  drawHorizontalRule(ctx, BOX_PAD, RULE_GAP_AFTER);
   drawColumnHeader(ctx, hasCoPo, { showMarks: false });
 
   for (const sub of q.sub_parts ?? []) {
@@ -927,9 +926,9 @@ function drawAttemptAnyOne(
     size: 10,
     font: regular,
     color: rgb(0, 0, 0),
+    maxWidth: COL_MARKS_X - (MARGIN_LEFT + 50) - 12,
   });
   drawRightCols(ctx, ctx.y, q.total_marks, null, null, null, false);
-  drawHorizontalRule(ctx, BOX_PAD, RULE_GAP_AFTER);
 
   for (let i = 0; i < (q.parts ?? []).length; i++) {
     const part = q.parts![i];
@@ -960,9 +959,9 @@ function drawPool(ctx: Ctx, q: GeneratedQuestion, hasCoPo: boolean): Ctx {
     size: 10,
     font: regular,
     color: rgb(0, 0, 0),
+    maxWidth: COL_MARKS_X - (MARGIN_LEFT + 50) - 12,
   });
   drawRightCols(ctx, ctx.y, q.total_marks, null, null, null, false);
-  drawHorizontalRule(ctx, BOX_PAD, RULE_GAP_AFTER);
 
   const marksPer = poolMarksPerItem(q);
   for (let i = 0; i < (q.items ?? []).length; i++) {

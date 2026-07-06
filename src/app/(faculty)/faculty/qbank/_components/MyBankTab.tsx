@@ -27,12 +27,14 @@ import {
   ChevronDown,
   ChevronUp,
   FileOutput,
+  FileText,
   GripVertical,
   Library,
   Loader2,
   Search,
   ShieldCheck,
   Sparkles,
+  Trash2,
   Upload,
   X,
 } from "lucide-react";
@@ -51,12 +53,13 @@ import {
 import { cn } from "@/lib/utils";
 import type { BankQuestion } from "@/lib/qbank/types";
 import { BankQuestionCard } from "./BankQuestionCard";
+import { ReviewFlowDialog } from "./ReviewFlowDialog";
 import {
   EMPTY_FILTERS,
   QUESTION_TYPES,
   SOURCE_LABELS,
   TYPE_LABELS,
-  bulkVerifyQuestions,
+  deleteQuestion,
   formatCo,
   listQuestionIds,
   listQuestions,
@@ -106,7 +109,10 @@ export function MyBankTab({
   const [loading, setLoading] = useState(false);
   const [loadedOnce, setLoadedOnce] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
-  const [verifying, setVerifying] = useState(false);
+  const [reviewQuestions, setReviewQuestions] = useState<BankQuestion[] | null>(
+    null
+  );
+  const [deleting, setDeleting] = useState(false);
 
   // Debounce the search box into the filter set.
   useEffect(() => {
@@ -210,40 +216,92 @@ export function MyBankTab({
     }
   };
 
-  const handleVerifySelected = async () => {
-    if (selectedIds.size === 0) return;
-    setVerifying(true);
-    try {
-      const { verified, skipped } = await bulkVerifyQuestions([...selectedIds]);
-      const verifiedSet = new Set([...selectedIds].filter(
-        (id) => !skipped.find((s) => s.id === id)
-      ));
-      setItems((prev) =>
-        prev.map((it) => (verifiedSet.has(it.id) ? { ...it, is_verified: true } : it))
-      );
-      setSelectedIds(new Set());
-      refreshStats();
-      const msg =
-        skipped.length === 0
-          ? `${verified} question${verified === 1 ? "" : "s"} verified`
-          : `${verified} verified, ${skipped.length} skipped (missing CO or BTL)`;
-      if (skipped.length === 0) {
-        toast.success(msg);
-      } else {
-        toast.warning(msg, {
-          description: skipped.map((s) => `• ${s.question_text.slice(0, 60)}…`).join("\n"),
-          duration: 6000,
-        });
-      }
-    } catch (err) {
-      console.error("[qbank] bulkVerify failed", err);
-      toast.error("Bulk verify failed");
-    } finally {
-      setVerifying(false);
-    }
+  const openReview = (questions: BankQuestion[]) => {
+    if (questions.length === 0) return;
+    setReviewQuestions(questions);
+  };
+
+  const handleVerifySelected = () => {
+    const selected = items.filter((it) => selectedIds.has(it.id));
+    openReview(selected);
+  };
+
+  const handleReviewNeedsReview = () => {
+    const unverified = items.filter((it) => !it.is_verified);
+    openReview(unverified);
+  };
+
+  const handleReviewClose = (completed = false) => {
+    setReviewQuestions(null);
+    if (completed) setSelectedIds(new Set());
+  };
+
+  const handleQuestionApproved = (id: string) => {
+    setItems((prev) =>
+      prev.map((it) => (it.id === id ? { ...it, is_verified: true } : it))
+    );
+    refreshStats();
   };
 
   const stagedIds = useMemo(() => new Set(staged.map((s) => s.id)), [staged]);
+
+  const unstagedSelectedCount = useMemo(
+    () => [...selectedIds].filter((id) => !stagedIds.has(id)).length,
+    [selectedIds, stagedIds]
+  );
+
+  const handleStageSelected = () => {
+    const itemById = new Map(items.map((it) => [it.id, it]));
+    for (const id of selectedIds) {
+      if (stagedIds.has(id)) continue;
+      const q = itemById.get(id);
+      if (q) onStage(q);
+    }
+  };
+
+  const handleDeleteSelected = async () => {
+    const n = selectedIds.size;
+    if (n === 0) return;
+    if (!window.confirm(`Delete ${n} question${n === 1 ? "" : "s"}? This cannot be undone.`)) {
+      return;
+    }
+    setDeleting(true);
+    const ids = [...selectedIds];
+    try {
+      const results = await Promise.all(
+        ids.map(async (id) => {
+          try {
+            await deleteQuestion(id);
+            return { id, ok: true as const };
+          } catch {
+            return { id, ok: false as const };
+          }
+        })
+      );
+      const succeeded = results.filter((r) => r.ok);
+      for (const { id } of succeeded) {
+        handleDeleted(id);
+      }
+      setSelectedIds(new Set());
+      const failed = results.length - succeeded.length;
+      if (failed === 0) {
+        toast.success(
+          `${succeeded.length} question${succeeded.length === 1 ? "" : "s"} deleted`
+        );
+      } else if (succeeded.length === 0) {
+        toast.error("Failed to delete selected questions");
+      } else {
+        toast.warning(
+          `${succeeded.length} deleted, ${failed} failed`
+        );
+      }
+    } catch (err) {
+      console.error("[qbank] bulkDelete failed", err);
+      toast.error("Bulk delete failed");
+    } finally {
+      setDeleting(false);
+    }
+  };
 
   const hasActiveFilters =
     !!filters.question_type ||
@@ -297,6 +355,17 @@ export function MyBankTab({
                 value={stats.needsReview}
                 tone="text-amber-500"
               />
+              {stats.needsReview > 0 && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-7 text-xs ml-auto"
+                  onClick={handleReviewNeedsReview}
+                >
+                  <ShieldCheck className="size-3 mr-1" />
+                  Review Needs Review
+                </Button>
+              )}
               <span className="text-muted-foreground text-xs">
                 By Type: MCQ {stats.byType.mcq} · Short {stats.byType.short_answer} ·
                 Long {stats.byType.long_answer} · Num {stats.byType.numerical}
@@ -408,14 +477,36 @@ export function MyBankTab({
                     size="sm"
                     className="h-7 text-xs"
                     onClick={handleVerifySelected}
-                    disabled={verifying}
+                    disabled={deleting}
                   >
-                    {verifying ? (
+                    <ShieldCheck className="size-3 mr-1" />
+                    Verify Selected
+                  </Button>
+                  {unstagedSelectedCount > 0 && (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="h-7 text-xs"
+                      onClick={handleStageSelected}
+                      disabled={deleting}
+                    >
+                      <FileText className="size-3 mr-1" />
+                      Save to Paper ({unstagedSelectedCount})
+                    </Button>
+                  )}
+                  <Button
+                    size="sm"
+                    variant="destructive"
+                    className="h-7 text-xs"
+                    onClick={handleDeleteSelected}
+                    disabled={deleting}
+                  >
+                    {deleting ? (
                       <Loader2 className="size-3 mr-1 animate-spin" />
                     ) : (
-                      <ShieldCheck className="size-3 mr-1" />
+                      <Trash2 className="size-3 mr-1" />
                     )}
-                    Verify Selected
+                    Delete Selected
                   </Button>
                 </>
               )}
@@ -465,6 +556,16 @@ export function MyBankTab({
         onReorder={onReorder}
         onExportPaper={onExportPaper}
       />
+
+      {reviewQuestions && (
+        <ReviewFlowDialog
+          questions={reviewQuestions}
+          modules={modules}
+          onClose={(completed) => handleReviewClose(completed)}
+          onQuestionUpdated={handleUpdated}
+          onQuestionApproved={handleQuestionApproved}
+        />
+      )}
     </div>
   );
 }

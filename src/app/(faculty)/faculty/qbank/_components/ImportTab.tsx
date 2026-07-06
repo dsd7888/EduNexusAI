@@ -860,8 +860,7 @@ function BulkCardRow({
     card.status !== "generating" &&
     card.status !== "committing" &&
     card.status !== "done";
-  // Type and marks are frozen once a draft exists (question was generated for those settings).
-  const canEditType = card.status === "idle";
+  const canEditType = card.status !== "generating" && card.status !== "committing";
   // Text and tag fields remain editable through the drafted state.
   const canEditContent =
     card.status === "idle" || card.status === "drafted";
