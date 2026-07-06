@@ -247,6 +247,7 @@ function AddQuestionForm({
       if (result.model_answer) updated.model_answer = result.model_answer;
       if (result.options && result.options.length > 0) updated.options = result.options;
       if (result.module_id) updated.module_id = result.module_id;
+      if (result.question_type) updated.question_type = result.question_type;
       setDraft(updated);
       setDraftImagePath(result.image_path);
       toast.success("Draft ready — review and edit before adding");
@@ -643,6 +644,7 @@ function BulkImagesMode({
                           : c.meta.btl_level,
                       difficulty: result.difficulty ?? c.meta.difficulty,
                       module_id: result.module_id ?? c.meta.module_id,
+                      question_type: result.question_type ?? c.meta.question_type,
                     },
                   }
                 : c

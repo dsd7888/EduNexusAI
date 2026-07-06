@@ -11,7 +11,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { FileText, History } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Card } from "@/components/ui/card";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -54,12 +53,10 @@ import {
 } from "./_components/shared";
 import type { PaperTemplateRow } from "@/lib/qpaper/templates";
 import { useQpaperDraft, type BuilderSnapshot } from "./_components/useQpaperDraft";
-import { ScopeAndDifficultyStage } from "./_components/ScopeAndDifficultyStage";
-import { SourcingStage } from "./_components/SourcingStage";
-import { TemplateStructureStage } from "./_components/TemplateStructureStage";
-import { BuilderSectionsEditor } from "./_components/BuilderSectionsEditor";
-import { FinalizeExportStage } from "./_components/FinalizeExportStage";
-import { ReviewAndValidateStage } from "./_components/ReviewAndValidateStage";
+import { SetupPanel } from "./_components/SetupPanel";
+import { BuilderView } from "./_components/BuilderView";
+import { GeneratingView } from "./_components/GeneratingView";
+import { DoneView } from "./_components/DoneView";
 
 /**
  * Recover the Storage object path from a public `generated-content` URL, so a
@@ -128,6 +125,9 @@ export default function QpaperPage() {
   // that failed to parse). Drives the non-blocking note below, alongside the
   // bank-fallback / unplaceable-preferred notes.
   const [answerKeyWarnings, setAnswerKeyWarnings] = useState<string[]>([]);
+  // Set on every post-generation mutation; drives the Done view's Regenerate
+  // confirm-before-discard prompt. Reset to false at the start of each generation.
+  const [paperEditedSinceGeneration, setPaperEditedSinceGeneration] = useState(false);
   // Wraps setPaper for ReviewAndValidateStage: any post-generation mutation
   // (inline edit, tag relabel, per-question regen) invalidates the answer key.
   const setPaperAndClearKey = useCallback(
@@ -135,6 +135,7 @@ export default function QpaperPage() {
       setPaper(value);
       setAnswerKeyUrl(null);
       setAnswerKeyWarnings([]);
+      setPaperEditedSinceGeneration(true);
     },
     []
   );
@@ -438,7 +439,7 @@ export default function QpaperPage() {
   };
 
   // ─── Finalize: record a history row, then clear the autosave draft ───────
-  // Wired into FinalizeExportStage's onFinalized; fires on every download
+  // Wired into DoneView's onFinalized; fires on every download
   // (PDF button, Word export, and — via the answer-key setter — after key gen).
   //
   // First call in a session: inserts a new qpaper_history row with whatever
@@ -632,6 +633,7 @@ export default function QpaperPage() {
     setPdfPath(null);
     setDocxPath(null);
     setAnswerKeyPath(null);
+    setPaperEditedSinceGeneration(false);
     historyRowIdRef.current = null;
     setBankFallbackCount(0);
     setUnplaceablePreferred([]);
@@ -718,7 +720,7 @@ export default function QpaperPage() {
   // doesn't flash blank. DnD-bearing children stay out until hydration done.
   if (!mounted) {
     return (
-      <div className="p-6 max-w-5xl mx-auto space-y-6">
+      <div className="px-6 pt-6">
         <div>
           <h1 className="text-2xl font-bold flex items-center gap-2">
             <FileText className="size-6" />
@@ -733,28 +735,25 @@ export default function QpaperPage() {
   }
 
   return (
-    <div className="p-6 max-w-5xl mx-auto space-y-6">
-      <div className="flex items-start justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-bold flex items-center gap-2">
-            <FileText className="size-6" />
-            Question Paper Generator
-          </h1>
-          <p className="text-muted-foreground text-sm mt-1">
-            Build your paper structure — AI generates the questions
-          </p>
-          {lastSavedAt && (
-            <p className="text-muted-foreground text-xs mt-1">
-              Draft autosaved · {new Date(lastSavedAt).toLocaleTimeString()}
+    <div className="flex flex-col -m-6 h-screen overflow-hidden">
+      <div className="px-6 pt-6 pb-4 shrink-0">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <h1 className="text-2xl font-bold flex items-center gap-2">
+              <FileText className="size-6" />
+              Question Paper Generator
+            </h1>
+            <p className="text-muted-foreground text-sm mt-1">
+              Build your paper structure — AI generates the questions
             </p>
-          )}
+          </div>
+          <Button variant="outline" size="sm" asChild>
+            <Link href="/faculty/qpaper/history">
+              <History className="mr-2 size-4" />
+              Past papers
+            </Link>
+          </Button>
         </div>
-        <Button variant="outline" size="sm" asChild>
-          <Link href="/faculty/qpaper/history">
-            <History className="mr-2 size-4" />
-            Past papers
-          </Link>
-        </Button>
       </div>
 
       {/* ── Resume an in-progress draft ──────────────────────────────── */}
@@ -793,147 +792,105 @@ export default function QpaperPage() {
         </AlertDialogContent>
       </AlertDialog>
 
-      {/* ── Setup: Subject + Modules + Sourcing mix ──────────────────── */}
-      <Card className="p-4 space-y-4">
-        <ScopeAndDifficultyStage
-          subjects={subjects}
-          isLoadingSubjects={isLoadingSubjects}
-          selectedSubjectId={selectedSubjectId}
-          onSelectSubject={setSelectedSubjectId}
-          targetMarks={targetMarks}
-          onTargetMarksChange={setTargetMarks}
-          modules={modules}
-          selectedModuleIds={selectedModuleIds}
-          setSelectedModuleIds={setSelectedModuleIds}
-          btlRange={btlRange}
-          onBtlRangeChange={setBtlRange}
-          coTargetsPct={coTargetsPct}
-          onCoTargetsPctChange={setCoTargetsPct}
-          difficultyTargets={difficultyTargets}
-          onDifficultyTargetsChange={setDifficultyTargets}
-          courseOutcomes={courseOutcomes}
-          moduleCoMap={moduleCoMap}
-        />
-        <SourcingStage
-          mix={sourcingMix}
-          setMix={setSourcingMix}
-          verifiedBankCount={verifiedBankCount}
-          preferredBankQuestionIds={preferredBankQuestionIds}
-        />
-      </Card>
+      <div className="flex md:flex-row flex-col gap-6 flex-1 min-h-0 overflow-hidden">
+        <aside className="md:w-80 w-full md:h-full shrink-0 overflow-y-auto h-full md:border-r md:border-b-0 border-b bg-card pl-6 pr-6 pb-6">
+          <SetupPanel
+            lastSavedAt={lastSavedAt}
+            subjects={subjects}
+            isLoadingSubjects={isLoadingSubjects}
+            selectedSubjectId={selectedSubjectId}
+            onSelectSubject={setSelectedSubjectId}
+            targetMarks={targetMarks}
+            onTargetMarksChange={setTargetMarks}
+            meta={meta}
+            setMeta={setMeta}
+            sections={sections}
+            modules={modules}
+            selectedModuleIds={selectedModuleIds}
+            setSelectedModuleIds={setSelectedModuleIds}
+            btlRange={btlRange}
+            onBtlRangeChange={setBtlRange}
+            coTargetsPct={coTargetsPct}
+            onCoTargetsPctChange={setCoTargetsPct}
+            difficultyTargets={difficultyTargets}
+            onDifficultyTargetsChange={setDifficultyTargets}
+            courseOutcomes={courseOutcomes}
+            moduleCoMap={moduleCoMap}
+            sourcingMix={sourcingMix}
+            setSourcingMix={setSourcingMix}
+            verifiedBankCount={verifiedBankCount}
+            preferredBankQuestionIds={preferredBankQuestionIds}
+            templateRefreshKey={templateRefreshKey}
+            onLoadTemplate={handleLoadTemplate}
+          />
+        </aside>
 
-      {/* ── Paper Details metadata + quick-start presets + template browser */}
-      <TemplateStructureStage
-        selectedSubject={selectedSubject}
-        meta={meta}
-        setMeta={setMeta}
-        metaOpen={metaOpen}
-        setMetaOpen={setMetaOpen}
-        totalMarksLive={totalMarksLive}
-        sectionsCount={sections.length}
-        onApplyEse={applyEse}
-        onApplyQuiz={applyQuiz}
-        onClearBuilder={clearBuilder}
-        refreshKey={templateRefreshKey}
-        onLoadTemplate={handleLoadTemplate}
-      />
+        <div className="flex-1 min-w-0 overflow-y-auto h-full p-6">
+          {paper === null && !isGenerating && (
+            <BuilderView
+              selectedSubject={selectedSubject}
+              meta={meta}
+              setMeta={setMeta}
+              metaOpen={metaOpen}
+              setMetaOpen={setMetaOpen}
+              totalMarksLive={totalMarksLive}
+              onApplyEse={applyEse}
+              onApplyQuiz={applyQuiz}
+              onClearBuilder={clearBuilder}
+              sections={sections}
+              setSections={setSections}
+              targetMarks={targetMarks}
+              flatLayout={flatLayout}
+              modules={modules}
+              selectedModuleIds={selectedModuleIds}
+              selectedSubjectId={selectedSubjectId}
+              onTemplateSaved={handleTemplateSaved}
+              isGenerating={isGenerating}
+              onGenerate={handleGenerate}
+            />
+          )}
 
-      {/* ── Drag-drop section/question builder ───────────────────────── */}
-      <BuilderSectionsEditor
-        sections={sections}
-        setSections={setSections}
-        targetMarks={targetMarks}
-        totalMarksLive={totalMarksLive}
-        flatLayout={flatLayout}
-      />
+          {isGenerating && (
+            <GeneratingView
+              selectedSubject={selectedSubject}
+              meta={meta}
+              targetMarks={targetMarks}
+              progressMsg={progressMsg}
+            />
+          )}
 
-      {/* ── Generate / Save / Download actions ───────────────────────── */}
-      <FinalizeExportStage
-        paper={paper}
-        downloadUrl={downloadUrl}
-        setDownloadUrl={setDownloadUrl}
-        answerKeyUrl={answerKeyUrl}
-        setAnswerKeyUrl={setAnswerKeyUrl}
-        setAnswerKeyWarnings={setAnswerKeyWarnings}
-        setPdfPath={setPdfPath}
-        setDocxPath={setDocxPath}
-        setAnswerKeyPath={setAnswerKeyPath}
-        selectedSubjectId={selectedSubjectId}
-        isGenerating={isGenerating}
-        progressMsg={progressMsg}
-        onGenerate={handleGenerate}
-        onFinalized={handleFinalized}
-        onTemplateSaved={handleTemplateSaved}
-        sections={sections}
-        modules={modules}
-        selectedModuleIds={selectedModuleIds}
-        meta={meta}
-        totalMarksLive={totalMarksLive}
-      />
-
-      {/* ── Non-blocking note: bank slots that fell back to fresh AI ──── */}
-      {bankFallbackCount > 0 && (
-        <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-3 py-2 -mt-2">
-          Bank allocation requested but {bankFallbackCount} question
-          {bankFallbackCount === 1 ? "" : "s"} fell back to fresh generation due
-          to insufficient verified coverage.
-        </p>
-      )}
-
-      {/* ── Non-blocking note: answer-key blocks that failed to generate ──── */}
-      {answerKeyWarnings.length > 0 && (
-        <div className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-3 py-2 -mt-2 space-y-1">
-          <p className="font-medium">
-            The answer key was generated, but {answerKeyWarnings.length} block
-            {answerKeyWarnings.length === 1 ? "" : "s"} could not be produced and{" "}
-            {answerKeyWarnings.length === 1 ? "is" : "are"} missing from the PDF.
-            Regenerate the answer key to retry, or fill{" "}
-            {answerKeyWarnings.length === 1 ? "it" : "them"} in manually.
-          </p>
-          <ul className="list-disc list-inside space-y-0.5 text-amber-600">
-            {answerKeyWarnings.map((w, i) => (
-              <li key={i} className="truncate">
-                {w}
-              </li>
-            ))}
-          </ul>
+          {paper !== null && !isGenerating && (
+            <DoneView
+              paper={paper}
+              setPaper={setPaperAndClearKey}
+              downloadUrl={downloadUrl}
+              setDownloadUrl={setDownloadUrl}
+              answerKeyUrl={answerKeyUrl}
+              setAnswerKeyUrl={setAnswerKeyUrl}
+              setAnswerKeyWarnings={setAnswerKeyWarnings}
+              setPdfPath={setPdfPath}
+              setDocxPath={setDocxPath}
+              setAnswerKeyPath={setAnswerKeyPath}
+              selectedSubjectId={selectedSubjectId}
+              onFinalized={handleFinalized}
+              onTemplateSaved={handleTemplateSaved}
+              sections={sections}
+              modules={modules}
+              selectedModuleIds={selectedModuleIds}
+              meta={meta}
+              totalMarksLive={totalMarksLive}
+              onSavedToBank={() =>
+                setVerifiedBankCount((c) => (c == null ? 1 : c + 1))
+              }
+              onGenerate={handleGenerate}
+              paperEditedSinceGeneration={paperEditedSinceGeneration}
+              reviewRef={reviewRef}
+              bankFallbackCount={bankFallbackCount}
+              answerKeyWarnings={answerKeyWarnings}
+              unplaceablePreferred={unplaceablePreferred}
+            />
+          )}
         </div>
-      )}
-
-      {/* ── Non-blocking note: preferred questions that couldn't be placed ── */}
-      {unplaceablePreferred.length > 0 && (
-        <div className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-3 py-2 -mt-2 space-y-1">
-          <p className="font-medium">
-            {unplaceablePreferred.length} of your selected Q Bank question
-            {unplaceablePreferred.length === 1 ? "" : "s"} couldn&apos;t be
-            placed in this paper — {unplaceablePreferred.length === 1 ? "its" : "their"}{" "}
-            marks or type didn&apos;t match any slot here. Adjust the paper
-            structure or pick different questions if you need{" "}
-            {unplaceablePreferred.length === 1 ? "it" : "them"} included.
-          </p>
-          <ul className="list-disc list-inside space-y-0.5 text-amber-600">
-            {unplaceablePreferred.map((q) => (
-              <li key={q.id} className="truncate">
-                {q.question_text}
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
-
-      {/* ── Generated paper preview (review + inline edit) ───────────── */}
-      <div ref={reviewRef}>
-        <ReviewAndValidateStage
-          paper={paper}
-          setPaper={setPaperAndClearKey}
-          sections={sections}
-          modules={modules}
-          selectedModuleIds={selectedModuleIds}
-          selectedSubjectId={selectedSubjectId}
-          onSavedToBank={() =>
-            setVerifiedBankCount((c) => (c == null ? 1 : c + 1))
-          }
-        />
       </div>
     </div>
   );

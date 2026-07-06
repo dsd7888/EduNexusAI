@@ -146,8 +146,9 @@ function lowerConfidence(
  * Classify every module of `subjectId` against the subject's COs and upsert the
  * result into `module_co_mapping` (source='ai_inferred'). Idempotent: re-running
  * for the same subject updates the same (module_id, co_code) rows rather than
- * adding duplicates. superadmin_verified rows are left untouched so a re-run can
- * never downgrade a human-verified mapping back to ai_inferred.
+ * adding duplicates. superadmin_verified and faculty_verified rows are left
+ * untouched so a re-run can never downgrade a human-verified mapping back to
+ * ai_inferred.
  */
 export async function classifyModulesForSubject(
   subjectId: string
@@ -306,7 +307,7 @@ export async function classifyModulesForSubject(
     .from("module_co_mapping")
     .select("module_id, co_code")
     .in("module_id", modules.map((m) => m.id))
-    .eq("source", "superadmin_verified");
+    .in("source", ["superadmin_verified", "faculty_verified"]);
   const verified = new Set(
     ((verifiedRows ?? []) as Array<{ module_id: string; co_code: string }>).map(
       (r) => `${r.module_id}::${r.co_code}`

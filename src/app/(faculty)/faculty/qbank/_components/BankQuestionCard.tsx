@@ -47,9 +47,10 @@ import {
 import { cn } from "@/lib/utils";
 import { RichQuestionText } from "@/components/RichQuestionText";
 import { toast } from "sonner";
-import type { BankQuestion, MCQOption } from "@/lib/qbank/types";
+import type { BankQuestion, MCQOption, QuestionType } from "@/lib/qbank/types";
 import {
   DIFFICULTY_CLASSES,
+  QUESTION_TYPES,
   SOURCE_LABELS,
   TYPE_LABELS,
   formatCo,
@@ -61,6 +62,7 @@ const OPT_LABELS: Array<"A" | "B" | "C" | "D"> = ["A", "B", "C", "D"];
 
 interface Draft {
   question_text: string;
+  question_type: QuestionType;
   marks: string;
   co_code: string;
   btl_level: string;
@@ -83,6 +85,7 @@ function toDraft(q: BankQuestion): Draft {
       : [];
   return {
     question_text: q.question_text,
+    question_type: q.question_type,
     marks: String(q.marks),
     co_code: q.co_code ?? "",
     btl_level: q.btl_level != null ? String(q.btl_level) : "",
@@ -136,6 +139,7 @@ export function BankQuestionCard({
     try {
       const patch: Partial<BankQuestion> = {
         question_text: draft.question_text.trim(),
+        question_type: draft.question_type,
         marks,
         co_code: draft.co_code.trim() || null,
         btl_level: draft.btl_level ? Number(draft.btl_level) : null,
@@ -144,8 +148,11 @@ export function BankQuestionCard({
         model_answer: draft.model_answer.trim() || null,
         is_verified: true, // editing == reviewing
       };
-      if (q.question_type === "mcq") {
+      if (draft.question_type === "mcq") {
         patch.options = draft.options.filter((o) => o.text.trim());
+      } else if (q.question_type === "mcq") {
+        // Switched away from MCQ: clear now-orphaned stored options.
+        patch.options = [];
       }
       const updated = await patchQuestion(q.id, patch);
       onUpdated(updated);
@@ -183,7 +190,7 @@ export function BankQuestionCard({
           className="text-sm"
           placeholder="Question text"
         />
-        {q.question_type === "mcq" && (
+        {draft.question_type === "mcq" && (
           <div className="space-y-1">
             {draft.options.map((opt, i) => (
               <div key={opt.label} className="flex items-center gap-2">
@@ -226,6 +233,37 @@ export function BankQuestionCard({
           </div>
         )}
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+          <div>
+            <span className="text-[10px] text-muted-foreground">Type</span>
+            <Select
+              value={draft.question_type}
+              onValueChange={(v) =>
+                setDraft({
+                  ...draft,
+                  question_type: v as QuestionType,
+                  options:
+                    v === "mcq" && draft.options.length === 0
+                      ? OPT_LABELS.map((label) => ({
+                          label,
+                          text: "",
+                          is_correct: false,
+                        }))
+                      : draft.options,
+                })
+              }
+            >
+              <SelectTrigger className="h-7 text-xs">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {QUESTION_TYPES.map((t) => (
+                  <SelectItem key={t} value={t}>
+                    {TYPE_LABELS[t]}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
           <LabeledInput
             label="Marks"
             value={draft.marks}

@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 
 import {
   BarChart2,
+  BookOpen,
   FileText,
   GitPullRequest,
   GraduationCap,
@@ -56,6 +57,10 @@ export default function FacultyLayout({ children }: LayoutProps) {
           <NavLink href="/faculty/qbank">
             <Library className="size-4" />
             <span>Q Bank</span>
+          </NavLink>
+          <NavLink href="/faculty/syllabus">
+            <BookOpen className="size-4" />
+            <span>Syllabus</span>
           </NavLink>
           <NavLink href="/faculty/refine">
             <Sparkles className="size-4" />

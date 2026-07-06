@@ -30,6 +30,7 @@ export interface DraftImagePayload {
 export interface DraftImageResponse {
   image_path: string;
   question_text: string;
+  question_type: QuestionType;
   options: MCQOption[] | null;
   model_answer: string | null;
   co_code: string | null;

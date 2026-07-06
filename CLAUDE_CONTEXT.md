@@ -1,6 +1,6 @@
 # EduNexus AI — Complete Project Context
 
-*Last updated: June 27, 2026 | Solo developer: Dhruv | Stack: Next.js 16 + Supabase + Gemini*
+*Last updated: July 5, 2026 | Solo developer: Dhruv | Stack: Next.js 16 + Supabase + Gemini*
 *This document is the single source of truth for any Claude instance working on EduNexus AI.*
 
 ---
@@ -227,7 +227,7 @@ edunexus-ai/
 │   │   │   ├── qpaper/                             ✅ Q paper builder (page.tsx + _components/)
 │   │   │   │   ├── _components/
 │   │   │   │   │   ├── TemplateStructureStage.tsx  ← stage 1: template/preset selection
-│   │   │   │   │   ├── ScopeAndDifficultyStage.tsx ← stage 2: module selection + BTL presets
+│   │   │   │   │   ├── ScopeAndDifficultyStage.tsx ← stage 2: module selection + BTL range + CO%/Difficulty% distribution
 │   │   │   │   │   ├── SourcingStage.tsx           ← stage 3: Fresh/PYQ-style/Bank % mix
 │   │   │   │   │   ├── BuilderSectionsEditor.tsx   ← stage 4: drag-drop section builder
 │   │   │   │   │   ├── ReviewAndValidateStage.tsx  ← stage 5: review + CO/BTL validation
@@ -361,7 +361,7 @@ edunexus-ai/
 #### Q Paper Generation
 Six-stage builder (page split into stage components under `_components/`):
 1. **TemplateStructureStage** — preset selection (ESE Standard, Quiz, custom), section/question-block configuration
-2. **ScopeAndDifficultyStage** — module selection + BTL-tier presets (Foundational/Balanced/Application-Heavy) + Custom % mode; achievability capped by module weightage share
+2. **ScopeAndDifficultyStage** — module selection + BTL Range [min,max] + CO% distribution + Difficulty% (easy/medium/hard) distribution; live CO-achievability preview against selected modules' `module_co_mapping`
 3. **SourcingStage** — percentage mix allocator (Fresh / PYQ-style / Bank); deterministic Hamilton apportionment via `allocateSlotSources()` in `sourcing.ts`; staged Q-Bank questions guaranteed via `preferredQuestionIds` (unplaceable ones surfaced to faculty, not silently dropped)
 4. **BuilderSectionsEditor** — drag-drop section/block editor with live marks totals
 5. **ReviewAndValidateStage** — generated paper review; CO/BTL validation pass via `validateQuestionTags()` (Flash judge, flags mismatches with suggested relabel/regenerate action); `<RichQuestionText>` renders pipe-table/list/bold in question text
@@ -369,7 +369,12 @@ Six-stage builder (page split into stage components under `_components/`):
 
 **Question block types:** `descriptive`, `descriptive_with_or`, `attempt_any_one`, `mcq`, `pool` (mixed MCQ/True-False/descriptive items; student attempts K of N). True/False modeled as an MCQ variant (`isPoolItemMcqLike` = true).
 
-**Difficulty:** BTL-tier presets (`foundational` {BTL 1–2 heavy}, `balanced` {BTL 3–4 focus}, `application_heavy` {BTL 4–6 heavy}) + Custom % sliders. Achievability ceiling = module's weightage share; `capTierWeightsToCeilings` + `renormalizeTierWeights` in `moduleAssignment.ts`.
+**Difficulty & targeting (July 2026 — replaced the BTL-tier preset system):** Faculty now set three independent, secondary directives — see §12 for the full architecture:
+- **BTL Range** `[min, max]` (1–6) — paper-wide eligibility filter, replaces the three-preset/custom-tier system
+- **CO% distribution** — per-CO target share of the paper's marks, biases module selection
+- **Difficulty% distribution** — easy/medium/hard split, becomes a per-slot prompt directive
+
+Weightage from the syllabus is always the PRIMARY criterion for module assignment; these three only bias BTL/CO/difficulty *within* that constraint (see the 5%-threshold rule in §12 and §18). The old `DifficultyPreset`/`CustomBtlWeights` types, `apportionBtlTiers`, `resolveTierWeights`, and `previewBtlDistribution` remain exported from `moduleAssignment.ts` for backward compatibility but are no longer wired to any UI — dead from the faculty's perspective, kept only so old code paths/templates don't crash.
 
 **Sourcing:** 3-category percentage mix replaces old 4-button exclusive modes. PYQ structured RAG always fed regardless of mix percentages.
 
@@ -537,6 +542,20 @@ Template composition (defined at structure-stage) is authoritative over AI-retur
 - CO normalization: "CO1", "CO 1", "01", "co1" all → "01"
 - `answer_key_descriptive` task added to `isStructuredTask` allowlist — prevents Flash thinking from silently truncating answer JSON
 
+### BTL Range / CO% / Difficulty% Targeting (July 2026 — replaces BTL-tier presets)
+
+Three secondary directives, set per-paper in `ScopeAndDifficultyStage`, flow through the full pipeline: UI state (`page.tsx`) → generate request body → `SlotAssignmentContext` (`moduleAssignment.ts`) → `QuestionSlot` fields → the per-slot prompt block (`sectionGen.ts`). **Weightage from the syllabus stays the PRIMARY criterion throughout** — these three only bias BTL/CO/difficulty within a module assignment that weightage has already determined.
+
+- **BTL Range** `btlRange: [min, max]` — paper-wide. In `buildSlot` (moduleAssignment.ts) it replaces the old per-question-type `TYPE_BTL_RANGE` lookup as each slot's `targetBtlRange` (still clamped to the module's own allowed levels). When set, `apportionBtlTiers` (the old preset-based tier spreader) is skipped entirely.
+- **CO% distribution** `coTargets: Map<co_code, targetMarks>` — prorated server-side from paper-wide % to each section's mark share (`route.ts`). `makePicker`'s module-selection scoring computes a `coScore` (sum of remaining demand across a candidate module's COs) as a **tiebreaker only**: a weightage shortfall gap wider than `sectionMarks * 0.05` (5%) wins unconditionally regardless of CO score; only within that 5% band does CO demand decide, then module number. `commit()` splits each slot's marks equally across the COs its module supplies to update `coAssigned`. `targetCoFor(moduleNumber)` returns the most under-served CO the module can reach, written onto the slot as `QuestionSlot.targetCo`.
+- **Difficulty% distribution** `difficultyTargets: [{difficulty, pct}]` (easy/medium/hard) — independent of BTL. `apportionDifficulty()` (Hamilton largest-remainder, mirrors `apportionBtlTiers`' counting logic) spreads labels evenly across a section's slots, writing `QuestionSlot.targetDifficulty`.
+
+**Prompt consumption:** `buildSlotsBlock()` in `sectionGen.ts` emits `Target CO for this slot: ...` and `Difficulty target: ... — {difficultyDirective(d)}` lines per slot when those fields are set, alongside the existing BTL/CO/module lines — the AI receives them as direct per-slot generation directives, not just a data assignment.
+
+**Persistence:** `btlRange` / `coTargetsPct` / `difficultyTargets` are stored inside `qpaper_templates.structure` (the existing unvalidated jsonb blob) via `buildTemplatePayload`/`fromTemplateStructure` in `shared.tsx` — no DB migration needed. Old templates without these keys degrade to `[1,4]` / `{}` / `{easy:40,medium:40,hard:20}` rather than crashing. Draft autosave (`qpaper_drafts.builder_state`, via `useQpaperDraft.ts`) carries the same three fields in `BuilderSnapshot`.
+
+**UI:** `ScopeAndDifficultyStage.tsx` renders BTL Range as two clamped NumericFields (min≤max enforced both directions), CO Distribution as one row per CO with a running-total chip (green=100%, amber=under, red=over) plus a live achievability line per CO (`N of M selected modules supply it`, driven by `module_co_mapping` fetched in `page.tsx`), and Difficulty Distribution as the same three-field + running-total pattern.
+
 ---
 
 ## 13. RLS Architecture
@@ -686,6 +705,9 @@ API routes:
 
 ## 16. Active Feature Roadmap
 
+### Recently Shipped (July 2026)
+- Q paper BTL-tier presets → BTL Range + CO% + Difficulty% targeting: `moduleAssignment.ts` (`btlRange`/`coTargets`/`difficultyTargets` on `SlotAssignmentContext`, CO-aware `makePicker` with a weightage-primary 5%-threshold tiebreak, `apportionDifficulty`, `targetCo`/`targetDifficulty` on `QuestionSlot`) → `sectionGen.ts` (threaded through + consumed in the per-slot prompt block) → `route.ts` (parses `btlRange`/`coTargets`/`difficultyTargets`, prorates CO% to each section) → full UI replacement in `ScopeAndDifficultyStage.tsx` (BTL Range fields, CO% rows with live achievability preview, Difficulty% split) → persisted in `qpaper_templates.structure` and `qpaper_drafts.builder_state` (no migration). Old preset types/functions kept exported for back-compat, no longer reachable from the UI.
+
 ### Recently Shipped (June 2026)
 - CSE Sem 1–7 fully seeded (52 subjects, 285 modules, 228 COs)
 - RLS fully enabled, 5-tier role hierarchy (superadmin/dean/hod/faculty/student)
@@ -778,6 +800,8 @@ API routes:
 | qpaper_history stores Storage paths not URLs | Signed URLs expire; paths are stable — re-sign on demand for confidential answer key |
 | qpaper_drafts: no dean/hod read | Drafts are private scratch state, not a reviewable artifact — nothing to oversee until finalized |
 | Template `scope` column (personal/school/dept) | Enables future cross-subject template sharing without a separate table |
+| Weightage always primary in `makePicker` (5% shortfall threshold before CO score breaks ties) | CO% targeting must never let mark distribution drift from syllabus weightage — the whole product's credibility rests on weightage compliance |
+| btlRange/coTargetsPct/difficultyTargets stored in `qpaper_templates.structure` jsonb, not new columns | `structure` is already unvalidated jsonb passed through as-is by the templates route — adding keys there needs no migration and degrades gracefully for old rows |
 
 ---
 
@@ -855,3 +879,4 @@ logs/screenshots, you verify before proceeding.
 - Pro model in gemini.ts always gets `maxOutputTokens: 32768` — dynamic budget from `tokenBudget.ts` only constrains Flash calls
 - `qpaper_history` stores Storage paths, not URLs — never store signed URLs in DB
 - `ppt_diagram` model is complexity-based (Flash/Pro per `routeDiagramBatchModel`) — not a blanket Pro rule
+- Q paper CO%/difficulty% targeting is secondary to weightage — never let it override the 5%-shortfall-threshold rule in `makePicker` (moduleAssignment.ts)

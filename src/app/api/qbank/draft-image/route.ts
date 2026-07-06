@@ -57,8 +57,20 @@ function buildImageQuestionSchema(questionType: string): object {
       btl_level: { type: "integer" },
       difficulty: { type: "string" },
       module_number: { type: "integer" },
+      suggested_type: {
+        type: "string",
+        enum: ["mcq", "short_answer", "long_answer", "numerical", "fill_blank"],
+      },
     },
-    required: ["question_text", "model_answer", "co_code", "btl_level", "difficulty", "module_number"],
+    required: [
+      "question_text",
+      "model_answer",
+      "co_code",
+      "btl_level",
+      "difficulty",
+      "module_number",
+      "suggested_type",
+    ],
   };
 }
 
@@ -85,7 +97,13 @@ function buildImageQuestionPrompt(params: {
   }
   lines.push(
     "",
-    `Write exactly one ${params.questionType} question worth ${params.marks} marks based on the attached image.`,
+    `Write exactly one question worth ${params.marks} marks based on the attached image. Also suggest the most appropriate question_type using this rubric — the suggestion will override the faculty's initial selection if the content clearly fits a different type:`,
+    "- mcq: best for recall, recognition, or single-concept checks where 4 plausible options can be written",
+    "- short_answer: single-sentence or 2-3 line response; simple recall, identification, or single-step computation",
+    "- long_answer: requires multi-step explanation, algorithm trace, derivation, proof, or 'show all steps / show your work' — if the model answer would be more than 4-5 lines, this is long_answer",
+    "- numerical: purely computational, single final numeric answer, no explanation of steps required",
+    "- fill_blank: a statement with a specific word/phrase missing",
+    `The faculty's currently selected type is: ${params.questionType}. Override it with suggested_type only when the image/question content clearly fits a different type — don't override for stylistic preference.`,
     "The question MUST directly reference what is specifically visible in the image — a labeled part, a value on a graph, a step in a diagram — not a generic question that could appear without the image.",
     params.questionType === "mcq"
       ? "Provide exactly 4 options (labels A, B, C, D), exactly one is_correct: true, with plausible distractors."
@@ -253,6 +271,7 @@ export async function POST(request: NextRequest) {
       btl_level?: unknown;
       difficulty?: string;
       module_number?: unknown;
+      suggested_type?: string;
     };
     try {
       aiQuestion = JSON.parse(aiResult.content) as typeof aiQuestion;
@@ -279,11 +298,20 @@ export async function POST(request: NextRequest) {
         : null;
     const resolvedModuleId = inferredModule?.id ?? moduleId ?? null;
 
+    const suggestedType = aiQuestion.suggested_type;
+    const finalType =
+      suggestedType &&
+      VALID_TYPES.has(suggestedType) &&
+      (questionType === "short_answer" || suggestedType === questionType)
+        ? suggestedType
+        : questionType;
+
     return Response.json({
       image_path: imagePath,
       question_text: aiText,
+      question_type: finalType,
       options:
-        questionType === "mcq" ? normaliseAiOptions(aiQuestion.options) : null,
+        finalType === "mcq" ? normaliseAiOptions(aiQuestion.options) : null,
       model_answer: aiQuestion.model_answer?.trim() || null,
       co_code: aiQuestion.co_code?.trim() || null,
       btl_level: normBtl(aiQuestion.btl_level),
