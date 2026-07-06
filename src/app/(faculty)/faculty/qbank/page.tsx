@@ -43,10 +43,25 @@ const EMPTY_BY_TYPE: Record<QuestionType, number> = {
   fill_blank: 0,
 };
 
+// Remembers the faculty's last-picked subject across refreshes, so the page
+// doesn't silently fall back to the first assigned subject on reload.
+const LAST_SUBJECT_KEY = "qbank:lastSubjectId";
+
 export default function QBankPage() {
   const { subjects, isLoading: subjectsLoading } = useFacultySubjects();
   const [subjectId, setSubjectId] = useState("");
   const [tab, setTab] = useState("bank");
+
+  // Hydrate the remembered subject once the assigned-subjects list is known
+  // (only if nothing has been explicitly selected yet this session).
+  useEffect(() => {
+    if (subjectId || subjects.length === 0) return;
+    const remembered = localStorage.getItem(LAST_SUBJECT_KEY);
+    if (remembered && subjects.some((s) => s.id === remembered)) {
+      setSubjectId(remembered);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [subjects]);
 
   const [modules, setModules] = useState<ModuleRef[]>([]);
   const [courseOutcomes, setCourseOutcomes] = useState<CourseOutcomeRef[]>([]);
@@ -71,6 +86,11 @@ export default function QBankPage() {
   const selectSubject = (id: string) => {
     setSubjectId(id);
     setStaged([]); // a staged paper is per-subject
+    try {
+      localStorage.setItem(LAST_SUBJECT_KEY, id);
+    } catch {
+      // localStorage may be unavailable; selection still works this session.
+    }
   };
 
   // Reference data (modules + course outcomes). setState only inside the async

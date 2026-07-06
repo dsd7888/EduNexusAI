@@ -359,11 +359,11 @@ export function MyBankTab({
                 <Button
                   size="sm"
                   variant="outline"
-                  className="h-7 text-xs ml-auto"
+                  className="h-7 text-xs ml-auto border-amber-400/40 text-amber-500 hover:text-amber-500 hover:bg-amber-500/10"
                   onClick={handleReviewNeedsReview}
                 >
                   <ShieldCheck className="size-3 mr-1" />
-                  Review Needs Review
+                  Review Qs
                 </Button>
               )}
               <span className="text-muted-foreground text-xs">

@@ -78,6 +78,13 @@ function pathFromPublicUrl(url: string | null): string | null {
 //   done       → full-width review + export, no sidebar
 type View = "form" | "generating" | "done";
 
+// Remembers the faculty's last-picked subject across refreshes. The
+// autosave/resume draft flow deliberately excludes subject from its
+// "meaningful" check (subject is auto-populated), so a plain refresh with a
+// pristine builder never surfaces a resume prompt — the subject choice needs
+// its own persistence independent of that.
+const LAST_SUBJECT_KEY = "qpaper:lastSubjectId";
+
 export default function QpaperPage() {
   const { subjects, isLoading: isLoadingSubjects } = useFacultySubjects();
   const [selectedSubjectId, setSelectedSubjectId] = useState("");
@@ -207,11 +214,32 @@ export default function QpaperPage() {
   const selectedSubject = subjects.find((s) => s.id === selectedSubjectId);
 
   // ─── Subject autoselect ─────────────────────────────────────────────────
+  // Prefer the last subject the faculty explicitly picked (survives a
+  // refresh); fall back to the first assigned subject only if there's no
+  // remembered choice (or it's no longer in their assigned list).
   useEffect(() => {
-    if (!selectedSubjectId && subjects.length > 0) {
+    if (selectedSubjectId || subjects.length === 0) return;
+    const remembered =
+      typeof window !== "undefined"
+        ? localStorage.getItem(LAST_SUBJECT_KEY)
+        : null;
+    if (remembered && subjects.some((s) => s.id === remembered)) {
+      setSelectedSubjectId(remembered);
+    } else {
       setSelectedSubjectId(subjects[0].id);
     }
   }, [subjects, selectedSubjectId]);
+
+  // Persist every subject change (explicit pick, staging hand-off, or draft
+  // resume) so the next refresh restores it.
+  useEffect(() => {
+    if (!selectedSubjectId) return;
+    try {
+      localStorage.setItem(LAST_SUBJECT_KEY, selectedSubjectId);
+    } catch {
+      // localStorage may be unavailable; selection still works this session.
+    }
+  }, [selectedSubjectId]);
 
   // Ref for the generated-paper review section — used to scroll to it on resume
   // when the snapshot already has content.
@@ -853,7 +881,7 @@ export default function QpaperPage() {
       {/* ── VIEW: form — two-column setup sidebar + builder ──────────────── */}
       {view === "form" && (
         <div className="flex md:flex-row flex-col gap-6 flex-1 min-h-0 overflow-hidden">
-          <aside className="md:w-80 w-full md:h-full shrink-0 overflow-y-auto h-full md:border-r md:border-b-0 border-b bg-card pl-6 pr-6 pb-6">
+          <aside className="md:w-96 w-full md:h-full shrink-0 overflow-y-auto h-full md:border-r md:border-b-0 border-b bg-card pl-6 pr-6 pb-6">
             <SetupPanel
               lastSavedAt={lastSavedAt}
               subjects={subjects}

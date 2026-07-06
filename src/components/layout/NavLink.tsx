@@ -10,9 +10,20 @@ interface NavLinkProps {
   href: string;
   children: ReactNode;
   icon?: ReactNode;
+  /** Icon-only rail mode: hides the label, centers the icon, and surfaces the
+   *  label via `title` instead. Only meaningful when `icon` + a string label
+   *  are passed (used by the collapsible faculty sidebar). */
+  collapsed?: boolean;
+  onNavigate?: () => void;
 }
 
-export function NavLink({ href, children, icon }: NavLinkProps) {
+export function NavLink({
+  href,
+  children,
+  icon,
+  collapsed,
+  onNavigate,
+}: NavLinkProps) {
   const pathname = usePathname();
 
   const isActive =
@@ -21,8 +32,11 @@ export function NavLink({ href, children, icon }: NavLinkProps) {
   return (
     <Link
       href={href}
+      onClick={onNavigate}
+      title={collapsed && typeof children === "string" ? children : undefined}
       className={cn(
         "flex items-center gap-2 rounded-md px-3 py-2 text-sm transition-colors",
+        collapsed && "justify-center px-2",
         isActive
           ? "bg-accent font-medium text-accent-foreground"
           : "text-muted-foreground hover:bg-accent/50 hover:text-foreground"
@@ -30,7 +44,7 @@ export function NavLink({ href, children, icon }: NavLinkProps) {
       aria-current={isActive ? "page" : undefined}
     >
       {icon}
-      {children}
+      {!collapsed && children}
     </Link>
   );
 }

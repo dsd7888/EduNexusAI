@@ -3,7 +3,7 @@
 *Last updated: July 5, 2026 | Solo developer: Dhruv | Stack: Next.js 16 + Supabase + Gemini*
 *This document is the single source of truth for any Claude instance working on EduNexus AI.*
 
----
+--- 
 
 ## 1. What This Project Is
 

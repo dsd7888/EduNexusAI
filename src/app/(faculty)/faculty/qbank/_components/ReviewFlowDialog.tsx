@@ -24,6 +24,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import {
   Select,
   SelectContent,
@@ -50,6 +51,7 @@ interface TagDraft {
   btl_level: string;
   difficulty: string;
   module_id: string;
+  model_answer: string;
 }
 
 function toTagDraft(q: BankQuestion): TagDraft {
@@ -60,6 +62,7 @@ function toTagDraft(q: BankQuestion): TagDraft {
     btl_level: q.btl_level != null ? String(q.btl_level) : "",
     difficulty: q.difficulty ?? "",
     module_id: q.module_id ?? "",
+    model_answer: q.model_answer ?? "",
   };
 }
 
@@ -81,7 +84,6 @@ export function ReviewFlowDialog({
   onQuestionApproved: (id: string) => void;
 }) {
   const total = questions.length;
-  const [index, setIndex] = useState(0);
   const [statuses, setStatuses] = useState<Map<string, QuestionStatus>>(() =>
     initStatuses(questions)
   );
@@ -100,7 +102,16 @@ export function ReviewFlowDialog({
   );
   const handledCount = approvedCount + skippedCount;
 
-  const current = questions[Math.min(index, Math.max(0, total - 1))] ?? null;
+  // Approved/skipped questions drop out of this list entirely, so the
+  // counter and prev/next nav only ever see what's still left to review —
+  // paging "back" can't resurface something already handled.
+  const pending = useMemo(
+    () => questions.filter((q) => statuses.get(q.id) === "pending"),
+    [questions, statuses]
+  );
+  const [pendingIndex, setPendingIndex] = useState(0);
+  const displayIndex = Math.min(pendingIndex, Math.max(0, pending.length - 1));
+  const current = pending[displayIndex] ?? null;
 
   useEffect(() => {
     if (current) {
@@ -111,28 +122,11 @@ export function ReviewFlowDialog({
 
   const progressPct = total === 0 ? 0 : Math.round((handledCount / total) * 100);
 
-  const goToNextPending = () => {
-    const nextIdx = questions.findIndex(
-      (q, i) => i > index && statuses.get(q.id) === "pending"
-    );
-    if (nextIdx !== -1) {
-      setIndex(nextIdx);
-      return;
-    }
-    const firstPending = questions.findIndex(
-      (q) => statuses.get(q.id) === "pending"
-    );
-    if (firstPending !== -1) {
-      setIndex(firstPending);
-    }
-  };
-
-  const allHandled = handledCount >= total;
+  const allHandled = pending.length === 0;
 
   const handleSkip = () => {
     if (!current) return;
     setStatuses((prev) => new Map(prev).set(current.id, "skipped"));
-    goToNextPending();
   };
 
   const handleApproveAsIs = async () => {
@@ -144,7 +138,6 @@ export function ReviewFlowDialog({
       onQuestionApproved(current.id);
       setStatuses((prev) => new Map(prev).set(current.id, "approved"));
       toast.success("Approved");
-      goToNextPending();
     } catch (err) {
       console.error(err);
       toast.error("Failed to approve question");
@@ -169,6 +162,7 @@ export function ReviewFlowDialog({
         btl_level: draft.btl_level ? Number(draft.btl_level) : null,
         difficulty: (draft.difficulty as BankQuestion["difficulty"]) || null,
         module_id: draft.module_id || null,
+        model_answer: draft.model_answer.trim() || null,
         is_verified: true,
       };
       const updated = await patchQuestion(current.id, patch);
@@ -176,7 +170,6 @@ export function ReviewFlowDialog({
       onQuestionApproved(current.id);
       setStatuses((prev) => new Map(prev).set(current.id, "approved"));
       toast.success("Saved & approved");
-      goToNextPending();
     } catch (err) {
       console.error(err);
       toast.error("Failed to save question");
@@ -233,11 +226,13 @@ export function ReviewFlowDialog({
         ) : (
           <>
             {/* Header */}
-            <div className="shrink-0 border-b px-4 py-3 space-y-2">
+            <div className="shrink-0 border-b pl-4 pr-12 py-3 space-y-2">
               <div className="flex items-center justify-between gap-2">
                 <DialogHeader className="text-left space-y-0">
                   <DialogTitle className="text-base">
-                    Reviewing {index + 1}/{total}
+                    {allHandled
+                      ? "All caught up"
+                      : `Reviewing ${displayIndex + 1} of ${pending.length}`}
                   </DialogTitle>
                 </DialogHeader>
                 <div className="flex items-center gap-1">
@@ -246,8 +241,8 @@ export function ReviewFlowDialog({
                     variant="ghost"
                     size="icon"
                     className="size-8"
-                    disabled={index === 0 || saving}
-                    onClick={() => setIndex((i) => Math.max(0, i - 1))}
+                    disabled={displayIndex === 0 || saving}
+                    onClick={() => setPendingIndex((i) => Math.max(0, i - 1))}
                     aria-label="Previous question"
                   >
                     <ChevronLeft className="size-4" />
@@ -257,21 +252,13 @@ export function ReviewFlowDialog({
                     variant="ghost"
                     size="icon"
                     className="size-8"
-                    disabled={index >= total - 1 || saving}
-                    onClick={() => setIndex((i) => Math.min(total - 1, i + 1))}
+                    disabled={displayIndex >= pending.length - 1 || saving}
+                    onClick={() =>
+                      setPendingIndex((i) => Math.min(pending.length - 1, i + 1))
+                    }
                     aria-label="Next question"
                   >
                     <ChevronRight className="size-4" />
-                  </Button>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="sm"
-                    className="h-8 text-xs"
-                    disabled={saving}
-                    onClick={handleSkip}
-                  >
-                    Skip this one
                   </Button>
                 </div>
               </div>
@@ -284,7 +271,11 @@ export function ReviewFlowDialog({
             </div>
 
             {/* Body */}
-            {current && draft && (
+            {!current || !draft ? (
+              <div className="flex-1 flex items-center justify-center px-4 py-8 text-sm text-muted-foreground">
+                Nothing left to review — click &ldquo;Finish review&rdquo; below.
+              </div>
+            ) : (
               <div className="flex-1 overflow-y-auto px-4 py-4 space-y-4 min-h-0">
                 {current.image_url && (
                   <img
@@ -445,30 +436,38 @@ export function ReviewFlowDialog({
                     </div>
                   )}
 
-                {current.model_answer && (
-                  <div className="border rounded-md">
-                    <button
-                      type="button"
-                      onClick={() => setModelAnswerOpen((v) => !v)}
-                      className="flex w-full items-center gap-2 px-3 py-2 text-xs font-medium hover:bg-muted/50 transition-colors"
-                    >
-                      {modelAnswerOpen ? (
-                        <ChevronDown className="size-3.5 shrink-0" />
-                      ) : (
-                        <ChevronRight className="size-3.5 shrink-0" />
-                      )}
-                      Model Answer
-                    </button>
-                    {modelAnswerOpen && (
-                      <div className="px-3 pb-3 text-xs text-muted-foreground border-t">
-                        <RichQuestionText
-                          text={current.model_answer}
-                          className="pt-2"
-                        />
-                      </div>
+                <div className="border rounded-md">
+                  <button
+                    type="button"
+                    onClick={() => setModelAnswerOpen((v) => !v)}
+                    className="flex w-full items-center gap-2 px-3 py-2 text-xs font-medium hover:bg-muted/50 transition-colors"
+                  >
+                    {modelAnswerOpen ? (
+                      <ChevronDown className="size-3.5 shrink-0" />
+                    ) : (
+                      <ChevronRight className="size-3.5 shrink-0" />
                     )}
-                  </div>
-                )}
+                    Model Answer
+                    {!draft.model_answer && (
+                      <span className="text-muted-foreground font-normal">
+                        (none yet)
+                      </span>
+                    )}
+                  </button>
+                  {modelAnswerOpen && (
+                    <div className="px-3 pb-3 border-t">
+                      <Textarea
+                        value={draft.model_answer}
+                        onChange={(e) =>
+                          setDraft({ ...draft, model_answer: e.target.value })
+                        }
+                        rows={4}
+                        className="mt-2 text-xs"
+                        placeholder="Add a model answer (optional)"
+                      />
+                    </div>
+                  )}
+                </div>
               </div>
             )}
 
