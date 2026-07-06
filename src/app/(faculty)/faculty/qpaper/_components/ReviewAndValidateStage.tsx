@@ -10,13 +10,20 @@
  * exported elsewhere.
  */
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Flag, Library, Loader2, Pencil, RefreshCw, Save, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { cn } from "@/lib/utils";
 import { RichQuestionText } from "@/components/RichQuestionText";
 import { toast } from "sonner";
@@ -28,17 +35,86 @@ import {
   type EditDraft,
   type GeneratedQuestion,
   type ModuleRow,
+  type PoolItem,
   type QuestionPart,
   type SubQuestion,
   type TagValidation,
+  type TemplatePoolQuestionPayload,
   type TemplateQuestionPayload,
 } from "./shared";
+import { BLOOMS_LEGEND } from "@/lib/qpaper/templates";
 import {
   isPoolItemMcqLike,
-  poolItemToPart,
-  poolItemToSubQuestion,
+  poolItemLabel,
   poolMarksPerItem,
 } from "@/lib/qpaper/poolRender";
+
+// ─── CO / BTL editable Selects (shared by every unit-level edit form) ────────
+// PO stays display-only — it is derived server-side from CO and has no
+// client-side option list, so it is intentionally not editable here.
+
+const NONE_TAG = "__none__";
+
+/** Atomic editable/regenerable unit within a question block. */
+type UnitKind = "sub" | "part" | "pool";
+
+function TagSelects({
+  co,
+  btl,
+  coOptions,
+  onChange,
+}: {
+  co: string | null | undefined;
+  btl: number | null | undefined;
+  /** Valid CO codes for the subject, plus the current value if it's off-list. */
+  coOptions: string[];
+  onChange: (patch: { co?: string | null; btl?: number | null }) => void;
+}) {
+  const coValue = co ?? NONE_TAG;
+  const btlValue = btl != null ? String(btl) : NONE_TAG;
+  return (
+    <div className="flex items-center gap-2">
+      <Select
+        value={coValue}
+        onValueChange={(v) => onChange({ co: v === NONE_TAG ? null : v })}
+      >
+        <SelectTrigger className="h-7 w-24 text-xs">
+          <SelectValue placeholder="CO" />
+        </SelectTrigger>
+        <SelectContent>
+          <SelectItem value={NONE_TAG} className="text-xs">
+            No CO
+          </SelectItem>
+          {coOptions.map((c) => (
+            <SelectItem key={c} value={c} className="text-xs">
+              {c}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+      <Select
+        value={btlValue}
+        onValueChange={(v) =>
+          onChange({ btl: v === NONE_TAG ? null : Number(v) })
+        }
+      >
+        <SelectTrigger className="h-7 w-32 text-xs">
+          <SelectValue placeholder="BTL" />
+        </SelectTrigger>
+        <SelectContent>
+          <SelectItem value={NONE_TAG} className="text-xs">
+            No BTL
+          </SelectItem>
+          {BLOOMS_LEGEND.map((b) => (
+            <SelectItem key={b.level} value={String(b.level)} className="text-xs">
+              BTL-{b.level} · {b.name}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+    </div>
+  );
+}
 
 // ─── Inline-edit action buttons (Save / Save to Bank / Cancel) ──────────────
 
@@ -108,8 +184,21 @@ function ValidationFlag({
 }) {
   const hasSuggestion =
     validation.suggestedCO != null || validation.suggestedBTL != null;
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const handler = (e: MouseEvent) => {
+      if (!containerRef.current?.contains(e.target as Node)) {
+        onToggle();
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [open, onToggle]);
+
   return (
-    <div className="relative inline-block">
+    <div ref={containerRef} className="relative inline-block">
       <button
         type="button"
         title="This tag may not match the question — click for details"
@@ -183,106 +272,6 @@ function QuestionImage({ url }: { url?: string | null }) {
   );
 }
 
-/** Read-only MCQ / true-false sub-part row (shared by MCQ blocks and pool items). */
-function SubPartDisplay({ sub }: { sub: SubQuestion }) {
-  return (
-    <div className="ml-3 space-y-1">
-      <div className="flex items-start justify-between gap-3">
-        <div className="flex-1">
-          <span className="font-mono mr-1">{sub.label}</span>
-          <RichQuestionText text={sub.question} />
-        </div>
-        <div className="flex items-center gap-1 shrink-0">
-          {sub.co && (
-            <Badge
-              variant="outline"
-              className="text-[10px] border-blue-300 bg-blue-50 text-blue-700"
-            >
-              {sub.co}
-            </Badge>
-          )}
-          {sub.btl != null && (
-            <Badge
-              variant="outline"
-              className="text-[10px] border-violet-300 bg-violet-50 text-violet-700"
-            >
-              BTL-{sub.btl}
-            </Badge>
-          )}
-          {sub.po && (
-            <Badge
-              variant="outline"
-              className="text-[10px] border-amber-300 bg-amber-50 text-amber-700"
-            >
-              {sub.po}
-            </Badge>
-          )}
-        </div>
-      </div>
-      {sub.options && (
-        <div className="ml-4 grid grid-cols-2 gap-x-4 text-xs text-muted-foreground">
-          {(["a", "b", "c", "d"] as const).map(
-            (kk) =>
-              sub.options?.[kk] && (
-                <div key={kk}>
-                  {kk}) {sub.options[kk]}
-                </div>
-              )
-          )}
-        </div>
-      )}
-      <QuestionImage url={sub.image_url} />
-    </div>
-  );
-}
-
-/** Read-only descriptive / attempt-any option row (shared by those blocks and pool items). */
-function PartDisplay({ part }: { part: QuestionPart }) {
-  const labelClean = part.label
-    ? String(part.label).replace(/^\(/, "").replace(/\)$/, "")
-    : null;
-  return (
-    <div>
-      <div className="ml-3 flex items-start justify-between gap-3">
-        <div className="flex-1">
-          {labelClean && (
-            <span className="font-semibold mr-1">({labelClean})</span>
-          )}
-          <RichQuestionText text={part.question} />
-        </div>
-        <Badge variant="outline" className="text-[10px] shrink-0">
-          [{String(part.marks).padStart(2, "0")}]
-        </Badge>
-        {part.co && (
-          <Badge
-            variant="outline"
-            className="text-[10px] shrink-0 border-blue-300 bg-blue-50 text-blue-700"
-          >
-            {part.co}
-          </Badge>
-        )}
-        {part.btl != null && (
-          <Badge
-            variant="outline"
-            className="text-[10px] shrink-0 border-violet-300 bg-violet-50 text-violet-700"
-          >
-            BTL-{part.btl}
-          </Badge>
-        )}
-        {part.po && (
-          <Badge
-            variant="outline"
-            className="text-[10px] shrink-0 border-amber-300 bg-amber-50 text-amber-700"
-          >
-            {part.po}
-          </Badge>
-        )}
-      </div>
-      <QuestionImage url={part.image_url} />
-    </div>
-  );
-}
-
 // ─── Stage ──────────────────────────────────────────────────────────────────
 
 interface ReviewAndValidateStageProps {
@@ -306,12 +295,47 @@ export function ReviewAndValidateStage({
   onSavedToBank,
 }: ReviewAndValidateStageProps) {
   const [regenKey, setRegenKey] = useState<string | null>(null);
-  const [regenSubKey, setRegenSubKey] = useState<string | null>(null);
+  // In-flight single-unit regenerations (keys: sIdx-qIdx-kind-idx). This is a
+  // SET, not a single key, so several units can regenerate concurrently — each
+  // is locked and unlocked independently (faculty routinely fire regen on a
+  // few items back-to-back without waiting). `regenInFlight` mirrors it as a
+  // ref for a synchronous double-click guard before React re-renders.
+  const [regenUnitKeys, setRegenUnitKeys] = useState<Set<string>>(new Set());
+  const regenInFlight = useRef<Set<string>>(new Set());
+  /** Claim a unit's regen lock; returns false if it is already in flight. */
+  const beginUnitRegen = (key: string): boolean => {
+    if (regenInFlight.current.has(key)) return false;
+    regenInFlight.current.add(key);
+    setRegenUnitKeys((prev) => new Set(prev).add(key));
+    return true;
+  };
+  const endUnitRegen = (key: string) => {
+    regenInFlight.current.delete(key);
+    setRegenUnitKeys((prev) => {
+      const next = new Set(prev);
+      next.delete(key);
+      return next;
+    });
+  };
   const [editingKey, setEditingKey] = useState<string | null>(null);
   const [editDraft, setEditDraft] = useState<EditDraft | null>(null);
   const [savingBankKey, setSavingBankKey] = useState<string | null>(null);
   // Which tag-mismatch flag panel is currently open (key: sIdx-qIdx-kind-idx).
   const [flagKey, setFlagKey] = useState<string | null>(null);
+
+  // ─── Shared per-section server context (modules for regen / validation) ──
+  const sectionModulesForServer = (sIdx: number) => {
+    const range = moduleRangeForSection(sIdx, modules, selectedModuleIds);
+    return modules
+      .filter(
+        (m) => m.module_number >= range[0] && m.module_number <= range[1]
+      )
+      .map((m) => ({ module_number: m.module_number, name: m.name }));
+  };
+  const moduleContentForSection = (sIdx: number) =>
+    sectionModulesForServer(sIdx)
+      .map((m) => `Module ${m.module_number}: ${m.name}`)
+      .join("\n");
 
   // ─── Regenerate single question ────────────────────────────────────────
   // `targetTags` (optional) steers the new question toward a specific CO/BTL —
@@ -325,21 +349,6 @@ export function ReviewAndValidateStage({
     const tplQ = sections[sIdx]?.questions[qIdx];
     if (!tplQ) return;
     const templateQuestion = toTemplateQuestion(tplQ, qIdx + 1);
-    const sectionRange = moduleRangeForSection(
-      sIdx,
-      modules,
-      selectedModuleIds
-    );
-    const sectionModulesForServer = modules
-      .filter(
-        (m) =>
-          m.module_number >= sectionRange[0] &&
-          m.module_number <= sectionRange[1]
-      )
-      .map((m) => ({
-        module_number: m.module_number,
-        name: m.name,
-      }));
 
     const existing = paper.sections[sIdx]?.questions[qIdx];
     const existingText = JSON.stringify(existing ?? {});
@@ -352,7 +361,7 @@ export function ReviewAndValidateStage({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           template_question: templateQuestion,
-          section_modules: sectionModulesForServer,
+          section_modules: sectionModulesForServer(sIdx),
           pyq_context: "",
           co_po_data: { courseOutcomes: paper.courseOutcomes ?? [] },
           question_context: existingText,
@@ -403,24 +412,9 @@ export function ReviewAndValidateStage({
       sub_parts: 1,
       total_marks: baseTemplate.marks_per_part ?? baseTemplate.total_marks,
     };
-    const sectionRange = moduleRangeForSection(
-      sIdx,
-      modules,
-      selectedModuleIds
-    );
-    const sectionModulesForServer = modules
-      .filter(
-        (m) =>
-          m.module_number >= sectionRange[0] &&
-          m.module_number <= sectionRange[1]
-      )
-      .map((m) => ({
-        module_number: m.module_number,
-        name: m.name,
-      }));
 
-    const key = `${sIdx}-${qIdx}-${subIdx}`;
-    setRegenSubKey(key);
+    const key = `${sIdx}-${qIdx}-sub-${subIdx}`;
+    if (!beginUnitRegen(key)) return;
 
     try {
       const res = await fetch("/api/generate/qpaper/regenerate-question", {
@@ -428,7 +422,7 @@ export function ReviewAndValidateStage({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           template_question: templateQuestion,
-          section_modules: sectionModulesForServer,
+          section_modules: sectionModulesForServer(sIdx),
           pyq_context: "",
           co_po_data: { courseOutcomes: paper.courseOutcomes ?? [] },
           question_context: JSON.stringify(question),
@@ -459,7 +453,176 @@ export function ReviewAndValidateStage({
       console.error(err);
       toast.error("Failed to regenerate sub-question");
     } finally {
-      setRegenSubKey(null);
+      endUnitRegen(key);
+    }
+  };
+
+  // ─── Regenerate a single descriptive / attempt-any part ─────────────────
+  // Generalizes the MCQ sub-part pattern to q.parts: asks the route for ONE
+  // fresh unit (a synthetic single-part "descriptive" template) and splices it
+  // into parts[partIdx], preserving that part's label, marks, and OR-alternative
+  // flag. Siblings and the block instruction stay byte-for-byte unchanged.
+  const regeneratePart = async (
+    sIdx: number,
+    qIdx: number,
+    partIdx: number
+  ) => {
+    if (!paper) return;
+    const tplQ = sections[sIdx]?.questions[qIdx];
+    const question = paper.sections[sIdx]?.questions[qIdx];
+    if (!tplQ || !question) return;
+    const part = question.parts?.[partIdx];
+    if (!part) return;
+
+    const baseTemplate = toTemplateQuestion(tplQ, qIdx + 1) as TemplateQuestionPayload;
+    // Single-part descriptive template → route returns `parts: [one]`.
+    const templateQuestion: TemplateQuestionPayload = {
+      ...baseTemplate,
+      type: "descriptive",
+      sub_parts: undefined,
+      parts: undefined,
+      attempt_logic: null,
+      total_marks: part.marks,
+    };
+
+    const key = `${sIdx}-${qIdx}-part-${partIdx}`;
+    if (!beginUnitRegen(key)) return;
+
+    try {
+      const res = await fetch("/api/generate/qpaper/regenerate-question", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          template_question: templateQuestion,
+          section_modules: sectionModulesForServer(sIdx),
+          pyq_context: "",
+          co_po_data: { courseOutcomes: paper.courseOutcomes ?? [] },
+          question_context: JSON.stringify(question),
+        }),
+      });
+      if (!res.ok) throw new Error(await res.text());
+      const data = (await res.json()) as { question: GeneratedQuestion };
+      const newPart = data.question.parts?.[0];
+      if (!newPart) throw new Error("No part returned");
+      setPaper((prev) => {
+        if (!prev) return prev;
+        const next = { ...prev, sections: prev.sections.map((s) => ({ ...s })) };
+        const q = { ...next.sections[sIdx].questions[qIdx] };
+        if (q.parts) {
+          q.parts = q.parts.map((p, i) =>
+            i === partIdx
+              ? {
+                  // New content + tags, but keep this part's structural fields.
+                  ...newPart,
+                  label: p.label,
+                  marks: p.marks,
+                  is_or_alternative: p.is_or_alternative,
+                }
+              : p
+          );
+          // attempt_any_one shortfall self-heal: recompute how many options now
+          // carry real content, capped at the configured total (mirrors pool).
+          if (q.attempt_expected_count != null) {
+            const nonBlank = q.parts.filter(
+              (p) => (p.question ?? "").trim().length > 0
+            ).length;
+            q.attempt_returned_count = Math.min(q.attempt_expected_count, nonBlank);
+          }
+        }
+        next.sections[sIdx].questions = next.sections[sIdx].questions.map(
+          (orig, i) => (i === qIdx ? q : orig)
+        );
+        return next;
+      });
+      toast.success("Part regenerated");
+    } catch (err) {
+      console.error(err);
+      toast.error("Failed to regenerate part");
+    } finally {
+      endUnitRegen(key);
+    }
+  };
+
+  // ─── Regenerate a single pool item ──────────────────────────────────────
+  // Sends a pool template with a single-row composition of this item's type;
+  // the route returns a one-item pool, which we splice into items[itemIdx].
+  // Positional labels ((i)/(ii)/…) are render-derived, so nothing to preserve.
+  // Marks-per-item, the block instruction, attempt_logic, and sibling items are
+  // untouched. Afterwards the shortfall (BUG-2) count is recomputed live.
+  const regeneratePoolItem = async (
+    sIdx: number,
+    qIdx: number,
+    itemIdx: number
+  ) => {
+    if (!paper) return;
+    const tplQ = sections[sIdx]?.questions[qIdx];
+    const question = paper.sections[sIdx]?.questions[qIdx];
+    if (!tplQ || !question || question.type !== "pool") return;
+    const item = question.items?.[itemIdx];
+    if (!item) return;
+
+    const baseTemplate = toTemplateQuestion(
+      tplQ,
+      qIdx + 1
+    ) as TemplatePoolQuestionPayload;
+    const perItem = poolMarksPerItem(question);
+    const templateQuestion: TemplatePoolQuestionPayload = {
+      ...baseTemplate,
+      type: "pool",
+      composition: [{ itemType: item.itemType, count: 1 }],
+      attemptCount: 1,
+      marksPerItem: perItem,
+      total_marks: perItem,
+    };
+
+    const key = `${sIdx}-${qIdx}-pool-${itemIdx}`;
+    if (!beginUnitRegen(key)) return;
+
+    try {
+      const res = await fetch("/api/generate/qpaper/regenerate-question", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          template_question: templateQuestion,
+          section_modules: sectionModulesForServer(sIdx),
+          pyq_context: "",
+          co_po_data: { courseOutcomes: paper.courseOutcomes ?? [] },
+          question_context: JSON.stringify(question),
+        }),
+      });
+      if (!res.ok) throw new Error(await res.text());
+      const data = (await res.json()) as { question: GeneratedQuestion };
+      const newItem = data.question.items?.[0];
+      if (!newItem) throw new Error("No pool item returned");
+      setPaper((prev) => {
+        if (!prev) return prev;
+        const next = { ...prev, sections: prev.sections.map((s) => ({ ...s })) };
+        const q = { ...next.sections[sIdx].questions[qIdx] };
+        if (q.items) {
+          // Force the template item type — the block composition is authoritative.
+          q.items = q.items.map((it, i) =>
+            i === itemIdx ? { ...newItem, itemType: it.itemType } : it
+          );
+          // Recompute shortfall: how many items now carry real content, capped
+          // at the expected count (so filling a padded blank clears the warning).
+          const nonBlank = q.items.filter(
+            (it) => (it.question_text ?? "").trim().length > 0
+          ).length;
+          if (q.pool_expected_count != null) {
+            q.pool_returned_count = Math.min(q.pool_expected_count, nonBlank);
+          }
+        }
+        next.sections[sIdx].questions = next.sections[sIdx].questions.map(
+          (orig, i) => (i === qIdx ? q : orig)
+        );
+        return next;
+      });
+      toast.success("Pool item regenerated");
+    } catch (err) {
+      console.error(err);
+      toast.error("Failed to regenerate pool item");
+    } finally {
+      endUnitRegen(key);
     }
   };
 
@@ -469,7 +632,7 @@ export function ReviewAndValidateStage({
   const applySuggestedTag = (
     sIdx: number,
     qIdx: number,
-    kind: "sub" | "part",
+    kind: UnitKind,
     innerIdx: number
   ) => {
     setPaper((prev) => {
@@ -492,6 +655,8 @@ export function ReviewAndValidateStage({
         q.sub_parts = q.sub_parts.map((s, i) => (i === innerIdx ? relabel(s) : s));
       } else if (kind === "part" && q.parts) {
         q.parts = q.parts.map((p, i) => (i === innerIdx ? relabel(p) : p));
+      } else if (kind === "pool" && q.items) {
+        q.items = q.items.map((it, i) => (i === innerIdx ? relabel(it) : it));
       }
       next.sections[sIdx].questions = next.sections[sIdx].questions.map(
         (orig, i) => (i === qIdx ? q : orig)
@@ -505,7 +670,7 @@ export function ReviewAndValidateStage({
   const beginEdit = (
     sIdx: number,
     qIdx: number,
-    kind: "sub" | "part",
+    kind: UnitKind,
     innerIdx: number
   ) => {
     const q = paper?.sections[sIdx]?.questions[qIdx];
@@ -519,12 +684,27 @@ export function ReviewAndValidateStage({
           : { a: "", b: "", c: "", d: "" },
         correct_option: sub?.correct_option,
         model_answer: sub?.model_answer ?? "",
+        co: sub?.co ?? null,
+        btl: sub?.btl ?? null,
+      });
+    } else if (kind === "pool") {
+      const item = q.items?.[innerIdx];
+      setEditDraft({
+        question: item?.question_text ?? "",
+        options: item?.options
+          ? { ...item.options }
+          : { a: "", b: "", c: "", d: "" },
+        model_answer: item?.model_answer ?? "",
+        co: item?.co ?? null,
+        btl: item?.btl ?? null,
       });
     } else {
       const part = q.parts?.[innerIdx];
       setEditDraft({
         question: part?.question ?? "",
         model_answer: part?.model_answer ?? "",
+        co: part?.co ?? null,
+        btl: part?.btl ?? null,
       });
     }
     setEditingKey(`${sIdx}-${qIdx}-${kind}-${innerIdx}`);
@@ -535,14 +715,41 @@ export function ReviewAndValidateStage({
     setEditDraft(null);
   };
 
-  const saveEdit = (
+  const saveEdit = async (
     sIdx: number,
     qIdx: number,
-    kind: "sub" | "part",
+    kind: UnitKind,
     innerIdx: number
   ) => {
     const draft = editDraft;
-    if (!draft) return cancelEdit();
+    if (!draft || !paper) return cancelEdit();
+
+    // Snapshot the pre-edit unit so we can tell what actually changed.
+    const q0 = paper.sections[sIdx]?.questions[qIdx];
+    const origUnit =
+      kind === "sub"
+        ? q0?.sub_parts?.[innerIdx]
+        : kind === "pool"
+          ? q0?.items?.[innerIdx]
+          : q0?.parts?.[innerIdx];
+    const origText =
+      kind === "pool"
+        ? (origUnit as PoolItem | undefined)?.question_text ?? ""
+        : (origUnit as SubQuestion | QuestionPart | undefined)?.question ?? "";
+    const origModel = origUnit?.model_answer ?? "";
+    const origCO = origUnit?.co ?? null;
+    const origBTL = origUnit?.btl ?? null;
+
+    const newText = draft.question;
+    const newModel = draft.model_answer || null;
+    const newCO = draft.co ?? null;
+    const newBTL = draft.btl ?? null;
+
+    // Manual tag edit wins: skip auto re-validation and clear any stale flag.
+    const tagsTouchedManually = newCO !== origCO || newBTL !== origBTL;
+    const textChanged =
+      newText !== origText || (newModel ?? "") !== (origModel ?? "");
+
     setPaper((prev) => {
       if (!prev) return prev;
       const next = { ...prev, sections: prev.sections.map((s) => ({ ...s })) };
@@ -552,20 +759,43 @@ export function ReviewAndValidateStage({
           i === innerIdx
             ? {
                 ...s,
-                question: draft.question,
+                question: newText,
                 options: draft.options ? { ...draft.options } : s.options,
                 correct_option: draft.correct_option ?? s.correct_option,
-                model_answer: draft.model_answer || null,
+                model_answer: newModel,
+                co: newCO,
+                btl: newBTL,
+                validation: tagsTouchedManually ? undefined : s.validation,
               }
             : s
+        );
+      } else if (kind === "pool" && q.items) {
+        q.items = q.items.map((it, i) =>
+          i === innerIdx
+            ? {
+                ...it,
+                question_text: newText,
+                options:
+                  isPoolItemMcqLike(it.itemType) && draft.options
+                    ? { ...draft.options }
+                    : it.options,
+                model_answer: newModel,
+                co: newCO,
+                btl: newBTL,
+                validation: tagsTouchedManually ? undefined : it.validation,
+              }
+            : it
         );
       } else if (kind === "part" && q.parts) {
         q.parts = q.parts.map((p, i) =>
           i === innerIdx
             ? {
                 ...p,
-                question: draft.question,
-                model_answer: draft.model_answer || null,
+                question: newText,
+                model_answer: newModel,
+                co: newCO,
+                btl: newBTL,
+                validation: tagsTouchedManually ? undefined : p.validation,
               }
             : p
         );
@@ -576,13 +806,75 @@ export function ReviewAndValidateStage({
       return next;
     });
     cancelEdit();
+
+    // Re-validate tags only when the content changed and the faculty did NOT
+    // manually set tags in this same edit. Non-blocking and fail-safe: on any
+    // error we leave the (manually or previously) set tags untouched.
+    if (!tagsTouchedManually && textChanged && newCO != null && newBTL != null) {
+      try {
+        const res = await fetch("/api/generate/qpaper/validate-tag", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            questionText: newText,
+            claimedCO: newCO,
+            claimedBTL: newBTL,
+            courseOutcomes: paper.courseOutcomes ?? [],
+            moduleContent: moduleContentForSection(sIdx),
+          }),
+        });
+        if (!res.ok) return;
+        const result = (await res.json()) as {
+          co: string | null;
+          btl: number | null;
+          validation?: TagValidation;
+        };
+        setPaper((prev) => {
+          if (!prev) return prev;
+          const next = {
+            ...prev,
+            sections: prev.sections.map((s) => ({ ...s })),
+          };
+          const q = { ...next.sections[sIdx].questions[qIdx] };
+          const apply = <
+            T extends {
+              co?: string | null;
+              btl?: number | null;
+              validation?: TagValidation;
+            }
+          >(
+            u: T
+          ): T => ({
+            ...u,
+            co: result.co,
+            btl: result.btl,
+            validation: result.validation,
+          });
+          if (kind === "sub" && q.sub_parts) {
+            q.sub_parts = q.sub_parts.map((s, i) =>
+              i === innerIdx ? apply(s) : s
+            );
+          } else if (kind === "pool" && q.items) {
+            q.items = q.items.map((it, i) => (i === innerIdx ? apply(it) : it));
+          } else if (kind === "part" && q.parts) {
+            q.parts = q.parts.map((p, i) => (i === innerIdx ? apply(p) : p));
+          }
+          next.sections[sIdx].questions = next.sections[sIdx].questions.map(
+            (orig, i) => (i === qIdx ? q : orig)
+          );
+          return next;
+        });
+      } catch (err) {
+        console.error("[saveEdit] tag re-validation failed:", err);
+      }
+    }
   };
 
   // ─── Save an (edited) question into the faculty Q Bank ──────────────────
   const saveQuestionToBank = async (
     sIdx: number,
     qIdx: number,
-    kind: "sub" | "part",
+    kind: UnitKind,
     innerIdx: number
   ) => {
     if (!selectedSubjectId) {
@@ -617,8 +909,29 @@ export function ReviewAndValidateStage({
         marks: 1,
         options,
         model_answer: editing?.model_answer ?? sub.model_answer ?? "",
-        co_code: sub.co ?? undefined,
-        btl_level: sub.btl ?? undefined,
+        co_code: editing?.co ?? sub.co ?? undefined,
+        btl_level: editing?.btl ?? sub.btl ?? undefined,
+      };
+    } else if (kind === "pool") {
+      const item = q.items?.[innerIdx];
+      if (!item) return;
+      const mcqLike = isPoolItemMcqLike(item.itemType);
+      const opts = editing?.options ?? item.options ?? {};
+      const options = mcqLike
+        ? (["a", "b", "c", "d"] as const)
+            .filter((k) => opts[k]?.trim())
+            .map((k) => ({ label: k.toUpperCase(), text: opts[k] }))
+        : undefined;
+      payload = {
+        subject_id: selectedSubjectId,
+        question_text: editing?.question ?? item.question_text,
+        // mcq-like pool items save as "mcq"; others map by their item type.
+        question_type: mcqLike ? "mcq" : item.itemType,
+        marks: poolMarksPerItem(q),
+        ...(options ? { options } : {}),
+        model_answer: editing?.model_answer ?? item.model_answer ?? "",
+        co_code: editing?.co ?? item.co ?? undefined,
+        btl_level: editing?.btl ?? item.btl ?? undefined,
       };
     } else {
       const part = q.parts?.[innerIdx];
@@ -629,8 +942,8 @@ export function ReviewAndValidateStage({
         question_type: q.type,
         marks: part.marks,
         model_answer: editing?.model_answer ?? part.model_answer ?? "",
-        co_code: part.co ?? undefined,
-        btl_level: part.btl ?? undefined,
+        co_code: editing?.co ?? part.co ?? undefined,
+        btl_level: editing?.btl ?? part.btl ?? undefined,
       };
     }
 
@@ -654,6 +967,18 @@ export function ReviewAndValidateStage({
   };
 
   if (!paper) return null;
+
+  // Valid CO codes for the subject's edit-form Select. A unit's current CO is
+  // appended when it's off-list, so an existing tag is never silently dropped.
+  const baseCoOptions = (paper.courseOutcomes ?? [])
+    .map((c) => c.co_code)
+    .filter(Boolean);
+  const coOptionsWith = (current?: string | null): string[] => {
+    if (current && !baseCoOptions.includes(current)) {
+      return [...baseCoOptions, current];
+    }
+    return baseCoOptions;
+  };
 
   return (
     <Card className="p-6 space-y-4 font-serif">
@@ -797,6 +1122,14 @@ export function ReviewAndValidateStage({
                           rows={2}
                           placeholder="Model answer (optional, used in answer key)"
                         />
+                        <TagSelects
+                          co={editDraft.co}
+                          btl={editDraft.btl}
+                          coOptions={coOptionsWith(editDraft.co ?? sub.co)}
+                          onChange={(patch) =>
+                            setEditDraft({ ...editDraft, ...patch })
+                          }
+                        />
                         <EditActions
                           onSave={() => saveEdit(sIdx, qIdx, "sub", si)}
                           onCancel={cancelEdit}
@@ -888,12 +1221,12 @@ export function ReviewAndValidateStage({
                               variant="ghost"
                               className="size-6"
                               title="Regenerate this sub-question"
-                              disabled={regenSubKey === `${sIdx}-${qIdx}-${si}`}
+                              disabled={regenUnitKeys.has(k)}
                               onClick={() =>
                                 regenerateSubPart(sIdx, qIdx, si)
                               }
                             >
-                              {regenSubKey === `${sIdx}-${qIdx}-${si}` ? (
+                              {regenUnitKeys.has(k) ? (
                                 <Loader2 className="size-3 animate-spin" />
                               ) : (
                                 <RefreshCw className="size-3" />
@@ -921,19 +1254,222 @@ export function ReviewAndValidateStage({
               })}
 
               {q.type === "pool" &&
-                q.items?.map((item, ii) =>
-                  isPoolItemMcqLike(item.itemType) ? (
-                    <SubPartDisplay
-                      key={ii}
-                      sub={poolItemToSubQuestion(item, ii)}
-                    />
-                  ) : (
-                    <PartDisplay
-                      key={ii}
-                      part={poolItemToPart(item, ii, poolMarksPerItem(q))}
-                    />
-                  )
-                )}
+                q.items?.map((item, ii) => {
+                  const k = `${sIdx}-${qIdx}-pool-${ii}`;
+                  const isEditing = editingKey === k && editDraft;
+                  const mcqLike = isPoolItemMcqLike(item.itemType);
+                  const label = poolItemLabel(ii);
+                  const marks = poolMarksPerItem(q);
+                  // Shortfall (BUG-2): a padded blank item the AI never
+                  // generated. Render a distinct "Generate this item" affordance
+                  // instead of an empty editable row so it reads as ungenerated,
+                  // not as an empty edit. Regenerating fills it in place.
+                  const isBlank = (item.question_text ?? "").trim().length === 0;
+                  return (
+                    <div key={ii} className="ml-3 space-y-1">
+                      {isEditing ? (
+                        <div className="space-y-2 border rounded p-2 bg-muted/30">
+                          <Textarea
+                            value={editDraft.question}
+                            onChange={(e) =>
+                              setEditDraft({
+                                ...editDraft,
+                                question: e.target.value,
+                              })
+                            }
+                            className="text-xs"
+                            rows={2}
+                            placeholder="Question text"
+                          />
+                          {item.itemType === "mcq" && (
+                            <div className="space-y-1">
+                              {(["a", "b", "c", "d"] as const).map((kk) => (
+                                <Input
+                                  key={kk}
+                                  value={editDraft.options?.[kk] ?? ""}
+                                  onChange={(e) =>
+                                    setEditDraft({
+                                      ...editDraft,
+                                      options: {
+                                        ...(editDraft.options ?? {}),
+                                        [kk]: e.target.value,
+                                      },
+                                    })
+                                  }
+                                  className="h-7 text-xs"
+                                  placeholder={`Option ${kk.toUpperCase()}`}
+                                />
+                              ))}
+                            </div>
+                          )}
+                          <Textarea
+                            value={editDraft.model_answer}
+                            onChange={(e) =>
+                              setEditDraft({
+                                ...editDraft,
+                                model_answer: e.target.value,
+                              })
+                            }
+                            className="text-xs"
+                            rows={2}
+                            placeholder="Model answer (optional, used in answer key)"
+                          />
+                          <TagSelects
+                            co={editDraft.co}
+                            btl={editDraft.btl}
+                            coOptions={coOptionsWith(editDraft.co ?? item.co)}
+                            onChange={(patch) =>
+                              setEditDraft({ ...editDraft, ...patch })
+                            }
+                          />
+                          <EditActions
+                            onSave={() => saveEdit(sIdx, qIdx, "pool", ii)}
+                            onCancel={cancelEdit}
+                            onSaveToBank={() =>
+                              saveQuestionToBank(sIdx, qIdx, "pool", ii)
+                            }
+                            savingBank={savingBankKey === k}
+                          />
+                        </div>
+                      ) : isBlank ? (
+                        <div className="flex items-center justify-between gap-3 rounded border border-dashed border-amber-300 bg-amber-50/50 px-3 py-2">
+                          <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                            <span className="font-mono">{label}</span>
+                            <span className="italic">
+                              Not generated yet — this item came up short.
+                            </span>
+                            <Badge variant="outline" className="text-[10px]">
+                              [{String(marks).padStart(2, "0")}]
+                            </Badge>
+                          </div>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="h-7 shrink-0 text-xs"
+                            disabled={regenUnitKeys.has(k)}
+                            onClick={() => regeneratePoolItem(sIdx, qIdx, ii)}
+                          >
+                            {regenUnitKeys.has(k) ? (
+                              <Loader2 className="size-3 mr-1 animate-spin" />
+                            ) : (
+                              <RefreshCw className="size-3 mr-1" />
+                            )}
+                            Generate this item
+                          </Button>
+                        </div>
+                      ) : (
+                        <>
+                          <div className="flex items-start justify-between gap-3">
+                            <div className="flex-1">
+                              <span className="font-mono mr-1">{label}</span>
+                              <RichQuestionText text={item.question_text} />
+                            </div>
+                            <div className="flex items-center gap-1 shrink-0">
+                              <Badge variant="outline" className="text-[10px]">
+                                [{String(marks).padStart(2, "0")}]
+                              </Badge>
+                              {item.co && (
+                                <Badge
+                                  variant="outline"
+                                  className="text-[10px] border-blue-300 bg-blue-50 text-blue-700"
+                                >
+                                  {item.co}
+                                </Badge>
+                              )}
+                              {item.btl != null && (
+                                <Badge
+                                  variant="outline"
+                                  className="text-[10px] border-violet-300 bg-violet-50 text-violet-700"
+                                >
+                                  BTL-{item.btl}
+                                </Badge>
+                              )}
+                              {item.po && (
+                                <Badge
+                                  variant="outline"
+                                  className="text-[10px] border-amber-300 bg-amber-50 text-amber-700"
+                                >
+                                  {item.po}
+                                </Badge>
+                              )}
+                              {item.validation && (
+                                <ValidationFlag
+                                  validation={item.validation}
+                                  open={flagKey === k}
+                                  onToggle={() =>
+                                    setFlagKey((cur) => (cur === k ? null : k))
+                                  }
+                                  onUseSuggestion={() =>
+                                    applySuggestedTag(sIdx, qIdx, "pool", ii)
+                                  }
+                                  onRegenerate={() => {
+                                    setFlagKey(null);
+                                    regeneratePoolItem(sIdx, qIdx, ii);
+                                  }}
+                                  regenerating={regenUnitKeys.has(k)}
+                                />
+                              )}
+                              <Button
+                                size="icon"
+                                variant="ghost"
+                                className="size-6"
+                                title="Edit"
+                                onClick={() => beginEdit(sIdx, qIdx, "pool", ii)}
+                              >
+                                <Pencil className="size-3" />
+                              </Button>
+                              <Button
+                                size="icon"
+                                variant="ghost"
+                                className="size-6"
+                                title="Save to Q Bank"
+                                disabled={savingBankKey === k}
+                                onClick={() =>
+                                  saveQuestionToBank(sIdx, qIdx, "pool", ii)
+                                }
+                              >
+                                {savingBankKey === k ? (
+                                  <Loader2 className="size-3 animate-spin" />
+                                ) : (
+                                  <Library className="size-3" />
+                                )}
+                              </Button>
+                              <Button
+                                size="icon"
+                                variant="ghost"
+                                className="size-6"
+                                title="Regenerate this pool item"
+                                disabled={regenUnitKeys.has(k)}
+                                onClick={() =>
+                                  regeneratePoolItem(sIdx, qIdx, ii)
+                                }
+                              >
+                                {regenUnitKeys.has(k) ? (
+                                  <Loader2 className="size-3 animate-spin" />
+                                ) : (
+                                  <RefreshCw className="size-3" />
+                                )}
+                              </Button>
+                            </div>
+                          </div>
+                          {mcqLike && item.options && (
+                            <div className="ml-4 grid grid-cols-2 gap-x-4 text-xs text-muted-foreground">
+                              {(["a", "b", "c", "d"] as const).map(
+                                (kk) =>
+                                  item.options?.[kk] && (
+                                    <div key={kk}>
+                                      {kk}) {item.options[kk]}
+                                    </div>
+                                  )
+                              )}
+                            </div>
+                          )}
+                          <QuestionImage url={item.image_url} />
+                        </>
+                      )}
+                    </div>
+                  );
+                })}
 
               {q.type !== "pool" &&
                 q.parts?.map((part, pi) => {
@@ -976,6 +1512,14 @@ export function ReviewAndValidateStage({
                           className="text-xs"
                           rows={2}
                           placeholder="Model answer (optional, used in answer key)"
+                        />
+                        <TagSelects
+                          co={editDraft.co}
+                          btl={editDraft.btl}
+                          coOptions={coOptionsWith(editDraft.co ?? part.co)}
+                          onChange={(patch) =>
+                            setEditDraft({ ...editDraft, ...patch })
+                          }
                         />
                         <EditActions
                           onSave={() => saveEdit(sIdx, qIdx, "part", pi)}
@@ -1070,6 +1614,20 @@ export function ReviewAndValidateStage({
                               <Loader2 className="size-3 animate-spin" />
                             ) : (
                               <Library className="size-3" />
+                            )}
+                          </Button>
+                          <Button
+                            size="icon"
+                            variant="ghost"
+                            className="size-6"
+                            title="Regenerate this part"
+                            disabled={regenUnitKeys.has(k)}
+                            onClick={() => regeneratePart(sIdx, qIdx, pi)}
+                          >
+                            {regenUnitKeys.has(k) ? (
+                              <Loader2 className="size-3 animate-spin" />
+                            ) : (
+                              <RefreshCw className="size-3" />
                             )}
                           </Button>
                         </div>

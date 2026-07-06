@@ -469,7 +469,14 @@ function renderQuestion(
         spacing: { before: 120 },
         children: [
           new TextRun({ text: label, bold: true, size: 22 }),
-          new TextRun({ text: `  ${q.instruction ?? "Attempt any one."}`, italics: true, size: 20 }),
+          new TextRun({
+            text: `  ${
+              q.instruction ??
+              `Attempt any ${poolAttemptCount(q)} of ${q.attempt_expected_count ?? q.parts?.length ?? 2}.`
+            }`,
+            italics: true,
+            size: 20,
+          }),
           new TextRun({ text: `\t[${q.total_marks}M]`, size: 20, color: "555555" }),
         ],
       })
@@ -484,7 +491,7 @@ function renderQuestion(
   if (type === "pool") {
     const instruction =
       q.instruction ??
-      `Attempt any ${poolAttemptCount(q)} of the following ${q.items?.length ?? 0} questions.`;
+      `Attempt any ${poolAttemptCount(q)} of the following ${q.pool_expected_count ?? q.items?.length ?? 0} questions.`;
     out.push(
       new Paragraph({
         tabStops: [{ type: TabStopType.RIGHT, position: TabStopPosition.MAX }],

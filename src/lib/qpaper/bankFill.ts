@@ -38,7 +38,14 @@ import type {
   QuestionType as PoolQuestionType,
   PoolItem,
 } from "./templates";
-import { isPoolItemMcqLike } from "./templates";
+import {
+  attemptAnyCount,
+  attemptAnyDefaultInstruction,
+  attemptAnyLogic,
+  attemptAnyMarksPerOption,
+  attemptAnyTotalOptions,
+  isPoolItemMcqLike,
+} from "./templates";
 import type { BankQuestion, MCQOption, QuestionType } from "@/lib/qbank/types";
 import {
   mcqSubSlotKey,
@@ -110,8 +117,8 @@ function slotsForQuestion(q: TemplateQuestionBlock, qIndex: number): AtomicSlot[
       slots.push({ qIndex, kind: "or_alt", innerIndex: i, bankType, marks });
     }
   } else if (q.type === "attempt_any_one") {
-    const count = Math.max(2, q.sub_parts ?? 2);
-    const marks = q.marks_per_part ?? q.total_marks;
+    const count = attemptAnyTotalOptions(q);
+    const marks = attemptAnyMarksPerOption(q);
     const bankType = descriptiveBankType(marks);
     for (let i = 0; i < count; i++) {
       slots.push({
@@ -497,13 +504,23 @@ function assembleQuestionFromBank(
   }
 
   if (tq.type === "attempt_any_one") {
-    const count = Math.max(2, tq.sub_parts ?? 2);
+    const count = attemptAnyTotalOptions(tq);
+    const marksEach = attemptAnyMarksPerOption(tq);
     const parts: QuestionPart[] = [];
     for (let i = 0; i < count; i++) {
       const b = get("attempt_option", i);
-      if (b) parts.push(bankToPart(b, `(${ROMAN[i] ?? i + 1})`, false));
+      if (b) {
+        // Per-option marks are the faculty-configured value, not the bank
+        // question's own marks.
+        parts.push({ ...bankToPart(b, `(${ROMAN[i] ?? i + 1})`, false), marks: marksEach });
+      }
     }
     base.parts = parts;
+    // Label always derives from configured K-of-M, never a stale stored string.
+    base.instruction = attemptAnyDefaultInstruction(tq);
+    base.attempt_logic = attemptAnyLogic(attemptAnyCount(tq));
+    base.attempt_expected_count = count;
+    base.attempt_returned_count = parts.length;
     return base;
   }
 

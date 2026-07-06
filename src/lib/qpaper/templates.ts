@@ -69,6 +69,11 @@ export interface TemplateQuestion extends TemplateQuestionBlockShared {
    *  assignModulesToSlots uses this module directly instead of pickModule.
    *  null/absent = automatic weightage-based assignment (default). */
   pinnedModuleId?: string | null;
+  /** attempt_any_one only: K — how many of the `sub_parts` options the student
+   *  must attempt. `sub_parts` carries M (total options) and `marks_per_part`
+   *  carries the per-option mark value. Absent on old templates — derive from
+   *  `attempt_logic` ("any_2" → 2) via {@link attemptAnyCount}. */
+  attemptCount?: number;
 }
 
 /**
@@ -111,6 +116,57 @@ export function poolItemTokenBudgetType(itemType: QuestionType): string {
 
 export function poolTotalItems(composition: PoolCompositionEntry[]): number {
   return composition.reduce((sum, row) => sum + row.count, 0);
+}
+
+// ─── attempt_any_one config (faculty-configured N of M) ─────────────────────
+// These read the faculty-configured "Attempt any K of M, marks/option" values
+// off a template block, tolerating old templates that only stored
+// `attempt_logic` + `sub_parts`. They are the single source of truth for the
+// standalone attempt-any block — never infer N/M/marks from AI output shape.
+
+/** Minimal structural shape shared by attempt_any_one template blocks. */
+type AttemptAnyLike = {
+  sub_parts?: number;
+  marks_per_part?: number;
+  attemptCount?: number;
+  attempt_logic?: string | null;
+  total_marks: number;
+};
+
+/** M — total number of options offered by an attempt_any_one block. */
+export function attemptAnyTotalOptions(t: AttemptAnyLike): number {
+  return Math.max(2, t.sub_parts ?? 2);
+}
+
+/** K — how many options the student must attempt. */
+export function attemptAnyCount(t: AttemptAnyLike): number {
+  if (typeof t.attemptCount === "number" && t.attemptCount > 0) {
+    return t.attemptCount;
+  }
+  const logic = t.attempt_logic ?? "";
+  if (logic === "any_one") return 1;
+  const m = /^any_(\d+)$/.exec(logic);
+  if (m) return Math.max(1, Number(m[1]) || 1);
+  return 1;
+}
+
+/** Faculty-configured marks awarded per attempted option. */
+export function attemptAnyMarksPerOption(t: AttemptAnyLike): number {
+  if (typeof t.marks_per_part === "number" && t.marks_per_part > 0) {
+    return t.marks_per_part;
+  }
+  const k = attemptAnyCount(t);
+  return k > 0 ? Math.round(t.total_marks / k) : t.total_marks;
+}
+
+/** Canonical "Attempt any K of M." instruction for an attempt_any_one block. */
+export function attemptAnyDefaultInstruction(t: AttemptAnyLike): string {
+  return `Attempt any ${attemptAnyCount(t)} of ${attemptAnyTotalOptions(t)}.`;
+}
+
+/** attempt_logic string for a given attempt count ("any_one" / "any_2" …). */
+export function attemptAnyLogic(k: number): string {
+  return k === 1 ? "any_one" : `any_${k}`;
 }
 
 /** Resolve the expected itemType for pool item index `idx` from the template composition. */

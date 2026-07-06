@@ -160,6 +160,10 @@ export interface EditDraft {
   options?: Record<string, string>; // keys a,b,c,d
   correct_option?: string;
   model_answer: string;
+  /** Editable CO code (e.g. "CO2"); null when untagged. */
+  co?: string | null;
+  /** Editable Bloom's level 1-6; null when untagged. */
+  btl?: number | null;
 }
 
 export interface ModuleRow {
@@ -226,6 +230,15 @@ export interface GeneratedQuestion {
   parts?: QuestionPart[];
   /** Populated on pool blocks after generation. */
   items?: PoolItem[];
+  /** Pool blocks only: template's requested item count (drives instruction/marks). */
+  pool_expected_count?: number;
+  /** Pool blocks only: how many items the AI actually returned (before blank padding);
+   *  recomputed client-side when a pool item is regenerated so shortfall notes self-heal. */
+  pool_returned_count?: number;
+  /** attempt_any_one only: template's configured option count (M) — drives instruction/marks. */
+  attempt_expected_count?: number;
+  /** attempt_any_one only: how many options the AI actually returned before blank padding. */
+  attempt_returned_count?: number;
   from_bank?: boolean;
 }
 
@@ -274,6 +287,8 @@ export interface PoolItem {
   po?: string | null;
   image_path?: string | null;
   image_url?: string | null;
+  /** CO/BTL tag-validation verdict; attached client-side on re-validation after an edit. */
+  validation?: TagValidation;
 }
 
 export interface TemplateQuestionPayload {
@@ -287,6 +302,9 @@ export interface TemplateQuestionPayload {
   parts?: string[];
   has_numerical?: boolean;
   attempt_logic: string | null;
+  /** attempt_any_one only: K — how many of the `sub_parts` (M) options must be
+   *  attempted. `marks_per_part` carries the per-option marks. */
+  attemptCount?: number;
   /** Pinned module id — basic mcq/descriptive rows only. null = auto. */
   pinnedModuleId?: string | null;
 }
@@ -528,14 +546,21 @@ export function toTemplateQuestion(
   }
 
   if (q.hasAttemptAny) {
+    // sub_parts = M (total options), marks_per_part = per-option marks,
+    // attemptCount = K, total_marks = K × per-option. These carry the faculty's
+    // configured N-of-M through generation so nothing is inferred downstream.
+    // The instruction ALWAYS derives from the live K/M — there is no custom
+    // instruction field for this block type, so honoring a stored string would
+    // let it go stale (e.g. show "of 3" after M was changed to 4).
     return {
       q_number: qNumber,
       display_label,
       type: "attempt_any_one",
-      instruction:
-        instruction ?? `Attempt any ${q.attemptAnyTake} of ${q.attemptAnyOfTotal}.`,
+      instruction: `Attempt any ${q.attemptAnyTake} of ${q.attemptAnyOfTotal}.`,
       total_marks: q.attemptAnyTake * q.attemptAnyMarks,
       sub_parts: q.attemptAnyOfTotal,
+      marks_per_part: q.attemptAnyMarks,
+      attemptCount: q.attemptAnyTake,
       attempt_logic:
         q.attemptAnyTake === 1 ? "any_one" : `any_${q.attemptAnyTake}`,
     };
@@ -777,12 +802,27 @@ function fromTemplateQuestion(q: TemplateQuestionBlockPayload): BuilderQuestion 
 
   if (tq.type === "attempt_any_one") {
     const logic = tq.attempt_logic ?? "any_one";
-    const take = logic === "any_one" ? 1 : (parseInt(logic.replace("any_", ""), 10) || 1);
+    // Prefer the explicit attemptCount; fall back to parsing attempt_logic for
+    // templates saved before the field existed.
+    const take =
+      typeof tq.attemptCount === "number" && tq.attemptCount > 0
+        ? tq.attemptCount
+        : logic === "any_one"
+          ? 1
+          : parseInt(logic.replace("any_", ""), 10) || 1;
     const ofTotal = tq.sub_parts ?? 2;
-    const marksEach = take > 0 ? Math.round(tq.total_marks / take) : tq.total_marks;
+    const marksEach =
+      typeof tq.marks_per_part === "number" && tq.marks_per_part > 0
+        ? tq.marks_per_part
+        : take > 0
+          ? Math.round(tq.total_marks / take)
+          : tq.total_marks;
     return newQuestion("long", {
       displayLabel: tq.display_label,
-      instruction: tq.instruction ?? `Attempt any ${take} of ${ofTotal}.`,
+      // Leave instruction empty — it is always re-derived from take/ofTotal on
+      // export, so a persisted "of N" string can't survive an M change and go
+      // stale.
+      instruction: "",
       hasAttemptAny: true,
       attemptAnyTake: take,
       attemptAnyOfTotal: ofTotal,

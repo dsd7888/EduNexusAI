@@ -17,6 +17,11 @@ import { routeAI } from "@/lib/ai/router";
 import { estimateMaxOutputTokens } from "@/lib/ai/tokenBudget";
 import type { TemplateSection, TemplateQuestionBlock, TemplatePoolQuestion, PoolItem } from "./templates";
 import {
+  attemptAnyCount,
+  attemptAnyDefaultInstruction,
+  attemptAnyLogic,
+  attemptAnyMarksPerOption,
+  attemptAnyTotalOptions,
   isPoolItemMcqLike,
   poolItemPromptDirective,
   poolItemSchemaFragment,
@@ -202,8 +207,12 @@ function buildSlotsBlock(
         return "  Question format: descriptive — single standalone question";
       case "descriptive_with_or":
         return "  Question format: descriptive_with_or — generate the main (a)+(b) pair AND a complete OR alternative (a)+(b) pair";
-      case "attempt_any_one":
-        return "  Question format: attempt_any_one — output exactly TWO independent standalone questions as options (i) and (ii). Print 'Attempt any one.' as the instruction. Use the attempt_any_one schema from Part G. A single question with internal sub-parts is WRONG for this format.";
+      case "attempt_any_one": {
+        const m = attemptAnyTotalOptions(tpl);
+        const k = attemptAnyCount(tpl);
+        const marksEach = attemptAnyMarksPerOption(tpl);
+        return `  Question format: attempt_any_one — output exactly ${m} independent standalone questions as options (i)…(${ROMAN[m - 1] ?? m}), each worth ${marksEach} marks. The student attempts any ${k} of the ${m}. Print '${attemptAnyDefaultInstruction(tpl)}' as the instruction. Use the attempt_any_one schema from Part G. A single question with internal sub-parts is WRONG for this format.`;
+      }
       case "pool":
         return "  Question format: pool — contributes to the parent pool block's items[] array (see pool_composition and Part G).";
       default:
@@ -438,20 +447,42 @@ function buildOutputSchemaBlock(
   }
 
   if (typesPresent.has("attempt_any_one")) {
-    blocks.push(`For attempt-any-one (Q-4 style):
-{
-  "slotKey": "Q4",
-  "type": "attempt_any_one",
-  "display_label": "Q - 4",
-  "instruction": "Attempt any one.",
-  "options": [
-    { "label": "(i)", "question_text": string, "marks": <number>, "co": "<co code>", "btl": <integer 1-6>, "po": "<po code>" },
-    { "label": "(ii)", "question_text": string, "marks": <number>, "co": "<co code>", "btl": <integer 1-6>, "po": "<po code>" }
-  ]
-}`);
+    templates.forEach((t, i) => {
+      if (t.type !== "attempt_any_one") return;
+      blocks.push(buildAttemptAnySchemaForQuestion(t, i + 1));
+    });
   }
 
   return blocks.join("\n\n");
+}
+
+/** Per-block attempt_any_one schema — M options, faculty-configured marks. */
+function buildAttemptAnySchemaForQuestion(
+  tpl: TemplateQuestionBlock,
+  sectionQNum: number
+): string {
+  const m = attemptAnyTotalOptions(tpl);
+  const k = attemptAnyCount(tpl);
+  const marksEach = attemptAnyMarksPerOption(tpl);
+  const instruction = attemptAnyDefaultInstruction(tpl);
+  const optionFragments: string[] = [];
+  for (let idx = 0; idx < m; idx++) {
+    const label = `(${ROMAN[idx] ?? idx + 1})`;
+    optionFragments.push(
+      `    { "label": "${label}", "question_text": string, "marks": ${marksEach}, "co": "<co code>", "btl": <integer 1-6>, "po": "<po code>" }`
+    );
+  }
+  return `For attempt-any-one block Q${sectionQNum} (${tpl.display_label}) — student attempts any ${k} of ${m}:
+{
+  "slotKey": "Q${sectionQNum}",
+  "type": "attempt_any_one",
+  "display_label": ${JSON.stringify(tpl.display_label)},
+  "instruction": ${JSON.stringify(instruction)},
+  "total_marks": ${tpl.total_marks},
+  "options": [
+${optionFragments.join(",\n")}
+  ]
+}`;
 }
 
 function buildUserPrompt(input: SectionGenInput, slots: QuestionSlot[]): string {
@@ -902,14 +933,19 @@ function convertOne(
     const tpl = template.type === "pool" ? template : null;
     const rawItems = Array.isArray(raw.items) ? raw.items : [];
     if (tpl) {
+      const expectedCount = poolTotalItems(tpl.composition);
       const normalized = normalizePoolItems(rawItems, sectionQNum, tpl);
       out.items = normalized.map((s, i) => buildPoolItem(s, i, tpl));
       out.type = "pool";
+      out.pool_expected_count = expectedCount;
+      out.pool_returned_count = Math.min(rawItems.length, expectedCount);
+      // The instruction's item count must always reflect what the template
+      // requested, never the AI's free-form text — if the model under-
+      // generates, it may (incorrectly) describe the shortfall as intended,
+      // which would silently turn a choice-based pool into a compulsory one.
       out.instruction =
-        typeof raw.instruction === "string" && raw.instruction.trim()
-          ? raw.instruction.trim()
-          : tpl.instruction ??
-            `Attempt any ${tpl.attemptCount} of the following ${poolTotalItems(tpl.composition)} questions.`;
+        tpl.instruction ??
+        `Attempt any ${tpl.attemptCount} of the following ${expectedCount} questions.`;
       out.total_marks = tpl.total_marks;
       out.attempt_logic =
         tpl.attemptCount === 1 ? "any_one" : `any_${tpl.attemptCount}`;
@@ -918,8 +954,40 @@ function convertOne(
   }
 
   if (type === "attempt_any_one") {
-    const options = Array.isArray(raw.options) ? raw.options : [];
-    out.parts = options.map((p, i) => buildPart(p, i, false, false));
+    const m = attemptAnyTotalOptions(template);
+    const k = attemptAnyCount(template);
+    const marksEach = attemptAnyMarksPerOption(template);
+    const rawOptions = Array.isArray(raw.options) ? raw.options : [];
+    // Per-option marks are ALWAYS the faculty-configured value — never the
+    // AI's free-form "marks" (which mirrors the block total and doubles them).
+    const built = rawOptions
+      .slice(0, m)
+      .map((p, i) => buildPart({ ...p, marks: marksEach }, i, false, false));
+    // Pad to M with blank options if the AI under-delivered, so the paper
+    // always offers the configured number of choices (BUG-2 shortfall pattern).
+    while (built.length < m) {
+      const i = built.length;
+      built.push({
+        label: ROMAN[i] ?? String(i + 1),
+        question: "",
+        marks: marksEach,
+        co: null,
+        btl: null,
+        po: null,
+        is_or_alternative: false,
+      });
+    }
+    out.parts = built;
+    // The label ALWAYS derives from the configured K-of-M (attemptCount +
+    // sub_parts), never a stored instruction string — that can go stale when
+    // the faculty changes M after saving, showing "of 3" on a 4-option block.
+    // It also can't come from AI output shape, so a shortfall can't silently
+    // turn "any K of M" into a compulsory question.
+    out.instruction = attemptAnyDefaultInstruction(template);
+    out.total_marks = template.total_marks;
+    out.attempt_logic = attemptAnyLogic(k);
+    out.attempt_expected_count = m;
+    out.attempt_returned_count = Math.min(rawOptions.length, m);
     return out;
   }
 
@@ -1102,9 +1170,14 @@ export function validateGeneratedSection(
     const sectionQNum = qi + 1;
     const expectedCount = poolTotalItems(t.composition);
     const items = q.items ?? [];
-    if (items.length !== expectedCount) {
+    // items.length is always padded out to expectedCount by normalizePoolItems
+    // (missing slots become blank placeholders), so it can never itself
+    // reveal a shortfall — pool_returned_count carries the AI's true output
+    // count from before padding.
+    const returnedCount = q.pool_returned_count ?? items.length;
+    if (returnedCount < expectedCount) {
       errors.push(
-        `Pool Q${sectionQNum}: expected ${expectedCount} items, got ${items.length}`
+        `Pool Q${sectionQNum}: requested ${expectedCount} items, AI returned ${returnedCount} — paper may not have sufficient choice.`
       );
     }
     items.forEach((item, i) => {
@@ -1427,6 +1500,45 @@ export function normaliseQuestion(
         ? "any_one"
         : `any_${template.attemptCount}`;
     out.total_marks = template.total_marks;
+  } else if (type === "attempt_any_one" && template.type === "attempt_any_one") {
+    const m = attemptAnyTotalOptions(template);
+    const k = attemptAnyCount(template);
+    const marksEach = attemptAnyMarksPerOption(template);
+    // The AI may return the options under "parts" (regenerate prompt) or
+    // "options" (section-gen prompt) — accept either.
+    const rawOptions = Array.isArray(row.options)
+      ? row.options
+      : Array.isArray(row.parts)
+        ? row.parts
+        : [];
+    const built = rawOptions.slice(0, m).map((p) => {
+      const part = normalisePart(
+        (p && typeof p === "object" ? p : {}) as Record<string, unknown>
+      ) as unknown as QuestionPart;
+      // Per-option marks always come from faculty config, not the AI.
+      part.marks = marksEach;
+      return part;
+    });
+    while (built.length < m) {
+      const i = built.length;
+      built.push({
+        label: ROMAN[i] ?? String(i + 1),
+        question: "",
+        marks: marksEach,
+        co: null,
+        btl: null,
+        po: null,
+        is_or_alternative: false,
+      });
+    }
+    out.parts = built;
+    // Always derive the label from the configured K-of-M — never a stored
+    // instruction string (which can go stale when M changes after saving).
+    out.instruction = attemptAnyDefaultInstruction(template);
+    out.total_marks = template.total_marks;
+    out.attempt_logic = attemptAnyLogic(k);
+    out.attempt_expected_count = m;
+    out.attempt_returned_count = Math.min(rawOptions.length, m);
   } else {
     const parts = Array.isArray(row.parts) ? row.parts : [];
     out.parts = parts.map((p) =>

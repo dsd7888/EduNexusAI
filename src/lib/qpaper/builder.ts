@@ -76,6 +76,21 @@ export interface GeneratedQuestion {
   parts?: QuestionPart[];
   /** Populated on pool blocks after generation. */
   items?: PoolItem[];
+  /** Pool blocks only: the template's originally requested item count — the
+   *  paper's instruction text and marks split must always derive from this,
+   *  never from items.length (which is padded to this same count even when
+   *  the AI under-delivered). */
+  pool_expected_count?: number;
+  /** Pool blocks only: how many items the AI actually returned before padding
+   *  filled the rest with blanks. Used to detect and warn on shortfall. */
+  pool_returned_count?: number;
+  /** attempt_any_one only: the template's configured option count (M). The
+   *  paper's instruction text and per-option marks always derive from this,
+   *  never from parts.length (which is padded to M on AI shortfall). */
+  attempt_expected_count?: number;
+  /** attempt_any_one only: how many options the AI actually returned before
+   *  padding filled the rest with blanks. Used to detect and warn on shortfall. */
+  attempt_returned_count?: number;
   /**
    * Explicit slot key hint. Normal paper questions leave this unset and the
    * answer-key AI derives "Q<q_number>". Set only on the synthetic per-item
@@ -911,7 +926,12 @@ function drawAttemptAnyOne(
   const { bold, regular } = ctx.fonts;
   ctx = ensureSpace(ctx, LINE_H * 5);
   const label = sanitize(q.display_label ?? `Q - ${q.q_number}`);
-  const instruction = sanitize(q.instruction ?? "Attempt any one.");
+  const instruction = sanitize(
+    q.instruction ??
+      `Attempt any ${poolAttemptCount(q)} of ${q.attempt_expected_count ?? q.parts?.length ?? 2}.`
+  );
+
+  const instructionMaxWidth = COL_MARKS_X - (MARGIN_LEFT + 50) - 12;
 
   ctx.page.drawText(label, {
     x: MARGIN_LEFT,
@@ -926,9 +946,11 @@ function drawAttemptAnyOne(
     size: 10,
     font: regular,
     color: rgb(0, 0, 0),
-    maxWidth: COL_MARKS_X - (MARGIN_LEFT + 50) - 12,
+    maxWidth: instructionMaxWidth,
   });
   drawRightCols(ctx, ctx.y, q.total_marks, null, null, null, false);
+  const instructionLines = wrapWords(instruction, regular, 10, instructionMaxWidth);
+  ctx.y -= LINE_H * Math.max(instructionLines.length, 1);
 
   for (let i = 0; i < (q.parts ?? []).length; i++) {
     const part = q.parts![i];
@@ -943,8 +965,11 @@ function drawPool(ctx: Ctx, q: GeneratedQuestion, hasCoPo: boolean): Ctx {
   ctx = ensureSpace(ctx, LINE_H * 5);
   const label = sanitize(q.display_label ?? `Q - ${q.q_number}`);
   const instruction = sanitize(
-    q.instruction ?? `Attempt any ${poolAttemptCount(q)} of the following ${q.items?.length ?? 0} questions.`
+    q.instruction ??
+      `Attempt any ${poolAttemptCount(q)} of the following ${q.pool_expected_count ?? q.items?.length ?? 0} questions.`
   );
+
+  const instructionMaxWidth = COL_MARKS_X - (MARGIN_LEFT + 50) - 12;
 
   ctx.page.drawText(label, {
     x: MARGIN_LEFT,
@@ -959,9 +984,11 @@ function drawPool(ctx: Ctx, q: GeneratedQuestion, hasCoPo: boolean): Ctx {
     size: 10,
     font: regular,
     color: rgb(0, 0, 0),
-    maxWidth: COL_MARKS_X - (MARGIN_LEFT + 50) - 12,
+    maxWidth: instructionMaxWidth,
   });
   drawRightCols(ctx, ctx.y, q.total_marks, null, null, null, false);
+  const instructionLines = wrapWords(instruction, regular, 10, instructionMaxWidth);
+  ctx.y -= LINE_H * Math.max(instructionLines.length, 1);
 
   const marksPer = poolMarksPerItem(q);
   for (let i = 0; i < (q.items ?? []).length; i++) {

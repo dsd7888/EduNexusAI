@@ -131,6 +131,9 @@ export default function QpaperPage() {
   const [unplaceablePreferred, setUnplaceablePreferred] = useState<
     Array<{ id: string; question_text: string }>
   >([]);
+  // Section-generation warnings from the last generation (e.g. a pool block
+  // where the AI returned fewer items than the template requested).
+  const [generationWarnings, setGenerationWarnings] = useState<string[]>([]);
 
   const [paper, setPaper] = useState<AssembledPaper | null>(null);
   const [downloadUrl, setDownloadUrl] = useState<string | null>(null);
@@ -174,6 +177,27 @@ export default function QpaperPage() {
       typeof window !== "undefined" &&
       !!sessionStorage.getItem(STAGING_KEY)
   );
+
+  // A `?resumeHistory=<rowId>` deep-link (from the Past Papers page) reopens a
+  // finalized paper into the full review/edit UI. Captured on first render for
+  // the common client-nav case (Link click) so the draft hook is disabled from
+  // the very first render, before it can prompt.
+  const [historyResumeId, setHistoryResumeId] = useState<string | null>(() =>
+    typeof window === "undefined"
+      ? null
+      : new URLSearchParams(window.location.search).get("resumeHistory")
+  );
+  // SSR/refresh safety net: on a hard refresh the initializer runs server-side
+  // (no window → null) and React reuses that on hydration, dropping the param.
+  // Re-read it on the client right after mount — this runs before the async
+  // auth lookup resolves, so the draft hook is still disabled before its resume
+  // detection can fire.
+  useEffect(() => {
+    if (historyResumeId) return;
+    const id = new URLSearchParams(window.location.search).get("resumeHistory");
+    if (id) setHistoryResumeId(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Hydration gate: @dnd-kit assigns aria IDs from a global counter
   // (DndDescribedBy-N) that drifts between SSR and client hydration. Also,
@@ -252,6 +276,9 @@ export default function QpaperPage() {
   // row written yet (first finalize will insert); non-null = row exists and
   // subsequent finalizes will update it with newly-available artifact paths.
   const historyRowIdRef = useRef<string | null>(null);
+  // Fingerprint of the last snapshot written to the history row (history-resume
+  // mode only), so the debounced autosave skips redundant writes.
+  const lastHistorySaveRef = useRef<string | null>(null);
 
   // Module ids to honor on the next modules load instead of "select all" —
   // set by a draft restore so a resumed module subset survives the reload that
@@ -452,7 +479,13 @@ export default function QpaperPage() {
     markComplete,
     markFailed,
     clearDraft,
-  } = useQpaperDraft(snapshot, { skipResume: cameFromStaging });
+  } = useQpaperDraft(snapshot, {
+    skipResume: cameFromStaging,
+    // In history-resume mode the builder persists straight back to the
+    // qpaper_history row (see the autosave effect below), so the draft system
+    // must stay completely out of the way — no prompt, no phantom draft row.
+    disabled: !!historyResumeId,
+  });
 
   // Hydrate the whole builder from a resumed draft, defaulting any field a
   // stored snapshot might predate (including snapshots written before the paper
@@ -576,6 +609,138 @@ export default function QpaperPage() {
     ]
   );
 
+  // ─── Resume a finalized paper from history (?resumeHistory=<rowId>) ───────
+  // The full paper JSON already lives in qpaper_history.structure_summary (the
+  // same BuilderSnapshot shape applySnapshot consumes), so reopening is pure
+  // hydration — no separate fetch/rebuild path. We point historyRowIdRef at
+  // this row so edits/answer-key writes UPDATE it in place instead of inserting
+  // a duplicate, and we mint fresh artifact links from the stored paths (the
+  // snapshot's own downloadUrl/answerKeyUrl may be expired signed URLs).
+  useEffect(() => {
+    if (!historyResumeId) return;
+    let cancelled = false;
+    const supabase = createBrowserClient();
+    (async () => {
+      const { data, error } = await supabase
+        .from("qpaper_history")
+        .select("id, structure_summary, pdf_path, docx_path, answer_key_path")
+        .eq("id", historyResumeId)
+        .maybeSingle();
+      if (cancelled) return;
+      if (error || !data) {
+        toast.error("Couldn't open that paper");
+        return;
+      }
+      const snap = (data.structure_summary ?? {}) as Partial<BuilderSnapshot>;
+      if (!snap.paper) {
+        // Papers finalized before the full snapshot was stored can only be
+        // re-downloaded — surface that instead of a broken/empty editor.
+        toast.info(
+          "This paper was saved before in-place editing was available — re-download it from the history page."
+        );
+        return;
+      }
+      historyRowIdRef.current = data.id;
+      scrollToPaperRef.current = true;
+      applySnapshot(snap as BuilderSnapshot);
+      // Restore the "edited since the PDF was built" flag so a paper edited in a
+      // previous session (without re-exporting) still shows the stale-PDF
+      // warning on reopen. Absent on originally-generated rows → false.
+      const wasPdfDirty = Boolean(
+        (snap as { pdfDirty?: boolean }).pdfDirty
+      );
+      setPaperEditedSinceGeneration(wasPdfDirty);
+      // Seed the autosave guard so the freshly-loaded snapshot isn't immediately
+      // written straight back.
+      lastHistorySaveRef.current = null;
+
+      // Prefer links minted from the durable Storage paths over the snapshot's
+      // possibly-stale URLs.
+      setPdfPath(data.pdf_path ?? null);
+      setDocxPath(data.docx_path ?? null);
+      setAnswerKeyPath(data.answer_key_path ?? null);
+      if (data.pdf_path) {
+        const { data: pub } = supabase.storage
+          .from("generated-content")
+          .getPublicUrl(data.pdf_path);
+        setDownloadUrl(pub.publicUrl);
+      }
+      if (data.answer_key_path) {
+        // Re-sign the confidential key on demand (same route history uses) so
+        // the existing key stays downloadable without regenerating it.
+        try {
+          const res = await fetch(
+            `/api/qpaper/history/answer-key-link?id=${data.id}`
+          );
+          if (res.ok) {
+            const { downloadUrl: keyUrl } = (await res.json()) as {
+              downloadUrl: string;
+            };
+            if (!cancelled) setAnswerKeyUrl(keyUrl);
+          }
+        } catch {
+          // Non-fatal — faculty can regenerate the key in place.
+        }
+      } else {
+        setAnswerKeyUrl(null);
+      }
+
+      setView("done");
+      toast.success("Paper opened — edit, regenerate, or export");
+      // Drop the query param so a refresh doesn't re-trigger the resume.
+      window.history.replaceState(null, "", "/faculty/qpaper");
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [historyResumeId, applySnapshot]);
+
+  // ─── History-mode autosave ───────────────────────────────────────────────
+  // While a paper resumed from history is open, persist every edit straight
+  // back to its qpaper_history row (debounced) so reopening it later — even in
+  // a new session — always shows the latest version. The draft system is
+  // disabled in this mode, so this is the single source of persistence.
+  // `pdfDirty` rides alongside the snapshot so the stale-PDF warning survives a
+  // reload when edits were made without re-exporting.
+  useEffect(() => {
+    const rowId = historyRowIdRef.current;
+    if (!rowId || view !== "done" || !paper) return;
+    const payload = { ...snapshot, pdfDirty: paperEditedSinceGeneration };
+    // Newly-produced artifacts (a re-exported PDF, a just-generated answer key)
+    // are persisted too, so they survive a reopen even without a download.
+    const fp = JSON.stringify({ payload, pdfPath, docxPath, answerKeyPath });
+    if (fp === lastHistorySaveRef.current) return;
+    const t = setTimeout(async () => {
+      const supabase = createBrowserClient();
+      const update: Record<string, unknown> = {
+        structure_summary: payload,
+        total_marks: paper.totalMarks ?? totalMarksLive,
+      };
+      if (pdfPath) update.pdf_path = pdfPath;
+      if (docxPath) update.docx_path = docxPath;
+      if (answerKeyPath) update.answer_key_path = answerKeyPath;
+      const { error } = await supabase
+        .from("qpaper_history")
+        .update(update)
+        .eq("id", rowId);
+      if (error) {
+        console.error("[qpaper history autosave] save failed", error);
+      } else {
+        lastHistorySaveRef.current = fp;
+      }
+    }, 1500);
+    return () => clearTimeout(t);
+  }, [
+    snapshot,
+    view,
+    paper,
+    paperEditedSinceGeneration,
+    totalMarksLive,
+    pdfPath,
+    docxPath,
+    answerKeyPath,
+  ]);
+
   // Scroll to the review section after a resume that includes generated content.
   // Runs whenever `paper` changes; only fires when the one-shot flag is set.
   useEffect(() => {
@@ -692,6 +857,7 @@ export default function QpaperPage() {
     historyRowIdRef.current = null;
     setBankFallbackCount(0);
     setUnplaceablePreferred([]);
+    setGenerationWarnings([]);
     // Flush the draft and mark it generating so a tab closed mid-request leaves
     // an honest 'generating' status to surface on return.
     void markGenerating();
@@ -752,12 +918,14 @@ export default function QpaperPage() {
         filePath?: string;
         bankFallbackCount?: number;
         unplaceablePreferred?: Array<{ id: string; question_text: string }>;
+        warnings?: string[];
       };
       setPaper(data.paper);
       setDownloadUrl(data.downloadUrl ?? null);
       setPdfPath(data.filePath ?? null);
       setBankFallbackCount(data.bankFallbackCount ?? 0);
       setUnplaceablePreferred(data.unplaceablePreferred ?? []);
+      setGenerationWarnings(data.warnings ?? []);
       setView("done");
       void markComplete();
       toast.success("Question paper generated!");
@@ -986,6 +1154,7 @@ export default function QpaperPage() {
               bankFallbackCount={bankFallbackCount}
               answerKeyWarnings={answerKeyWarnings}
               unplaceablePreferred={unplaceablePreferred}
+              generationWarnings={generationWarnings}
             />
           </div>
         </div>

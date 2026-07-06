@@ -156,7 +156,7 @@ General marking guidance (include verbatim in answer key):
 ${JSON.stringify(sectionQuestions, null, 2)}
 
 The above is the exact question paper JSON. Generate model answers for every question and sub-question present. Do not skip any.
-For attempt_any_one: provide model answers for BOTH options.
+For attempt_any_one: provide model answers for EVERY option present (there may be more than two).
 For descriptive_with_or: provide model answers for BOTH the main set AND the OR alternative set.
 If a question object includes an explicit "slotKey" field (e.g. "Q3_ii"), you MUST copy that exact string into its output entry's slotKey — do not derive your own from q_number. For objects without a slotKey field, use "Q<q_number>".
 </questions>
@@ -1330,8 +1330,9 @@ async function drawAttemptAnyOne(
 ): Promise<void> {
   builder.space(6);
   builder.ensureSpace(40);
+  const attemptNote = origQ?.instruction?.trim() || "Attempt any one";
   builder.text(
-    `${label}   (Attempt any one - both options shown for evaluators)`,
+    `${label}   (${attemptNote.replace(/\.$/, "")} - all options shown for evaluators)`,
     {
       font: builder.getFont("bold"),
       size: 10.5,

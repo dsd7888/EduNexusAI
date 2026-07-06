@@ -95,6 +95,41 @@ function bloomName(level: number | null): string {
   return BLOOMS_LEGEND.find((b) => b.level === level)?.name ?? "unknown";
 }
 
+/** Resolved tag state after applying the confidence rule to a judge verdict. */
+export interface ResolvedTag {
+  co: string | null;
+  btl: number | null;
+  /** Present only when the mismatch should surface the amber flag (low confidence). */
+  validation?: TagValidation;
+}
+
+/**
+ * The single confidence-based decision reused by the batch validator
+ * (`attachTagValidations`) and the single-unit re-validation route:
+ *   - matches → keep the claimed tags, no flag.
+ *   - mismatch + confidence ≥ 90 + has a suggestion → silently auto-apply it.
+ *   - otherwise → keep the claimed tags and surface the flag.
+ */
+export function resolveTagValidation(
+  claimedCO: string | null,
+  claimedBTL: number | null,
+  validation: TagValidation
+): ResolvedTag {
+  if (validation.matches) {
+    return { co: claimedCO, btl: claimedBTL };
+  }
+  const confidence = validation.confidence ?? 50;
+  const hasSuggestion =
+    validation.suggestedCO != null || validation.suggestedBTL != null;
+  if (confidence >= 90 && hasSuggestion) {
+    return {
+      co: validation.suggestedCO != null ? validation.suggestedCO : claimedCO,
+      btl: validation.suggestedBTL != null ? validation.suggestedBTL : claimedBTL,
+    };
+  }
+  return { co: claimedCO, btl: claimedBTL, validation };
+}
+
 /**
  * Resolve a CO code to its description, tolerating "CO2" / "co-2" / "2" forms.
  */
@@ -286,16 +321,15 @@ export async function attachTagValidations(
         moduleContent
       );
       if (!validation.matches) {
-        const confidence = validation.confidence ?? 50;
-        const hasSuggestion =
-          validation.suggestedCO != null || validation.suggestedBTL != null;
-        if (confidence >= 90 && hasSuggestion) {
-          // High confidence: auto-apply silently — no flag shown to faculty.
-          if (validation.suggestedCO != null) unit.co = validation.suggestedCO;
-          if (validation.suggestedBTL != null) unit.btl = validation.suggestedBTL;
-        } else {
-          unit.validation = validation;
-        }
+        const resolved = resolveTagValidation(
+          unit.co ?? null,
+          unit.btl ?? null,
+          validation
+        );
+        unit.co = resolved.co;
+        unit.btl = resolved.btl;
+        // undefined for the high-confidence auto-apply case (no flag shown).
+        unit.validation = resolved.validation;
       }
     })
   );

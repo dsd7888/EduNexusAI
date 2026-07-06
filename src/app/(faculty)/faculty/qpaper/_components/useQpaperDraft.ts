@@ -122,11 +122,18 @@ function isRecent(iso: string): boolean {
 interface UseQpaperDraftOptions {
   /** Skip the resume prompt (e.g. arrived via Q Bank staging with intent). */
   skipResume?: boolean;
+  /**
+   * Fully inert: no resume detection, no autosave, no writes at all. Used when
+   * the builder is driven by a history-resume session that persists straight
+   * back to `qpaper_history` — a competing `qpaper_drafts` row must never be
+   * created, or it would resurface as a phantom "Resume your draft?" prompt.
+   */
+  disabled?: boolean;
 }
 
 export function useQpaperDraft(
   snapshot: BuilderSnapshot,
-  { skipResume = false }: UseQpaperDraftOptions = {}
+  { skipResume = false, disabled = false }: UseQpaperDraftOptions = {}
 ) {
   const supabase = useMemo(() => createBrowserClient(), []);
 
@@ -161,6 +168,10 @@ export function useQpaperDraft(
 
   // ─── Resume detection (runs once the user is known) ──────────────────────
   useEffect(() => {
+    if (disabled) {
+      setPhase("active");
+      return;
+    }
     if (!userId) return;
     if (skipResume) {
       setPhase("active");
@@ -201,12 +212,12 @@ export function useQpaperDraft(
     return () => {
       cancelled = true;
     };
-  }, [userId, skipResume, supabase]);
+  }, [userId, skipResume, supabase, disabled]);
 
   // ─── Core write (insert-or-update the single draft row) ──────────────────
   const persist = useCallback(
     async (snap: BuilderSnapshot, status?: GenerationStatus) => {
-      if (!userId) return;
+      if (!userId || disabled) return;
       const row: Record<string, unknown> = {
         faculty_id: userId,
         subject_id: snap.selectedSubjectId || null,
@@ -237,18 +248,19 @@ export function useQpaperDraft(
         console.error("[qpaper draft] save failed", err);
       }
     },
-    [supabase, userId]
+    [supabase, userId, disabled]
   );
 
   // ─── Debounced autosave ──────────────────────────────────────────────────
   useEffect(() => {
+    if (disabled) return;
     if (phase !== "active" || !userId) return;
     if (!isMeaningful(snapshot)) return; // don't persist a pristine builder
     if (JSON.stringify(snapshot) === lastWrittenRef.current) return; // no change
 
     const t = setTimeout(() => persist(snapshot), AUTOSAVE_DEBOUNCE_MS);
     return () => clearTimeout(t);
-  }, [snapshot, phase, userId, persist]);
+  }, [snapshot, phase, userId, persist, disabled]);
 
   // ─── Resume: adopt the candidate's row and hand its state to the page ────
   const resume = useCallback((): BuilderSnapshot | null => {

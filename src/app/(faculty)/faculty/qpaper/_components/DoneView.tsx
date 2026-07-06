@@ -64,6 +64,9 @@ interface DoneViewProps {
   bankFallbackCount: number;
   answerKeyWarnings: string[];
   unplaceablePreferred: Array<{ id: string; question_text: string }>;
+  /** Section-generation warnings, e.g. a pool block where the AI returned
+   *  fewer items than the template requested. */
+  generationWarnings: string[];
 }
 
 export function DoneView({
@@ -93,6 +96,7 @@ export function DoneView({
   bankFallbackCount,
   answerKeyWarnings,
   unplaceablePreferred,
+  generationWarnings,
 }: DoneViewProps) {
   const [isGeneratingAnswerKey, setIsGeneratingAnswerKey] = useState(false);
   const [isReExporting, setIsReExporting] = useState(false);
@@ -103,6 +107,52 @@ export function DoneView({
     (n, s) => n + s.questions.length,
     0
   );
+
+  // Pool-shortfall notes are derived LIVE from the current paper (not the static
+  // generation-time strings) so regenerating a blank pool item self-heals the
+  // warning. The server-provided pool-shortfall lines are filtered out to avoid
+  // showing a stale count alongside the fresh one; all other generation
+  // warnings pass through unchanged.
+  const POOL_SHORTFALL_RE = /Pool Q\d+: requested \d+ items/;
+  const ATTEMPT_SHORTFALL_RE = /Attempt-any Q\d+: requested \d+ options/;
+  const livePoolShortfallWarnings: string[] = [];
+  paper.sections.forEach((section) => {
+    section.questions.forEach((q, qi) => {
+      if (q.type === "pool" && q.pool_expected_count != null) {
+        const expected = q.pool_expected_count;
+        const nonBlank = (q.items ?? []).filter(
+          (it) => (it.question_text ?? "").trim().length > 0
+        ).length;
+        const returned = Math.min(expected, q.pool_returned_count ?? nonBlank);
+        if (returned < expected) {
+          livePoolShortfallWarnings.push(
+            `${section.section_name}: Pool Q${qi + 1}: requested ${expected} items, AI returned ${returned} — paper may not have sufficient choice.`
+          );
+        }
+        return;
+      }
+      // attempt_any_one shortfall — same pattern as pool: derive live from the
+      // current parts so regenerating a blank option self-heals the warning.
+      if (q.type === "attempt_any_one" && q.attempt_expected_count != null) {
+        const expected = q.attempt_expected_count;
+        const nonBlank = (q.parts ?? []).filter(
+          (p) => (p.question ?? "").trim().length > 0
+        ).length;
+        const returned = Math.min(expected, q.attempt_returned_count ?? nonBlank);
+        if (returned < expected) {
+          livePoolShortfallWarnings.push(
+            `${section.section_name}: Attempt-any Q${qi + 1}: requested ${expected} options, AI returned ${returned} — paper may not have sufficient choice.`
+          );
+        }
+      }
+    });
+  });
+  const displayWarnings = [
+    ...generationWarnings.filter(
+      (w) => !POOL_SHORTFALL_RE.test(w) && !ATTEMPT_SHORTFALL_RE.test(w)
+    ),
+    ...livePoolShortfallWarnings,
+  ];
 
   const handleRegenerate = () => {
     if (paperEditedSinceGeneration) {
@@ -285,6 +335,24 @@ export function DoneView({
         </div>
       )}
 
+      {/* ── Non-blocking note: generation issues (e.g. pool item shortfall) ── */}
+      {displayWarnings.length > 0 && (
+        <div className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-3 py-2 space-y-1">
+          <p className="font-medium">
+            {displayWarnings.length} issue
+            {displayWarnings.length === 1 ? "" : "s"} flagged during
+            generation — review before finalizing.
+          </p>
+          <ul className="list-disc list-inside space-y-0.5 text-amber-600">
+            {displayWarnings.map((w, i) => (
+              <li key={i} className="truncate">
+                {w}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
       {/* ── Review + inline edit ─────────────────────────────────────── */}
       <div ref={reviewRef}>
         <ReviewAndValidateStage
@@ -326,6 +394,15 @@ export function DoneView({
             disabled={!downloadUrl}
             onClick={() => {
               if (!downloadUrl) return;
+              // Block a silent stale download: the PDF was built before the
+              // current edits, so grading against it risks outdated content.
+              // Require an explicit acknowledgement (nudging "Update PDF").
+              if (paperEditedSinceGeneration) {
+                const ok = window.confirm(
+                  "This PDF was built before your latest edits and won't reflect them. Cancel and use \"Update PDF\" for an accurate copy, or OK to download the outdated version anyway."
+                );
+                if (!ok) return;
+              }
               window.open(downloadUrl, "_blank");
               onFinalized();
             }}

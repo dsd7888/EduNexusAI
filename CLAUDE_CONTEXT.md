@@ -174,7 +174,7 @@ role_scope: id, user_id, school, department (null = entire school), created_at
 - `qpaper_history`: id, faculty_id, subject_id, label, total_marks, structure_summary jsonb, pdf_path, docx_path, answer_key_path, created_at — finalized papers; paths are Storage paths (not URLs). RLS: own OR superadmin/dean/hod (oversight-visible)
 
 ### Q Bank Table
-- `faculty_question_bank`: id, subject_id, faculty_id, module_id, question_text, question_type (mcq/short_answer/long_answer/numerical/fill_blank), marks, model_answer, options jsonb, co_code, btl_level (1–6), po_codes text[], difficulty (easy/medium/hard), source (ai_generated/faculty_imported/pyq_inspired), is_verified bool, usage_count, last_used_at, created_at, updated_at
+- `faculty_question_bank`: id, subject_id, faculty_id, module_id, question_text, question_type (mcq/short_answer/long_answer/numerical/fill_blank), marks, model_answer, options jsonb, co_code, btl_level (1–6), po_codes text[], difficulty (easy/medium/hard), source (ai_generated/faculty_imported/pyq_inspired), is_verified bool, usage_count, last_used_at, created_at, updated_at, **image_path** (nullable, faculty-uploaded image stored in `question-images` Storage bucket)
 
 ### Explainers Table
 - `explainers`: id, short_code (unique, 8-char), subject_id, module_id, topic, script (jsonb — ExtractedContent), storage_path, has_audio, duration_seconds, created_by, created_at
@@ -236,9 +236,14 @@ edunexus-ai/
 │   │   │   │   │   ├── ReviewAndValidateStage.tsx  ← stage 5: review + CO/BTL validation
 │   │   │   │   │   ├── FinalizeExportStage.tsx     ← stage 6: generate + export + history
 │   │   │   │   │   ├── shared.tsx                  ← shared types + helpers
-│   │   │   │   │   └── useQpaperDraft.ts           ← autosave/resume hook (qpaper_drafts)
+│   │   │   │   │   ├── useQpaperDraft.ts           ← autosave/resume hook (qpaper_drafts)
+│   │   │   │   │   ├── NumericField.tsx            ← clamped numeric input (BTL range, CO%, difficulty%)
+│   │   │   │   │   ├── GeneratingView.tsx          ← full-page spinner + cycling hints (generating state)
+│   │   │   │   │   └── DoneView.tsx                ← full-width result view + sticky action bar
 │   │   │   │   └── history/                        ✅ Re-downloadable finalized papers
 │   │   │   ├── qbank/                              ✅ Q bank
+│   │   │   │   └── _components/ReviewFlowDialog.tsx ✅ card-by-card verify review dialog
+│   │   │   ├── syllabus/                           ✅ faculty syllabus viewer with AI CO mapping display + editing
 │   │   │   ├── explainer/                          ⚠️  UNDER DEVELOPMENT (UI shows placeholder)
 │   │   │   ├── refine/                             ✅ PPT + text refinement tabs
 │   │   │   ├── request-change/ + analytics/ + profile/ ✅
@@ -266,12 +271,17 @@ edunexus-ai/
 │   │       ├── qpaper/templates/ + templates/[id]/ ✅
 │   │       ├── qpaper/history/ + history/answer-key-link/                                  ✅
 │   │       ├── qbank/generate/ + import/ + list/ + [id]/ + questions/ + sample-csv/ ✅
+│   │       ├── qbank/add-manual/                   ✅ manual question entry + optional image upload
+│   │       ├── qbank/draft-image/                  ✅ image→AI draft generation (separate from commit)
+│   │       ├── admin/classify-module-co/           ✅ batch CO classification trigger (superadmin/dept_admin)
+│   │       ├── syllabus/module-co-mapping/         ✅ GET/PATCH for faculty CO mapping edits
 │   │       ├── ppt-refine/extract/ + refine/       ✅
 │   │       ├── refine/                             ✅
 │   │       ├── explainer/generate/ + list/ + [id]/ ✅ (routes exist, UI under development)
 │   │       ├── placement/generate/ + submit/ + export/ ✅
 │   │       └── placement/practice/generate/ + submit/ + export/ ✅
 │   ├── components/ui/ + layout/ + chat/ + ppt/ + ErrorBoundary.tsx ✅
+│   ├── components/layout/FacultyShell.tsx           ✅ collapsible faculty nav shell
 │   ├── components/RichQuestionText.tsx             ✅ renders AI question text with table/list/bold support via markdownLite
 │   ├── hooks/useSupabaseData.ts                    ✅
 │   └── lib/
@@ -284,6 +294,7 @@ edunexus-ai/
 │       ├── ppt/generator.ts                        ✅
 │       ├── ppt-refine/types.ts + extractor.ts + refiner.ts + assembler.ts ✅
 │       ├── qbank/types.ts + tagger.ts + generator.ts + parser.ts + row.ts ✅
+│       ├── qbank/image-storage.ts                  ✅ uploadQuestionImage, createQuestionImageSignedUrl, downloadQuestionImage
 │       ├── explainer/                              ⚠️ PARTIALLY BUILT — see §16 for status
 │       │   ├── types.ts                            ← ExtractedContent + 14 PatternData types
 │       │   ├── scriptGenerator.ts                  ← two-call: ideate (Flash+thinking) → extract (Pro+responseSchema)
@@ -295,7 +306,9 @@ edunexus-ai/
 │       │   + templates.ts + builder.ts + bankFill.ts + docxBuilder.ts                  ✅
 │       │   + sourcing.ts (allocateSlotSources, Hamilton apportionment)                  ✅
 │       │   + poolRender.ts (pool block rendering helpers)                               ✅
-│       │   + validateTags.ts (validateQuestionTags — Flash CO/BTL judge)                ✅
+│       │   + validateTags.ts (validateQuestionTags — Flash CO/BTL judge; confidence field, auto-apply ≥90%) ✅
+│       │   + moduleCoClassifier.ts (classifyModulesForSubject — dual-pass Flash CO classifier)     ✅
+│       │   + qpaperImages.ts (loadPaperImages, attachQuestionImageUrls, imageDisplaySize)          ✅
 │       ├── syllabus/types.ts + prompts.ts + parser.ts + reconstruct.ts ✅
 │       ├── quiz/generator.ts                       ✅
 │       ├── placement/generator.ts + bankManager.ts + fallbackSyllabus.ts + modules.ts ✅
@@ -321,10 +334,14 @@ edunexus-ai/
 │   ├── 20260620000003_backfill_get_my_role.sql     ✅ applied — checkpoints get_my_role() into migrations
 │   ├── 20260621000000_qpaper_history.sql           ✅ applied — oversight-visible finalized paper history
 │   ├── 20260622000000_generated_content_answer_key_type.sql ✅ applied — adds 'answer_key' to generated_content.type
-│   └── 20260625000000_generated_content_generation_status.sql ✅ applied — expands status enum for PPT checkpoint/resume
+│   ├── 20260625000000_generated_content_generation_status.sql ✅ applied — expands status enum for PPT checkpoint/resume
+│   ├── 20260628000000_module_co_mapping.sql         ✅ applied — module_co_mapping table + RLS
+│   ├── 20260628000000_qpaper_templates_personal_shared.sql ✅ applied — is_snapshot, is_preset, 4 RLS policies
+│   ├── 20260628000000_question_images.sql          ✅ applied — image_path on faculty_question_bank + question-images bucket
+│   └── 20260706000000_faculty_co_edit.sql           ✅ applied — faculty_verified source value + faculty write policy on module_co_mapping
 ├── supabase/seed_cse_sem1_4.sql                    ✅ 22 subjects Sem 1–4
 ├── supabase/seed_cse_sem5_7.sql                    ✅ 30 subjects Sem 5–7
-├── vercel.json                                     ✅ maxDuration per route
+├── vercel.json                                     ✅ maxDuration per route; all heavy generation routes also set memory: 1024
 ├── CLAUDE_CONTEXT.md                               ← This file
 ├── .env.local
 └── package.json
@@ -362,24 +379,106 @@ edunexus-ai/
 - 4-stage UI: upload → configure → processing → results
 
 #### Q Paper Generation
-Six-stage builder (page split into stage components under `_components/`):
-1. **TemplateStructureStage** — preset selection (ESE Standard, Quiz, custom), section/question-block configuration
-2. **ScopeAndDifficultyStage** — module selection + BTL Range [min,max] + CO% distribution + Difficulty% (easy/medium/hard) distribution; live CO-achievability preview against selected modules' `module_co_mapping`
-3. **SourcingStage** — percentage mix allocator (Fresh / PYQ-style / Bank); deterministic Hamilton apportionment via `allocateSlotSources()` in `sourcing.ts`; staged Q-Bank questions guaranteed via `preferredQuestionIds` (unplaceable ones surfaced to faculty, not silently dropped)
-4. **BuilderSectionsEditor** — drag-drop section/block editor with live marks totals
-5. **ReviewAndValidateStage** — generated paper review; CO/BTL validation pass via `validateQuestionTags()` (Flash judge, flags mismatches with suggested relabel/regenerate action); `<RichQuestionText>` renders pipe-table/list/bold in question text
-6. **FinalizeExportStage** — generate button, PDF/Word/answer-key downloads, save-as-template, history log
+**Architecture:** Three-view state machine (form → generating → done), mirroring PPT gen.
+- form view: two-column layout (setup sidebar + builder main area)
+- generating view: full-page spinner + cycling hints, popstate blocked
+- done view: full-width result with sticky action bar (Back to Setup, downloads)
+
+**Stage components** (all under `_components/`):
+TemplateStructureStage, ScopeAndDifficultyStage, SourcingStage,
+BuilderSectionsEditor, ReviewAndValidateStage, DoneView, GeneratingView
 
 **Question block types:** `descriptive`, `descriptive_with_or`, `attempt_any_one`, `mcq`, `pool` (mixed MCQ/True-False/descriptive items; student attempts K of N). True/False modeled as an MCQ variant (`isPoolItemMcqLike` = true).
 
-**Difficulty & targeting (July 2026 — replaced the BTL-tier preset system):** Faculty now set three independent, secondary directives — see §12 for the full architecture:
-- **BTL Range** `[min, max]` (1–6) — paper-wide eligibility filter, replaces the three-preset/custom-tier system
-- **CO% distribution** — per-CO target share of the paper's marks, biases module selection
-- **Difficulty% distribution** — easy/medium/hard split, becomes a per-slot prompt directive
+**Three-axis allocation (replaces BTL-tier presets):**
+- BTL range [min, max]: eligibility filter per slot, clamped to module's allowed levels
+- CO% (paper-wide %): capacity-aware via module_co_mapping; tiebreaker bias in pickModule
+  (5% sectionMarks threshold: weightage wins unconditionally outside it, CO breaks ties inside)
+- Difficulty% (easy/medium/hard): Hamilton apportionment to slots, generation-time directive only
+  (no pre-generation capacity modeling — mirrors Q Bank's existing treatment)
+Old `DifficultyPreset`/`CustomBtlWeights` system retired from UI; machinery kept exported for
+backward compat.
 
-Weightage from the syllabus is always the PRIMARY criterion for module assignment; these three only bias BTL/CO/difficulty *within* that constraint (see the 5%-threshold rule in §12 and §18). The old `DifficultyPreset`/`CustomBtlWeights` types, `apportionBtlTiers`, `resolveTierWeights`, and `previewBtlDistribution` remain exported from `moduleAssignment.ts` for backward compatibility but are no longer wired to any UI — dead from the faculty's perspective, kept only so old code paths/templates don't crash.
+**Per-question module pinning:**
+BuilderQuestion.pinnedModuleId: bypasses pickModule for that slot entirely.
+PoolCompositionEntry.pinnedModuleId: all N items from that row use the pinned module.
+Fallback to auto-assignment when pinned module not found in section modules.
 
-**Sourcing:** 3-category percentage mix replaces old 4-button exclusive modes. PYQ structured RAG always fed regardless of mix percentages.
+**Smart CO filtering:** ScopeAndDifficultyStage shows only COs covered by selected modules
+(from moduleCoMap); clears stale coTargetsPct entries when selection changes.
+
+**CO achievability preview:** "X of N selected modules supply CO1" computed from
+moduleCoMap in ScopeAndDifficultyStage. Fetched client-side from module_co_mapping
+(public-read RLS).
+
+**Validation (confidence-based):**
+validateQuestionTags now returns confidence 1-100. Auto-applies corrections silently
+when confidence ≥ 90 AND a suggestion exists (mutates unit.co/unit.btl before PDF build —
+no rebuild needed). Lower confidence: flag shown as before.
+
+**Per-subpart regeneration:** MCQ sub-items can be regenerated individually
+(regenerateSubPart in ReviewAndValidateStage). Full question regeneration unchanged.
+
+**Stale-PDF warning:** amber banner + "Download PDF (outdated)" label when
+paperEditedSinceGeneration is true. Clears via onPdfUpdated callback after reExportPdf
+succeeds. "Update PDF" button upgrades to visible outline button when stale.
+
+**Templates (personal/shared):**
+- is_snapshot: true on pre-generation auto-saves (no longer pollutes the browse list)
+- is_preset: true on built-in ESE Standard/Quiz/Custom (seeded once globally, scope='school')
+- scope: 'personal' | 'school' (not per-subject)
+- Name uniqueness: personal = per-faculty; shared = platform-wide
+- Browse dialog: search by name/creator, My Templates + Shared Templates sections
+- Creator shown on shared templates; presets shown as "Built-in"
+- is_owner computed server-side on every row for delete gating
+
+**Past Papers (/faculty/qpaper/history):** functional — PDF/Word via public URL,
+Answer Key via short-lived re-signed URL (/api/qpaper/history/answer-key-link).
+History row written lazily on first download, updated on subsequent artifact downloads.
+**Reopen for editing:** `qpaper_history.structure_summary` already stores the full
+`BuilderSnapshot` (incl. `paper`) written at finalize — so no migration was needed to
+make past papers resumable. Each row shows "Open & Edit" (gated on `structure_summary->paper`
+present via an id-only filtered query — rows lacking it keep re-download-only, graceful,
+not broken), deep-linking to `/faculty/qpaper?resumeHistory=<rowId>`. The builder hydrates
+that row via the existing `applySnapshot`, lands in DoneView, and points `historyRowIdRef`
+at the row so all in-place actions (inline edit, part/pool-item regen, validation flags,
+answer-key generation, re-export) write back to the **same** row — no duplicate. Fresh
+links are minted from stored paths (public PDF/Word URL; answer key re-signed) since the
+snapshot's own URLs may be expired. Stale-PDF download is blocked behind an explicit
+confirm (not silent), so faculty can't grade against outdated content.
+
+**Draft system fully disabled in history-resume mode** (`useQpaperDraft({ disabled })`):
+resuming from history must NOT create a `qpaper_drafts` row — a competing draft resurfaces
+as a phantom "Resume your draft?" prompt and fights the history session. Instead, a
+dedicated debounced autosave on `page.tsx` writes every edit straight back to the
+`qpaper_history` row (`structure_summary` + `total_marks` + artifact paths + a `pdfDirty`
+flag riding in the snapshot), so reopening the same paper later — even in a new session —
+always shows the latest version. `pdfDirty` restores the stale-PDF warning across reloads.
+`historyResumeId` is captured in a `useState` initializer AND reconciled in a mount effect
+(the initializer returns null under SSR/hard-refresh, so the client re-reads the query
+param before the async auth lookup resolves — keeping the draft hook disabled from the
+first render).
+
+**Delete past papers:** each history row has a trash action → `POST /api/qpaper/history/delete`
+(requireRole faculty+oversight, ownership-checked), which removes the Storage objects
+(pdf/docx/answer-key) *then* the row, so deletion actually reclaims bucket space rather
+than orphaning files. Confirmation dialog + a header nudge encourage cleanup.
+
+**History-resume architecture (July 2026):** reopening a finalized paper from `/faculty/qpaper/history` into the full review/edit UI demonstrates a complete pattern for session-specific persistence that avoids conflicts with the baseline draft system:
+- Query param `?resumeHistory=<rowId>` triggers the resume flow.
+- `historyResumeId` is captured in a `useState` initializer AND reconciled in a mount effect (SSR safety net: initializer returns null under server-render/refresh, so the client re-reads the query param before async auth resolves — keeping the draft hook disabled from first render).
+- Draft hook is disabled via `{ disabled: true }` — no `qpaper_drafts` row can be created, so no phantom "Resume your draft?" prompt resurfaces.
+- History-specific debounced autosave (1.5s window) writes every edit straight back to the `qpaper_history` row: `structure_summary` (the snapshot), `total_marks`, and newly-produced artifact paths (PDF, Word, answer key). A `pdfDirty` flag rides in the snapshot so the stale-PDF warning survives a reload if edits were made without re-exporting.
+- Fresh links are minted from stored paths on resume (public PDF/Word via `getPublicUrl`, answer key re-signed on demand via `/api/qpaper/history/answer-key-link`), so expired signed URLs don't break reopens.
+- All DoneView actions — inline edit, part/pool-item regen, validation flags, answer-key generation, re-export — operate on the resumed `paper` identically to fresh generation, writing back to the same row (no duplicate row created).
+- Stale-PDF download is blocked behind an explicit `confirm()`, preventing silent downloads of outdated content.
+
+**Key insight:** history-resume and draft-autosave can coexist via the disabled-hook pattern. This pattern is reusable if a future feature needs a different persistence backend (e.g., per-module chapter saves, collaborative editing).
+
+**PDF fixes:** horizontal rules removed from MCQ/attempt-any-one/pool headers;
+instruction text maxWidth clamp prevents marks-column overflow.
+
+**Sourcing:** 3-category percentage mix (Fresh / PYQ-style / Bank), deterministic Hamilton apportionment via `allocateSlotSources()` in `sourcing.ts`; staged Q-Bank questions guaranteed via `preferredQuestionIds` (unplaceable ones surfaced to faculty, not silently dropped). PYQ structured RAG always fed regardless of mix percentages.
 
 **Token budget:** `estimateMaxOutputTokens()` in `tokenBudget.ts` replaces hardcoded maxTokens across qpaper/qbank/answer-key calls. Separate calibration profiles for "generation" vs "answer_key".
 
@@ -387,21 +486,52 @@ Weightage from the syllabus is always the PRIMARY criterion for module assignmen
 
 **Flat layout:** `flatLayout: true` on template (used by Quiz preset) flattens the section hierarchy in PDF and Word. **Known gap: web preview in ReviewAndValidateStage does not honor `flatLayout`.**
 
-**Draft autosave/resume:** `useQpaperDraft.ts` hook writes to `qpaper_drafts` (faculty-private). Stores full builder state including any generated paper content. Resume-from-draft flow on page mount.
+**Draft autosave/resume:** `useQpaperDraft.ts` hook writes to `qpaper_drafts` (faculty-private). Stores full builder state including any generated paper content. Resume-from-draft flow on page mount. **Pattern: can be disabled** via `{ disabled: true }` when another session is persisting state elsewhere — prevents competing writes and phantom resume prompts. Used in history-resume mode (see below).
 
-**Paper history:** `qpaper_history` table (oversight-visible). Stores Storage paths (not URLs) for durable re-download. Populated on finalize; matching draft is deleted.
+**Paper history:** `qpaper_history` table (oversight-visible). Stores Storage paths (not URLs) for durable re-download. Populated on finalize; matching draft is deleted. **CRITICAL:** `structure_summary` jsonb column holds the full `BuilderSnapshot` (incl. `paper: AssembledPaper`, the generated question content) written at finalize — no migration needed to support history-resume, the data was always there. This is the single source of truth for a paper's full state.
 
 **Answer key:** CONFIDENTIAL PDF + Word export. 6 parallel calls (`answer_key_mcq` Flash × 2, `answer_key_descriptive` Pro × 4). Both tasks are in `isStructuredTask` allowlist (prevents Flash thinking from consuming output budget). Pool questions decomposed to per-item Flash/Pro calls in `splitQuestionsForBlocks`.
+
+#### Faculty Syllabus Viewer (/faculty/syllabus)
+- Faculty view their subject's full syllabus (modules, content, weightage, BTL levels)
+- AI-inferred CO mappings displayed per module with confidence color coding
+  (high=green, medium=amber, low=red)
+- Faculty can add/remove CO assignments for modules they're assigned to
+- Changes persist to module_co_mapping with source='faculty_verified'
+- Used by Q Paper generation for CO-aware module picking
 
 #### Q Bank
 - Per-subject persistent question library
 - Generate: slot-based bulk generation (≤60 questions), Fresh + PYQ-Inspired styles
-- Import: CSV/TXT with AI tagging for missing CO/BTL (sample CSV downloadable)
-- My Bank: infinite scroll, full filters, inline edit, delete, staging area
+- Add Questions tab (replaces Import tab): three sub-modes:
+  - CSV Import: RFC-4180 parser with AI auto-tagging for missing CO/BTL
+  - Single: manual question entry form with optional image upload
+  - Bulk Images: multi-file picker (≤20 images), per-card AI draft generation
+    (image → AI writes question + tags), editable before commit, parallel per-card
+- Image support (Phase 1+2): faculty-uploaded images stored in question-images bucket.
+  AI reads image and writes question via Gemini multimodal (routeAI attachments[] path,
+  NOT the @google/genai Imagen client). `suggested_type` returned by AI and applied when
+  confidence warrants. Type selector unlocked after draft (not locked to "generating" status).
+- Image support (Phase 3): images embedded in PDF (builder.ts), Word (docxBuilder.ts),
+  web preview (ReviewAndValidateStage), and answer key PDF — all four surfaces use
+  imageDisplaySize() from qpaperImages.ts for consistent sizing.
+- My Bank: infinite scroll, full filters + text search (client-side, loaded pages only),
+  inline edit (including question_type change), delete, staging area.
+  Mass operations: "Save to Paper (N)", "Delete Selected".
+  Review flow: ReviewFlowDialog — card-by-card review with editable tags, model answer
+  collapsible, Approve/Skip/Edit actions, progress bar. Triggered via "Verify Selected"
+  or "Review Needs Review" button.
+- Auto-tagging: tagger.ts runs as fallback for any untagged manually-entered question
+  (not just CSV imports). AI-image questions use is_verified: false.
+- module_co_mapping table: AI-inferred module→CO assignments (classifyModulesForSubject,
+  dual-pass Flash with confidence calibration). Backfilled for all CSE subjects.
+  Faculty can edit assignments via /faculty/syllabus page.
 - Q paper integration: From Q Bank source, 📚 badge, usage tracking
 
 #### Animated Explainers (UNDER DEVELOPMENT — UI shows placeholder)
 The infrastructure is built but the visual output quality is not acceptable yet. Shelved for a dedicated session. Do not attempt to use or fix incrementally.
+
+ConceptExplainers component hidden from PPT generation result page (July 2026) — feature not production-ready. Component code preserved.
 
 **What's built:**
 - Two-call pipeline architecture: `ideateExplainer()` (Flash + thinking, pedagogical narrative) → `extractStructuredContent()` (Pro + responseSchema, pattern classification + data extraction)
@@ -574,6 +704,20 @@ $$;
 
 All API routes use `createAdminClient()` (service role, bypasses RLS). RLS only affects browser client calls.
 
+### RLS Audit (July 2026)
+
+15 tables were found with RLS enabled but zero policies (silently blocking
+all browser-client queries with no error). Fixed in a single SQL patch:
+exam_structures, note_change_requests, chat_sessions, chat_messages,
+quizzes, quiz_attempts, usage_analytics, generated_content,
+semantic_cache, document_chunks, co_po_mapping, co_pso_mapping,
+exam_scheme, pyq_questions, course_outcomes.
+
+Root cause: Supabase SQL editor bypasses RLS (runs as postgres/superuser),
+so these gaps were invisible during development. Browser client (PostgREST)
+enforces RLS strictly, returning [] with no error when no policy matches.
+Check pg_policies (not migration files) to verify live RLS state.
+
 ---
 
 ## 14. Animated Explainer Architecture (For Next Session)
@@ -709,7 +853,15 @@ API routes:
 ## 16. Active Feature Roadmap
 
 ### Recently Shipped (July 2026)
-- Q paper BTL-tier presets → BTL Range + CO% + Difficulty% targeting: `moduleAssignment.ts` (`btlRange`/`coTargets`/`difficultyTargets` on `SlotAssignmentContext`, CO-aware `makePicker` with a weightage-primary 5%-threshold tiebreak, `apportionDifficulty`, `targetCo`/`targetDifficulty` on `QuestionSlot`) → `sectionGen.ts` (threaded through + consumed in the per-slot prompt block) → `route.ts` (parses `btlRange`/`coTargets`/`difficultyTargets`, prorates CO% to each section) → full UI replacement in `ScopeAndDifficultyStage.tsx` (BTL Range fields, CO% rows with live achievability preview, Difficulty% split) → persisted in `qpaper_templates.structure` and `qpaper_drafts.builder_state` (no migration). Old preset types/functions kept exported for back-compat, no longer reachable from the UI.
+- Q paper BTL-tier presets → BTL Range + CO% + Difficulty% targeting: `moduleAssignment.ts` (`btlRange`/`coTargets`/`difficultyTargets` on `SlotAssignmentContext`, CO-aware `makePicker` with a weightage-primary 5%-threshold tiebreak, `apportionDifficulty`, `targetCo`/`targetDifficulty` on `QuestionSlot`) → `sectionGen.ts` (threaded through + consumed in the per-slot prompt block) → `route.ts` (parses `btlRange`/`coTargets`/`difficultyTargets`, prorates CO% to each section) → full UI replacement in `ScopeAndDifficultyStage.tsx` (BTL Range fields, CO% rows with live achievability preview, Difficulty% split) → persisted in `qpaper_templates.structure` and `qpaper_drafts.builder_state` (no migration). Old preset types/functions kept exported for back-compat, no longer reachable from the UI. **Complete.**
+- Q Bank image support (Phases 1, 2, 3 + answer key): faculty image upload (question-images bucket), Bulk Images add-mode with per-card AI draft generation, images embedded across PDF/Word/web preview/answer key. **Complete.**
+- Per-question and per-pool-row module pinning (`pinnedModuleId`), bypassing auto-assignment for pinned slots. **Complete.**
+- Templates personal/shared (`is_snapshot`/`is_preset`, browse dialog with My/Shared sections, server-side `is_owner` gating). **Complete.**
+- module_co_mapping CO backfill for all CSE subjects (dual-pass Flash classifier); faculty-editable via `/faculty/syllabus`. **Complete.**
+- Per-subpart MCQ regeneration (`regenerateSubPart`) in ReviewAndValidateStage. **Complete.**
+- Stale-PDF warning banner + "Update PDF" flow (`paperEditedSinceGeneration`). **Complete.**
+- Faculty Syllabus Viewer (`/faculty/syllabus`) with confidence-coded CO mapping display + faculty editing. **Complete.**
+- 15-table RLS audit — fixed tables with RLS enabled but zero policies (see §13).
 
 ### Recently Shipped (June 2026)
 - CSE Sem 1–7 fully seeded (52 subjects, 285 modules, 228 COs)
@@ -729,25 +881,48 @@ API routes:
 1. Q paper flat-layout web preview (ReviewAndValidateStage doesn't honor `flatLayout` — PDF/Word do)
 2. Per-option-marks cosmetic divergence in web preview vs PDF/Word
 3. Answer-key PDF spacing tighter than student paper
-4. Template save-but-no-browse/load gap (TemplateStructureStage has no "load a saved template" UI)
-5. Resume builder PDF/Word export QA
-6. Expand interview prep bank to 30+ questions
-7. Test TPO dashboard with real student batch
+4. Resume builder PDF/Word export QA
+5. Expand interview prep bank to 30+ questions
+6. Test TPO dashboard with real student batch
+7. Placement module bugs (branch matching, gap tag display, setup redirect) — unresolved
 
 **Tier 2 — Depth at PPSU:**
 9. Q bank UX simplification (too many steps for daily faculty use)
+10. Per-module difficulty ceiling UI (popover on module chips) — designed, not built
+11. Equation/chemistry rendering (LaTeX → PDF/Word) — research spike deferred
 
 **Tier 3 — High institutional value:**
-10. NAAC auto-report generator (Criterion 2 from existing data — changes Dean's buying decision)
-11. Animated explainer renderer rewrite (dedicated session, start with array_sort pattern)
+12. NAAC auto-report generator (Criterion 2 from existing data — changes Dean's buying decision)
+13. Animated explainer renderer rewrite (dedicated session, start with array_sort pattern)
+14. Curriculum quality validator tool — deferred until Q Paper fully end-to-end verified
 
 **Tier 4 — Agentic placement (after foundation):**
-12. Placement Agent (Gemini function-calling, multi-turn)
-13. Company Arrival Mode (full drive countdown auto-shift)
-14. Commerce/Architecture mini-project guides
+15. Placement Agent (Gemini function-calling, multi-turn)
+16. Company Arrival Mode (full drive countdown auto-shift)
+17. Commerce/Architecture mini-project guides
 
 **Tier 5 — Growth:**
-15. Dean/HOD provisioning UI, JD Gap Analysis, Credential Passport, Mock Interview, Multi-tenant
+18. Dean/HOD provisioning UI, JD Gap Analysis, Credential Passport, Mock Interview, Multi-tenant
+
+### Key Learnings
+
+- **module_co_mapping gap:** For modules with no clean CO match (e.g. OOP-Java
+  Thread/Applet/IO), faculty confirmed this is a curriculum-design issue being
+  fixed slowly. In Q Paper generation, nearest-fit CO is assigned (never blank)
+  since these modules are taught and carry exam weightage. Modules deliberately
+  assigned no CO by the classifier → currently fall back to allCoCodes in
+  moduleAssignment.ts (pending Phase 2 picker redesign).
+
+- **Dual-pass AI classification:** For any AI judgment with high-stakes output
+  (module_co_mapping, potentially others), run two independent calls and compare.
+  Disagreement → union + force confidence:'low'. Agreement → keep result + pick
+  lower confidence of the two. Empirically more reliable than single-call +
+  self-reported confidence alone.
+
+- **Vercel cold start mitigation:** all heavy generation routes (qpaper gen, answer key,
+  PPT build) now have memory:1024 in vercel.json. PPR and ping-warmup approaches
+  were evaluated and rejected (PPR risky without per-route testing; ping doesn't
+  warm the heavy serverless functions, only edge).
 
 ---
 
@@ -762,11 +937,14 @@ API routes:
 | Q paper flat-layout web preview | Active | ReviewAndValidateStage ignores flatLayout; PDF/Word correct |
 | Per-option-marks cosmetic divergence | Active | Web preview vs PDF/Word rendering differs |
 | Answer-key PDF spacing tighter than student paper | Active | Cosmetic — tighten PDF builder spacing |
-| Template save-but-no-browse/load gap | Active | TemplateStructureStage has no "load saved template" UI |
 | Q bank UX too complex | Active | Simplification needed |
 | CO-PO/PSO column alignment Sem 1–4 | Active | Fix via superadmin UI before accreditation |
 | CO-PO/PSO missing Sem 5–7 electives | Active | Add via superadmin UI before accreditation |
 | Animated explainer visuals broken | Shelved | Full renderer rewrite in dedicated session |
+| Equation/chemistry rendering (LaTeX → PDF/Word) | Deferred | Research spike deferred |
+| Per-module difficulty ceiling UI (popover on module chips) | Designed, not built | Build UI once prioritized |
+| Placement module bugs (branch matching, gap tag display, setup redirect) | Active | Unresolved |
+| Curriculum quality validator tool | Deferred | Deferred until Q Paper fully end-to-end verified |
 
 ---
 
