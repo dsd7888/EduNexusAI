@@ -519,6 +519,7 @@ export function MyBankTab({
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 placeholder="Search questions..."
+                aria-label="Search questions"
                 className="h-8 pl-7 pr-8 text-sm"
               />
               {searchQuery && (
@@ -534,8 +535,23 @@ export function MyBankTab({
             </div>
             {searchQuery.trim() && (
               <p className="text-[11px] text-muted-foreground">
-                {filteredItems.length} of {items.length} question
-                {items.length === 1 ? "" : "s"}
+                {filteredItems.length} of {stats?.total ?? items.length} question
+                {(stats?.total ?? items.length) === 1 ? "" : "s"}
+              </p>
+            )}
+            {searchQuery.trim() && page < totalPages && (
+              <p className="text-[11px] text-muted-foreground mt-0.5">
+                Showing loaded questions only.{" "}
+                <button
+                  type="button"
+                  onClick={() =>
+                    sentinelRef.current?.scrollIntoView({ behavior: "smooth", block: "end" })
+                  }
+                  className="text-primary hover:underline"
+                >
+                  Load all
+                </button>{" "}
+                to search the full bank.
               </p>
             )}
           </div>

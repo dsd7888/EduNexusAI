@@ -1437,6 +1437,7 @@ export default function FacultyGeneratePage() {
             </div>
           </div>
 
+          {/* TODO: re-enable when Explainer is production-ready
           <ConceptExplainers
             slides={conceptSlides}
             subjectId={selectedSubjectId}
@@ -1446,6 +1447,7 @@ export default function FacultyGeneratePage() {
                 : undefined
             }
           />
+          */}
         </div>
 
         <MyGenerationsPanel

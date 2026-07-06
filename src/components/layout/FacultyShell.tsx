@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { usePathname } from "next/navigation";
 import {
   BarChart2,
@@ -63,17 +63,29 @@ function NavGroupLabel({ collapsed, label }: { collapsed: boolean; label?: strin
 
 export function FacultyShell({ children }: { children: ReactNode }) {
   const pathname = usePathname();
-  // Starts collapsed on every page load so the workspace gets full width by
-  // default; the toggle re-expands it for browsing, and picking a tab
-  // auto-collapses it again. Reset-on-navigation is done during render
-  // (React's documented pattern for "adjust state when a prop changes")
-  // rather than in an effect, to avoid an extra post-navigation render.
-  const [collapsed, setCollapsed] = useState(true);
+  // Reset-on-navigation is done during render (React's documented pattern
+  // for "adjust state when a prop changes") rather than in an effect, to
+  // avoid an extra post-navigation render.
+  // Start expanded on both server and client render to keep hydration in
+  // sync; the saved preference (if any) is applied after mount.
+  const [collapsed, setCollapsed] = useState(false);
+  useEffect(() => {
+    const saved = localStorage.getItem("faculty_nav_collapsed");
+    if (saved === "true") setCollapsed(true);
+  }, []);
   const [prevPathname, setPrevPathname] = useState(pathname);
   if (pathname !== prevPathname) {
     setPrevPathname(pathname);
     setCollapsed(true);
   }
+
+  const toggle = () => {
+    setCollapsed((c) => {
+      const next = !c;
+      localStorage.setItem("faculty_nav_collapsed", String(next));
+      return next;
+    });
+  };
 
   const renderItem = (item: NavItem) => (
     <NavLink key={item.href} href={item.href} icon={item.icon} collapsed={collapsed}>
@@ -108,7 +120,7 @@ export function FacultyShell({ children }: { children: ReactNode }) {
           )}
           <button
             type="button"
-            onClick={() => setCollapsed((c) => !c)}
+            onClick={toggle}
             title={collapsed ? "Expand menu" : "Collapse menu"}
             className="shrink-0 rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground"
           >

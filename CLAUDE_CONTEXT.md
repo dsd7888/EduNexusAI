@@ -1,6 +1,6 @@
 # EduNexus AI — Complete Project Context
 
-*Last updated: July 5, 2026 | Solo developer: Dhruv | Stack: Next.js 16 + Supabase + Gemini*
+*Last updated: July 6, 2026 | Solo developer: Dhruv | Stack: Next.js 16 + Supabase + Gemini*
 *This document is the single source of truth for any Claude instance working on EduNexus AI.*
 
 --- 
@@ -75,6 +75,8 @@ const TASK_TO_MODEL = {
   qbank_tag: "flash",              // maxTokens: 2048
   explainer_ideate: "flash",       // maxTokens: 8192, thinking ON (thinkingBudget: 2048 via ChatParams)
   explainer_extract: "pro",        // maxTokens: 16384, thinkingBudget: 0 (structured JSON + responseSchema)
+  module_co_classify: "flash",     // module→CO mapping classifier
+  qbank_image_question: "flash",   // image→question AI draft generation
 }
 ```
 
@@ -163,9 +165,10 @@ role_scope: id, user_id, school, department (null = entire school), created_at
 - `co_po_mapping`: id, subject_id, co_code, po_code, strength (1/2/3)
 - `co_pso_mapping`: id, subject_id, co_code, pso_code, strength (1/2/3)
 - `exam_scheme`: id, subject_id (UNIQUE), theory_ce, theory_ese, practical_ce, practical_ese, tutorial_marks, total_marks, credits
+- `module_co_mapping`: id, module_id, co_code, confidence, source ('ai_classified'/'faculty_verified'), created_at — AI-inferred module→CO assignments, faculty-editable via `/faculty/syllabus`; RLS: public read, faculty write (own assigned subjects)
 
 ### Q Paper Tables
-- `qpaper_templates`: id, subject_id (nullable), created_by, name, is_default, university_name, exam_title, duration_minutes, total_marks, instructions text[], structure jsonb, **scope** text ('personal'/'school'/'department', default 'personal')
+- `qpaper_templates`: id, subject_id (nullable), created_by, name, is_default, university_name, exam_title, duration_minutes, total_marks, instructions text[], structure jsonb, **scope** text ('personal'/'school'/'department', default 'personal'), **is_snapshot** bool (true on pre-generation auto-saves, excluded from browse list), **is_preset** bool (true on built-in ESE Standard/Quiz/Custom, seeded once globally at scope='school') — 4 RLS policies cover personal + shared read/write
 - `pyq_questions`: id, document_id, subject_id, section_name, q_number, question_text, question_type, marks, co, btl, po, options jsonb, year
 - `qpaper_drafts`: id, faculty_id, subject_id, label, builder_state jsonb, generation_status ('idle'/'generating'/'complete'/'failed'), last_saved_at, created_at — faculty-private autosave scratch state (RLS: own + superadmin only; dean/hod intentionally excluded)
 - `qpaper_history`: id, faculty_id, subject_id, label, total_marks, structure_summary jsonb, pdf_path, docx_path, answer_key_path, created_at — finalized papers; paths are Storage paths (not URLs). RLS: own OR superadmin/dean/hod (oversight-visible)
