@@ -69,9 +69,18 @@ function buildImageQuestionSchema(questionType: string): object {
       "btl_level",
       "difficulty",
       "module_number",
-      "suggested_type",
     ],
   };
+}
+
+function extractQuestionTextFromAiContent(content: string): string | null {
+  const match = content.match(/"question_text"\s*:\s*"((?:[^"\\]|\\.)*)"/);
+  if (!match) return null;
+  try {
+    return (JSON.parse(`"${match[1]}"`) as string).trim() || null;
+  } catch {
+    return match[1].trim() || null;
+  }
 }
 
 function buildImageQuestionPrompt(params: {
@@ -260,7 +269,7 @@ export async function POST(request: NextRequest) {
       // Each call has a distinct image as its real source of variation; randomness isn't needed here,
       // and CO/BTL/difficulty tagging should be as consistent as every other tagging task (all near 0).
       temperature: 0.1,
-      maxTokens: 2048,
+      maxTokens: 4096,
     });
 
     let aiQuestion: {
@@ -276,16 +285,30 @@ export async function POST(request: NextRequest) {
     try {
       aiQuestion = JSON.parse(aiResult.content) as typeof aiQuestion;
     } catch {
-      console.error(
-        "[qbank draft-image] AI parse failed:",
-        aiResult.content.slice(0, 200)
-      );
-      return apiError("AI failed to generate a valid question from the image", 502);
+      const recovered = extractQuestionTextFromAiContent(aiResult.content);
+      if (!recovered) {
+        console.error(
+          "[qbank draft-image] AI parse failed:",
+          aiResult.content.slice(0, 200)
+        );
+        return apiError(
+          "AI failed to generate a valid question from the image",
+          502
+        );
+      }
+      aiQuestion = { question_text: recovered };
     }
 
     const aiText = aiQuestion.question_text?.trim();
     if (!aiText) {
       return apiError("AI returned an empty question", 502);
+    }
+
+    if (
+      !aiQuestion.suggested_type ||
+      !VALID_TYPES.has(aiQuestion.suggested_type)
+    ) {
+      aiQuestion.suggested_type = questionType;
     }
 
     const aiModuleNumber =
