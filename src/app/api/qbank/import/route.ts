@@ -6,6 +6,7 @@ import {
   type ModuleRef,
 } from "@/lib/qbank/parser";
 import { tagQuestions } from "@/lib/qbank/tagger";
+import { hasUnsupportedNotation } from "@/lib/text/latexSegments";
 import { rowToBankQuestion, type FqbRow } from "@/lib/qbank/row";
 import type { ImportedQuestion, MCQOption } from "@/lib/qbank/types";
 import type { NextRequest } from "next/server";
@@ -151,7 +152,14 @@ export async function POST(request: NextRequest) {
 
     // ── Build insert rows ────────────────────────────────────────────────
     const rows = questions.map((q, i) => {
-      const verified = Boolean(q.co_code) && q.btl_level != null;
+      // Unsupported/malformed math or chemistry notation forces needs-review
+      // (is_verified=false) regardless of tag completeness, so a reviewer catches
+      // it before it renders as literal source in a paper. Same generic check
+      // used by manual/image entry and the CSV preview.
+      const verified =
+        Boolean(q.co_code) &&
+        q.btl_level != null &&
+        !hasUnsupportedNotation(q.question_text, q.model_answer);
       const inf = inferred.get(i);
       return {
         subject_id: subjectId,

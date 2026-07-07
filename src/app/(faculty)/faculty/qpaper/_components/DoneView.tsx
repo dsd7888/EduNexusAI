@@ -144,6 +144,24 @@ export function DoneView({
             `${section.section_name}: Attempt-any Q${qi + 1}: requested ${expected} options, AI returned ${returned} — paper may not have sufficient choice.`
           );
         }
+        return;
+      }
+      // Generic empty-slot detection for every remaining block type (mcq,
+      // descriptive, descriptive_with_or, …). Shortfall detection used to be
+      // scoped only to pool / attempt_any_one, so a plain descriptive or MCQ
+      // block that the AI returned nothing for rendered silently blank with no
+      // warning at all. Any question that carries no renderable content in any
+      // of its slots now triggers the same warning-banner note.
+      const hasContent =
+        (q.sub_parts ?? []).some((s) => (s.question ?? "").trim().length > 0) ||
+        (q.parts ?? []).some((p) => (p.question ?? "").trim().length > 0) ||
+        (q.items ?? []).some(
+          (it) => (it.question_text ?? "").trim().length > 0
+        );
+      if (!hasContent) {
+        livePoolShortfallWarnings.push(
+          `${section.section_name}: Q${qi + 1}: the AI returned no content for this question — regenerate or fill it in before distributing.`
+        );
       }
     });
   });
@@ -281,9 +299,16 @@ export function DoneView({
         </p>
         <Button variant="ghost" size="sm" onClick={handleRegenerate}>
           <RefreshCw className="mr-1.5 size-3.5" />
-          Regenerate
+          Regenerate Whole Paper
         </Button>
       </div>
+
+      {/* ── Persistent tip: prefer per-item regen/edit over a full rebuild ── */}
+      <p className="text-xs text-muted-foreground px-1">
+        Something not right? Use the ↻ icon on a question or part to
+        regenerate just that item, or the ✎ icon to edit it manually — no
+        need to regenerate the whole paper.
+      </p>
 
       {/* ── Non-blocking note: bank slots that fell back to fresh AI ──── */}
       {bankFallbackCount > 0 && (

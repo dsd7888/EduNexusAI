@@ -1,6 +1,7 @@
 import { requireRole, apiError } from "@/lib/api/helpers";
 import { generatePPSUPaperPDF, type AssembledPaper } from "@/lib/qpaper/builder";
 import { loadPaperImages } from "@/lib/qpaper/qpaperImages";
+import { renderPaperMath } from "@/lib/qpaper/paperMath";
 import type { NextRequest } from "next/server";
 
 export async function POST(request: NextRequest) {
@@ -14,8 +15,11 @@ export async function POST(request: NextRequest) {
       return apiError("paper payload required", 400);
     }
 
-    const images = await loadPaperImages(adminClient, body.paper);
-    const pdfBuffer = await generatePPSUPaperPDF(body.paper, { images });
+    const [images, math] = await Promise.all([
+      loadPaperImages(adminClient, body.paper),
+      renderPaperMath(body.paper),
+    ]);
+    const pdfBuffer = await generatePPSUPaperPDF(body.paper, { images, math });
     const fileName = `qpaper_${Date.now()}_${user.id.slice(0, 8)}.pdf`;
     const filePath = `qpapers/${fileName}`;
 

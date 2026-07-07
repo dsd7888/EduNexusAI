@@ -16,7 +16,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { Textarea } from "@/components/ui/textarea";
+import { MathTextarea } from "@/components/MathToolbar";
 import {
   Select,
   SelectContent,
@@ -1058,12 +1058,12 @@ export function ReviewAndValidateStage({
                   <div key={si} className="ml-3 space-y-1">
                     {isEditing ? (
                       <div className="space-y-2 border rounded p-2 bg-muted/30">
-                        <Textarea
+                        <MathTextarea
                           value={editDraft.question}
-                          onChange={(e) =>
+                          onChange={(v) =>
                             setEditDraft({
                               ...editDraft,
-                              question: e.target.value,
+                              question: v,
                             })
                           }
                           className="text-xs"
@@ -1110,12 +1110,12 @@ export function ReviewAndValidateStage({
                             </div>
                           ))}
                         </div>
-                        <Textarea
+                        <MathTextarea
                           value={editDraft.model_answer}
-                          onChange={(e) =>
+                          onChange={(v) =>
                             setEditDraft({
                               ...editDraft,
-                              model_answer: e.target.value,
+                              model_answer: v,
                             })
                           }
                           className="text-xs"
@@ -1240,7 +1240,8 @@ export function ReviewAndValidateStage({
                               (kk) =>
                                 sub.options?.[kk] && (
                                   <div key={kk}>
-                                    {kk}) {sub.options[kk]}
+                                    {kk}){" "}
+                                    <RichQuestionText text={sub.options[kk]} />
                                   </div>
                                 )
                             )}
@@ -1269,12 +1270,12 @@ export function ReviewAndValidateStage({
                     <div key={ii} className="ml-3 space-y-1">
                       {isEditing ? (
                         <div className="space-y-2 border rounded p-2 bg-muted/30">
-                          <Textarea
+                          <MathTextarea
                             value={editDraft.question}
-                            onChange={(e) =>
+                            onChange={(v) =>
                               setEditDraft({
                                 ...editDraft,
-                                question: e.target.value,
+                                question: v,
                               })
                             }
                             className="text-xs"
@@ -1302,12 +1303,12 @@ export function ReviewAndValidateStage({
                               ))}
                             </div>
                           )}
-                          <Textarea
+                          <MathTextarea
                             value={editDraft.model_answer}
-                            onChange={(e) =>
+                            onChange={(v) =>
                               setEditDraft({
                                 ...editDraft,
-                                model_answer: e.target.value,
+                                model_answer: v,
                               })
                             }
                             className="text-xs"
@@ -1458,7 +1459,8 @@ export function ReviewAndValidateStage({
                                 (kk) =>
                                   item.options?.[kk] && (
                                     <div key={kk}>
-                                      {kk}) {item.options[kk]}
+                                      {kk}){" "}
+                                      <RichQuestionText text={item.options[kk]} />
                                     </div>
                                   )
                               )}
@@ -1489,24 +1491,24 @@ export function ReviewAndValidateStage({
                     )}
                     {isEditing ? (
                       <div className="ml-3 space-y-2 border rounded p-2 bg-muted/30">
-                        <Textarea
+                        <MathTextarea
                           value={editDraft.question}
-                          onChange={(e) =>
+                          onChange={(v) =>
                             setEditDraft({
                               ...editDraft,
-                              question: e.target.value,
+                              question: v,
                             })
                           }
                           className="text-xs"
                           rows={3}
                           placeholder="Question text"
                         />
-                        <Textarea
+                        <MathTextarea
                           value={editDraft.model_answer}
-                          onChange={(e) =>
+                          onChange={(v) =>
                             setEditDraft({
                               ...editDraft,
-                              model_answer: e.target.value,
+                              model_answer: v,
                             })
                           }
                           className="text-xs"

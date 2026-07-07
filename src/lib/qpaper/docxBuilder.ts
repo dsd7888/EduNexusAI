@@ -52,6 +52,12 @@ import {
   PT_TO_PX,
   type PaperImageMap,
 } from "./qpaperImages";
+import { extractLatexSegments } from "@/lib/text/latexSegments";
+import {
+  mathKey,
+  mathSizeDocxPx,
+  type MathRenderMap,
+} from "./paperMath";
 
 /** Block-level docx node: a paragraph or a table. */
 type Block = Paragraph | Table;
@@ -63,6 +69,9 @@ let orderedInstanceSeq = 0;
 // per call in generateQpaperDocx (mirrors the orderedInstanceSeq pattern) so the
 // per-unit renderers can reach it without threading it through every signature.
 let imageMap: PaperImageMap | null = null;
+// Rasterised math/chemistry spans for the current document (from renderPaperMath).
+// Set per call in generateQpaperDocx, same pattern as imageMap.
+let mathMap: MathRenderMap | null = null;
 
 const GREEN = "1B7F3A";
 const RED = "B00020";
@@ -75,6 +84,8 @@ export interface DocxOptions {
   department?: string;
   /** Decoded question images keyed by storage path (from loadPaperImages). */
   images?: PaperImageMap;
+  /** Rasterised math/chemistry spans (from renderPaperMath). */
+  math?: MathRenderMap;
 }
 
 // ─── small helpers ──────────────────────────────────────────────────────────
@@ -166,8 +177,8 @@ interface RunStyle {
   bold?: boolean;
 }
 
-/** Turn an inline run into docx TextRuns, honouring **bold** and `code`. */
-function inlineRuns(text: string, style: RunStyle): TextRun[] {
+/** Turn a plain inline run into docx TextRuns, honouring **bold** and `code`. */
+function plainInlineRuns(text: string, style: RunStyle): TextRun[] {
   const tokens = parseInline(text);
   if (tokens.length === 0) return [new TextRun({ text: "", size: style.size })];
   return tokens.map(
@@ -180,6 +191,79 @@ function inlineRuns(text: string, style: RunStyle): TextRun[] {
         font: tok.type === "code" ? "Consolas" : undefined,
       })
   );
+}
+
+/**
+ * An inline math/chemistry image sized to the run's font, or null when the span
+ * failed to rasterise (caller falls back to the literal source). `style.size` is
+ * in half-points, so the target point size is `style.size / 2`.
+ */
+function mathImageRun(
+  latex: string,
+  displayMode: boolean,
+  style: RunStyle
+): ImageRun | null {
+  if (!mathMap) return null;
+  const asset = mathMap.get(mathKey(latex, displayMode));
+  if (!asset) return null;
+  const { width, height } = mathSizeDocxPx(asset, style.size / 2);
+  return new ImageRun({
+    type: "png",
+    data: asset.buffer,
+    transformation: { width, height },
+  });
+}
+
+/**
+ * Turn an inline run into docx runs, honouring **bold** / `code` AND math /
+ * chemistry spans (rendered as inline images). Fast path: a run with no math is
+ * byte-identical to {@link plainInlineRuns}, so non-math text is unchanged.
+ */
+function inlineRuns(text: string, style: RunStyle): (TextRun | ImageRun)[] {
+  const parts = extractLatexSegments(text);
+  if (!parts.some((p) => p.type === "math")) {
+    return plainInlineRuns(text, style);
+  }
+  const out: (TextRun | ImageRun)[] = [];
+  for (const p of parts) {
+    if (p.type === "math") {
+      const img = mathImageRun(p.latex, p.displayMode, style);
+      if (img) out.push(img);
+      else out.push(...plainInlineRuns(p.latex, style)); // literal fallback
+    } else {
+      out.push(...plainInlineRuns(p.value, style));
+    }
+  }
+  return out.length ? out : [new TextRun({ text: "", size: style.size })];
+}
+
+/** If a line is exactly one block/display math span, return it; else null. */
+function soleBlockMath(line: string): string | null {
+  const parts = extractLatexSegments(line.trim());
+  if (parts.length === 1 && parts[0].type === "math" && parts[0].displayMode) {
+    return parts[0].latex;
+  }
+  return null;
+}
+
+/** A block/display equation centered on its own paragraph (matches the PDF). */
+function mathBlockParagraph(
+  latex: string,
+  style: RunStyle,
+  indent: number
+): Paragraph {
+  const img = mathImageRun(latex, true, { ...style, size: style.size + 2 });
+  if (!img) {
+    return new Paragraph({
+      indent: { left: indent },
+      children: plainInlineRuns(latex, style),
+    });
+  }
+  return new Paragraph({
+    alignment: AlignmentType.CENTER,
+    spacing: { before: 80, after: 80 },
+    children: [img],
+  });
 }
 
 const CELL_BORDER = { style: BorderStyle.SINGLE, size: 4, color: "999999" };
@@ -259,6 +343,12 @@ function blocksFromSegments(
     // text — one paragraph per line (blank lines collapse).
     for (const line of seg.content.split(/\n+/)) {
       if (!line.trim()) continue;
+      // A line that is just a block/display equation gets its own centered para.
+      const block = soleBlockMath(line);
+      if (block) {
+        out.push(mathBlockParagraph(block, style, indent));
+        continue;
+      }
       out.push(
         new Paragraph({
           indent: { left: indent },
@@ -340,7 +430,7 @@ function renderSubPart(
       out.push(
         new Paragraph({
           indent: { left: 720 },
-          children: [new TextRun({ text: `(${k}) ${v}`, size: 20 })],
+          children: inlineRuns(`(${k}) ${v}`, { size: 20 }),
         })
       );
     }
@@ -544,6 +634,7 @@ export async function generateQpaperDocx(
   const dateStr = paper.date ?? "____________";
   orderedInstanceSeq = 0; // restart ordered-list numbering per document
   imageMap = options.images ?? null; // question images for this document
+  mathMap = options.math ?? null; // rasterised math/chemistry for this document
 
   // ── per-page header: Subject | Exam | Date ────────────────────────────
   const headerChildren: Paragraph[] = [];

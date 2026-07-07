@@ -15,6 +15,11 @@ import {
 } from "@/lib/ai/prompts";
 import { buildImagenPrompt, generateImagenImage } from "@/lib/ai/imagen";
 import { sanitizeMermaidCode } from "./mermaidSanitize";
+import {
+  bulletsHaveMath,
+  hasLatex,
+  renderPptTextImage,
+} from "./pptMath";
 
 // ── TYPES ──────────────────────────────────────────────────
 
@@ -1195,6 +1200,141 @@ function addPageNumber(
   });
 }
 
+// ── MATH / CHEMISTRY EMBEDDING ─────────────────────────────
+// These helpers embed rasterised LaTeX/mhchem images into the text-bearing slide
+// types (overview, concept, example, practice, summary). They are ONLY reached
+// when a line actually contains math (callers gate on `hasLatex` /
+// `bulletsHaveMath`), so a slide with zero math takes its exact pre-existing
+// pptxgenjs text path, byte-identical to before. Math embedding lives entirely
+// inside these build-time text cases and never touches diagram/dual_visual
+// routing, so an equation in body text can never be mistaken for a diagram.
+
+/**
+ * Render a vertical list of bullets where at least one bullet carries math.
+ * Each bullet gets an equal-height row; math bullets embed a fitted PNG (scaled
+ * DOWN to the row, so nothing overflows the slide), plain bullets fall back to a
+ * normal text run so they stay selectable text. A malformed equation that fails
+ * to rasterise also falls back to its literal source, exactly like PDF/Word.
+ */
+async function addBulletsMathAware(
+  slide: PptxGenJS.Slide,
+  bullets: string[],
+  zone: { x: number; y: number; w: number; h: number },
+  style: { fontSize: number; colorHex: string; showDot: boolean },
+): Promise<void> {
+  const rows = Math.max(1, bullets.length);
+  const rowH = zone.h / rows;
+  const dotW = style.showDot ? 0.28 : 0;
+
+  for (let i = 0; i < bullets.length; i++) {
+    const line = capBullet(bullets[i]);
+    if (!line) continue;
+    const rowY = zone.y + i * rowH;
+    const textX = zone.x + dotW;
+    const maxW = zone.w - dotW;
+
+    const img = hasLatex(line)
+      ? await renderPptTextImage(line, {
+          fontSizePt: style.fontSize,
+          colorHex: style.colorHex,
+        })
+      : null;
+
+    if (img) {
+      let w = img.wIn;
+      let h = img.hIn;
+      if (w > maxW) {
+        const k = maxW / w;
+        w *= k;
+        h *= k;
+      }
+      const maxH = rowH - 0.06;
+      if (h > maxH) {
+        const k = maxH / h;
+        h *= k;
+        w *= k;
+      }
+      if (style.showDot) {
+        slide.addText("•", {
+          x: zone.x,
+          y: rowY,
+          w: dotW,
+          h: rowH,
+          fontSize: style.fontSize,
+          color: style.colorHex,
+          fontFace: "Calibri",
+          valign: "middle",
+        });
+      }
+      slide.addImage({
+        data: img.dataUri,
+        x: textX,
+        y: rowY + Math.max(0, (rowH - h) / 2),
+        w,
+        h,
+      });
+    } else {
+      slide.addText(line, {
+        x: zone.x,
+        y: rowY,
+        w: zone.w,
+        h: rowH,
+        fontSize: style.fontSize,
+        color: style.colorHex,
+        fontFace: "Calibri",
+        valign: "middle",
+        wrap: true,
+        autoFit: true,
+        bullet: style.showDot
+          ? ({ code: "2022", indent: 15 } as PptxGenJS.TextPropsOptions["bullet"])
+          : false,
+      });
+    }
+  }
+}
+
+/**
+ * Embed a single math-bearing text field (a problem/answer/question line) as a
+ * fitted image inside `box`, scaled down to fit both width and height so it can
+ * never overflow. Callers use this only after `hasLatex(text)` is true; the
+ * plain-text branch stays on the untouched `slide.addText` path at the call site.
+ */
+async function addMathTextField(
+  slide: PptxGenJS.Slide,
+  text: string,
+  box: { x: number; y: number; w: number; h: number },
+  style: { fontSize: number; colorHex: string; align?: "left" | "center" },
+): Promise<boolean> {
+  const img = await renderPptTextImage(text, {
+    fontSizePt: style.fontSize,
+    colorHex: style.colorHex,
+  });
+  if (!img) return false;
+
+  let w = img.wIn;
+  let h = img.hIn;
+  if (w > box.w) {
+    const k = box.w / w;
+    w *= k;
+    h *= k;
+  }
+  if (h > box.h) {
+    const k = box.h / h;
+    h *= k;
+    w *= k;
+  }
+  const x =
+    style.align === "center" ? box.x + Math.max(0, (box.w - w) / 2) : box.x;
+  slide.addImage({
+    data: img.dataUri,
+    x,
+    y: box.y + Math.max(0, (box.h - h) / 2),
+    w,
+    h,
+  });
+  return true;
+}
+
 /**
  * Left panel of dual_visual: metaphor illustration via Imagen when build route
  * did not already attach imageBase64.
@@ -1359,33 +1499,32 @@ export async function generatePPTXBuffer(
           paraSpaceBefore: 3,
         };
 
-        slide.addText(
-          col1.map((b) => ({
-            text: cap(b),
-            options: { ...overviewBulletBase },
-          })),
-          {
-            x: 0.4,
-            y: ZONE.body.y,
-            w: 4.4,
-            h: ZONE.body.h,
-            fontFace: "Calibri",
-            valign: "middle",
-            wrap: true,
-            autoFit: true,
+        if (bulletsHaveMath(overviewBullets)) {
+          // Math present → embed rasterised equations; plain bullets stay text.
+          await addBulletsMathAware(
+            slide,
+            col1,
+            { x: 0.4, y: ZONE.body.y, w: 4.4, h: ZONE.body.h },
+            { fontSize: 13, colorHex: "1e293b", showDot: true }
+          );
+          if (col2.length > 0) {
+            await addBulletsMathAware(
+              slide,
+              col2,
+              { x: 5.1, y: ZONE.body.y, w: 4.6, h: ZONE.body.h },
+              { fontSize: 13, colorHex: "1e293b", showDot: true }
+            );
           }
-        );
-
-        if (col2.length > 0) {
+        } else {
           slide.addText(
-            col2.map((b) => ({
+            col1.map((b) => ({
               text: cap(b),
               options: { ...overviewBulletBase },
             })),
             {
-              x: 5.1,
+              x: 0.4,
               y: ZONE.body.y,
-              w: 4.6,
+              w: 4.4,
               h: ZONE.body.h,
               fontFace: "Calibri",
               valign: "middle",
@@ -1393,6 +1532,25 @@ export async function generatePPTXBuffer(
               autoFit: true,
             }
           );
+
+          if (col2.length > 0) {
+            slide.addText(
+              col2.map((b) => ({
+                text: cap(b),
+                options: { ...overviewBulletBase },
+              })),
+              {
+                x: 5.1,
+                y: ZONE.body.y,
+                w: 4.6,
+                h: ZONE.body.h,
+                fontFace: "Calibri",
+                valign: "middle",
+                wrap: true,
+                autoFit: true,
+              }
+            );
+          }
         }
 
         addPageNumber(slide, slideNum, totalSlides);
@@ -1402,7 +1560,10 @@ export async function generatePPTXBuffer(
 
       case "concept": {
         const chunks = chunkBullets(splitToBullets(slideData.bullets ?? []));
-        chunks.forEach((chunk, idx) => {
+        // A plain for-loop (not forEach) so each chunk can `await` the async
+        // math-image embedding without racing slide creation.
+        for (let idx = 0; idx < chunks.length; idx++) {
+          const chunk = chunks[idx];
           const slide = pptx.addSlide();
           const titleText =
             idx === 0 ? slideData.title : `${slideData.title} (cont.)`;
@@ -1445,33 +1606,49 @@ export async function generatePPTXBuffer(
             count <= 4 ? 18 : count <= 5 ? 14 : count <= 6 ? 10 : 7;
           const paraSpaceAfter =
             count <= 4 ? 5 : count <= 5 ? 4 : count <= 6 ? 3 : 2;
-          const formulaBullet = bullets.find((b) => isEquation(b));
+          // When bullets carry LaTeX/chemistry, the equations are embedded inline
+          // as images — the separate ASCII "formula box" (an isEquation heuristic
+          // for plain-text equations) is redundant and would show the literal
+          // `$…$` source, so suppress it in math mode.
+          const mathMode = bulletsHaveMath(bullets);
+          const formulaBullet = mathMode
+            ? undefined
+            : bullets.find((b) => isEquation(b));
           const hasFormula = Boolean(formulaBullet);
           let bodyHeight = hasNote ? ZONE.body.h - 0.7 : ZONE.body.h - 0.15;
           if (hasFormula) bodyHeight -= 0.65;
 
-          slide.addText(
-            bullets.map((b) => ({
-              text: capBullet(b),
-              options: {
-                bullet: { code: "2022", indent: 15 } as any,
-                fontSize,
-                color: "1e293b",
-                breakLine: true,
-                paraSpaceBefore,
-                paraSpaceAfter,
-              } as any,
-            })),
-            {
-              x: ZONE.body.x,
-              y: ZONE.body.y,
-              w: ZONE.body.w,
-              h: bodyHeight,
-              fontFace: "Calibri",
-              valign: "middle",
-              autoFit: true,
-            }
-          );
+          if (mathMode) {
+            await addBulletsMathAware(
+              slide,
+              bullets,
+              { x: ZONE.body.x, y: ZONE.body.y, w: ZONE.body.w, h: bodyHeight },
+              { fontSize, colorHex: "1e293b", showDot: true }
+            );
+          } else {
+            slide.addText(
+              bullets.map((b) => ({
+                text: capBullet(b),
+                options: {
+                  bullet: { code: "2022", indent: 15 } as any,
+                  fontSize,
+                  color: "1e293b",
+                  breakLine: true,
+                  paraSpaceBefore,
+                  paraSpaceAfter,
+                } as any,
+              })),
+              {
+                x: ZONE.body.x,
+                y: ZONE.body.y,
+                w: ZONE.body.w,
+                h: bodyHeight,
+                fontFace: "Calibri",
+                valign: "middle",
+                autoFit: true,
+              }
+            );
+          }
 
           if (hasFormula && formulaBullet) {
             const formulaText = formulaBullet
@@ -1536,7 +1713,7 @@ export async function generatePPTXBuffer(
 
           addPageNumber(slide, slideNum, totalSlides);
           slideNum += 1;
-        });
+        }
         break;
       }
 
@@ -1918,30 +2095,61 @@ export async function generatePPTXBuffer(
             fill: { color: "DCFCE7" },
             line: { color: C.success, width: 1.5 },
           });
-          slide.addText(`Problem: ${capProblem(ex.problem)}`, {
-            x: 0.5,
-            y: ZONE.header.h + 0.08,
-            w: 9.1,
-            h: problemBoxH,
-            fontSize: 13,
-            bold: true,
-            color: "14532D",
-            fontFace: "Calibri",
-            valign: "middle",
-            wrap: true,
-            autoFit: true,
-          });
+          const problemLine = `Problem: ${capProblem(ex.problem)}`;
+          if (
+            !hasLatex(problemLine) ||
+            !(await addMathTextField(
+              slide,
+              problemLine,
+              {
+                x: 0.5,
+                y: ZONE.header.h + 0.08,
+                w: 9.1,
+                h: problemBoxH,
+              },
+              { fontSize: 13, colorHex: "14532D", align: "left" }
+            ))
+          ) {
+            slide.addText(problemLine, {
+              x: 0.5,
+              y: ZONE.header.h + 0.08,
+              w: 9.1,
+              h: problemBoxH,
+              fontSize: 13,
+              bold: true,
+              color: "14532D",
+              fontFace: "Calibri",
+              valign: "middle",
+              wrap: true,
+              autoFit: true,
+            });
+          }
 
           const rawSteps = ex.steps ?? slideData.steps ?? [];
           const steps = Array.isArray(rawSteps) ? rawSteps : [String(rawSteps)];
+          const stepLines = steps.map((step: string, idx: number) => {
+            const cleaned = capStep(
+              step.replace(/^Step\s*\d+\s*[:\-–]\s*/i, "").trim()
+            );
+            return `Step ${idx + 1}:  ${cleaned}`;
+          });
 
-          slide.addText(
-            steps.map((step: string, idx: number) => {
-              const cleaned = capStep(
-                step.replace(/^Step\s*\d+\s*[:\-–]\s*/i, "").trim()
-              );
-              return {
-                text: `Step ${idx + 1}:  ${cleaned}`,
+          if (bulletsHaveMath(stepLines)) {
+            await addBulletsMathAware(
+              slide,
+              stepLines,
+              {
+                x: ZONE.body.x,
+                y: ZONE.header.h + problemBoxH + 0.1,
+                w: ZONE.body.w,
+                h: availableH,
+              },
+              { fontSize: 12, colorHex: "1e293b", showDot: false }
+            );
+          } else {
+            slide.addText(
+              stepLines.map((line) => ({
+                text: line,
                 options: {
                   bullet: false,
                   fontSize: 12,
@@ -1950,18 +2158,18 @@ export async function generatePPTXBuffer(
                   paraSpaceBefore: 5,
                   bold: false,
                 } as any,
-              };
-            }),
-            {
-              x: ZONE.body.x,
-              y: ZONE.header.h + problemBoxH + 0.1,
-              w: ZONE.body.w,
-              h: availableH,
-              fontFace: "Calibri",
-              valign: "top",
-              autoFit: true,
-            }
-          );
+              })),
+              {
+                x: ZONE.body.x,
+                y: ZONE.header.h + problemBoxH + 0.1,
+                w: ZONE.body.w,
+                h: availableH,
+                fontFace: "Calibri",
+                valign: "top",
+                autoFit: true,
+              }
+            );
+          }
 
           slide.addShape("rect", {
             x: 0,
@@ -1971,19 +2179,30 @@ export async function generatePPTXBuffer(
             fill: { color: C.success },
             line: { color: C.success },
           });
-          slide.addText(`✓  ${capAnswer(ex.answer)}`, {
-            x: 0.3,
-            y: SLIDE_H - answerBarH,
-            w: 9.4,
-            h: answerBarH,
-            fontSize: 14,
-            bold: true,
-            color: C.white,
-            fontFace: "Calibri",
-            valign: "middle",
-            wrap: true,
-            autoFit: true,
-          });
+          const answerLine = `✓  ${capAnswer(ex.answer)}`;
+          if (
+            !hasLatex(answerLine) ||
+            !(await addMathTextField(
+              slide,
+              answerLine,
+              { x: 0.3, y: SLIDE_H - answerBarH, w: 9.4, h: answerBarH },
+              { fontSize: 14, colorHex: C.white, align: "left" }
+            ))
+          ) {
+            slide.addText(answerLine, {
+              x: 0.3,
+              y: SLIDE_H - answerBarH,
+              w: 9.4,
+              h: answerBarH,
+              fontSize: 14,
+              bold: true,
+              color: C.white,
+              fontFace: "Calibri",
+              valign: "middle",
+              wrap: true,
+              autoFit: true,
+            });
+          }
         }
 
         addPageNumber(slide, slideNum, totalSlides);
@@ -2033,45 +2252,63 @@ export async function generatePPTXBuffer(
             valign: "middle",
           });
 
-          slide.addText(cap(q.text, 200), {
-            x: 1.05,
-            y: 1.0,
-            w: 8.6,
-            h: 1.1,
-            fontSize: 15,
-            bold: true,
-            color: C.textDark,
-            fontFace: "Calibri",
-            valign: "top",
-            wrap: true,
-            autoFit: true,
-            lineSpacingMultiple: 1.3,
-          });
-
-          if (q.options && q.options.length) {
-            const labels = ["A", "B", "C", "D"];
-            const optText = q.options
-              .map((opt: string, i: number) => {
-                const stripped = opt
-                  .replace(/^\([A-Da-d]\)\s*/i, "")
-                  .replace(/^[A-Da-d][\.\)]\s*/i, "")
-                  .trim();
-                return `${labels[i] ?? i + 1}. ${cap(stripped)}`;
-              })
-              .join("\n");
-            slide.addText(optText, {
-              x: 0.5,
-              y: 2.25,
-              w: 9.1,
-              h: 1.9,
-              fontSize: 13,
-              color: C.textMuted,
+          const questionText = cap(q.text, 200);
+          if (
+            !hasLatex(questionText) ||
+            !(await addMathTextField(
+              slide,
+              questionText,
+              { x: 1.05, y: 1.0, w: 8.6, h: 1.1 },
+              { fontSize: 15, colorHex: C.textDark, align: "left" }
+            ))
+          ) {
+            slide.addText(questionText, {
+              x: 1.05,
+              y: 1.0,
+              w: 8.6,
+              h: 1.1,
+              fontSize: 15,
+              bold: true,
+              color: C.textDark,
               fontFace: "Calibri",
               valign: "top",
               wrap: true,
               autoFit: true,
-              lineSpacingMultiple: 1.6,
+              lineSpacingMultiple: 1.3,
             });
+          }
+
+          if (q.options && q.options.length) {
+            const labels = ["A", "B", "C", "D"];
+            const optLines = q.options.map((opt: string, i: number) => {
+              const stripped = opt
+                .replace(/^\([A-Da-d]\)\s*/i, "")
+                .replace(/^[A-Da-d][\.\)]\s*/i, "")
+                .trim();
+              return `${labels[i] ?? i + 1}. ${cap(stripped)}`;
+            });
+            if (bulletsHaveMath(optLines)) {
+              await addBulletsMathAware(
+                slide,
+                optLines,
+                { x: 0.5, y: 2.25, w: 9.1, h: 1.9 },
+                { fontSize: 13, colorHex: C.textMuted, showDot: false }
+              );
+            } else {
+              slide.addText(optLines.join("\n"), {
+                x: 0.5,
+                y: 2.25,
+                w: 9.1,
+                h: 1.9,
+                fontSize: 13,
+                color: C.textMuted,
+                fontFace: "Calibri",
+                valign: "top",
+                wrap: true,
+                autoFit: true,
+                lineSpacingMultiple: 1.6,
+              });
+            }
           }
 
           slide.addShape("rect", {
@@ -2091,19 +2328,30 @@ export async function generatePPTXBuffer(
               }`
             : "";
 
-          slide.addText(ansText, {
-            x: 0.3,
-            y: SLIDE_H - 0.6,
-            w: 9.4,
-            h: 0.6,
-            fontSize: 11,
-            color: C.dark,
-            italic: true,
-            fontFace: "Calibri",
-            valign: "middle",
-            wrap: true,
-            autoFit: true,
-          });
+          if (
+            !ansText ||
+            !hasLatex(ansText) ||
+            !(await addMathTextField(
+              slide,
+              ansText,
+              { x: 0.3, y: SLIDE_H - 0.6, w: 9.4, h: 0.6 },
+              { fontSize: 11, colorHex: C.dark, align: "left" }
+            ))
+          ) {
+            slide.addText(ansText, {
+              x: 0.3,
+              y: SLIDE_H - 0.6,
+              w: 9.4,
+              h: 0.6,
+              fontSize: 11,
+              color: C.dark,
+              italic: true,
+              fontFace: "Calibri",
+              valign: "middle",
+              wrap: true,
+              autoFit: true,
+            });
+          }
         }
 
         addPageNumber(slide, slideNum, totalSlides);
@@ -2165,28 +2413,37 @@ export async function generatePPTXBuffer(
             ? slideData.bullets
             : ["No key takeaways provided."]
         );
-        slide.addText(
-          takeawayBullets.map((b) => ({
-            text: cap(b),
-            options: {
-              bullet: false,
-              fontSize: 13,
-              color: C.white,
-              breakLine: true,
-              paraSpaceBefore: 10,
-            } as any,
-          })),
-          {
-            x: 0.7,
-            y: 1.0,
-            w: 8.6,
-            h: 3.9,
-            fontFace: "Calibri",
-            valign: "top",
-            wrap: true,
-            autoFit: true,
-          }
-        );
+        if (bulletsHaveMath(takeawayBullets)) {
+          await addBulletsMathAware(
+            slide,
+            takeawayBullets,
+            { x: 0.7, y: 1.0, w: 8.6, h: 3.9 },
+            { fontSize: 13, colorHex: C.white, showDot: false }
+          );
+        } else {
+          slide.addText(
+            takeawayBullets.map((b) => ({
+              text: cap(b),
+              options: {
+                bullet: false,
+                fontSize: 13,
+                color: C.white,
+                breakLine: true,
+                paraSpaceBefore: 10,
+              } as any,
+            })),
+            {
+              x: 0.7,
+              y: 1.0,
+              w: 8.6,
+              h: 3.9,
+              fontFace: "Calibri",
+              valign: "top",
+              wrap: true,
+              autoFit: true,
+            }
+          );
+        }
 
         slide.addText(`End of ${capTitle(data.topic, 60)}`, {
           x: 0.5,

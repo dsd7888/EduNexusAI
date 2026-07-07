@@ -6,6 +6,7 @@ import {
   resolveImageExt,
 } from "@/lib/qbank/image-storage";
 import { tagQuestions } from "@/lib/qbank/tagger";
+import { hasUnsupportedNotation } from "@/lib/text/latexSegments";
 import type { MCQOption, QuestionSource, QuestionType } from "@/lib/qbank/types";
 import type { NextRequest } from "next/server";
 
@@ -183,9 +184,15 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // is_verified only when faculty explicitly supplied both CO and BTL (not AI-inferred).
+    // is_verified only when faculty explicitly supplied both CO and BTL (not
+    // AI-inferred) AND the text carries no unsupported/malformed notation — the
+    // same generic needs-review gate used by CSV import (covers manual entry and
+    // image-drafted questions, which both commit through this route).
     const isVerified =
-      source !== "ai_generated" && Boolean(coCode) && btlLevel != null;
+      source !== "ai_generated" &&
+      Boolean(coCode) &&
+      btlLevel != null &&
+      !hasUnsupportedNotation(questionText, modelAnswer);
 
     const { data: inserted, error: insertError } = await adminClient
       .from("faculty_question_bank")

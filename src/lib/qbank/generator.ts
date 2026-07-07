@@ -9,6 +9,10 @@
 
 import { routeAI } from "@/lib/ai/router";
 import { estimateMaxOutputTokens } from "@/lib/ai/tokenBudget";
+import {
+  archetypeHintForSubject,
+  classifySubjectFamily,
+} from "@/lib/qpaper/archetypes";
 import type {
   Difficulty,
   GenerationSlot,
@@ -19,6 +23,9 @@ import type {
 const CONCURRENCY = 5;
 const PYQ_PER_SLOT = 5;
 const MODULE_CONTENT_MAX = 300;
+// Below this many PYQ inspirations, supplement the prompt with a subject-family
+// archetype hint (math/chem only) so shape doesn't drift to generic prompts.
+const PYQ_THIN_THRESHOLD = 3;
 
 export interface GenModule {
   id: string;
@@ -117,6 +124,14 @@ Variation rules:
 - Numerical: change all values, keep the concept/algorithm
 - Theory: rephrase completely, test same CO from different angle
 - MCQ: change options, keep correct concept`;
+  }
+
+  // Supplement with subject-family archetypes only when PYQ inspiration is
+  // thin/absent (fresh slots always qualify) — never overrides the PYQ examples
+  // above when they exist. Returns "" for non-math/chem subjects (no change).
+  if (pyqs.length < PYQ_THIN_THRESHOLD) {
+    const hint = archetypeHintForSubject(ctx.subject_name);
+    if (hint) prompt += `\n\n${hint}`;
   }
 
   return prompt;
@@ -221,7 +236,8 @@ async function generateSlot(
       temperature: 0.6,
       maxTokens: estimateMaxOutputTokens(
         [{ type: slot.question_type, count: slot.count }],
-        "generation"
+        "generation",
+        { latexVerbose: classifySubjectFamily(ctx.subject_name) !== null }
       ),
     });
     const arr = parseJsonArray(String(result.content ?? ""));

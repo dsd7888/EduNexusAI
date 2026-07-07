@@ -24,7 +24,6 @@ import {
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { Textarea } from "@/components/ui/textarea";
 import {
   Select,
   SelectContent,
@@ -35,6 +34,9 @@ import {
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 import type { BankQuestion, MCQOption } from "@/lib/qbank/types";
+import { findUnsupportedNotation } from "@/lib/text/latexSegments";
+import { RichQuestionText } from "@/components/RichQuestionText";
+import { MathTextarea } from "@/components/MathToolbar";
 import { BankQuestionCard } from "./BankQuestionCard";
 import {
   addManualQuestion,
@@ -102,6 +104,14 @@ function parseCsvRows(text: string): string[][] {
   return rows.filter((r) => r.some((c) => c.trim() !== ""));
 }
 
+/** Re-serialise a raw cell array back into one CSV line, quoting only where needed. */
+function csvField(v: string): string {
+  return /[",\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v;
+}
+function serializeCsvRow(cells: string[]): string {
+  return cells.map(csvField).join(",");
+}
+
 const HEADERS: Record<string, string> = {
   question: "question_text", question_text: "question_text", text: "question_text",
   type: "question_type", question_type: "question_type",
@@ -126,8 +136,13 @@ function previewCsv(text: string): PreviewRow[] {
     const btl = cell(r, ci.btl);
     let status: RowStatus = "ready";
     let note = "";
+    // Malformed/unsupported math or chemistry notation is surfaced distinctly so
+    // faculty catch it here, before commit, rather than in a generated paper.
+    const notationIssue = question ? findUnsupportedNotation(question) : null;
     if (!question || !(Number(marks) > 0)) {
       status = "error"; note = !question ? "Missing question" : "Invalid marks";
+    } else if (notationIssue) {
+      status = "review"; note = `Check notation: ${notationIssue}`;
     } else if (!co || !btl) {
       status = "review"; note = "CO/BTL will be inferred";
     }
@@ -140,11 +155,16 @@ function previewTxt(text: string): PreviewRow[] {
     const marks = line.match(/\[(\d+(?:\.\d+)?)\s*m\]/i)?.[1] ?? "1";
     const co = line.match(/\[(CO\s*\d+)\]/i)?.[1]?.replace(/\s+/g, "") ?? "";
     const question = line.replace(/\[[^\]]*\]/g, "").replace(/^\s*\d+[.)]\s*/, "").trim();
+    const notationIssue = question ? findUnsupportedNotation(question) : null;
     return {
       status: question ? ("review" as RowStatus) : ("error" as RowStatus),
       question, type: "short_answer", marks: `${marks}M`,
       co: co || "(infer)", btl: "(infer)", module: "—",
-      note: question ? "CO/BTL will be inferred" : "Empty line",
+      note: !question
+        ? "Empty line"
+        : notationIssue
+          ? `Check notation: ${notationIssue}`
+          : "CO/BTL will be inferred",
     };
   });
 }
@@ -333,9 +353,9 @@ function AddQuestionForm({
       </div>
 
       <div className="space-y-1">
-        <Textarea
+        <MathTextarea
           value={draft.question_text}
-          onChange={(e) => setDraft({ ...draft, question_text: e.target.value })}
+          onChange={(v) => setDraft({ ...draft, question_text: v })}
           rows={3}
           className="text-sm"
           placeholder="Question text"
@@ -998,9 +1018,9 @@ function BulkCardRow({
       {(canEditContent || card.status === "committing") && (
         <div className="space-y-1">
           <span className="text-[10px] text-muted-foreground">Question text</span>
-          <Textarea
+          <MathTextarea
             value={card.draftText}
-            onChange={(e) => onTextChange(e.target.value)}
+            onChange={onTextChange}
             rows={3}
             className="text-xs"
             placeholder={
@@ -1074,7 +1094,17 @@ export function ImportTab({
   // CSV state
   const [file, setFile] = useState<File | null>(null);
   const [preview, setPreview] = useState<PreviewRow[] | null>(null);
+  // Raw parsed source kept alongside `preview` so a filtered re-upload (after
+  // row deselection) can be reassembled byte-for-byte from the original cells
+  // rather than from the (lossy — e.g. no MCQ options) preview fields.
+  const [csvRows, setCsvRows] = useState<string[][] | null>(null); // [header, ...dataRows], CSV only
+  const [txtLines, setTxtLines] = useState<string[] | null>(null); // TXT only
   const [filter, setFilter] = useState<"all" | RowStatus>("all");
+  // Rows the faculty has unchecked — indices into `preview` (and 1:1 into
+  // csvRows' data rows / txtLines). Absent from this set = selected. Keying by
+  // the absolute preview index (not the filtered-view index) is what makes a
+  // deselection survive switching between the All/Ready/Review/Errors tabs.
+  const [excludedIdx, setExcludedIdx] = useState<Set<number>>(new Set());
   const [importing, setImporting] = useState(false);
   const [result, setResult] = useState<ImportResponse | null>(null);
   const [dragOver, setDragOver] = useState(false);
@@ -1093,9 +1123,66 @@ export function ImportTab({
     }
     setResult(null);
     setFile(f);
+    setExcludedIdx(new Set());
     f.text().then((text) => {
-      setPreview(name.endsWith(".csv") ? previewCsv(text) : previewTxt(text));
+      if (name.endsWith(".csv")) {
+        const rows = parseCsvRows(text);
+        setCsvRows(rows.length > 0 ? rows : null);
+        setTxtLines(null);
+        setPreview(previewCsv(text));
+      } else {
+        const lines = text.replace(/\r\n?/g, "\n").split("\n").map((l) => l.trim()).filter(Boolean);
+        setTxtLines(lines);
+        setCsvRows(null);
+        setPreview(previewTxt(text));
+      }
     });
+  };
+
+  const removeFile = () => {
+    setFile(null);
+    setPreview(null);
+    setCsvRows(null);
+    setTxtLines(null);
+    setExcludedIdx(new Set());
+    setFilter("all");
+    setResult(null);
+    if (inputRef.current) inputRef.current.value = "";
+  };
+
+  const toggleRow = (idx: number) => {
+    setExcludedIdx((prev) => {
+      const next = new Set(prev);
+      if (next.has(idx)) next.delete(idx);
+      else next.add(idx);
+      return next;
+    });
+  };
+
+  /** Check/uncheck every row currently visible under the active filter tab. */
+  const toggleAllVisible = (idxs: number[], select: boolean) => {
+    setExcludedIdx((prev) => {
+      const next = new Set(prev);
+      idxs.forEach((idx) => (select ? next.delete(idx) : next.add(idx)));
+      return next;
+    });
+  };
+
+  /** Rebuild a File containing only the checked rows, for upload. */
+  const buildSelectedFile = (): File => {
+    if (!file) throw new Error("No file loaded");
+    if (csvRows) {
+      const [header, ...dataRows] = csvRows;
+      const kept = dataRows.filter((_, i) => !excludedIdx.has(i));
+      const text = [header, ...kept].map(serializeCsvRow).join("\r\n") + "\r\n";
+      return new File([text], file.name, { type: "text/csv" });
+    }
+    if (txtLines) {
+      const kept = txtLines.filter((_, i) => !excludedIdx.has(i));
+      const text = kept.join("\n") + "\n";
+      return new File([text], file.name, { type: "text/plain" });
+    }
+    return file;
   };
 
   const doImport = async () => {
@@ -1103,7 +1190,8 @@ export function ImportTab({
     if (!file) return;
     setImporting(true);
     try {
-      const res = await importFile(subjectId, file);
+      const toUpload = buildSelectedFile();
+      const res = await importFile(subjectId, toUpload);
       setResult(res);
       onImported();
       toast.success(`Added ${res.added} question${res.added === 1 ? "" : "s"}. ${res.needs_review} need review.`);
@@ -1115,7 +1203,7 @@ export function ImportTab({
     }
   };
 
-  const resetCsv = () => { setFile(null); setPreview(null); setResult(null); setFilter("all"); };
+  const resetCsv = removeFile;
 
   const counts = {
     all: preview?.length ?? 0,
@@ -1123,8 +1211,19 @@ export function ImportTab({
     review: preview?.filter((r) => r.status === "review").length ?? 0,
     error: preview?.filter((r) => r.status === "error").length ?? 0,
   };
-  const visible = (preview ?? []).filter((r) => filter === "all" || r.status === filter);
-  const importable = counts.all - counts.error;
+  // Carry each row's absolute index (its position in `preview`, and 1:1 with
+  // csvRows' data rows / txtLines) through the filter, so the checkbox state
+  // keyed by that index survives switching between filter tabs.
+  const indexed = (preview ?? []).map((r, idx) => ({ r, idx }));
+  const visible = indexed.filter(({ r }) => filter === "all" || r.status === filter);
+  // What will actually be imported: checked AND not a hard "error" row (error
+  // rows can never import regardless of selection — the checkbox on them only
+  // controls whether they're sent at all, e.g. to keep them out of the
+  // server's skipped/errors report while the faculty fixes them offline).
+  const selectedCount = indexed.filter(
+    ({ r, idx }) => !excludedIdx.has(idx) && r.status !== "error"
+  ).length;
+  const allVisibleSelected = visible.length > 0 && visible.every(({ idx }) => !excludedIdx.has(idx));
 
   return (
     <div className="space-y-4">
@@ -1196,7 +1295,15 @@ export function ImportTab({
                     <p className="text-xs text-muted-foreground">CSV or TXT · max 2MB</p>
                   </div>
                   <input ref={inputRef} type="file" accept=".csv,.txt" className="hidden" onChange={(e) => acceptCsv(e.target.files?.[0])} />
-                  <Button variant="outline" size="sm" onClick={() => inputRef.current?.click()}>Choose file</Button>
+                  <div className="flex items-center gap-2">
+                    <Button variant="outline" size="sm" onClick={() => inputRef.current?.click()}>Choose file</Button>
+                    {file && (
+                      <Button variant="ghost" size="sm" onClick={removeFile} className="text-muted-foreground hover:text-destructive">
+                        <X className="size-3.5 mr-1" />
+                        Remove file
+                      </Button>
+                    )}
+                  </div>
                   <button type="button" onClick={() => window.open("/api/qbank/sample-csv", "_blank")} className="inline-flex items-center gap-1 text-xs text-primary hover:underline">
                     <Download className="size-3" />
                     Download Sample CSV Template
@@ -1230,6 +1337,19 @@ export function ImportTab({
                       <li>Module name doesn&apos;t need to be exact — we fuzzy match</li>
                     </ul>
                   </div>
+                  <div>
+                    <p className="font-semibold mb-1">Math &amp; chemistry notation:</p>
+                    <ul className="list-disc pl-4 text-muted-foreground space-y-0.5">
+                      <li>Inline math in <code>$…$</code> — e.g. <code>$x^2$</code></li>
+                      <li>Block math in <code>$$…$$</code> — e.g. <code>{"$$\\frac{a}{b}$$"}</code></li>
+                      <li>Chemistry in <code>{"\\ce{…}"}</code>, no dollar signs — e.g. <code>{"\\ce{H2SO4 -> H2O + SO3}"}</code></li>
+                      <li>The sample template groups worked examples by subject — Mathematics and Chemistry sections</li>
+                      <li>Preview renders each row so you can spot bad notation before import</li>
+                      <li className="text-foreground">
+                        Diagram-based or structurally-drawn questions (skeletal chemistry structures, geometric figures, graphs) aren&apos;t supported via CSV text — add those through the Single or Bulk Images tabs instead
+                      </li>
+                    </ul>
+                  </div>
                 </Card>
               </div>
 
@@ -1253,6 +1373,17 @@ export function ImportTab({
                     <table className="w-full text-xs">
                       <thead className="bg-muted/50 sticky top-0">
                         <tr className="text-left">
+                          <th className="p-2 font-medium w-8">
+                            <input
+                              type="checkbox"
+                              title={allVisibleSelected ? "Deselect all shown" : "Select all shown"}
+                              checked={allVisibleSelected}
+                              onChange={(e) =>
+                                toggleAllVisible(visible.map(({ idx }) => idx), e.target.checked)
+                              }
+                              className="size-3.5 accent-primary cursor-pointer"
+                            />
+                          </th>
                           <th className="p-2 font-medium">Status</th>
                           <th className="p-2 font-medium">Question</th>
                           <th className="p-2 font-medium">Type</th>
@@ -1263,17 +1394,40 @@ export function ImportTab({
                         </tr>
                       </thead>
                       <tbody>
-                        {visible.map((r, i) => {
+                        {visible.map(({ r, idx }) => {
                           const meta = STATUS_META[r.status];
                           const Icon = meta.icon;
+                          const checked = !excludedIdx.has(idx);
                           return (
-                            <tr key={i} className="border-t">
+                            <tr key={idx} className={cn("border-t", !checked && "opacity-50")}>
+                              <td className="p-2">
+                                <input
+                                  type="checkbox"
+                                  title={checked ? "Exclude this row from import" : "Include this row in import"}
+                                  checked={checked}
+                                  onChange={() => toggleRow(idx)}
+                                  className="size-3.5 accent-primary cursor-pointer"
+                                />
+                              </td>
                               <td className="p-2">
                                 <span className={cn("flex items-center gap-1", meta.cls)}>
                                   <Icon className="size-3" />{meta.label}
                                 </span>
                               </td>
-                              <td className="p-2 max-w-xs truncate" title={r.question}>{r.question || <span className="italic">{r.note}</span>}</td>
+                              <td className="p-2 max-w-xs" title={r.question}>
+                                {r.question ? (
+                                  <>
+                                    <div className="truncate">
+                                      <RichQuestionText text={r.question} />
+                                    </div>
+                                    {r.note && r.status !== "ready" && (
+                                      <div className={cn("text-[10px] mt-0.5", meta.cls)}>{r.note}</div>
+                                    )}
+                                  </>
+                                ) : (
+                                  <span className="italic">{r.note}</span>
+                                )}
+                              </td>
                               <td className="p-2">{r.type}</td>
                               <td className="p-2">{r.marks}</td>
                               <td className="p-2 text-muted-foreground">{r.co}</td>
@@ -1288,11 +1442,11 @@ export function ImportTab({
 
                   <div className="flex items-center justify-between gap-2">
                     <span className="text-xs text-muted-foreground">
-                      {importable} importable{counts.error > 0 && ` · ${counts.error} will be skipped`}
+                      {selectedCount} selected{counts.error > 0 && ` · ${counts.error} error row(s) never import`}
                     </span>
-                    <Button onClick={doImport} disabled={importing || importable === 0}>
+                    <Button onClick={doImport} disabled={importing || selectedCount === 0}>
                       {importing ? <Loader2 className="size-4 mr-2 animate-spin" /> : <Upload className="size-4 mr-2" />}
-                      Import {importable} Question{importable === 1 ? "" : "s"}
+                      Import {selectedCount} Question{selectedCount === 1 ? "" : "s"}
                     </Button>
                   </div>
                 </Card>

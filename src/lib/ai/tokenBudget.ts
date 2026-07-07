@@ -33,9 +33,20 @@ const FIXED_OVERHEAD = 600;
 const FLOOR = 2048;
 const CEILING = 24000; // comfortably under the real ~65536 ceiling; keeps single-call latency sane on Vercel
 
+// Math/chemistry content is materially more token-verbose per question — LaTeX
+// markup (`\frac{}{}`, `\ce{}`, `\begin{}`), shown-steps derivations, and the
+// $…$ delimiters all cost tokens that plain prose does not. When a caller knows
+// it is generating for a math/chem subject (and especially when the archetype
+// hint pushes shown-step problems), it passes latexVerbose so the OUTPUT budget
+// grows to match — this is the headroom check that keeps LaTeX answers from
+// truncating (the BUG-2 failure mode). It scales the per-question estimate, not
+// the fixed overhead, so it tracks question count.
+const LATEX_VERBOSITY_MULTIPLIER = 1.25;
+
 export function estimateMaxOutputTokens(
   slots: { type: QType; count: number }[],
-  profile: "generation" | "answer_key" = "generation"
+  profile: "generation" | "answer_key" = "generation",
+  opts?: { latexVerbose?: boolean }
 ): number {
   const table = profile === "answer_key" ? ANSWER_KEY_TOKENS_PER_Q : GEN_TOKENS_PER_Q;
   const fallback = profile === "answer_key" ? DEFAULT_KEY : DEFAULT_GEN;
@@ -43,6 +54,7 @@ export function estimateMaxOutputTokens(
     (sum, s) => sum + (table[s.type] ?? fallback) * s.count,
     0
   );
-  const withSafety = raw * SAFETY_MULTIPLIER + FIXED_OVERHEAD;
+  const verbosity = opts?.latexVerbose ? LATEX_VERBOSITY_MULTIPLIER : 1;
+  const withSafety = raw * verbosity * SAFETY_MULTIPLIER + FIXED_OVERHEAD;
   return Math.max(FLOOR, Math.min(CEILING, Math.ceil(withSafety)));
 }

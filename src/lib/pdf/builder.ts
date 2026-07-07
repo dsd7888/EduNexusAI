@@ -2,10 +2,18 @@ import {
   PDFDocument,
   StandardFonts,
   rgb,
+  type PDFImage,
   type PDFPage,
   type PDFFont,
 } from "pdf-lib";
 import { parseMarkdownLite } from "@/lib/text/markdownLite";
+import { extractLatexSegments, hasLatex } from "@/lib/text/latexSegments";
+import {
+  mathKey,
+  mathSizePt,
+  type MathGeometry,
+  type MathRenderMap,
+} from "@/lib/qpaper/paperMath";
 
 // Brand colors
 export const COLORS = {
@@ -226,6 +234,12 @@ export class PDFBuilder {
   private fonts: FontBundle;
   private currentPage!: PDFPage;
   private y = 0; // current Y position from TOP
+  // Rasterised math/chemistry spans embedded up-front, keyed by mathKey. Empty
+  // unless a caller invokes embedMath(); mathLine() falls back to literal text.
+  private mathAssets: Map<
+    string,
+    { img: PDFImage; g: MathGeometry }
+  > = new Map();
 
   constructor(doc: PDFDocument, fonts: FontBundle) {
     this.doc = doc;
@@ -321,6 +335,226 @@ export class PDFBuilder {
   // Public helper so callers can request space
   ensureSpace(neededHeight: number) {
     this.checkNewPage(neededHeight);
+  }
+
+  /**
+   * Embed a paper's rasterised math spans (from renderPaperMath) so the sync
+   * draw path can look them up. Call once, after construction, before rendering
+   * any math-bearing content. Failed renders (null) are skipped — mathLine then
+   * falls back to the literal source.
+   */
+  async embedMath(map: MathRenderMap | undefined): Promise<void> {
+    if (!map) return;
+    for (const [key, asset] of map) {
+      if (!asset) continue;
+      try {
+        const img = await this.doc.embedPng(asset.buffer);
+        this.mathAssets.set(key, {
+          img,
+          g: {
+            width: asset.width,
+            height: asset.height,
+            baseline: asset.baseline,
+          },
+        });
+      } catch {
+        // leave it out; mathLine falls back to literal text
+      }
+    }
+  }
+
+  /**
+   * Draw one run of text that may contain inline / block math, in this engine's
+   * from-the-top cursor model. Plain runs word-wrap like {@link text}; inline
+   * math draws as a baseline-aligned image; block/display math is centred on its
+   * own line. Pagination uses {@link checkNewPage} like everything else.
+   *
+   * Math is extracted from the RAW string (so the keys match renderPaperMath);
+   * only the plain-text runs are sanitised.
+   */
+  mathLine(
+    content: string,
+    opts: {
+      size?: number;
+      color?: ReturnType<typeof rgb>;
+      x?: number;
+      maxWidth?: number;
+    } = {}
+  ): void {
+    const size = opts.size ?? 10;
+    const color = opts.color ?? COLORS.text;
+    const x0 = opts.x ?? MARGIN;
+    const maxWidth = opts.maxWidth ?? CONTENT_W;
+    const font = this.fonts.regular;
+    const spaceW = font.widthOfTextAtSize(" ", size);
+    const textAsc = size;
+    const textDesc = size * 0.28;
+    const lineGap = size * 0.35;
+
+    const segments = extractLatexSegments(content ?? "");
+
+    type Tok =
+      | { kind: "word"; text: string; w: number; spaceBefore: boolean }
+      | {
+          kind: "imath";
+          img: PDFImage;
+          w: number;
+          h: number;
+          b: number;
+          spaceBefore: boolean;
+        };
+
+    const tokens: Array<Tok | { kind: "block"; latex: string }> = [];
+    let pendingSpace = false;
+    const pushWords = (s: string) => {
+      for (const piece of sanitizeForPDF(s).split(/(\s+)/)) {
+        if (piece === "") continue;
+        if (/^\s+$/.test(piece)) {
+          pendingSpace = true;
+          continue;
+        }
+        tokens.push({
+          kind: "word",
+          text: piece,
+          w: font.widthOfTextAtSize(piece, size),
+          spaceBefore: pendingSpace,
+        });
+        pendingSpace = false;
+      }
+    };
+
+    for (const seg of segments) {
+      if (seg.type === "text") {
+        pushWords(seg.value);
+        continue;
+      }
+      if (seg.displayMode) {
+        tokens.push({ kind: "block", latex: seg.latex });
+        pendingSpace = false;
+        continue;
+      }
+      const asset = this.mathAssets.get(mathKey(seg.latex, false));
+      if (!asset) {
+        pushWords(seg.latex);
+        continue;
+      }
+      const { width: w, height: h, baseline: b } = mathSizePt(asset.g, size);
+      tokens.push({ kind: "imath", img: asset.img, w, h, b, spaceBefore: pendingSpace });
+      pendingSpace = false;
+    }
+
+    const drawBlock = (latex: string) => {
+      const asset =
+        this.mathAssets.get(mathKey(latex, true)) ??
+        this.mathAssets.get(mathKey(latex, false));
+      if (!asset) {
+        this.text(latex, { size, color, x: x0, maxWidth });
+        return;
+      }
+      let { width: w, height: h } = mathSizePt(asset.g, size + 1);
+      if (w > maxWidth) {
+        const s = maxWidth / w;
+        w *= s;
+        h *= s;
+      }
+      this.checkNewPage(h + 6);
+      const cx = x0 + Math.max(0, (maxWidth - w) / 2);
+      this.currentPage.drawImage(asset.img, {
+        x: cx,
+        y: this.py(this.y) - h,
+        width: w,
+        height: h,
+      });
+      this.y += h + 6;
+    };
+
+    let line: Tok[] = [];
+    let lineW = 0;
+    const flush = () => {
+      if (line.length === 0) return;
+      let asc = textAsc;
+      let desc = textDesc;
+      for (const t of line) {
+        if (t.kind === "imath") {
+          asc = Math.max(asc, t.h - t.b);
+          desc = Math.max(desc, t.b);
+        }
+      }
+      const lineH = asc + desc + lineGap;
+      this.checkNewPage(lineH);
+      const baseFromTop = this.y + asc;
+      const baseBottom = this.py(baseFromTop);
+      let x = x0;
+      let first = true;
+      for (const t of line) {
+        if (!first && t.spaceBefore) x += spaceW;
+        if (t.kind === "word") {
+          this.currentPage.drawText(t.text, { x, y: baseBottom, size, font, color });
+          x += t.w;
+        } else {
+          this.currentPage.drawImage(t.img, {
+            x,
+            y: baseBottom - t.b,
+            width: t.w,
+            height: t.h,
+          });
+          x += t.w;
+        }
+        first = false;
+      }
+      this.y += lineH;
+      line = [];
+      lineW = 0;
+    };
+
+    for (const t of tokens) {
+      if (t.kind === "block") {
+        flush();
+        drawBlock(t.latex);
+        continue;
+      }
+      const gap = line.length > 0 && t.spaceBefore ? spaceW : 0;
+      const cand = line.length === 0 ? t.w : lineW + gap + t.w;
+      if (cand > maxWidth && line.length > 0) {
+        flush();
+        line.push(t);
+        lineW = t.w;
+      } else {
+        line.push(t);
+        lineW = cand;
+      }
+    }
+    flush();
+  }
+
+  /**
+   * Draw a content line that MAY contain math: routes through {@link mathLine}
+   * when a span is present, otherwise the untouched {@link text}. Fast path keeps
+   * non-math content byte-identical (including the requested font/align, which
+   * mathLine does not model — acceptable only for the rare math-bearing line).
+   */
+  textOrMath(
+    content: string,
+    options: {
+      font?: PDFFont;
+      size?: number;
+      color?: ReturnType<typeof rgb>;
+      x?: number;
+      maxWidth?: number;
+      lineHeight?: number;
+      align?: "left" | "center" | "right";
+    } = {}
+  ): void {
+    if (hasLatex(content)) {
+      this.mathLine(content, {
+        size: options.size,
+        color: options.color,
+        x: options.x,
+        maxWidth: options.maxWidth,
+      });
+    } else {
+      this.text(content, options);
+    }
   }
 
   // Add vertical space
@@ -617,7 +851,21 @@ export class PDFBuilder {
    * mid-table; tables taller than a full page fall back to per-row breaks with
    * the header repeated on each continuation page.
    */
+  // Dispatcher: math-free tables use the original byte-identical renderer; only a
+  // table containing a math/chemistry span takes the math-aware path.
   drawTable(
+    headers: string[],
+    rows: string[][],
+    opts: { size?: number; x?: number; maxWidth?: number } = {}
+  ) {
+    const anyMath =
+      headers.some((h) => hasLatex(h)) ||
+      rows.some((r) => r.some((c) => hasLatex(c)));
+    if (anyMath) this.drawTableMath(headers, rows, opts);
+    else this.drawTablePlain(headers, rows, opts);
+  }
+
+  private drawTablePlain(
     headers: string[],
     rows: string[][],
     opts: { size?: number; x?: number; maxWidth?: number } = {}
@@ -700,6 +948,194 @@ export class PDFBuilder {
   }
 
   /**
+   * Math-aware sibling of {@link drawTablePlain}: identical bordered layout,
+   * header repeat and page-break behaviour, but each cell's inline math renders
+   * as a baseline-aligned image and rows grow to the tallest image. Only reached
+   * when a table actually contains a math span.
+   */
+  private drawTableMath(
+    headers: string[],
+    rows: string[][],
+    opts: { size?: number; x?: number; maxWidth?: number } = {}
+  ) {
+    const size = opts.size ?? 9.5;
+    const x0 = opts.x ?? MARGIN;
+    const tableW = opts.maxWidth ?? CONTENT_W - (x0 - MARGIN);
+    const nCols = Math.max(1, headers.length);
+    const colW = tableW / nCols;
+    const padX = 4;
+    const padY = 3;
+    const lineGap = size * 0.3;
+    const headFont = this.fonts.bold;
+    const bodyFont = this.fonts.regular;
+    const innerW = colW - padX * 2;
+    const spaceW = bodyFont.widthOfTextAtSize(" ", size);
+
+    type CTok =
+      | { kind: "word"; text: string; w: number; sb: boolean }
+      | { kind: "imath"; img: PDFImage; w: number; h: number; b: number; sb: boolean };
+    interface CLine {
+      toks: CTok[];
+      asc: number;
+      desc: number;
+    }
+    const layout = (txt: string, font: PDFFont): CLine[] => {
+      const toks: CTok[] = [];
+      let pending = false;
+      const pushWords = (s: string) => {
+        for (const p of sanitizeForPDF(s).split(/(\s+)/)) {
+          if (p === "") continue;
+          if (/^\s+$/.test(p)) {
+            pending = true;
+            continue;
+          }
+          toks.push({
+            kind: "word",
+            text: p,
+            w: font.widthOfTextAtSize(p, size),
+            sb: pending,
+          });
+          pending = false;
+        }
+      };
+      for (const seg of extractLatexSegments(txt ?? "")) {
+        if (seg.type === "text") {
+          pushWords(seg.value);
+          continue;
+        }
+        const asset =
+          this.mathAssets.get(mathKey(seg.latex, seg.displayMode)) ??
+          this.mathAssets.get(mathKey(seg.latex, !seg.displayMode));
+        if (!asset) {
+          pushWords(seg.latex);
+          continue;
+        }
+        let { width: w, height: h, baseline: b } = mathSizePt(asset.g, size);
+        if (w > innerW) {
+          const s = innerW / w;
+          w *= s;
+          h *= s;
+          b *= s;
+        }
+        toks.push({ kind: "imath", img: asset.img, w, h, b, sb: pending });
+        pending = false;
+      }
+      const lines: CLine[] = [];
+      let cur: CTok[] = [];
+      let curW = 0;
+      const flush = () => {
+        if (cur.length === 0) return;
+        let asc = size;
+        let desc = size * 0.22;
+        for (const t of cur) {
+          if (t.kind === "imath") {
+            asc = Math.max(asc, t.h - t.b);
+            desc = Math.max(desc, t.b);
+          }
+        }
+        lines.push({ toks: cur, asc, desc });
+        cur = [];
+        curW = 0;
+      };
+      for (const t of toks) {
+        const gap = cur.length > 0 && t.sb ? spaceW : 0;
+        const cand = cur.length === 0 ? t.w : curW + gap + t.w;
+        if (cand > innerW && cur.length > 0) {
+          flush();
+          cur.push(t);
+          curW = t.w;
+        } else {
+          cur.push(t);
+          curW = cand;
+        }
+      }
+      flush();
+      if (lines.length === 0) lines.push({ toks: [], asc: size, desc: size * 0.22 });
+      return lines;
+    };
+
+    const cellH = (lines: CLine[]) =>
+      lines.reduce((s, l) => s + l.asc + l.desc, 0) +
+      Math.max(0, lines.length - 1) * lineGap;
+    const rowHeight = (cells: string[], font: PDFFont) =>
+      Math.max(
+        ...Array.from({ length: nCols }, (_, c) => cellH(layout(cells[c] ?? "", font))),
+        0
+      ) +
+      padY * 2;
+
+    const headerH = rowHeight(headers, headFont);
+    const totalH =
+      headerH + rows.reduce((s, r) => s + rowHeight(r, bodyFont), 0);
+    const pageInnerH = PAGE_H - MARGIN * 2;
+    const remaining = PAGE_H - MARGIN - this.y;
+    if (totalH > remaining && totalH <= pageInnerH) {
+      this.currentPage = this.doc.addPage([PAGE_W, PAGE_H]);
+      this.pages.push(this.currentPage);
+      this.y = MARGIN;
+    }
+
+    const drawRow = (cells: string[], font: PDFFont, fill: boolean) => {
+      const layouts = Array.from({ length: nCols }, (_, c) =>
+        layout(cells[c] ?? "", font)
+      );
+      const h = Math.max(...layouts.map(cellH), 0) + padY * 2;
+      if (this.y + h > PAGE_H - MARGIN && this.y > MARGIN) {
+        this.currentPage = this.doc.addPage([PAGE_W, PAGE_H]);
+        this.pages.push(this.currentPage);
+        this.y = MARGIN;
+        if (!fill) drawRow(headers, headFont, true);
+      }
+      const topY = this.y;
+      for (let c = 0; c < nCols; c++) {
+        const cx = x0 + c * colW;
+        this.currentPage.drawRectangle({
+          x: cx,
+          y: this.py(topY) - h,
+          width: colW,
+          height: h,
+          color: fill ? COLORS.bgAccent : COLORS.white,
+          borderColor: COLORS.muted,
+          borderWidth: 0.5,
+        });
+        const lines = layouts[c];
+        // baseline from top for the first line, then step down per line.
+        let baseTop = topY + padY + (lines[0]?.asc ?? size);
+        lines.forEach((ln, li) => {
+          if (li > 0) baseTop += lines[li - 1].desc + lineGap + ln.asc;
+          let x = cx + padX;
+          let first = true;
+          for (const t of ln.toks) {
+            if (!first && t.sb) x += spaceW;
+            if (t.kind === "word") {
+              this.currentPage.drawText(t.text, {
+                x,
+                y: this.py(baseTop),
+                size,
+                font,
+                color: COLORS.text,
+              });
+            } else {
+              this.currentPage.drawImage(t.img, {
+                x,
+                y: this.py(baseTop) - t.b,
+                width: t.w,
+                height: t.h,
+              });
+            }
+            x += t.w;
+            first = false;
+          }
+        });
+      }
+      this.y = topY + h;
+    };
+
+    drawRow(headers, headFont, true);
+    for (const r of rows) drawRow(r, bodyFont, false);
+  }
+
+  /**
    * Render AI text that may carry light markdown leakage (pipe tables, bullet /
    * numbered lists, **bold**, `code`, ## headings). Tables become real bordered
    * tables; lists get proper markers + indentation; everything else renders as
@@ -729,12 +1165,21 @@ export class PDFBuilder {
             font: this.fonts.bold,
             color: COLORS.primary,
           });
-          this.text(this.stripInlineMarkdown(item), {
-            x: MARGIN + indent,
-            maxWidth: CONTENT_W - indent,
-            size,
-            lineHeight: size * 1.5,
-          });
+          const itemText = this.stripInlineMarkdown(item);
+          if (hasLatex(itemText)) {
+            this.mathLine(itemText, {
+              x: MARGIN + indent,
+              maxWidth: CONTENT_W - indent,
+              size,
+            });
+          } else {
+            this.text(itemText, {
+              x: MARGIN + indent,
+              maxWidth: CONTENT_W - indent,
+              size,
+              lineHeight: size * 1.5,
+            });
+          }
         });
         this.space(2);
         continue;
@@ -762,7 +1207,12 @@ export class PDFBuilder {
           });
           continue;
         }
-        this.text(this.stripInlineMarkdown(line), { size, color: COLORS.text });
+        const lineText = this.stripInlineMarkdown(line);
+        if (hasLatex(lineText)) {
+          this.mathLine(lineText, { size, color: COLORS.text });
+        } else {
+          this.text(lineText, { size, color: COLORS.text });
+        }
       }
     }
   }

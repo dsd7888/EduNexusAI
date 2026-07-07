@@ -12,6 +12,8 @@ import {
   poolMarksPerItem,
 } from "./poolRender";
 import { parseMarkdownLite, type Segment } from "@/lib/text/markdownLite";
+import { extractLatexSegments, hasLatex } from "@/lib/text/latexSegments";
+import { mathKey, mathSizePt, type MathRenderMap } from "./paperMath";
 import type { TagValidation } from "./validateTags";
 
 // ── Types for the assembled paper ──────────────────────────────────────────
@@ -238,6 +240,16 @@ interface EmbeddedPdfImage {
   height: number;
 }
 
+/** A rasterised math/chemistry span embedded up-front. Geometry is intrinsic px
+ *  at the reference size; scaled to the drawing font via {@link mathSizePt}. */
+interface EmbeddedMath {
+  img: PDFImage;
+  width: number;
+  height: number;
+  baseline: number;
+  displayMode: boolean;
+}
+
 interface Ctx {
   doc: PDFDocument;
   page: PDFPage;
@@ -250,6 +262,8 @@ interface Ctx {
   };
   /** Question images embedded up-front, keyed by storage path (may be empty). */
   images: Map<string, EmbeddedPdfImage>;
+  /** Rasterised math spans embedded up-front, keyed by {@link mathKey}. */
+  math: Map<string, EmbeddedMath>;
 }
 
 /**
@@ -519,11 +533,218 @@ function drawTextLines(
   }
 }
 
+/**
+ * Math-aware wrapped-text run. Splits the text into plain and math/chemistry
+ * spans; plain runs draw exactly as {@link drawTextLines} (word-wrapped Times),
+ * inline math draws as a baseline-aligned image mid-line, and block/display math
+ * draws centred on its own line. Pagination uses the same {@link ensureSpace}
+ * page-break the rest of the engine uses, so a tall equation triggers a break
+ * like any other block.
+ *
+ * Fast path: when the text contains no math at all, this is byte-identical to
+ * {@link drawTextLines} — the non-math rendering path is untouched.
+ *
+ * Math is extracted from the RAW text (matching how renderPaperMath keyed the
+ * pre-rendered images); only the plain-text runs go through `sanitize`.
+ */
+function drawMathText(
+  ctx: Ctx,
+  text: string,
+  indentX: number,
+  size: number,
+  textColor = rgb(0, 0, 0)
+) {
+  const segments = extractLatexSegments(text ?? "");
+  if (!segments.some((s) => s.type === "math")) {
+    drawTextLines(ctx, text ?? "", indentX, size);
+    return;
+  }
+
+  const { regular } = ctx.fonts;
+  const maxWidth = COL_MARKS_X - indentX - 12;
+  const spaceW = regular.widthOfTextAtSize(" ", size);
+  const textAscent = size * 0.75;
+  const textDescent = size * 0.25;
+  const lineGap = 3;
+
+  type Tok =
+    | { kind: "word"; text: string; w: number; spaceBefore: boolean }
+    | {
+        kind: "imath";
+        e: EmbeddedMath;
+        w: number;
+        h: number;
+        b: number;
+        spaceBefore: boolean;
+      }
+    | { kind: "block"; latex: string };
+  // Only inline tokens ever enter a line; block math is drawn between lines.
+  type InlineTok = Exclude<Tok, { kind: "block" }>;
+
+  // ── Build the inline token stream, honouring real whitespace boundaries ────
+  const tokens: Tok[] = [];
+  let pendingSpace = false;
+  const lookupMath = (latex: string, displayMode: boolean) =>
+    ctx.math.get(mathKey(latex, displayMode));
+
+  const drawBlockMath = (latex: string) => {
+    const e = lookupMath(latex, true) ?? lookupMath(latex, false);
+    if (!e) {
+      // Fallback: the literal source as plain text (never crash generation).
+      drawTextLines(ctx, latex, indentX, size);
+      return;
+    }
+    let { width: w, height: h } = mathSizePt(e, size + 1);
+    if (w > maxWidth) {
+      const s = maxWidth / w;
+      w *= s;
+      h *= s;
+    }
+    ctx.y -= 4;
+    const c = ensureSpace(ctx, h + 6);
+    const cx = indentX + Math.max(0, (maxWidth - w) / 2);
+    c.page.drawImage(e.img, { x: cx, y: c.y - h, width: w, height: h });
+    c.y -= h + 6;
+  };
+
+  for (const seg of segments) {
+    if (seg.type === "text") {
+      // Split keeping whitespace so spacing across math boundaries is faithful.
+      for (const piece of sanitize(seg.value).split(/(\s+)/)) {
+        if (piece === "") continue;
+        if (/^\s+$/.test(piece)) {
+          pendingSpace = true;
+          continue;
+        }
+        tokens.push({
+          kind: "word",
+          text: piece,
+          w: regular.widthOfTextAtSize(piece, size),
+          spaceBefore: pendingSpace,
+        });
+        pendingSpace = false;
+      }
+      continue;
+    }
+    // math segment
+    if (seg.displayMode) {
+      tokens.push({ kind: "block", latex: seg.latex });
+      pendingSpace = false;
+      continue;
+    }
+    const e = lookupMath(seg.latex, false);
+    if (!e) {
+      // Literal fallback for a failed inline span.
+      for (const piece of sanitize(seg.latex).split(/(\s+)/)) {
+        if (piece === "" || /^\s+$/.test(piece)) {
+          if (/^\s+$/.test(piece)) pendingSpace = true;
+          continue;
+        }
+        tokens.push({
+          kind: "word",
+          text: piece,
+          w: regular.widthOfTextAtSize(piece, size),
+          spaceBefore: pendingSpace,
+        });
+        pendingSpace = false;
+      }
+      continue;
+    }
+    const { width: w, height: h, baseline: b } = mathSizePt(e, size);
+    tokens.push({ kind: "imath", e, w, h, b, spaceBefore: pendingSpace });
+    pendingSpace = false;
+  }
+
+  // ── Line-break and draw ────────────────────────────────────────────────────
+  let line: InlineTok[] = [];
+  let lineW = 0;
+
+  const flushLine = () => {
+    if (line.length === 0) return;
+    let asc = textAscent;
+    let desc = textDescent;
+    for (const t of line) {
+      if (t.kind === "imath") {
+        asc = Math.max(asc, t.h - t.b);
+        desc = Math.max(desc, t.b);
+      }
+    }
+    const c = ensureSpace(ctx, asc + desc + lineGap);
+    const baseline = c.y - asc;
+    let x = indentX;
+    let first = true;
+    for (const t of line) {
+      if (!first && t.spaceBefore) x += spaceW;
+      if (t.kind === "word") {
+        c.page.drawText(t.text, {
+          x,
+          y: baseline,
+          size,
+          font: regular,
+          color: textColor,
+        });
+        x += t.w;
+      } else if (t.kind === "imath") {
+        c.page.drawImage(t.e.img, {
+          x,
+          y: baseline - t.b,
+          width: t.w,
+          height: t.h,
+        });
+        x += t.w;
+      }
+      first = false;
+    }
+    c.y = baseline - desc - lineGap;
+    line = [];
+    lineW = 0;
+  };
+
+  for (const t of tokens) {
+    // Block-math: flush the current line, draw centred, continue.
+    if (t.kind === "block") {
+      flushLine();
+      drawBlockMath(t.latex);
+      continue;
+    }
+    const gap = line.length > 0 && t.spaceBefore ? spaceW : 0;
+    const cand = line.length === 0 ? t.w : lineW + gap + t.w;
+    if (cand > maxWidth && line.length > 0) {
+      flushLine();
+      line.push(t);
+      lineW = t.w;
+    } else {
+      line.push(t);
+      lineW = cand;
+    }
+  }
+  flushLine();
+}
+
 // Bordered, even-column table ported from pdf/builder.ts drawTable() into this
 // engine's bottom-anchored ctx/cursor model: shaded+bold header row, wrapped
 // cell text, whole-table page-break when it would otherwise be split, and a
 // per-row break with header repeat for tables taller than a page.
+// Dispatcher: math-free tables use the original byte-identical renderer; only a
+// table that actually contains a math/chemistry span takes the math-aware path.
 function drawMarkdownTable(
+  ctx: Ctx,
+  headers: string[],
+  rows: string[][],
+  indentX: number,
+  baseSize: number
+) {
+  const anyMath =
+    headers.some((h) => hasLatex(h)) ||
+    rows.some((r) => r.some((c) => hasLatex(c)));
+  if (anyMath) {
+    drawMarkdownTableMath(ctx, headers, rows, indentX, baseSize);
+  } else {
+    drawMarkdownTablePlain(ctx, headers, rows, indentX, baseSize);
+  }
+}
+
+function drawMarkdownTablePlain(
   ctx: Ctx,
   headers: string[],
   rows: string[][],
@@ -609,6 +830,204 @@ function drawMarkdownTable(
   ctx.y -= size + 6;
 }
 
+// ── Math-aware table cells ───────────────────────────────────────────────────
+// One wrapped line inside a cell: a mix of word tokens and inline-math image
+// tokens, with the line's ascent/descent (so rows size to the tallest image).
+type CellTok =
+  | { kind: "word"; text: string; w: number; sb: boolean }
+  | { kind: "imath"; e: EmbeddedMath; w: number; h: number; b: number; sb: boolean };
+interface CellLine {
+  toks: CellTok[];
+  asc: number;
+  desc: number;
+}
+
+/** Wrap a cell's text (with inline math) into rich lines within `innerW`. */
+function layoutCellLines(
+  ctx: Ctx,
+  txt: string,
+  size: number,
+  innerW: number
+): CellLine[] {
+  const { regular } = ctx.fonts;
+  const spaceW = regular.widthOfTextAtSize(" ", size);
+  const toks: CellTok[] = [];
+  let pending = false;
+  const pushWords = (s: string) => {
+    for (const p of sanitize(s).split(/(\s+)/)) {
+      if (p === "") continue;
+      if (/^\s+$/.test(p)) {
+        pending = true;
+        continue;
+      }
+      toks.push({
+        kind: "word",
+        text: p,
+        w: regular.widthOfTextAtSize(p, size),
+        sb: pending,
+      });
+      pending = false;
+    }
+  };
+  for (const seg of extractLatexSegments(txt ?? "")) {
+    if (seg.type === "text") {
+      pushWords(seg.value);
+      continue;
+    }
+    const e =
+      ctx.math.get(mathKey(seg.latex, seg.displayMode)) ??
+      ctx.math.get(mathKey(seg.latex, !seg.displayMode));
+    if (!e) {
+      pushWords(seg.latex); // literal fallback for a failed span
+      continue;
+    }
+    let { width: w, height: h, baseline: b } = mathSizePt(e, size);
+    if (w > innerW) {
+      const s = innerW / w;
+      w *= s;
+      h *= s;
+      b *= s;
+    }
+    toks.push({ kind: "imath", e, w, h, b, sb: pending });
+    pending = false;
+  }
+
+  const lines: CellLine[] = [];
+  let cur: CellTok[] = [];
+  let curW = 0;
+  const flush = () => {
+    if (cur.length === 0) return;
+    let asc = size;
+    let desc = size * 0.22;
+    for (const t of cur) {
+      if (t.kind === "imath") {
+        asc = Math.max(asc, t.h - t.b);
+        desc = Math.max(desc, t.b);
+      }
+    }
+    lines.push({ toks: cur, asc, desc });
+    cur = [];
+    curW = 0;
+  };
+  for (const t of toks) {
+    const gap = cur.length > 0 && t.sb ? spaceW : 0;
+    const cand = cur.length === 0 ? t.w : curW + gap + t.w;
+    if (cand > innerW && cur.length > 0) {
+      flush();
+      cur.push(t);
+      curW = t.w;
+    } else {
+      cur.push(t);
+      curW = cand;
+    }
+  }
+  flush();
+  if (lines.length === 0) lines.push({ toks: [], asc: size, desc: size * 0.22 });
+  return lines;
+}
+
+/**
+ * Math-aware sibling of {@link drawMarkdownTablePlain}: identical bordered layout,
+ * header repeat and page-break behaviour, but each cell is laid out with
+ * {@link layoutCellLines} so inline math/chemistry renders as baseline-aligned
+ * images and rows grow to fit the tallest image. Only reached when a table
+ * actually contains a math span.
+ */
+function drawMarkdownTableMath(
+  ctx: Ctx,
+  headers: string[],
+  rows: string[][],
+  indentX: number,
+  baseSize: number
+) {
+  const { regular, bold } = ctx.fonts;
+  const size = Math.min(baseSize, 9.5);
+  const x0 = indentX;
+  const tableW = COL_MARKS_X - indentX - 12;
+  const nCols = Math.max(1, headers.length);
+  const colW = tableW / nCols;
+  const padX = 4;
+  const padY = 3;
+  const lineGap = size * 0.3;
+  const innerW = colW - padX * 2;
+  const bottomLimit = MARGIN_BOTTOM + 30;
+  const pageTopY = PAGE_HEIGHT - MARGIN_TOP;
+
+  const cellH = (lines: CellLine[]) =>
+    lines.reduce((s, l) => s + l.asc + l.desc, 0) +
+    Math.max(0, lines.length - 1) * lineGap;
+  const cellLayouts = (cells: string[]) =>
+    Array.from({ length: nCols }, (_, c) =>
+      layoutCellLines(ctx, cells[c] ?? "", size, innerW)
+    );
+  const rowHeight = (cells: string[]) => {
+    const layouts = cellLayouts(cells);
+    return Math.max(...layouts.map(cellH), 0) + padY * 2;
+  };
+
+  const headerH = rowHeight(headers);
+  const totalH = headerH + rows.reduce((s, r) => s + rowHeight(r), 0);
+  const remaining = ctx.y - bottomLimit;
+  const pageInnerH = pageTopY - bottomLimit;
+  if (totalH > remaining && totalH <= pageInnerH) newPage(ctx);
+
+  const drawRow = (cells: string[], font: PDFFont, fill: boolean) => {
+    const layouts = cellLayouts(cells);
+    const h = Math.max(...layouts.map(cellH), 0) + padY * 2;
+    if (ctx.y - h < bottomLimit && ctx.y < pageTopY) {
+      newPage(ctx);
+      if (!fill) drawRow(headers, bold, true);
+    }
+    const topY = ctx.y;
+    for (let c = 0; c < nCols; c++) {
+      const cx = x0 + c * colW;
+      ctx.page.drawRectangle({
+        x: cx,
+        y: topY - h,
+        width: colW,
+        height: h,
+        color: fill ? rgb(0.93, 0.93, 0.93) : rgb(1, 1, 1),
+        borderColor: rgb(0.4, 0.4, 0.4),
+        borderWidth: 0.5,
+      });
+      const lines = layouts[c];
+      let baseline = topY - padY - (lines[0]?.asc ?? size);
+      lines.forEach((ln, li) => {
+        if (li > 0) baseline -= lines[li - 1].desc + lineGap + ln.asc;
+        let x = cx + padX;
+        let first = true;
+        for (const t of ln.toks) {
+          if (!first && t.sb) x += regular.widthOfTextAtSize(" ", size);
+          if (t.kind === "word") {
+            ctx.page.drawText(t.text, {
+              x,
+              y: baseline,
+              size,
+              font,
+              color: rgb(0, 0, 0),
+            });
+          } else {
+            ctx.page.drawImage(t.e.img, {
+              x,
+              y: baseline - t.b,
+              width: t.w,
+              height: t.h,
+            });
+          }
+          x += t.w;
+          first = false;
+        }
+      });
+    }
+    ctx.y = topY - h;
+  };
+
+  ctx.y -= 2;
+  drawRow(headers, bold, true);
+  for (const r of rows) drawRow(r, regular, false);
+  ctx.y -= size + 6;
+}
+
 // Bullet / numbered list with a marker column and hanging indent, in the same
 // cursor model as drawTextLines.
 function drawMarkdownList(
@@ -654,20 +1073,29 @@ function drawQuestionText(
 ): { startY: number } {
   const startY = ctx.y;
   const segments = parseMarkdownLite(text ?? "");
-  // Common case (no embedded table/list): behave exactly as before.
+  // Common case (no embedded table/list): render as text, math-aware. When the
+  // text also has no math, drawMathText delegates to drawTextLines unchanged.
   if (!segments.some((s) => s.type !== "text")) {
-    drawTextLines(ctx, text ?? "", indentX, size);
-    return { startY };
-  }
-  for (const seg of segments) {
-    if (seg.type === "table") {
-      drawMarkdownTable(ctx, seg.headers, seg.rows, indentX, size);
-    } else if (seg.type === "list") {
-      drawMarkdownList(ctx, seg, indentX, size);
-    } else {
-      drawTextLines(ctx, seg.content, indentX, size);
+    drawMathText(ctx, text ?? "", indentX, size);
+  } else {
+    for (const seg of segments) {
+      if (seg.type === "table") {
+        drawMarkdownTable(ctx, seg.headers, seg.rows, indentX, size);
+      } else if (seg.type === "list") {
+        drawMarkdownList(ctx, seg, indentX, size);
+      } else {
+        drawMathText(ctx, seg.content, indentX, size);
+      }
     }
   }
+  // Header-overlap guard: the body is drawn side-by-side with (and starting on
+  // the same baseline as) the caller's header label. When the AI returned an
+  // empty slot the body draws nothing and ctx.y never leaves the label's
+  // baseline, so the next question's header prints on top of it. Force the
+  // cursor one line below the header — the same "advance past the header even
+  // when the body is empty" principle as BUG 1, for the empty-body case that
+  // fix didn't reach.
+  if (ctx.y === startY) ctx.y -= LINE_H;
   return { startY };
 }
 
@@ -710,12 +1138,24 @@ function drawTaggedSubRow(ctx: Ctx, sub: SubQuestion, hasCoPo: boolean): Ctx {
   if (sub.options) {
     const opts = sub.options;
     const { regular } = ctx.fonts;
+    const OPT_GRAY = rgb(0.2, 0.2, 0.2);
     for (const k of ["a", "b", "c", "d"]) {
       const v = (opts as Record<string, string>)[k];
       if (!v) continue;
       ctx = ensureSpace(ctx, LINE_H);
-      const line = sanitize(`${k}) ${v}`);
-      const lines = wrapWords(line, regular, 9.5, COL_MARKS_X - MARGIN_LEFT - 36);
+      const raw = `${k}) ${v}`;
+      // Math-bearing options flow through the math-aware layout (raw, so the
+      // latex keys match); plain options keep the exact original gray path.
+      if (hasLatex(raw)) {
+        drawMathText(ctx, raw, MARGIN_LEFT + 36, 9.5, OPT_GRAY);
+        continue;
+      }
+      const lines = wrapWords(
+        sanitize(raw),
+        regular,
+        9.5,
+        COL_MARKS_X - MARGIN_LEFT - 36
+      );
       for (const ln of lines) {
         ctx = ensureSpace(ctx, LINE_H);
         ctx.page.drawText(ln, {
@@ -723,7 +1163,7 @@ function drawTaggedSubRow(ctx: Ctx, sub: SubQuestion, hasCoPo: boolean): Ctx {
           y: ctx.y,
           size: 9.5,
           font: regular,
-          color: rgb(0.2, 0.2, 0.2),
+          color: OPT_GRAY,
         });
         ctx.y -= 11;
       }
@@ -1119,6 +1559,8 @@ function drawFooter(ctx: Ctx, paper: AssembledPaper) {
 export interface PdfBuildOptions {
   /** Decoded question images keyed by storage path (from loadPaperImages). */
   images?: PaperImageMap;
+  /** Rasterised math/chemistry spans (from renderPaperMath). */
+  math?: MathRenderMap;
 }
 
 export async function generatePPSUPaperPDF(
@@ -1149,6 +1591,29 @@ export async function generatePPSUPaperPDF(
     }
   }
 
+  // Same up-front-embed strategy for rasterised math spans: the draw helpers are
+  // synchronous, so every PNG is embedded here and looked up by mathKey.
+  const math = new Map<string, EmbeddedMath>();
+  for (const [key, asset] of options.math ?? []) {
+    if (!asset) continue; // failed render → drawMathText falls back to literal
+    try {
+      const img = await doc.embedPng(asset.buffer);
+      math.set(key, {
+        img,
+        width: asset.width,
+        height: asset.height,
+        baseline: asset.baseline,
+        displayMode: asset.displayMode,
+      });
+    } catch (err) {
+      console.warn(
+        `[qpaper/builder] could not embed math ${key}: ${
+          err instanceof Error ? err.message : "unknown"
+        }`
+      );
+    }
+  }
+
   const ctx: Ctx = {
     doc,
     page: doc.addPage([PAGE_WIDTH, PAGE_HEIGHT]),
@@ -1156,6 +1621,7 @@ export async function generatePPSUPaperPDF(
     pageNo: 1,
     fonts: { regular, bold, italic },
     images,
+    math,
   };
 
   drawHeader(ctx, paper);

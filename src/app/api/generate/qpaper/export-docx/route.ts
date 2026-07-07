@@ -1,6 +1,7 @@
 import { requireRole, apiError } from "@/lib/api/helpers";
 import { generateQpaperDocx } from "@/lib/qpaper/docxBuilder";
 import { loadPaperImages } from "@/lib/qpaper/qpaperImages";
+import { renderPaperMath } from "@/lib/qpaper/paperMath";
 import type { AssembledPaper } from "@/lib/qpaper/builder";
 import type { NextRequest } from "next/server";
 
@@ -27,8 +28,11 @@ export async function POST(request: NextRequest) {
     }
 
     const answerKey = body.answerKey === true;
-    const images = await loadPaperImages(adminClient, paper);
-    const docxBuffer = await generateQpaperDocx(paper, { answerKey, images });
+    const [images, math] = await Promise.all([
+      loadPaperImages(adminClient, paper),
+      renderPaperMath(paper),
+    ]);
+    const docxBuffer = await generateQpaperDocx(paper, { answerKey, images, math });
 
     const suffix = answerKey ? "answerkey" : "qpaper";
     const fileName = `${suffix}_${Date.now()}_${user.id.slice(0, 8)}.docx`;

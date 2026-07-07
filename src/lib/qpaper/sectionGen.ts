@@ -15,6 +15,11 @@
 
 import { routeAI } from "@/lib/ai/router";
 import { estimateMaxOutputTokens } from "@/lib/ai/tokenBudget";
+import { MATH_CHEM_NOTATION_GUIDE } from "@/lib/text/latexSegments";
+import {
+  archetypeHintForSubject,
+  classifySubjectFamily,
+} from "@/lib/qpaper/archetypes";
 import type { TemplateSection, TemplateQuestionBlock, TemplatePoolQuestion, PoolItem } from "./templates";
 import {
   attemptAnyCount,
@@ -147,6 +152,13 @@ Your papers are known for:
 - Mark distribution that mirrors syllabus module weightage exactly
 - Question difficulty that is fair, unambiguous, and appropriate to the cognitive level specified
 
+When a question, option, or answer contains mathematics or chemistry, write the
+notation using this exact convention so it renders correctly in the exported
+PDF and Word documents (these math/chemistry delimiters are required and are NOT
+considered "markdown"):
+
+${MATH_CHEM_NOTATION_GUIDE}
+
 You output ONLY valid JSON. First character [, last character ].
 No markdown. No prose before or after. No code fences.`;
 
@@ -227,14 +239,30 @@ function buildSlotsBlock(
       : "  Sourcing style: Fresh — original framing; no need to echo PYQ phrasing";
   };
 
+  // Faculty-authored custom instruction for the parent question block, surfaced
+  // per slot as a BINDING content directive (not merely a printed header). Pool
+  // sub-slots inherit the parent pool instruction, which is already carried by
+  // the pool_composition block, so they are skipped here.
+  const instructionLineFor = (slot: QuestionSlot): string => {
+    if (slot.poolItemType) return "";
+    const match = /^Q(\d+)/.exec(slot.slotKey);
+    if (!match) return "";
+    const idx = Number(match[1]) - 1;
+    const tpl = templates[idx];
+    const instruction = tpl?.instruction?.trim();
+    if (!instruction) return "";
+    return `  Custom instruction (BINDING — the question(s) in this slot MUST comply): "${instruction}"`;
+  };
+
   return slots
     .map((s) => {
       const formatLine = formatLineFor(s);
       const styleLine = styleLineFor(s);
+      const instructionLine = instructionLineFor(s);
       return `
 Slot: ${s.slotKey}
   Display label: ${s.display}
-${formatLine}
+${formatLine}${instructionLine ? `\n${instructionLine}` : ""}
   Assigned module: Module ${s.moduleNumber} — ${s.moduleName}
   Marks: ${s.marks}
   Allowed BTL levels for this module: [${s.allowedBtlLevels.join(", ")}]
@@ -254,6 +282,41 @@ ${
 ${styleLine}`;
     })
     .join("");
+}
+
+/**
+ * Explicit cross-slot distinctness roster. The section is generated in a single
+ * bulk call, so the model already sees every slot — but nothing forces it to
+ * differentiate them. When two slots resolve to the same module/CO (a common,
+ * legitimate outcome of weightage-based assignment), the model will happily emit
+ * near-identical questions unless told, by slot key, that each must be distinct.
+ * This block lists the sibling roster and makes non-repetition an explicit,
+ * per-slot mandate rather than a buried quality rule.
+ */
+function buildDistinctnessBlock(slots: QuestionSlot[]): string {
+  if (slots.length < 2) return "";
+  const rows = slots
+    .map((s) => {
+      const co = s.targetCo
+        ? `CO ${s.targetCo}`
+        : s.cos.length > 0
+          ? `CO ${s.cos.join("/")}`
+          : "CO any";
+      const diff = s.targetDifficulty ? `, ${s.targetDifficulty}` : "";
+      return `  ${s.slotKey}: Module ${s.moduleNumber} — ${s.moduleName} (${co}${diff})`;
+    })
+    .join("\n");
+  return `<cross_slot_distinctness>
+This section contains ${slots.length} slots, listed below with their assigned module and CO:
+${rows}
+
+MANDATORY: Every slot's question must be DISTINCT from every other slot in this
+section — a different topic, concept, algorithm, or problem instance. This applies
+EVEN WHEN two slots share the same module and CO: vary the aspect examined (one may
+define, another may apply, another may compare) and never reuse the same question
+stem, scenario, or data across two slots. Two slots returning the same or paraphrased
+question is a paper-design defect that will be rejected.
+</cross_slot_distinctness>`;
 }
 
 /** Explicit per-block pool composition plan injected into the prompt. */
@@ -392,12 +455,19 @@ function buildOutputSchemaBlock(
   }
 
   if (typesPresent.has("mcq")) {
+    // Echo the faculty-authored instruction back in the schema so the AI copies
+    // the real value — a hardcoded literal here would override template.instruction
+    // in convertOne (which prefers raw.instruction), silently dropping the
+    // faculty's custom instruction.
+    const mcqTemplate = templates.find((t) => t.type === "mcq");
+    const mcqInstruction =
+      mcqTemplate?.instruction?.trim() || "MCQ/Short Question/Fill in the Blanks";
     blocks.push(`For MCQ (sub-parts):
 {
   "slotKey": "Q1",
   "type": "mcq",
   "display_label": "Q - 1",
-  "instruction": "MCQ/Short Question/Fill in the Blanks",
+  "instruction": ${JSON.stringify(mcqInstruction)},
   "total_marks": <sum of sub_parts marks>,
   "sub_parts": [
     {
@@ -485,7 +555,32 @@ ${optionFragments.join(",\n")}
 }`;
 }
 
-function buildUserPrompt(input: SectionGenInput, slots: QuestionSlot[]): string {
+/**
+ * Builds a targeted correction block for a retry pass. `errors` are the raw
+ * validation error strings from the prior attempt (e.g. "BTL violation in Q1a:
+ * got 3, allowed [1,2,4,5]"). We surface them as explicit per-slot directives so
+ * the retry regenerates the specific offending items within the allowed range,
+ * rather than blindly re-rolling the whole section and hoping for a better draw.
+ */
+function buildCorrectionsBlock(errors: string[]): string {
+  if (errors.length === 0) return "";
+  const directives = errors.map((e) => `- ${e}`).join("\n");
+  return `<validation_corrections>
+CRITICAL — THIS IS A CORRECTION PASS. Your previous attempt produced the constraint violations listed below. Regenerate the full section, but you MUST fix each of these specific violations. Slots not listed here were acceptable — keep them at comparable difficulty and do not introduce new violations.
+
+${directives}
+
+For each BTL violation: the assigned BTL fell outside the allowed levels for that slot's module. Rewrite THAT specific question so its cognitive demand genuinely fits an allowed BTL level, and assign a BTL from the allowed set — do not merely relabel the BTL number while leaving the question unchanged, and do not exceed the allowed range again.
+
+Before emitting output, re-check every listed slot against its allowed BTL levels in Part B to confirm the violation is resolved.
+</validation_corrections>`;
+}
+
+function buildUserPrompt(
+  input: SectionGenInput,
+  slots: QuestionSlot[],
+  corrections: string[] = []
+): string {
   const sectionName = input.sectionName;
   const sectionMarks = input.sectionTemplate.total_marks;
   const slotsBlock = buildSlotsBlock(slots, input.sectionTemplate.questions);
@@ -505,6 +600,7 @@ function buildUserPrompt(input: SectionGenInput, slots: QuestionSlot[]): string 
   const poolCompositionBlock = buildPoolCompositionBlock(
     input.sectionTemplate.questions
   );
+  const distinctnessBlock = buildDistinctnessBlock(slots);
   const hasStyleTags = slots.some((s) => s.style != null);
   const questionBlockCount = input.sectionTemplate.questions.length;
   const hasPool = input.sectionTemplate.questions.some((t) => t.type === "pool");
@@ -522,6 +618,7 @@ ${hasPool ? "Pool blocks: each pool block produces ONE JSON object with an items
   const partB = `<module_question_assignment>
 MANDATORY: The following assignment is derived from the official syllabus weightage. Generate questions ONLY from the assigned module for each slot. Deviation from this assignment produces an invalid examination paper that will be rejected by the examination committee.
 ${poolCompositionBlock ? `${poolCompositionBlock}\n` : ""}${slotsBlock}
+${distinctnessBlock ? `\n${distinctnessBlock}\n` : ""}
 Before finalising output: verify every question's slot key matches its assigned module. A question about Module 3 content must not appear in a slot assigned to Module 1.
 </module_question_assignment>`;
 
@@ -704,7 +801,35 @@ correct_option: present in the JSON but NEVER printed in the PDF.
 
 Generate ${questionBlockCount} question block(s) for ${sectionName}${hasPool ? " (pool blocks: one parent object each, with all sub-slots in items[])" : ""}.`;
 
-  return [partA, partB, partC, partD, partE, partF, partG].join("\n\n");
+  // Subject-family archetype fallback: only when PYQ coverage is thin/absent, and
+  // only for a math/chemistry subject — supplements PYQ mirroring, never overrides
+  // it. Empty string for every other subject (no change to those prompts).
+  const archetypeHint = pyqCoverageIsThin(input)
+    ? archetypeHintForSubject(input.subjectName, input.subjectCode)
+    : "";
+
+  const correctionsBlock = buildCorrectionsBlock(corrections);
+  const base = correctionsBlock
+    ? [correctionsBlock, partA, partB, partC, partD, partE]
+    : [partA, partB, partC, partD, partE];
+  // Archetype hint sits right after the PYQ reference (partE) so the model reads
+  // it as a fallback to the PYQ style, before the quality standards.
+  const parts = archetypeHint
+    ? [...base, archetypeHint, partF, partG]
+    : [...base, partF, partG];
+  return parts.join("\n\n");
+}
+
+/**
+ * True when this section has little or no PYQ signal to anchor style — the
+ * trigger for supplementing the prompt with a subject-family archetype hint.
+ * Approximated at the subject level (PYQ examples are not module-keyed here):
+ * few structured examples AND no substantial free-text PYQ context.
+ */
+function pyqCoverageIsThin(input: SectionGenInput): boolean {
+  const exampleCount = (input.pyqExamples ?? []).length;
+  const ctxLen = (input.pyqContext ?? "").trim().length;
+  return exampleCount < 3 && ctxLen < 200;
 }
 
 // ─── JSON parsing ──────────────────────────────────────────────────────────
@@ -1117,6 +1242,86 @@ export interface ValidationResult {
   warnings: string[];
 }
 
+// ─── Duplicate detection ────────────────────────────────────────────────────
+
+interface StemEntry {
+  label: string;
+  tokens: Set<string>;
+  normalized: string;
+}
+
+/** Lowercase, strip punctuation/notation, collapse whitespace. */
+function normalizeStem(text: string): string {
+  return text
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/** Collect every atomic question stem in a section, tagged with a readable label. */
+function gatherStems(questions: GeneratedQuestion[]): StemEntry[] {
+  const out: StemEntry[] = [];
+  const push = (label: string, text: string | undefined | null) => {
+    const normalized = normalizeStem(String(text ?? ""));
+    const tokens = new Set(normalized.split(" ").filter(Boolean));
+    // Ignore trivially short stems (e.g. one-word fill-in-the-blanks) — they
+    // produce false positives and are not the duplicate case we care about.
+    if (tokens.size < 4) return;
+    out.push({ label, tokens, normalized });
+  };
+  for (const q of questions) {
+    const base = q.display_label ?? `Q${q.q_number}`;
+    (q.sub_parts ?? []).forEach((sp) =>
+      push(`${base} ${sp.label ?? ""}`.trim(), sp.question)
+    );
+    (q.parts ?? []).forEach((p) =>
+      push(`${base}${p.label ? ` (${p.label})` : ""}`, p.question)
+    );
+    (q.items ?? []).forEach((it, i) =>
+      push(`${base} (${ROMAN[i] ?? i + 1})`, it.question_text)
+    );
+  }
+  return out;
+}
+
+/** Token-set Jaccard similarity in [0,1]. */
+function jaccard(a: Set<string>, b: Set<string>): number {
+  if (a.size === 0 || b.size === 0) return 0;
+  let shared = 0;
+  for (const t of a) if (b.has(t)) shared++;
+  return shared / (a.size + b.size - shared);
+}
+
+/**
+ * Surface (never silently pass) near-identical question stems within a section —
+ * the same "detect and warn" pattern as the pool-shortfall check. Returns human
+ * warnings for any pair at/above the similarity threshold.
+ */
+export function detectDuplicateStems(
+  questions: GeneratedQuestion[]
+): string[] {
+  const stems = gatherStems(questions);
+  const warnings: string[] = [];
+  const SIMILARITY_THRESHOLD = 0.8;
+  for (let i = 0; i < stems.length; i++) {
+    for (let j = i + 1; j < stems.length; j++) {
+      const a = stems[i];
+      const b = stems[j];
+      const sim =
+        a.normalized === b.normalized ? 1 : jaccard(a.tokens, b.tokens);
+      if (sim >= SIMILARITY_THRESHOLD) {
+        warnings.push(
+          `Possible duplicate: ${a.label} and ${b.label} are ${Math.round(
+            sim * 100
+          )}% similar — review for near-identical content.`
+        );
+      }
+    }
+  }
+  return warnings;
+}
+
 /**
  * Normalize CO codes to a canonical form for cross-format comparison.
  * "CO1", "CO 1", "co1", "1", "01" → "01".
@@ -1129,6 +1334,76 @@ function normalizeCoCode(co: string): string {
     .replace(/^CO\s*/i, "")
     .trim()
     .padStart(2, "0");
+}
+
+/**
+ * Mutates generated question parts in place, replacing any `co` value that
+ * doesn't match a real course-outcome code for this subject with the nearest
+ * valid CO for that slot's assigned module — the same fallback chain used when
+ * a module has no mapped COs at all (slot.targetCo → slot.cos[0] → the
+ * subject's first CO). The AI occasionally emits a malformed/hallucinated CO
+ * string instead of a real code (observed: "CO_Module4_MathematicalLogic") —
+ * that must never reach the rendered paper, so this replaces rather than
+ * merely warns.
+ */
+function sanitizeCoCodes(
+  questions: GeneratedQuestion[],
+  slots: QuestionSlot[],
+  templates: TemplateQuestionBlock[],
+  validCoCodes: string[]
+): string[] {
+  const fixes: string[] = [];
+  const slotMap = new Map(slots.map((s) => [s.slotKey, s]));
+  const validCoNormalized = new Set(validCoCodes.map(normalizeCoCode));
+  const subjectFallbackCo = validCoCodes[0] ?? null;
+
+  const nearestCoFor = (slotKey: string): string | null => {
+    const slot = slotMap.get(slotKey);
+    const candidate = slot?.targetCo ?? slot?.cos[0] ?? subjectFallbackCo;
+    return candidate ? normalizeCoCode(candidate) : null;
+  };
+
+  const fix = (slotKey: string, holder: { co?: string | null }) => {
+    const co = holder.co;
+    if (!co || validCoNormalized.has(normalizeCoCode(co))) return;
+    const replacement = nearestCoFor(slotKey);
+    if (!replacement) return;
+    fixes.push(`Corrected malformed CO "${co}" in ${slotKey} → "${replacement}"`);
+    holder.co = replacement;
+  };
+
+  questions.forEach((q, qi) => {
+    const t = templates[qi];
+    if (!t) return;
+    const sectionQNum = qi + 1;
+    if (q.type === "mcq") {
+      (q.sub_parts ?? []).forEach((sp, i) => fix(mcqSubSlotKey(sectionQNum, i), sp));
+      return;
+    }
+    if (q.type === "descriptive_with_or") {
+      const primaryCount = (t.parts ?? ["a", "b"]).length;
+      (q.parts ?? []).forEach((p, i) => {
+        const slotKey = p.is_or_alternative
+          ? orAlternativeSlotKey(sectionQNum, i - primaryCount)
+          : orPrimarySlotKey(sectionQNum, i);
+        fix(slotKey, p);
+      });
+      return;
+    }
+    if (q.type === "attempt_any_one") {
+      const parentKey = descriptiveSlotKey(sectionQNum);
+      (q.parts ?? []).forEach((p) => fix(parentKey, p));
+      return;
+    }
+    if (q.type === "pool") {
+      (q.items ?? []).forEach((item, i) => fix(mcqSubSlotKey(sectionQNum, i), item));
+      return;
+    }
+    const head = q.parts?.[0];
+    if (head) fix(descriptiveSlotKey(sectionQNum), head);
+  });
+
+  return fixes;
 }
 
 export function validateGeneratedSection(
@@ -1160,7 +1435,12 @@ export function validateGeneratedSection(
       validCoNormalized.size > 0 &&
       !validCoNormalized.has(normalizeCoCode(part.co))
     ) {
-      warnings.push(`Unknown CO code "${part.co}" in ${part.slotKey}`);
+      // sanitizeCoCodes runs before this validation and should have already
+      // replaced any malformed/unknown CO with a real one — reaching here means
+      // it couldn't find a fallback (e.g. subject has zero course outcomes).
+      // An unvalidated CO string must never reach the rendered paper, so this
+      // is an error (triggers the retry), not a warning.
+      errors.push(`Unknown CO code "${part.co}" in ${part.slotKey}`);
     }
   }
 
@@ -1213,6 +1493,11 @@ export function validateGeneratedSection(
       }
     });
   });
+
+  // Cross-slot duplicate detection — surface near-identical stems as warnings
+  // (non-fatal), so a section where two slots came back the same doesn't pass
+  // through silently. Same detect-and-surface pattern as the pool shortfall.
+  warnings.push(...detectDuplicateStems(questions));
 
   return { valid: errors.length === 0, errors, warnings };
 }
@@ -1359,13 +1644,18 @@ export async function generateSection(
   const templates = input.sectionTemplate.questions;
   const validCoCodes = input.courseOutcomes.map((c) => c.co_code);
 
+  // Math/chemistry subjects emit more LaTeX-heavy, token-verbose output — grow
+  // the output budget so the archetype-hinted shown-step questions don't truncate.
+  const latexVerbose =
+    classifySubjectFamily(input.subjectName, input.subjectCode) !== null;
   const sectionBudget = estimateMaxOutputTokens(
     buildSectionSlots(templates),
-    "generation"
+    "generation",
+    { latexVerbose }
   );
 
-  const attempt = async (label: string) => {
-    const prompt = buildUserPrompt(input, slots);
+  const attempt = async (label: string, corrections: string[] = []) => {
+    const prompt = buildUserPrompt(input, slots, corrections);
     console.log(
       `[generateSection] ${input.sectionName} ${label} promptChars=${prompt.length} slots=${slots.length} maxTokens=${sectionBudget}`
     );
@@ -1383,6 +1673,13 @@ export async function generateSection(
       );
     }
     const questions = convertResponse(arr, templates);
+    const coFixes = sanitizeCoCodes(questions, slots, templates, validCoCodes);
+    if (coFixes.length > 0) {
+      console.warn(
+        `[generateSection] ${input.sectionName} ${label} CO corrections:\n  ` +
+          coFixes.join("\n  ")
+      );
+    }
     const validation = validateGeneratedSection(
       questions,
       slots,
@@ -1401,7 +1698,7 @@ export async function generateSection(
       first.validation.errors.join("\n  ")
   );
 
-  const retry = await attempt("attempt 2 (retry)");
+  const retry = await attempt("attempt 2 (retry)", first.validation.errors);
   if (retry.validation.valid) {
     return { questions: retry.questions, warnings: retry.validation.warnings };
   }

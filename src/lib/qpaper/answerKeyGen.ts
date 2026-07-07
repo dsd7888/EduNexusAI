@@ -18,6 +18,8 @@
 import { routeAI } from "@/lib/ai/router";
 import { estimateMaxOutputTokens } from "@/lib/ai/tokenBudget";
 import { createPDFBuilder, COLORS } from "@/lib/pdf/builder";
+import { renderPaperMath } from "@/lib/qpaper/paperMath";
+import { MATH_CHEM_NOTATION_GUIDE } from "@/lib/text/latexSegments";
 import type {
   AssembledPaper,
   GeneratedQuestion,
@@ -110,6 +112,12 @@ Your model answers are:
 - Appropriately detailed — depth matches the marks and BTL level of the question
 - Evaluator-friendly — marking scheme is explicit, partial credit guidance is clear
 - Fair — alternative valid approaches are noted where they exist
+
+When a model answer, marking scheme, or step contains mathematics or chemistry,
+write the notation using this exact convention so it renders correctly in the
+exported PDF (these delimiters are required and are NOT "markdown"):
+
+${MATH_CHEM_NOTATION_GUIDE}
 
 You output ONLY valid JSON. First character [, last character ]. No markdown. No prose before or after.`;
 
@@ -853,6 +861,10 @@ export async function buildAnswerKeyPDF(
   const { paper, sections } = input;
   const { builder } = await createPDFBuilder();
 
+  // Rasterise every math/chemistry span in the paper AND the generated answers,
+  // then embed them so the sync draw path can place them (mirrors image embed).
+  await builder.embedMath(await renderPaperMath({ paper, sections }));
+
   const imageMap = input.images;
   const renderImageByPath = async (path: string | null | undefined): Promise<void> => {
     if (!path || !imageMap) return;
@@ -1154,20 +1166,20 @@ async function drawMCQ(
       a.correct_text && a.correct_text.trim().length > 0
         ? `${a.label}  Correct Answer: (${a.correct_option})  ${stripInline(a.correct_text)}`
         : `${a.label}  Correct Answer: (${a.correct_option})`;
-    builder.text(head, {
+    builder.textOrMath(head, {
       font: builder.getFont("bold"),
       size: 10,
       color: COLORS.text,
     });
     if (a.justification && a.justification.trim().length > 0) {
-      builder.text(stripInline(a.justification), {
+      builder.textOrMath(stripInline(a.justification), {
         font: builder.getFont("regular"),
         size: 10,
         color: COLORS.text,
       });
     }
     if (a.distractor_note && a.distractor_note.trim().length > 0) {
-      builder.text(`Distractor note: ${stripInline(a.distractor_note)}`, {
+      builder.textOrMath(`Distractor note: ${stripInline(a.distractor_note)}`, {
         font: builder.getFont("italic"),
         size: 9,
         color: COLORS.text,
@@ -1200,7 +1212,7 @@ async function drawDescriptive(
     }
   }
   if (entry.marking_scheme) {
-    builder.text(`Marking Scheme: ${stripInline(entry.marking_scheme)}`, {
+    builder.textOrMath(`Marking Scheme: ${stripInline(entry.marking_scheme)}`, {
       font: builder.getFont("regular"),
       size: 10,
       color: COLORS.text,
@@ -1213,14 +1225,14 @@ async function drawDescriptive(
   });
   renderPlainBody(builder, entry.model_answer ?? "");
   if (entry.partial_credit_note && entry.partial_credit_note.trim()) {
-    builder.text(`Note: ${stripInline(entry.partial_credit_note)}`, {
+    builder.textOrMath(`Note: ${stripInline(entry.partial_credit_note)}`, {
       font: builder.getFont("italic"),
       size: 10,
       color: COLORS.text,
     });
   }
   if (entry.alternative_approaches && entry.alternative_approaches.trim()) {
-    builder.text(
+    builder.textOrMath(
       `Alternative approach: ${stripInline(entry.alternative_approaches)}`,
       {
         font: builder.getFont("italic"),
@@ -1250,7 +1262,7 @@ async function drawDescriptivePart(
   // see it in the same visual position as on the question paper.
   if (imagePath && renderImage) await renderImage(imagePath);
   if (part.marking_scheme) {
-    builder.text(`Marking Scheme: ${stripInline(part.marking_scheme)}`, {
+    builder.textOrMath(`Marking Scheme: ${stripInline(part.marking_scheme)}`, {
       font: builder.getFont("regular"),
       size: 10,
       color: COLORS.text,
@@ -1263,14 +1275,14 @@ async function drawDescriptivePart(
   });
   renderPlainBody(builder, part.model_answer ?? "");
   if (part.partial_credit_note && part.partial_credit_note.trim()) {
-    builder.text(`Note: ${stripInline(part.partial_credit_note)}`, {
+    builder.textOrMath(`Note: ${stripInline(part.partial_credit_note)}`, {
       font: builder.getFont("italic"),
       size: 10,
       color: COLORS.text,
     });
   }
   if (part.alternative_approaches && part.alternative_approaches.trim()) {
-    builder.text(
+    builder.textOrMath(
       `Alternative approach: ${stripInline(part.alternative_approaches)}`,
       {
         font: builder.getFont("italic"),

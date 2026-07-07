@@ -11,6 +11,10 @@
  */
 
 import { Fragment } from "react";
+import katex from "katex";
+import "katex/dist/katex.min.css";
+// Registers the mhchem (`\ce{...}`) extension on the shared katex singleton.
+import "katex/contrib/mhchem";
 import { cn } from "@/lib/utils";
 import {
   parseInline,
@@ -18,8 +22,57 @@ import {
   type InlineToken,
   type Segment,
 } from "@/lib/text/markdownLite";
+import { extractLatexSegments } from "@/lib/text/latexSegments";
 
-function Inline({ text }: { text: string }) {
+/**
+ * Render a single LaTeX / mhchem span with KaTeX (the same in-browser engine the
+ * chat uses). Server-side rasterisation (MathJax) is for PDF/Word/PPT only; on
+ * screen we stay on KaTeX per the established split.
+ *
+ * Malformed input (which AI-generated text occasionally produces) falls back to
+ * the literal source shown in a muted code style, so a faculty reviewer can spot
+ * and fix it rather than seeing a crash or a red KaTeX error blob.
+ */
+function MathSpan({
+  latex,
+  displayMode,
+}: {
+  latex: string;
+  displayMode: boolean;
+}) {
+  let html: string | null = null;
+  try {
+    html = katex.renderToString(latex, {
+      displayMode,
+      throwOnError: true,
+      strict: false,
+      output: "htmlAndMathml",
+    });
+  } catch {
+    html = null;
+  }
+
+  if (html == null) {
+    return (
+      <code className="rounded bg-muted px-1 py-0.5 font-mono text-[0.85em] text-muted-foreground">
+        {latex}
+      </code>
+    );
+  }
+
+  if (displayMode) {
+    return (
+      <span
+        className="my-1 block overflow-x-auto text-center"
+        dangerouslySetInnerHTML={{ __html: html }}
+      />
+    );
+  }
+  return <span dangerouslySetInnerHTML={{ __html: html }} />;
+}
+
+/** The original bold/code/plain inline tokeniser — untouched behaviour. */
+function InlineTokens({ text }: { text: string }) {
   const tokens = parseInline(text);
   return (
     <>
@@ -43,6 +96,32 @@ function Inline({ text }: { text: string }) {
         }
         return <Fragment key={i}>{tok.value}</Fragment>;
       })}
+    </>
+  );
+}
+
+/**
+ * Inline run renderer. Splits out math/chemistry spans and renders them with
+ * KaTeX; everything else flows through the untouched {@link InlineTokens} path.
+ *
+ * Fast path: when a run contains no math at all, this is byte-for-byte identical
+ * to the previous `Inline` — a single `parseInline` pass — so non-math questions
+ * render exactly as before.
+ */
+function Inline({ text }: { text: string }) {
+  const parts = extractLatexSegments(text);
+  if (!parts.some((p) => p.type === "math")) {
+    return <InlineTokens text={text} />;
+  }
+  return (
+    <>
+      {parts.map((p, i) =>
+        p.type === "math" ? (
+          <MathSpan key={i} latex={p.latex} displayMode={p.displayMode} />
+        ) : (
+          <InlineTokens key={i} text={p.value} />
+        ),
+      )}
     </>
   );
 }
