@@ -95,7 +95,10 @@ const BATCH_RESPONSE_SCHEMA = {
             nullable: true,
             properties: {
               type: { type: 'string' },
-              content: { type: 'string' },
+              // Mirrors DIAGRAM_BATCH_SCHEMA's svgCode bound (ppt/batch/route.ts):
+              // a real, labelled SVG/mermaid diagram runs ~2-6k chars, so 12000 is
+              // generous headroom while still capping runaway generation.
+              content: { type: 'string', maxLength: 12000 },
               caption: { type: 'string' },
             },
           },
