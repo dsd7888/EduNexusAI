@@ -84,7 +84,7 @@ const DEFAULT_OPTIONS: RefinementOptions = {
   simplify_content:        false,
   add_summary_slide:       false,
   add_key_insights:        false,
-  allow_new_slides:        false,
+  allow_new_slides:        true,
   subject_id:              null,
   target_semester:         null,
 };
