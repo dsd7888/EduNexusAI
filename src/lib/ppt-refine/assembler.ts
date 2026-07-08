@@ -1,4 +1,5 @@
 import AdmZip from 'adm-zip';
+import { parseSlideSize, type SlideCanvas } from './slide-size';
 import type { RefinedDeck, RefinedSlide } from './types';
 
 /**
@@ -508,7 +509,70 @@ function buildNewSlideBody(bullets: string[], type: string): string {
   return out.join('');
 }
 
-export function buildNewSlideXml(slide: RefinedSlide): string {
+// ─── New-slide geometry scaling ─────────────────────────────────────────────
+// The reference coordinates below were authored for a 10" × 5.625" (16:9)
+// canvas. We scale them to whatever the uploaded deck's <p:sldSz> actually is,
+// so new slides fill the same proportional area as the original slides rather
+// than a small box in the corner of a larger canvas.
+
+const REFERENCE_WIDTH_EMU = 9144000; // 10"
+const REFERENCE_HEIGHT_EMU = 5143500; // 5.625"
+const MIN_CANVAS_EMU = 914400; // 1" — anything smaller is malformed input
+
+interface Geometry {
+  x: number;
+  y: number;
+  cx: number;
+  cy: number;
+}
+
+// Original hardcoded new-slide boxes (EMU) at the 10" × 5.625" reference size.
+const TITLE_REF: Geometry = { x: 311700, y: 445025, cx: 8520575, cy: 572700 };
+const BODY_REF: Geometry = { x: 311700, y: 1143000, cx: 8520575, cy: 3810600 };
+
+/**
+ * Scale one EMU value from the reference dimension to the actual canvas
+ * dimension. Pure and independent per axis: x/cx use the width ratio, y/cy the
+ * height ratio, so non-16:9 canvases (e.g. legacy 4:3) don't get distorted.
+ */
+function scaleGeometry(emu: number, referenceDim: number, actualDim: number): number {
+  return Math.round((emu * actualDim) / referenceDim);
+}
+
+/** Scale a whole box, x-axis by width ratio and y-axis by height ratio. */
+function scaleBox(box: Geometry, widthEmu: number, heightEmu: number): Geometry {
+  return {
+    x: scaleGeometry(box.x, REFERENCE_WIDTH_EMU, widthEmu),
+    y: scaleGeometry(box.y, REFERENCE_HEIGHT_EMU, heightEmu),
+    cx: scaleGeometry(box.cx, REFERENCE_WIDTH_EMU, widthEmu),
+    cy: scaleGeometry(box.cy, REFERENCE_HEIGHT_EMU, heightEmu),
+  };
+}
+
+/**
+ * Resolve the canvas to scale against, guarding malformed input. A non-finite
+ * or absurdly small dimension would produce a divide-by-zero-adjacent or
+ * corrupt box, so we fail safe to the reference size (scale factor 1.0 — i.e.
+ * the original pre-scaling hardcoded coordinates) and log a warning.
+ */
+function safeCanvas(canvas: SlideCanvas): SlideCanvas {
+  const { widthEmu, heightEmu } = canvas;
+  if (
+    !Number.isFinite(widthEmu) ||
+    !Number.isFinite(heightEmu) ||
+    widthEmu < MIN_CANVAS_EMU ||
+    heightEmu < MIN_CANVAS_EMU
+  ) {
+    console.warn(
+      `[ppt-refine/assembler] Invalid canvas ${widthEmu}×${heightEmu} EMU — ` +
+        `falling back to 10"×5.625" reference geometry`
+    );
+    return { widthEmu: REFERENCE_WIDTH_EMU, heightEmu: REFERENCE_HEIGHT_EMU };
+  }
+  return canvas;
+}
+
+export function buildNewSlideXml(slide: RefinedSlide, canvas: SlideCanvas): string {
   let title = cleanText(slide.refined_title || slide.title || 'Slide');
   if (slide.is_new) {
     // One clean label, no emoji (emojis in titles break some PowerPoint builds).
@@ -522,8 +586,14 @@ export function buildNewSlideXml(slide: RefinedSlide): string {
 
   const body = buildNewSlideBody(bullets, slide.type);
 
+  // Scale the reference boxes to the ACTUAL uploaded canvas size (guarded).
+  const { widthEmu, heightEmu } = safeCanvas(canvas);
+  const t = scaleBox(TITLE_REF, widthEmu, heightEmu);
+  const b = scaleBox(BODY_REF, widthEmu, heightEmu);
+
   // Explicit positioned shapes (NOT <p:ph> placeholders) so font sizes are
-  // deterministic instead of inherited from the master. Slide is 10" × 5.625".
+  // deterministic instead of inherited from the master. Positions/sizes are
+  // scaled to the source deck's canvas; font sizes are intentionally NOT scaled.
   return (
     `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
     `<p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" ` +
@@ -536,7 +606,7 @@ export function buildNewSlideXml(slide: RefinedSlide): string {
     // Title — explicit position, 24pt bold, autofit at 90%
     `<p:sp><p:nvSpPr><p:cNvPr id="2" name="Title"/>` +
     `<p:cNvSpPr><a:spLocks noGrp="1"/></p:cNvSpPr><p:nvPr/></p:nvSpPr>` +
-    `<p:spPr><a:xfrm><a:off x="311700" y="445025"/><a:ext cx="8520575" cy="572700"/></a:xfrm>` +
+    `<p:spPr><a:xfrm><a:off x="${t.x}" y="${t.y}"/><a:ext cx="${t.cx}" cy="${t.cy}"/></a:xfrm>` +
     `<a:prstGeom prst="rect"><a:avLst/></a:prstGeom><a:noFill/></p:spPr>` +
     `<p:txBody><a:bodyPr><a:normAutofit fontScale="90000"/></a:bodyPr><a:lstStyle/>` +
     `<a:p><a:r><a:rPr lang="en-IN" sz="2400" b="1" dirty="0"/><a:t>${escT(title)}</a:t></a:r></a:p>` +
@@ -544,7 +614,7 @@ export function buildNewSlideXml(slide: RefinedSlide): string {
     // Body — explicit position, 16pt regular / 14pt sub-bullets, autofit
     `<p:sp><p:nvSpPr><p:cNvPr id="3" name="Body"/>` +
     `<p:cNvSpPr><a:spLocks noGrp="1"/></p:cNvSpPr><p:nvPr/></p:nvSpPr>` +
-    `<p:spPr><a:xfrm><a:off x="311700" y="1143000"/><a:ext cx="8520575" cy="3810600"/></a:xfrm>` +
+    `<p:spPr><a:xfrm><a:off x="${b.x}" y="${b.y}"/><a:ext cx="${b.cx}" cy="${b.cy}"/></a:xfrm>` +
     `<a:prstGeom prst="rect"><a:avLst/></a:prstGeom><a:noFill/></p:spPr>` +
     `<p:txBody><a:bodyPr><a:normAutofit/></a:bodyPr><a:lstStyle/>${body}</p:txBody></p:sp>` +
     `</p:spTree></p:cSld>` +
@@ -686,6 +756,10 @@ export async function assemblePptx(
     const ctName = '[Content_Types].xml';
     let ctXml = zip.readAsText(ctName);
 
+    // The ACTUAL canvas of the uploaded deck — the single source of truth for
+    // scaling new-slide geometry (same parser + fallback as the extractor).
+    const canvas = parseSlideSize(presXml);
+
     const ridToTarget = parseRels(relsXml);
     const fileNumToRid = new Map<number, string>();
     for (const [rid, target] of ridToTarget) {
@@ -725,7 +799,7 @@ export async function assemblePptx(
 
       zip.addFile(
         `ppt/slides/slide${fileNum}.xml`,
-        Buffer.from(buildNewSlideXml(s), 'utf-8')
+        Buffer.from(buildNewSlideXml(s, canvas), 'utf-8')
       );
       zip.addFile(
         `ppt/slides/_rels/slide${fileNum}.xml.rels`,

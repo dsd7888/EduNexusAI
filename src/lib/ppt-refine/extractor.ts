@@ -1,6 +1,7 @@
 import AdmZip from 'adm-zip';
 import { XMLParser } from 'fast-xml-parser';
 import { routeAI } from '@/lib/ai/router';
+import { parseSlideSize } from './slide-size';
 import type { ExtractedDeck, ExtractedSlide, SlideType } from './types';
 
 // ─── XML parser factory ───────────────────────────────────────────────────────
@@ -229,18 +230,11 @@ export async function extractDeckFromBuffer(
   const notesMap = buildNotesMap(zip);
 
   // Original slide dimensions (EMU) from ppt/presentation.xml <p:sldSz>.
-  // Default to 16:9 widescreen (13.333" × 7.5").
-  let widthEmu = 12192000;
-  let heightEmu = 6858000;
+  // Parsed via the shared helper so the assembler's fallback can never drift.
   const presEntry = zip.getEntry('ppt/presentation.xml');
-  if (presEntry) {
-    const presXml = presEntry.getData().toString('utf-8');
-    const szMatch = presXml.match(/<p:sldSz[^>]*\bcx="(\d+)"[^>]*\bcy="(\d+)"/);
-    if (szMatch) {
-      widthEmu = parseInt(szMatch[1], 10);
-      heightEmu = parseInt(szMatch[2], 10);
-    }
-  }
+  const { widthEmu, heightEmu } = presEntry
+    ? parseSlideSize(presEntry.getData().toString('utf-8'))
+    : parseSlideSize('');
 
   const slides: ExtractedSlide[] = [];
 
