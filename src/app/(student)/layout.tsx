@@ -21,6 +21,7 @@ import { NavLink } from "@/components/layout/NavLink";
 import { LogoutButton } from "@/components/layout/LogoutButton";
 import { UserProfile } from "@/components/layout/UserProfile";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
+import { SessionTracker } from "@/components/layout/SessionTracker";
 
 interface LayoutProps {
   children: ReactNode;
@@ -99,6 +100,7 @@ export default function StudentLayout({ children }: LayoutProps) {
 
   return (
     <div className="flex min-h-screen bg-background">
+      <SessionTracker />
       {/* Mobile top bar */}
       <div className="fixed inset-x-0 top-0 z-30 flex items-center justify-between border-b bg-background/80 px-4 py-3 backdrop-blur lg:hidden">
         <button

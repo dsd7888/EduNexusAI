@@ -27,9 +27,21 @@ export default function LoginPage() {
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
 
   useEffect(() => {
     emailRef.current?.focus();
+  }, []);
+
+  // Surface why the user landed here (e.g. idle auto-logout). Read from the URL
+  // directly rather than useSearchParams to avoid a Suspense-boundary build bailout.
+  useEffect(() => {
+    const reason = new URLSearchParams(window.location.search).get("reason");
+    if (reason === "idle_timeout") {
+      setNotice(
+        "You were logged out due to 2 hours of inactivity. Please sign in again."
+      );
+    }
   }, []);
 
   const handleSubmit = useCallback(async () => {
@@ -85,6 +97,12 @@ export default function LoginPage() {
         </CardHeader>
 
         <CardContent className="space-y-4">
+          {notice && (
+            <Alert>
+              <AlertDescription>{notice}</AlertDescription>
+            </Alert>
+          )}
+
           <div role="group" aria-label="Sign in form" className="space-y-4">
             <div className="space-y-2">
               <label htmlFor="email" className="sr-only">

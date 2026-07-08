@@ -14,6 +14,7 @@ import { NavLink } from "@/components/layout/NavLink";
 import { LogoutButton } from "@/components/layout/LogoutButton";
 import { UserProfile } from "@/components/layout/UserProfile";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
+import { SessionTracker } from "@/components/layout/SessionTracker";
 
 interface LayoutProps {
   children: ReactNode;
@@ -22,6 +23,7 @@ interface LayoutProps {
 export default function SuperadminLayout({ children }: LayoutProps) {
   return (
     <div className="flex h-screen overflow-hidden bg-background">
+      <SessionTracker />
       <aside className="fixed inset-y-0 left-0 flex w-64 flex-col border-r bg-card">
         <div className="flex items-center gap-2 border-b px-4 py-4">
           <GraduationCap className="size-6 text-primary" />
