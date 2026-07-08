@@ -74,17 +74,25 @@ export async function POST(request: NextRequest) {
     if (typeof subjectId === 'string' && subjectId.trim()) {
       const adminClient = createAdminClient();
 
-      const { data: subject } = await adminClient
+      const { data: subject, error: subjectError } = await adminClient
         .from('subjects')
         .select('name')
         .eq('id', subjectId.trim())
         .maybeSingle();
 
-      const { data: modules } = await adminClient
+      if (subjectError) {
+        console.error('[ppt-refine/extract] subjects query failed:', subjectError);
+      }
+
+      const { data: modules, error: modulesError } = await adminClient
         .from('modules')
         .select('name')
         .eq('subject_id', subjectId.trim())
-        .order('order_index', { ascending: true });
+        .order('module_number', { ascending: true });
+
+      if (modulesError) {
+        console.error('[ppt-refine/extract] modules query failed:', modulesError);
+      }
 
       if (subject) {
         subjectContext = {

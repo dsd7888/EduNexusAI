@@ -59,6 +59,10 @@ export async function POST(request: NextRequest) {
       target_semester:          typeof optionsRaw.target_semester === 'number' ? optionsRaw.target_semester : null,
     };
 
+    if (!options.subject_id) {
+      return apiError('subject_id is required — link this refinement to a subject before continuing', 400);
+    }
+
     // ─── Load extracted deck ─────────────────────────────────────────────────
     let deckWithCtx: ExtractedDeck & { subject_context?: SubjectContext | null };
 
@@ -137,12 +141,22 @@ export async function POST(request: NextRequest) {
             .from('modules')
             .select('name, description')
             .eq('subject_id', options.subject_id)
-            .order('order_index', { ascending: true }),
+            .order('module_number', { ascending: true }),
           adminClient
             .from('course_outcomes')
             .select('co_code, description')
             .eq('subject_id', options.subject_id),
         ]);
+
+        if (subjectRes.error) {
+          console.error('[ppt-refine/refine] subjects query failed:', subjectRes.error);
+        }
+        if (modulesRes.error) {
+          console.error('[ppt-refine/refine] modules query failed:', modulesRes.error);
+        }
+        if (coRes.error) {
+          console.error('[ppt-refine/refine] course_outcomes query failed:', coRes.error);
+        }
 
         if (subjectRes.data) {
           const sub = subjectRes.data as { name: string };
@@ -216,7 +230,9 @@ export async function POST(request: NextRequest) {
         subject_id: options.subject_id ?? null,
         module_id: null,
         type: 'ppt',
-        title: deck.file_name.replace(/\.pptx$/i, ''),
+        title: deck.detected_topic
+          ? `Refined: ${deck.detected_topic}`
+          : deck.file_name.replace(/\.pptx$/i, ''),
         file_path: storedFilePath,
         metadata: {
           extraction_id: extractionId,
@@ -226,6 +242,13 @@ export async function POST(request: NextRequest) {
           new_slides_added: refinedDeck.slides.filter((s) => s.is_new).length,
           options_used: options,
           changes_summary: refinedDeck.changes_summary,
+          // History list (src/app/api/generate/ppt/history/route.ts) reads
+          // metadata.subject / .topic / .slideCount — match the keys the
+          // regular PPT-generation flow uses so refined decks display the
+          // same way in "My Generations".
+          subject: subjectContext?.subject_name ?? null,
+          topic: deck.detected_topic,
+          slideCount: refinedDeck.refined_slide_count,
           detected_topic: deck.detected_topic,
           detected_level: deck.detected_level,
           expires_at: expiresAt,
@@ -254,6 +277,9 @@ export async function POST(request: NextRequest) {
         refined_slides: refinedDeck.refined_slide_count,
         new_slides_added: refinedDeck.slides.filter((s) => s.is_new).length,
       },
+      ...(insertError ? {
+        historyWarning: `Presentation refined but not saved to history: ${insertError.message}`,
+      } : {}),
     });
   } catch (err) {
     console.error('[ppt-refine/refine] Unexpected error:', err);
