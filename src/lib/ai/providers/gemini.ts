@@ -1,4 +1,5 @@
 import { GoogleGenerativeAI, GoogleGenerativeAIFetchError } from "@google/generative-ai";
+import { calculateTextCostInr } from "../pricing";
 import type {
   AIProvider,
   ChatMessage,
@@ -13,36 +14,12 @@ const MODEL_MAP = {
 
 const EMBED_MODEL = "gemini-embedding-001";
 
-const INPUT_COST_PER_1M_USD = {
-  flash: 0.15,
-  pro: 1.25,
-} as const;
-
-const OUTPUT_COST_PER_1M_USD = {
-  flash: 0.6,
-  pro: 10.0,
-} as const;
-
-const USD_TO_INR = 83.33;
-
 function estimateTokens(text: string): number {
   return Math.ceil(text.length / 4);
 }
 
 function toGeminiRole(role: "user" | "assistant"): "user" | "model" {
   return role === "assistant" ? "model" : "user";
-}
-
-function calculateCostInr(
-  inputTokens: number,
-  outputTokens: number,
-  model: "flash" | "pro"
-): number {
-  const inputCostUsd =
-    (inputTokens / 1_000_000) * INPUT_COST_PER_1M_USD[model];
-  const outputCostUsd =
-    (outputTokens / 1_000_000) * OUTPUT_COST_PER_1M_USD[model];
-  return (inputCostUsd + outputCostUsd) * USD_TO_INR;
 }
 
 function createGeminiProvider(): AIProvider {
@@ -172,17 +149,37 @@ function createGeminiProvider(): AIProvider {
         const response = result.response;
         const content = response.text();
 
-        const usageMetadata = (response as { usageMetadata?: { promptTokenCount?: number; candidatesTokenCount?: number } }).usageMetadata;
-        const inputTokens = usageMetadata?.promptTokenCount ?? estimateTokens(
-          messages.map((m) => m.content).join("")
-        );
-        const outputTokens = usageMetadata?.candidatesTokenCount ?? estimateTokens(content);
+        const usageMetadata = (
+          response as {
+            usageMetadata?: {
+              promptTokenCount?: number;
+              candidatesTokenCount?: number;
+              thoughtsTokenCount?: number;
+            };
+          }
+        ).usageMetadata;
+        const inputTokens =
+          usageMetadata?.promptTokenCount ??
+          estimateTokens(messages.map((m) => m.content).join(""));
+        const outputTokens =
+          usageMetadata?.candidatesTokenCount ?? estimateTokens(content);
+        const thinkingTokens = usageMetadata?.thoughtsTokenCount ?? 0;
 
-        const costInr = calculateCostInr(inputTokens, outputTokens, modelKey);
+        const { costUsd, costInr } = calculateTextCostInr(
+          inputTokens,
+          outputTokens,
+          thinkingTokens,
+          modelKey
+        );
 
         return {
           content,
-          tokensUsed: { input: inputTokens, output: outputTokens },
+          tokensUsed: {
+            input: inputTokens,
+            output: outputTokens,
+            thinking: thinkingTokens,
+          },
+          costUsd,
           costInr,
           modelUsed: modelName,
         };

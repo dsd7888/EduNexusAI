@@ -6,6 +6,7 @@ import {
   createServerClient,
 } from "@/lib/db/supabase-server";
 import { requireAuth, requireRole, apiError, apiSuccess } from "@/lib/api/helpers";
+import type { AILogContext } from "@/lib/ai/providers/types";
 import type { NextRequest } from "next/server";
 
 const VALID_DEPTHS = ["basic", "intermediate", "advanced"] as const;
@@ -77,7 +78,7 @@ export async function POST(request: NextRequest) {
 
     const authResult = await requireRole(["faculty", "superadmin", "dean", "hod"]);
     if (authResult instanceof Response) return authResult;
-    const { user, adminClient } = authResult;
+    const { user, profile, adminClient } = authResult;
 
     const body = await request.json().catch(() => ({} as Record<string, unknown>));
     const subjectId = String(body?.subjectId ?? "").trim();
@@ -193,6 +194,7 @@ export async function POST(request: NextRequest) {
     }
 
     console.log("[ppt/outline] Generating outline...");
+    const contentId = crypto.randomUUID();
     const outlinePrompt = buildOutlinePrompt({
       subjectName,
       subjectCode,
@@ -206,6 +208,16 @@ export async function POST(request: NextRequest) {
     const outlineAi = await routeAI("ppt_gen", {
       messages: [{ role: "user", content: outlinePrompt }],
       responseSchema: OUTLINE_SCHEMA,
+      logContext: {
+        userId: user.id,
+        userEmail: user.email ?? null,
+        userRole: profile.role,
+        subjectId,
+        subjectCode: subjectCode || null,
+        jobId: contentId,
+        relatedContentId: contentId,
+        feature: "ppt_generation",
+      } satisfies AILogContext,
     });
     const raw = String(outlineAi.content ?? "");
     console.log(`[ppt/outline] Raw response length: ${raw.length}`);
@@ -263,6 +275,7 @@ export async function POST(request: NextRequest) {
     const { data: checkpointRow, error: checkpointError } = await adminClient
       .from("generated_content")
       .insert({
+        id: contentId,
         subject_id: subjectId,
         module_id: moduleId ?? null,
         type: "ppt",
@@ -298,7 +311,7 @@ export async function POST(request: NextRequest) {
     return Response.json({
       outline,
       costInr: outlineCostInr,
-      contentId: checkpointRow?.id ?? null,
+      contentId: checkpointRow?.id ?? contentId,
     });
   } catch (err) {
     console.error("[ppt/outline] Error:", err);

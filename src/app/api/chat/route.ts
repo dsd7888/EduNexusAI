@@ -317,9 +317,20 @@ export async function POST(request: NextRequest) {
       ];
 
       try {
+        const jobId = crypto.randomUUID();
         const ai = await routeAI("chat", {
           systemPrompt,
           messages: messagesForAI,
+          logContext: {
+            userId: user.id,
+            userEmail: user.email ?? null,
+            userRole: profile.role,
+            subjectId,
+            subjectCode: subject.code ?? null,
+            jobId,
+            relatedContentId: null,
+            feature: "chat",
+          },
         });
         aiResponse = String(ai.content ?? "");
         if (!aiResponse.trim()) throw new Error("Empty response");

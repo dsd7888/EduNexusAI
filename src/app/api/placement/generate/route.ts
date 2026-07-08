@@ -10,6 +10,7 @@ import {
   saveToBankAndRecord,
 } from "@/lib/placement/bankManager";
 import { requireAuth, requireRole, apiError, apiSuccess } from "@/lib/api/helpers";
+import type { AILogContext } from "@/lib/ai/providers/types";
 import type { NextRequest } from "next/server";
 
 function parsePlacementQuestions(raw: string): any[] | null {
@@ -103,13 +104,18 @@ function getBranchFallbackSyllabus(branch: string): string {
 
 async function generateWithRetry(
   prompt: string,
-  maxAttempts = 3
+  maxAttempts = 3,
+  logContext: AILogContext
 ): Promise<any[] | null> {
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
       console.log(`[placement/generate] Attempt ${attempt}/${maxAttempts}`);
       const result = await routeAI("placement_gen", {
         messages: [{ role: "user", content: prompt }],
+        logContext: {
+          ...logContext,
+          attemptNumber: attempt,
+        },
       });
       const raw = String(result.content ?? "");
 
@@ -152,7 +158,8 @@ export async function POST(request: NextRequest) {
     // 1. Auth check — student only
     const authResult = await requireRole(["student"]);
     if (authResult instanceof Response) return authResult;
-    const { user, adminClient } = authResult;
+    const { user, profile: authProfile, adminClient } = authResult;
+    const jobId = crypto.randomUUID();
 
     // 2. Parse body
     const { companyId } = await request.json();
@@ -327,6 +334,16 @@ export async function POST(request: NextRequest) {
 
       const flashResult = await routeAI("quiz_gen", {
         messages: [{ role: "user", content: flashPrompt }],
+        logContext: {
+          userId: user.id,
+          userEmail: user.email ?? null,
+          userRole: authProfile.role,
+          subjectId: null,
+          subjectCode: null,
+          jobId,
+          relatedContentId: null,
+          feature: "placement",
+        },
       });
       const flashRaw = String(flashResult.content ?? "");
       const flashParsed = parsePlacementQuestions(flashRaw);
@@ -351,7 +368,17 @@ export async function POST(request: NextRequest) {
     if (!questions || questions.length < 16) {
       questions = await generateWithRetry(
         buildPlacementTestPrompt({ ...promptOptions, totalQuestions: 20 }),
-        2
+        2,
+        {
+          userId: user.id,
+          userEmail: user.email ?? null,
+          userRole: authProfile.role,
+          subjectId: null,
+          subjectCode: null,
+          jobId,
+          relatedContentId: null,
+          feature: "placement",
+        }
       );
     }
 

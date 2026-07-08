@@ -23,11 +23,13 @@ import {
   type AnswerKeyGenSectionResult,
   type AnswerKeyModuleInfo,
 } from "@/lib/qpaper/answerKeyGen";
+import { backfillRelatedContentId } from "@/lib/ai/costLogger";
 import type {
   AssembledPaper,
   GeneratedSection,
 } from "@/lib/qpaper/builder";
 import { loadPaperImages } from "@/lib/qpaper/qpaperImages";
+import type { AILogContext } from "@/lib/ai/providers/types";
 import type { NextRequest } from "next/server";
 
 interface ModuleRow {
@@ -74,6 +76,7 @@ export async function POST(request: NextRequest) {
 
     const subjectId = String(body.subject_id ?? "").trim();
     if (!subjectId) return apiError("subject_id is required", 400);
+    const jobId = crypto.randomUUID();
 
     const paper = body.paper as AssembledPaper | undefined;
     if (!paper || !Array.isArray(paper.sections) || paper.sections.length === 0) {
@@ -87,6 +90,16 @@ export async function POST(request: NextRequest) {
       typeof body.generated_content_id === "string"
         ? body.generated_content_id.trim()
         : "";
+    const baseLogContext: AILogContext = {
+      userId: user.id,
+      userEmail: user.email ?? null,
+      userRole: profile.role,
+      subjectId,
+      subjectCode: paper.courseCode || null,
+      jobId,
+      relatedContentId: generatedContentId || null,
+      feature: "qpaper",
+    };
 
     // ── Ownership check ────────────────────────────────────────────────────
     // Faculty can only generate answer keys for subjects they are assigned to.
@@ -150,6 +163,10 @@ export async function POST(request: NextRequest) {
           referenceBooks,
           sectionQuestions: section.questions,
           modules: modulesForSection(modules, section),
+          logContext: {
+            ...baseLogContext,
+            metadata: { section: section.section_name },
+          },
         })
       )
     );
@@ -211,11 +228,13 @@ export async function POST(request: NextRequest) {
           updateError.message
         );
         // Non-fatal — the PDF is uploaded and downloadable.
+      } else {
+        await backfillRelatedContentId(jobId, generatedContentId);
       }
     } else {
       // Otherwise insert a fresh row tagged "answer_key" so the upload is
       // still attributable in analytics.
-      const { error: insertError } = await adminClient
+      const { data: insertedContent, error: insertError } = await adminClient
         .from("generated_content")
         .insert({
           subject_id: subjectId,
@@ -231,12 +250,16 @@ export async function POST(request: NextRequest) {
           status: "completed",
           answer_key_path: filePath,
           answer_key_generated_at: generatedAt,
-        });
+        })
+        .select("id")
+        .single();
       if (insertError) {
         console.error(
           "[answer-key] generated_content insert failed:",
           insertError.message
         );
+      } else if (insertedContent?.id) {
+        await backfillRelatedContentId(jobId, insertedContent.id);
       }
     }
 

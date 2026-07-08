@@ -200,7 +200,11 @@ export async function POST(request: NextRequest) {
     // 7. Module ↔ CO mapping — now that modules and course_outcomes are saved,
     // infer which COs each module teaches toward. This NEVER throws (logs and
     // returns on any failure), so it can't compromise the save we just did.
-    await classifyModulesForSubject(subjectId);
+    await classifyModulesForSubject(subjectId, {
+      userId: user.id,
+      userEmail: user.email ?? null,
+      userRole: "superadmin",
+    });
 
     return Response.json({ saved: true, warnings });
   } catch (err) {

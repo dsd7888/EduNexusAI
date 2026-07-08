@@ -20,6 +20,7 @@ import type {
   MCQOption,
   QuestionType,
 } from "./types";
+import type { AILogContext } from "@/lib/ai/providers/types";
 
 const CONCURRENCY = 5;
 const PYQ_PER_SLOT = 5;
@@ -226,7 +227,9 @@ function normaliseBtl(v: unknown): number | null {
 async function generateSlot(
   slot: GenerationSlot,
   ctx: GenSubjectContext,
-  pyqs: PyqInspiration[]
+  pyqs: PyqInspiration[],
+  logContext: AILogContext,
+  slotIndex: number
 ): Promise<GeneratedBankQuestion[]> {
   const prompt = buildUserPrompt(slot, ctx, pyqs);
   try {
@@ -240,6 +243,16 @@ async function generateSlot(
         "generation",
         { latexVerbose: classifySubjectFamily(ctx.subject_name) !== null }
       ),
+      logContext: {
+        ...logContext,
+        metadata: {
+          ...(logContext.metadata ?? {}),
+          slotIndex,
+          questionType: slot.question_type,
+          count: slot.count,
+          style: slot.style,
+        },
+      },
     });
     const arr = parseJsonArray(String(result.content ?? ""));
     if (!arr) {
@@ -302,14 +315,21 @@ async function generateSlot(
 export async function generateForSlots(
   slots: GenerationSlot[],
   ctx: GenSubjectContext,
-  pyqs: PyqInspiration[]
+  pyqs: PyqInspiration[],
+  logContext: AILogContext
 ): Promise<GeneratedBankQuestion[]> {
   const out: GeneratedBankQuestion[] = [];
   for (let i = 0; i < slots.length; i += CONCURRENCY) {
     const window = slots.slice(i, i + CONCURRENCY);
     const results = await Promise.all(
-      window.map((slot) =>
-        generateSlot(slot, ctx, slot.style === "pyq_inspired" ? pyqs : [])
+      window.map((slot, offset) =>
+        generateSlot(
+          slot,
+          ctx,
+          slot.style === "pyq_inspired" ? pyqs : [],
+          logContext,
+          i + offset
+        )
       )
     );
     for (const r of results) out.push(...r);

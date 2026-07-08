@@ -12,7 +12,7 @@ export async function POST(request: NextRequest) {
   try {
     const authResult = await requireRole(["student"]);
     if (authResult instanceof Response) return authResult;
-    const { user, adminClient } = authResult;
+    const { user, profile, adminClient } = authResult;
 
     const rateCheck = await checkRateLimit({
       userId: user.id,
@@ -34,6 +34,7 @@ export async function POST(request: NextRequest) {
     const body = await request.json().catch(() => ({} as any));
     const question = String(body?.question ?? "").trim();
     const subjectName = String(body?.subjectName ?? "").trim();
+    const subjectId = String(body?.subjectId ?? "").trim();
     const unit =
       body?.unit != null ? String(body.unit).trim() || undefined : undefined;
 
@@ -47,11 +48,55 @@ export async function POST(request: NextRequest) {
       unit,
     });
 
+    const jobId = crypto.randomUUID();
     const ai = await routeAI("chat", {
       messages: [{ role: "user", content: prompt }],
+      logContext: {
+        userId: user.id,
+        userEmail: user.email ?? null,
+        userRole: profile.role,
+        subjectId: subjectId || null,
+        subjectCode: null,
+        jobId,
+        relatedContentId: null,
+        feature: "chat",
+      },
     });
 
     const hint = String(ai.content ?? "");
+
+    try {
+      const today = new Date().toISOString().slice(0, 10);
+      let usageQuery = adminClient
+        .from("usage_analytics")
+        .select("id, event_count")
+        .eq("date", today)
+        .eq("user_id", user.id)
+        .eq("event_type", "hint");
+      usageQuery = subjectId
+        ? usageQuery.eq("subject_id", subjectId)
+        : usageQuery.is("subject_id", null);
+      const { data: existingUsage } = await usageQuery.maybeSingle();
+
+      if (existingUsage) {
+        await adminClient
+          .from("usage_analytics")
+          .update({
+            event_count: (existingUsage.event_count ?? 0) + 1,
+          })
+          .eq("id", existingUsage.id);
+      } else {
+        await adminClient.from("usage_analytics").insert({
+          date: today,
+          user_id: user.id,
+          subject_id: subjectId || null,
+          event_type: "hint",
+          event_count: 1,
+        });
+      }
+    } catch (err) {
+      console.error("[quiz/hint] usage_analytics error:", err);
+    }
 
     return Response.json({ hint });
   } catch (err) {

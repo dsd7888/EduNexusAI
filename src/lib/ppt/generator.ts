@@ -14,6 +14,8 @@ import {
   OUTLINE_PROMPT_INDIAN_CONTEXT,
 } from "@/lib/ai/prompts";
 import { buildImagenPrompt, generateImagenImage } from "@/lib/ai/imagen";
+import { calculateImageCostInr } from "@/lib/ai/pricing";
+import type { AILogContext } from "@/lib/ai/providers/types";
 import { sanitizeMermaidCode } from "./mermaidSanitize";
 import {
   bulletsHaveMath,
@@ -92,6 +94,7 @@ export interface PPTSlideJSON {
   subject: string;
   topic: string;
   slides: SlideContent[];
+  aiLogContext?: AILogContext;
   addLogo?: boolean;
   logoUrl?: string;
 }
@@ -1567,6 +1570,7 @@ async function generateImagenForSlide(
     slideTitle: string;
     imagenPrompt?: string | undefined | null;
     complexity?: "standard" | "intricate" | undefined;
+    logContext?: AILogContext | undefined;
   }
 ): Promise<string | null> {
   const scene =
@@ -1584,7 +1588,10 @@ async function generateImagenForSlide(
       leftVisual === "illustration" ? "illustration" : "dual",
   });
 
-  return generateImagenImage(fullPrompt, { complexity: ctx.complexity });
+  return generateImagenImage(fullPrompt, {
+    complexity: ctx.complexity,
+    logContext: ctx.logContext,
+  });
 }
 
 export async function generatePPTXBuffer(
@@ -1988,10 +1995,26 @@ export async function generatePPTXBuffer(
             });
             const generated = await generateImagenImage(fullPrompt, {
               complexity: slideData.diagramComplexity,
+              logContext: data.aiLogContext
+                ? {
+                    ...data.aiLogContext,
+                    metadata: {
+                      ...(data.aiLogContext.metadata ?? {}),
+                      slideTitle: slideData.title,
+                      renderHint: slideData.diagramRenderType,
+                      diagramComplexity:
+                        slideData.diagramComplexity ?? "standard",
+                      source: "ppt_buffer_fallback",
+                    },
+                  }
+                : undefined,
             });
             if (generated) {
               diagramImageBase64 = generated;
-              totalCostInr += 0.04 * 83.33;
+              totalCostInr += calculateImageCostInr(
+                slideData.diagramComplexity ?? "standard",
+                1
+              ).costInr;
             }
           } catch (err) {
             console.warn("[ppt/diagram] Imagen fallback failed:", err);
@@ -2188,11 +2211,27 @@ export async function generatePPTXBuffer(
               slideTitle: slideData.title,
               imagenPrompt: slideData.imagenPrompt,
               complexity: slideData.diagramComplexity,
+              logContext: data.aiLogContext
+                ? {
+                    ...data.aiLogContext,
+                    metadata: {
+                      ...(data.aiLogContext.metadata ?? {}),
+                      slideTitle: slideData.title,
+                      renderHint: "dual",
+                      diagramComplexity:
+                        slideData.diagramComplexity ?? "standard",
+                      source: "ppt_buffer_fallback",
+                    },
+                  }
+                : undefined,
             }
           );
           if (generated) {
             leftB64 = generated;
-            totalCostInr += 0.04 * 83.33;
+            totalCostInr += calculateImageCostInr(
+              slideData.diagramComplexity ?? "standard",
+              1
+            ).costInr;
           }
         }
 

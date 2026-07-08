@@ -13,6 +13,7 @@
 
 import { routeAI } from "@/lib/ai/router";
 import { createAdminClient } from "@/lib/db/supabase-server";
+import type { AILogContext } from "@/lib/ai/providers/types";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -33,6 +34,12 @@ interface ClassifiedModule {
   reasoning?: string;
   co_codes?: string[];
   confidence?: string;
+}
+
+export interface ModuleCoClassifierLogParams {
+  userId: string | null;
+  userEmail: string | null;
+  userRole: string | null;
 }
 
 // ─── Prompt ──────────────────────────────────────────────────────────────────
@@ -151,16 +158,19 @@ function lowerConfidence(
  * ai_inferred.
  */
 export async function classifyModulesForSubject(
-  subjectId: string
+  subjectId: string,
+  logParams?: ModuleCoClassifierLogParams
 ): Promise<void> {
   const admin = createAdminClient();
 
   const { data: subjectRow } = await admin
     .from("subjects")
-    .select("name")
+    .select("name, code")
     .eq("id", subjectId)
     .maybeSingle();
   const subjectName = (subjectRow as { name?: string } | null)?.name ?? "this subject";
+  const subjectCode =
+    (subjectRow as { code?: string | null } | null)?.code ?? null;
 
   const { data: moduleRows, error: modErr } = await admin
     .from("modules")
@@ -192,6 +202,17 @@ export async function classifyModulesForSubject(
 
   let parsed: ClassifiedModule[];
   try {
+    const jobId = crypto.randomUUID();
+    const baseLogContext: AILogContext = {
+      userId: logParams?.userId ?? null,
+      userEmail: logParams?.userEmail ?? null,
+      userRole: logParams?.userRole ?? null,
+      subjectId,
+      subjectCode,
+      jobId,
+      relatedContentId: null,
+      feature: "admin_classification",
+    };
     const aiParams = {
       model: "flash" as const,
       messages: [
@@ -208,8 +229,14 @@ export async function classifyModulesForSubject(
     };
 
     const [resultA, resultB] = await Promise.all([
-      routeAI("module_co_classify", aiParams),
-      routeAI("module_co_classify", aiParams),
+      routeAI("module_co_classify", {
+        ...aiParams,
+        logContext: { ...baseLogContext, metadata: { pass: 1 } },
+      }),
+      routeAI("module_co_classify", {
+        ...aiParams,
+        logContext: { ...baseLogContext, metadata: { pass: 2 } },
+      }),
     ]);
 
     const parsePass = (result: typeof resultA, label: string): ClassifiedModule[] => {

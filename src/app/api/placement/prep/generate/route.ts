@@ -2,6 +2,7 @@ import { NextResponse, type NextRequest } from "next/server";
 import { createAdminClient } from "@/lib/db/supabase-server";
 import { requireRole, apiError, apiSuccess } from "@/lib/api/helpers";
 import { routeAI } from "@/lib/ai/router";
+import type { AILogContext } from "@/lib/ai/providers/types";
 import type {
   PlacementCompanyProfile,
   PlacementBankQuestion,
@@ -250,7 +251,18 @@ export async function POST(request: NextRequest) {
     const authResult = await requireRole(["student"]);
     if (authResult instanceof Response) return authResult;
 
-    const { user } = authResult;
+    const { user, profile } = authResult;
+    const jobId = crypto.randomUUID();
+    const logContext: AILogContext = {
+      userId: user.id,
+      userEmail: user.email ?? null,
+      userRole: profile.role,
+      subjectId: null,
+      subjectCode: null,
+      jobId,
+      relatedContentId: null,
+      feature: "placement",
+    };
     const body = await request.json() as {
       track?: unknown;
       topic?: unknown;
@@ -399,7 +411,8 @@ export async function POST(request: NextRequest) {
           cleanTopic,
           difficultyToServe,
           company,
-          companySlugStr
+          companySlugStr,
+          logContext
         );
       }
 
@@ -425,6 +438,10 @@ export async function POST(request: NextRequest) {
             thinkingBudget: 0,
             maxTokens:      4000,
             responseSchema: RESPONSE_SCHEMA,
+            logContext: {
+              ...logContext,
+              attemptNumber: attempt,
+            },
           });
 
           const raw = String(result.content ?? "");
@@ -558,7 +575,8 @@ async function generateFillCodeMix(
   topic: string,
   difficulty: Difficulty,
   company: PlacementCompanyProfile | null,
-  companySlugStr: string | null
+  companySlugStr: string | null,
+  logContext: AILogContext
 ): Promise<Response> {
   const mcqPrompt = buildPrompt(track, topic, difficulty, company, 4);
   const fcPrompt = buildFillCodePrompt(topic);
@@ -570,6 +588,7 @@ async function generateFillCodeMix(
       thinkingBudget: 0,
       maxTokens:      3000,
       responseSchema: RESPONSE_SCHEMA,
+      logContext,
     }),
     routeAI("placement_prep", {
       messages:       [{ role: "user", content: fcPrompt }],
@@ -577,6 +596,7 @@ async function generateFillCodeMix(
       thinkingBudget: 0,
       maxTokens:      6000,
       responseSchema: FILL_CODE_RESPONSE_SCHEMA,
+      logContext,
     }),
   ]);
 

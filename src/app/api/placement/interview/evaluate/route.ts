@@ -43,6 +43,8 @@ export async function POST(request: NextRequest) {
   try {
     const authResult = await requireRole(["student"]);
     if (authResult instanceof Response) return authResult;
+    const { user, profile } = authResult;
+    const jobId = crypto.randomUUID();
 
     const body = (await request.json()) as {
       question_id?: unknown;
@@ -92,6 +94,16 @@ export async function POST(request: NextRequest) {
         thinkingBudget: 0,
         maxTokens: 1500,
         responseSchema: RESPONSE_SCHEMA,
+        logContext: {
+          userId: user.id,
+          userEmail: user.email ?? null,
+          userRole: profile.role,
+          subjectId: null,
+          subjectCode: null,
+          jobId,
+          relatedContentId: null,
+          feature: "placement",
+        },
       });
     } catch (err) {
       console.error("[interview/evaluate] AI call failed:", err);

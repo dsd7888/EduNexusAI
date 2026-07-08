@@ -11,6 +11,7 @@
 
 import { routeAI } from "@/lib/ai/router";
 import type { Difficulty, ImportedQuestion } from "./types";
+import type { AILogContext } from "@/lib/ai/providers/types";
 
 // ─── Public input/output types ─────────────────────────────────────────────
 
@@ -201,7 +202,9 @@ function lowConfidenceTag(q: ImportedQuestion): TaggedQuestion {
 async function tagBatch(
   batch: ImportedQuestion[],
   context: SubjectContext,
-  validModuleIds: ReadonlySet<string>
+  validModuleIds: ReadonlySet<string>,
+  logContext: AILogContext,
+  batchIndex: number
 ): Promise<TaggedQuestion[]> {
   const prompt = buildUserPrompt(batch, context);
 
@@ -213,6 +216,15 @@ async function tagBatch(
         messages: [{ role: "user", content: prompt }],
         systemPrompt: SYSTEM_PROMPT,
         temperature: 0.2,
+        logContext: {
+          ...logContext,
+          attemptNumber: attempt,
+          metadata: {
+            ...(logContext.metadata ?? {}),
+            batchIndex,
+            batchSize: batch.length,
+          },
+        },
       });
       const arr = parseTagArray(String(result.content ?? ""));
       if (arr && arr.length > 0) {
@@ -255,7 +267,8 @@ async function tagBatch(
 
 export async function tagQuestions(
   questions: ImportedQuestion[],
-  subjectContext: SubjectContext
+  subjectContext: SubjectContext,
+  logContext: AILogContext
 ): Promise<TaggedQuestion[]> {
   if (questions.length === 0) return [];
 
@@ -268,7 +281,9 @@ export async function tagQuestions(
 
   // Batches are independent — run them in parallel and flatten in order.
   const tagged = await Promise.all(
-    batches.map((batch) => tagBatch(batch, subjectContext, validModuleIds))
+    batches.map((batch, batchIndex) =>
+      tagBatch(batch, subjectContext, validModuleIds, logContext, batchIndex)
+    )
   );
 
   return tagged.flat();

@@ -3,6 +3,7 @@ import {
   createAdminClient,
   createServerClient,
 } from "@/lib/db/supabase-server";
+import type { AILogContext } from "@/lib/ai/providers/types";
 import type { NextRequest } from "next/server";
 
 type Operation = "patch" | "insert";
@@ -125,6 +126,8 @@ export async function POST(req: NextRequest) {
 
     const operation = body?.operation as Operation | undefined;
     const slideIndex = body?.slideIndex as number | undefined;
+    const contentId =
+      typeof body?.contentId === "string" ? body.contentId.trim() : "";
     const instructionRaw = body?.instruction as string | undefined;
     const currentSlide = body?.currentSlide;
     const subjectName =
@@ -151,6 +154,12 @@ export async function POST(req: NextRequest) {
     if (!operation || !["patch", "insert"].includes(operation)) {
       return Response.json({ error: "Invalid operation" }, { status: 400 });
     }
+    if (!contentId) {
+      return Response.json(
+        { error: "contentId is required for cost logging" },
+        { status: 400 }
+      );
+    }
     if (typeof slideIndex !== "number" || slideIndex < 0) {
       return Response.json({ error: "Invalid slideIndex" }, { status: 400 });
     }
@@ -168,6 +177,42 @@ export async function POST(req: NextRequest) {
     }
 
     const instruction = instructionRaw.trim();
+    const { data: contentRow } = await supabase
+      .from("generated_content")
+      .select("subject_id")
+      .eq("id", contentId)
+      .maybeSingle();
+    const contentSubjectId =
+      typeof (contentRow as { subject_id?: unknown } | null)?.subject_id ===
+      "string"
+        ? (contentRow as { subject_id: string }).subject_id
+        : null;
+    let subjectCode: string | null = null;
+    if (contentSubjectId) {
+      const { data: subjectRow } = await supabase
+        .from("subjects")
+        .select("code")
+        .eq("id", contentSubjectId)
+        .maybeSingle();
+      subjectCode =
+        typeof (subjectRow as { code?: unknown } | null)?.code === "string"
+          ? ((subjectRow as { code: string }).code || null)
+          : null;
+    }
+    const logContext: AILogContext = {
+      userId: user.id,
+      userEmail: user.email ?? null,
+      userRole: (profile as { role: string }).role,
+      subjectId: contentSubjectId,
+      subjectCode,
+      jobId: contentId,
+      relatedContentId: contentId,
+      feature: "ppt_generation",
+      metadata: {
+        action: "single_slide_regenerate",
+        slide_index: slideIndex,
+      },
+    };
 
     // 3. Build prompt based on operation
     let systemPrompt: string;
@@ -427,6 +472,7 @@ fields relevant to that type:
       systemPrompt,
       maxTokens,
       responseSchema: REFINE_SLIDE_SCHEMA,
+      logContext,
     });
 
     // 5. Parse response — responseSchema guarantees schema-conformant JSON, so

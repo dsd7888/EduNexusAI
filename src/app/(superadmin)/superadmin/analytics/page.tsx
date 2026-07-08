@@ -113,8 +113,8 @@ interface SummaryResponse {
   facultyCount: number;
   subjectCount: number;
   contentCount: number;
-  costThisMonth: number;
-  apiCallsThisMonth: number;
+  costThisMonth?: number;
+  apiCallsThisMonth?: number;
   pendingApprovals: number;
 }
 
@@ -361,7 +361,9 @@ export default function SuperadminAnalyticsPage() {
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-semibold">
-              {summary ? Math.round(summary.costThisMonth) : "—"}
+              {summary?.costThisMonth != null
+                ? Math.round(summary.costThisMonth)
+                : "—"}
             </div>
           </CardContent>
         </Card>

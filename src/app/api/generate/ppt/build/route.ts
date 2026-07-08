@@ -9,6 +9,9 @@ import {
   createServerClient,
 } from "@/lib/db/supabase-server";
 import { requireAuth, requireRole, apiError, apiSuccess } from "@/lib/api/helpers";
+import { backfillRelatedContentId } from "@/lib/ai/costLogger";
+import { calculateImageCostInr } from "@/lib/ai/pricing";
+import type { AILogContext } from "@/lib/ai/providers/types";
 import type { NextRequest } from "next/server";
 
 export async function POST(request: NextRequest) {
@@ -23,7 +26,7 @@ export async function POST(request: NextRequest) {
 
     const authResult = await requireRole(["faculty", "superadmin", "dean", "hod"]);
     if (authResult instanceof Response) return authResult;
-    const { user, adminClient } = authResult;
+    const { user, profile, adminClient } = authResult;
 
     const body = await request.json().catch(() => ({} as Record<string, unknown>));
     const subjectId = String(body?.subjectId ?? "").trim();
@@ -75,6 +78,16 @@ export async function POST(request: NextRequest) {
         400
       );
     }
+
+    const { data: subjectRow } = await adminClient
+      .from("subjects")
+      .select("code")
+      .eq("id", subjectId)
+      .maybeSingle();
+    const subjectCode =
+      typeof (subjectRow as { code?: unknown } | null)?.code === "string"
+        ? ((subjectRow as { code: string }).code || null)
+        : null;
 
     // ── Failed-slide guard (Task 1) ──────────────────────────────────────────
     // The batch route flags slides it could not generate (after in-loop parse
@@ -139,6 +152,17 @@ export async function POST(request: NextRequest) {
       );
 
     let totalImagenCost = 0;
+    const imagenJobId = contentId ?? crypto.randomUUID();
+    const imagenLogContext: AILogContext = {
+      userId: user.id,
+      userEmail: user.email ?? null,
+      userRole: profile.role,
+      subjectId,
+      subjectCode,
+      jobId: imagenJobId,
+      relatedContentId: contentId,
+      feature: "ppt_generation",
+    };
 
     if (imagenSlides.length > 0) {
       console.log(`[ppt/build] Generating ${imagenSlides.length} Imagen image(s)`);
@@ -160,13 +184,26 @@ export async function POST(request: NextRequest) {
           const complexity = slide.diagramComplexity ?? "standard";
           const imageBase64 = await generateImagenImage(fullPrompt, {
             complexity,
+            logContext: {
+              ...imagenLogContext,
+              metadata: {
+                slideIndex: idx,
+                renderHint:
+                  slide.type === "dual_visual"
+                    ? "dual"
+                    : slide.diagramRenderType ?? null,
+                diagramComplexity: complexity,
+              },
+            },
           });
 
           if (imageBase64) {
             // Image cost estimate: Pro image tier (~$0.10) costs more than the
             // Flash tier (~$0.02–0.04); use a per-tier estimate, not one bucket.
-            const imagenCostInr =
-              (complexity === "intricate" ? 0.10 : 0.04) * 83.33;
+            const { costInr: imagenCostInr } = calculateImageCostInr(
+              complexity,
+              1
+            );
             totalImagenCost += imagenCostInr;
             console.log(
               `[ppt/imagen] Slide image cost (tier=${complexity}): ₹${imagenCostInr.toFixed(2)}`
@@ -199,6 +236,7 @@ export async function POST(request: NextRequest) {
       subject: subject || presentationTitle,
       topic: topic || presentationTitle,
       slides,
+      aiLogContext: imagenLogContext,
       addLogo,
       logoUrl: logoUrl || undefined,
     };
@@ -357,6 +395,10 @@ export async function POST(request: NextRequest) {
         return apiError("Failed to record generated content", 500);
       }
       finalContentId = insertedRow.id;
+    }
+
+    if (!contentId && totalImagenCost > 0 && finalContentId) {
+      await backfillRelatedContentId(imagenJobId, finalContentId);
     }
 
     console.log("[ppt/build] Done.", fileName);

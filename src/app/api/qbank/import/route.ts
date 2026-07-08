@@ -9,6 +9,7 @@ import { tagQuestions } from "@/lib/qbank/tagger";
 import { hasUnsupportedNotation } from "@/lib/text/latexSegments";
 import { rowToBankQuestion, type FqbRow } from "@/lib/qbank/row";
 import type { ImportedQuestion, MCQOption } from "@/lib/qbank/types";
+import type { AILogContext } from "@/lib/ai/providers/types";
 import type { NextRequest } from "next/server";
 
 const MAX_FILE_BYTES = 2 * 1024 * 1024; // 2MB
@@ -37,7 +38,7 @@ export async function POST(request: NextRequest) {
   try {
     const authResult = await requireRole(["faculty", "superadmin", "dean", "hod"]);
     if (authResult instanceof Response) return authResult;
-    const { user, adminClient } = authResult;
+    const { user, profile, adminClient } = authResult;
 
     let form: FormData;
     try {
@@ -129,18 +130,32 @@ export async function POST(request: NextRequest) {
 
     const inferred = new Map<number, { co: string; btl: number; diff: string }>();
     if (toTag.length > 0) {
-      const tagged = await tagQuestions(toTag, {
-        subject_name: (subject as { name: string }).name,
-        modules: modules.map((m) => ({
-          id: m.id,
-          name: m.name,
-          description: m.description ?? "",
-        })),
-        course_outcomes: (coRows ?? []) as {
-          co_code: string;
-          description: string;
-        }[],
-      });
+      const tagged = await tagQuestions(
+        toTag,
+        {
+          subject_name: (subject as { name: string }).name,
+          modules: modules.map((m) => ({
+            id: m.id,
+            name: m.name,
+            description: m.description ?? "",
+          })),
+          course_outcomes: (coRows ?? []) as {
+            co_code: string;
+            description: string;
+          }[],
+        },
+        {
+          userId: user.id,
+          userEmail: user.email ?? null,
+          userRole: profile.role,
+          subjectId,
+          subjectCode: null,
+          jobId: crypto.randomUUID(),
+          relatedContentId: null,
+          feature: "qbank",
+          metadata: { action: "import_tag" },
+        } satisfies AILogContext
+      );
       tagged.forEach((t, i) => {
         inferred.set(untaggedIdx[i], {
           co: t.inferred_co_code,

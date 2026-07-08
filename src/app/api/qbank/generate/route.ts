@@ -8,6 +8,7 @@ import {
 import { tagQuestions } from "@/lib/qbank/tagger";
 import { rowToBankQuestion, type FqbRow } from "@/lib/qbank/row";
 import type { GenerationSlot, ImportedQuestion } from "@/lib/qbank/types";
+import type { AILogContext } from "@/lib/ai/providers/types";
 import type { NextRequest } from "next/server";
 
 const MAX_TOTAL_QUESTIONS = 60;
@@ -37,7 +38,7 @@ export async function POST(request: NextRequest) {
   try {
     const authResult = await requireRole(["faculty", "superadmin", "dean", "hod"]);
     if (authResult instanceof Response) return authResult;
-    const { user, adminClient } = authResult;
+    const { user, profile, adminClient } = authResult;
 
     let body: Record<string, unknown>;
     try {
@@ -48,6 +49,7 @@ export async function POST(request: NextRequest) {
 
     const subjectId = String(body.subject_id ?? "").trim();
     if (!subjectId) return apiError("subject_id is required", 400);
+    const jobId = crypto.randomUUID();
 
     const rawSlots = Array.isArray(body.slots) ? body.slots : [];
     const slots = rawSlots.filter(isValidSlot);
@@ -67,7 +69,7 @@ export async function POST(request: NextRequest) {
     // ── Subject context ──────────────────────────────────────────────────
     const { data: subject, error: subjectError } = await adminClient
       .from("subjects")
-      .select("name")
+      .select("name, code")
       .eq("id", subjectId)
       .single();
     if (subjectError || !subject) return apiError("Subject not found", 404);
@@ -88,6 +90,16 @@ export async function POST(request: NextRequest) {
       modules: (moduleRows ?? []) as GenSubjectContext["modules"],
       course_outcomes: (coRows ?? []) as GenSubjectContext["course_outcomes"],
     };
+    const logContext: AILogContext = {
+      userId: user.id,
+      userEmail: user.email ?? null,
+      userRole: profile.role,
+      subjectId,
+      subjectCode: (subject as { code?: string | null }).code ?? null,
+      jobId,
+      relatedContentId: null,
+      feature: "qbank",
+    };
 
     // ── PYQ inspiration (only when requested and pyq_inspired slots exist) ─
     let pyqs: PyqInspiration[] = [];
@@ -105,13 +117,13 @@ export async function POST(request: NextRequest) {
     }
 
     // ── Generate ─────────────────────────────────────────────────────────
-    const generated = await generateForSlots(slots, ctx, pyqs);
+    const generated = await generateForSlots(slots, ctx, pyqs, logContext);
     if (generated.length === 0) {
       return apiError("Generation produced no questions", 502);
     }
 
     // ── Tag any questions missing CO or BTL ──────────────────────────────
-    await tagMissing(generated, ctx);
+    await tagMissing(generated, ctx, logContext);
 
     // ── Insert ───────────────────────────────────────────────────────────
     const rows = generated.map((q) => ({
@@ -156,7 +168,8 @@ export async function POST(request: NextRequest) {
  */
 async function tagMissing(
   generated: GeneratedBankQuestion[],
-  ctx: GenSubjectContext
+  ctx: GenSubjectContext,
+  logContext: AILogContext
 ): Promise<void> {
   const untaggedIdx: number[] = [];
   const toTag: ImportedQuestion[] = [];
@@ -172,15 +185,19 @@ async function tagMissing(
   });
   if (toTag.length === 0) return;
 
-  const tagged = await tagQuestions(toTag, {
-    subject_name: ctx.subject_name,
-    modules: ctx.modules.map((m) => ({
-      id: m.id,
-      name: m.name,
-      description: m.description ?? "",
-    })),
-    course_outcomes: ctx.course_outcomes,
-  });
+  const tagged = await tagQuestions(
+    toTag,
+    {
+      subject_name: ctx.subject_name,
+      modules: ctx.modules.map((m) => ({
+        id: m.id,
+        name: m.name,
+        description: m.description ?? "",
+      })),
+      course_outcomes: ctx.course_outcomes,
+    },
+    logContext
+  );
 
   tagged.forEach((t, i) => {
     const q = generated[untaggedIdx[i]];

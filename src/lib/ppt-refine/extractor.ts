@@ -2,6 +2,7 @@ import AdmZip from 'adm-zip';
 import { XMLParser } from 'fast-xml-parser';
 import { routeAI } from '@/lib/ai/router';
 import { parseSlideSize } from './slide-size';
+import type { AILogContext } from '@/lib/ai/providers/types';
 import type { ExtractedDeck, ExtractedSlide, SlideType } from './types';
 
 // ─── XML parser factory ───────────────────────────────────────────────────────
@@ -311,7 +312,8 @@ function buildNotesMap(zip: AdmZip): Map<number, string> {
 
 export async function extractDeckFromBuffer(
   buffer: Buffer,
-  fileName: string
+  fileName: string,
+  logContext: AILogContext
 ): Promise<ExtractedDeck> {
   const zip = new AdmZip(buffer);
 
@@ -391,6 +393,13 @@ export async function extractDeckFromBuffer(
         },
       ],
       maxTokens: 256,
+      logContext: {
+        ...logContext,
+        metadata: {
+          ...(logContext.metadata ?? {}),
+          fileName,
+        },
+      },
     });
 
     const text = String(ai.content ?? '');

@@ -11,6 +11,7 @@ export async function POST(request: NextRequest) {
   try {
     const authResult = await requireRole(["superadmin"]);
     if (authResult instanceof Response) return authResult;
+    const { user, profile } = authResult;
 
     const formData = await request.formData();
     const pdf = formData.get("pdf") as File | null;
@@ -30,10 +31,21 @@ export async function POST(request: NextRequest) {
       `[syllabus/extract] subject=${subjectId} pdfBytes=${arrayBuffer.byteLength}`
     );
 
+    const jobId = crypto.randomUUID();
     const ai = await routeAI("syllabus_extract", {
       systemPrompt: SYLLABUS_EXTRACT_SYSTEM_PROMPT,
       messages: [{ role: "user", content: SYLLABUS_EXTRACT_USER_PROMPT }],
       attachments: [{ mediaType: "application/pdf", data: base64Data }],
+      logContext: {
+        userId: user.id,
+        userEmail: user.email ?? null,
+        userRole: profile.role,
+        subjectId,
+        subjectCode: null,
+        jobId,
+        relatedContentId: null,
+        feature: "syllabus",
+      },
     });
 
     const raw = String(ai.content ?? "");

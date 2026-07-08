@@ -159,7 +159,8 @@ export async function POST(request: NextRequest) {
       "hod",
     ]);
     if (authResult instanceof Response) return authResult;
-    const { user, adminClient } = authResult;
+    const { user, profile, adminClient } = authResult;
+    const jobId = crypto.randomUUID();
 
     let body: Record<string, unknown>;
     try {
@@ -266,6 +267,16 @@ export async function POST(request: NextRequest) {
       attachments: [{ mediaType: mimeType, data: body.image_base64 }],
       responseSchema: buildImageQuestionSchema(questionType),
       thinkingBudget: 0,
+      logContext: {
+        userId: user.id,
+        userEmail: user.email ?? null,
+        userRole: profile.role,
+        subjectId,
+        subjectCode: null,
+        jobId,
+        relatedContentId: null,
+        feature: "qbank",
+      },
       // Each call has a distinct image as its real source of variation; randomness isn't needed here,
       // and CO/BTL/difficulty tagging should be as consistent as every other tagging task (all near 0).
       temperature: 0.1,

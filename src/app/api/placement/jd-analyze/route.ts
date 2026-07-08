@@ -99,7 +99,8 @@ export async function POST(request: NextRequest) {
     const authResult = await requireRole(["student"]);
     if (authResult instanceof Response) return authResult;
 
-    const { user, adminClient } = authResult;
+    const { user, profile, adminClient } = authResult;
+    const jobId = crypto.randomUUID();
 
     // ── Validate input ─────────────────────────────────────────────────────────
     const body = (await request.json()) as { jd_text?: unknown };
@@ -175,6 +176,16 @@ export async function POST(request: NextRequest) {
         thinkingBudget: 0,
         maxTokens:      3000,
         responseSchema: RESPONSE_SCHEMA,
+        logContext: {
+          userId: user.id,
+          userEmail: user.email ?? null,
+          userRole: profile.role,
+          subjectId: null,
+          subjectCode: null,
+          jobId,
+          relatedContentId: null,
+          feature: "placement",
+        },
       });
     } catch (err) {
       console.error("[jd-analyze] AI call failed:", err);

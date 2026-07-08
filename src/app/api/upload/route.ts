@@ -4,6 +4,7 @@ import {
 } from "@/lib/db/supabase-server";
 import { requireAuth, requireRole, apiError, apiSuccess } from "@/lib/api/helpers";
 import { routeAI } from "@/lib/ai/router";
+import type { AILogContext } from "@/lib/ai/providers/types";
 import { type NextRequest, NextResponse } from "next/server";
 import type { SupabaseClient } from "@supabase/supabase-js";
 
@@ -107,9 +108,10 @@ async function extractAndSavePyqQuestions(
     subjectId: string;
     year: number | null;
     pdfBase64: string;
+    logContext: AILogContext;
   }
 ): Promise<{ count: number; error: string | null }> {
-  const { documentId, subjectId, year, pdfBase64 } = params;
+  const { documentId, subjectId, year, pdfBase64, logContext } = params;
   try {
     if (!pdfBase64) {
       return { count: 0, error: "missing pdf data" };
@@ -119,6 +121,7 @@ async function extractAndSavePyqQuestions(
       systemPrompt: PYQ_EXTRACT_SYSTEM_PROMPT,
       messages: [{ role: "user", content: PYQ_EXTRACT_USER_PROMPT }],
       attachments: [{ mediaType: "application/pdf", data: pdfBase64 }],
+      logContext,
     });
 
     const questions = parsePyqArray(String(ai.content ?? ""));
@@ -297,7 +300,7 @@ export async function POST(request: NextRequest) {
     const supabase = createServerClientForRequestResponse(request, response);
     const authResult = await requireRole(["superadmin"]);
     if (authResult instanceof Response) return authResult;
-    const { user, adminClient } = authResult;
+    const { user, profile, adminClient } = authResult;
 
     console.log("[upload] User ID:", user.id);
 
@@ -393,11 +396,22 @@ export async function POST(request: NextRequest) {
     let pyqExtractedCount = 0;
     if (type === "pyq") {
       const pdfBase64 = buffer.toString("base64");
+      const jobId = crypto.randomUUID();
       const result = await extractAndSavePyqQuestions(adminClient, {
         documentId: document.id,
         subjectId,
         year: yearValue,
         pdfBase64,
+        logContext: {
+          userId: user.id,
+          userEmail: user.email ?? null,
+          userRole: profile.role,
+          subjectId,
+          subjectCode,
+          jobId,
+          relatedContentId: null,
+          feature: "pyq_extraction",
+        },
       });
       pyqExtractedCount = result.count;
       if (result.error) {

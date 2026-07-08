@@ -1,6 +1,6 @@
 import { requireRole, apiError } from '@/lib/api/helpers';
-import { createAdminClient } from '@/lib/db/supabase-server';
 import { extractDeckFromBuffer } from '@/lib/ppt-refine/extractor';
+import type { AILogContext } from '@/lib/ai/providers/types';
 import type { NextRequest } from 'next/server';
 
 const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50 MB
@@ -13,7 +13,7 @@ export async function POST(request: NextRequest) {
 
     const authResult = await requireRole(['faculty', 'superadmin', 'dept_admin', 'dean', 'hod']);
     if (authResult instanceof Response) return authResult;
-    const { user } = authResult;
+    const { user, profile, adminClient } = authResult;
 
     let formData: FormData;
     try {
@@ -55,10 +55,43 @@ export async function POST(request: NextRequest) {
 
     const arrayBuffer = await file.arrayBuffer();
     const buffer = Buffer.from(arrayBuffer);
+    const timestamp = Date.now();
+    const extractionId = `${user.id}_${timestamp}`;
+
+    const subjectId = formData.get('subject_id');
+    let subjectCode: string | null = null;
+    if (typeof subjectId === 'string' && subjectId.trim()) {
+      const { data: subjectForLog, error: subjectForLogError } = await adminClient
+        .from('subjects')
+        .select('code')
+        .eq('id', subjectId.trim())
+        .maybeSingle();
+      if (subjectForLogError) {
+        console.error('[ppt-refine/extract] subject code query failed:', subjectForLogError);
+      }
+      subjectCode =
+        typeof (subjectForLog as { code?: unknown } | null)?.code === 'string'
+          ? ((subjectForLog as { code: string }).code || null)
+          : null;
+    }
+
+    const logContext: AILogContext = {
+      userId: user.id,
+      userEmail: user.email ?? null,
+      userRole: profile.role,
+      subjectId:
+        typeof subjectId === 'string' && subjectId.trim()
+          ? subjectId.trim()
+          : null,
+      subjectCode,
+      jobId: extractionId,
+      relatedContentId: null,
+      feature: 'ppt_refine',
+    };
 
     let extractedDeck;
     try {
-      extractedDeck = await extractDeckFromBuffer(buffer, file.name);
+      extractedDeck = await extractDeckFromBuffer(buffer, file.name, logContext);
     } catch (err) {
       console.error('[ppt-refine/extract] Extraction error:', err);
       return apiError(
@@ -68,12 +101,9 @@ export async function POST(request: NextRequest) {
     }
 
     // Optional: enrich with subject context
-    const subjectId = formData.get('subject_id');
     let subjectContext: { name: string; modules: string[] } | undefined;
 
     if (typeof subjectId === 'string' && subjectId.trim()) {
-      const adminClient = createAdminClient();
-
       const { data: subject, error: subjectError } = await adminClient
         .from('subjects')
         .select('name')
@@ -105,8 +135,6 @@ export async function POST(request: NextRequest) {
     }
 
     // Store extracted deck JSON in Supabase Storage
-    const adminClient = createAdminClient();
-    const timestamp = Date.now();
 
     // Persist the ORIGINAL .pptx so the refine step can patch it in place
     // (the XML-patching assembler needs the source bytes, not a rebuild).
@@ -158,8 +186,6 @@ export async function POST(request: NextRequest) {
       : await adminClient.storage
           .from('generated-content')
           .createSignedUrl(storagePath, 2 * 60 * 60);
-
-    const extractionId = `${user.id}_${timestamp}`;
 
     console.log(
       `[ppt-refine/extract] Done. slides=${extractedDeck.slide_count} ` +

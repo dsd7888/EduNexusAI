@@ -55,6 +55,7 @@ import {
   type QuestionSlot,
   type SlotAssignmentContext,
 } from "./moduleAssignment";
+import type { AILogContext } from "@/lib/ai/providers/types";
 
 export type { CustomBtlWeights, DifficultyPreset, DifficultyTarget };
 
@@ -138,6 +139,7 @@ export interface SectionGenInput {
    * full CO list.
    */
   moduleCoMap?: Map<number, string[]>;
+  logContext: AILogContext;
 }
 
 export interface SectionGenResult {
@@ -1766,13 +1768,18 @@ function buildSectionSlots(
   return out;
 }
 
-async function callPro(prompt: string, maxTokens: number): Promise<string> {
+async function callPro(
+  prompt: string,
+  maxTokens: number,
+  logContext: AILogContext
+): Promise<string> {
   const result = await routeAI("qpaper_gen", {
     model: "pro",
     messages: [{ role: "user", content: prompt }],
     systemPrompt: SYSTEM_PROMPT,
     temperature: 0.4,
     maxTokens,
+    logContext,
   });
   return String(result.content ?? "");
 }
@@ -1818,7 +1825,14 @@ export async function generateSection(
     console.log(
       `[generateSection] ${input.sectionName} ${label} promptChars=${prompt.length} slots=${slots.length} maxTokens=${sectionBudget}`
     );
-    const raw = await callPro(prompt, sectionBudget);
+    const raw = await callPro(prompt, sectionBudget, {
+      ...input.logContext,
+      attemptNumber: label.includes("2") ? 2 : 1,
+      metadata: {
+        ...(input.logContext.metadata ?? {}),
+        section: input.sectionName,
+      },
+    });
     const arr = parseQuestionArray(raw);
     if (!arr || arr.length === 0) {
       console.error(

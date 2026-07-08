@@ -7,9 +7,17 @@ import type { NextRequest } from "next/server";
 
 export async function GET(_request: NextRequest) {
   try {
-    const authResult = await requireRole(["faculty", "superadmin", "dean", "hod"]);
+    const authResult = await requireRole([
+      "faculty",
+      "superadmin",
+      "dept_admin",
+      "dean",
+      "hod",
+    ]);
     if (authResult instanceof Response) return authResult;
-    const { adminClient } = authResult;
+    const { adminClient, profile } = authResult;
+    const canViewCostSummary =
+      profile.role === "superadmin" || profile.role === "dept_admin";
 
     const [
       { count: studentCount },
@@ -39,22 +47,26 @@ export async function GET(_request: NextRequest) {
     const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
     const monthStartStr = monthStart.toISOString().slice(0, 10);
 
-    const { data: usageRows, error: usageError } = await adminClient
-      .from("usage_analytics")
-      .select("event_count, cost_inr, date")
-      .gte("date", monthStartStr);
+    let costThisMonth: number | undefined;
+    let apiCallsThisMonth: number | undefined;
+    if (canViewCostSummary) {
+      const { data: usageRows, error: usageError } = await adminClient
+        .from("usage_analytics")
+        .select("event_count, cost_inr, date")
+        .gte("date", monthStartStr);
 
-    if (usageError) {
-      console.error("[analytics/summary] usage_analytics error:", usageError);
-    }
+      if (usageError) {
+        console.error("[analytics/summary] usage_analytics error:", usageError);
+      }
 
-    let costThisMonth = 0;
-    let apiCallsThisMonth = 0;
-    for (const row of usageRows ?? []) {
-      const ec = (row as any).event_count ?? 0;
-      const cost = Number((row as any).cost_inr ?? 0);
-      apiCallsThisMonth += ec;
-      costThisMonth += cost;
+      costThisMonth = 0;
+      apiCallsThisMonth = 0;
+      for (const row of usageRows ?? []) {
+        const ec = (row as any).event_count ?? 0;
+        const cost = Number((row as any).cost_inr ?? 0);
+        apiCallsThisMonth += ec;
+        costThisMonth += cost;
+      }
     }
 
     const { count: pendingApprovals } = await adminClient
@@ -67,8 +79,12 @@ export async function GET(_request: NextRequest) {
       facultyCount: facultyCount ?? 0,
       subjectCount: subjectCount ?? 0,
       contentCount: contentCount ?? 0,
-      costThisMonth,
-      apiCallsThisMonth,
+      ...(canViewCostSummary
+        ? {
+            costThisMonth,
+            apiCallsThisMonth,
+          }
+        : {}),
       pendingApprovals: pendingApprovals ?? 0,
     });
   } catch (err) {

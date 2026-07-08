@@ -17,6 +17,7 @@ import {
   createServerClient,
 } from "@/lib/db/supabase-server";
 import { requireAuth, requireRole, apiError, apiSuccess } from "@/lib/api/helpers";
+import type { AILogContext } from "@/lib/ai/providers/types";
 import type { NextRequest } from "next/server";
 
 const VALID_DEPTHS = ["basic", "intermediate", "advanced"] as const;
@@ -144,10 +145,11 @@ export async function POST(request: NextRequest) {
 
     const authResult = await requireRole(["faculty", "superadmin", "dean", "hod"]);
     if (authResult instanceof Response) return authResult;
-    const { user, adminClient } = authResult;
+    const { user, profile, adminClient } = authResult;
 
     const body = await request.json().catch(() => ({} as Record<string, unknown>));
     const subjectId = String(body?.subjectId ?? "").trim();
+    const contentId = String(body?.contentId ?? "").trim();
     const moduleId = String(body?.moduleId ?? "").trim() || undefined;
     const customTopic =
       body?.customTopic != null
@@ -259,6 +261,9 @@ export async function POST(request: NextRequest) {
     if (!subjectId) {
       return apiError("subjectId is required", 400);
     }
+    if (!contentId) {
+      return apiError("contentId is required for cost logging", 400);
+    }
     if (slides.length === 0) {
       return apiError(
         "slides array is required and must not be empty",
@@ -309,6 +314,16 @@ export async function POST(request: NextRequest) {
     const row = contentRow as { content?: string; reference_books?: string };
     const fullSyllabus = String(row.content ?? "");
     const referenceBooks = String(row.reference_books ?? "");
+    const baseLogContext: AILogContext = {
+      userId: user.id,
+      userEmail: user.email ?? null,
+      userRole: profile.role,
+      subjectId,
+      subjectCode: subjectCode || null,
+      jobId: contentId,
+      relatedContentId: contentId,
+      feature: "ppt_generation",
+    };
 
     let moduleName: string | undefined;
     let moduleDescription = "";
@@ -420,7 +435,8 @@ export async function POST(request: NextRequest) {
     async function runBatchOnModel(
       prompt: string,
       model: "flash" | "pro",
-      maxRetries: number = 2
+      maxRetries: number = 2,
+      path: string
     ): Promise<RunResult> {
       let costInr = 0;
       const start = Date.now();
@@ -434,6 +450,20 @@ export async function POST(request: NextRequest) {
             messages: [{ role: "user", content: prompt }],
             maxTokens,
             model, // explicit per-attempt model override (router honours it)
+            logContext: {
+              ...baseLogContext,
+              attemptNumber: attempt,
+              metadata: {
+                path,
+                ...(isDiagramBatch
+                  ? {
+                      renderHint: slides[0]?.renderHint ?? "svg",
+                      diagramComplexity:
+                        slides[0]?.diagramComplexity ?? "standard",
+                    }
+                  : {}),
+              },
+            },
             // Schema-constrain BOTH batch kinds now. Diagram batches use the
             // diagram schema; content batches use CONTENT_BATCH_SCHEMA to stop the
             // unescaped-LaTeX-backslash JSON breakage (see schema comment). Gemini
@@ -549,7 +579,7 @@ export async function POST(request: NextRequest) {
       // batch ONE more time from scratch (Task 1) — a fresh generation routinely
       // parses where a malformed one did not.
       if (!isDiagramBatch) {
-        const first = await runBatchOnModel(prompt, "flash");
+        const first = await runBatchOnModel(prompt, "flash", 2, "content-flash");
         batchCostInr += first.costInr;
         recordPath("content-flash", first.costInr, first.timeMs);
         if (first.kind !== "fail") return first.slides;
@@ -557,7 +587,12 @@ export async function POST(request: NextRequest) {
         console.warn(
           "[ppt/batch][content-fail] content batch unparseable after in-loop retries — regenerating the whole batch once before giving up"
         );
-        const retry = await runBatchOnModel(prompt, "flash");
+        const retry = await runBatchOnModel(
+          prompt,
+          "flash",
+          2,
+          "content-flash-retry"
+        );
         batchCostInr += retry.costInr;
         recordPath("content-flash-retry", retry.costInr, retry.timeMs);
         if (retry.kind !== "fail") {
@@ -579,7 +614,7 @@ export async function POST(request: NextRequest) {
 
       // pro-direct: intricate SVG/dual goes straight to Pro (no escalation step).
       if (diagramModel === "pro") {
-        const r = await runBatchOnModel(prompt, "pro");
+        const r = await runBatchOnModel(prompt, "pro", 2, "pro-direct");
         batchCostInr += r.costInr;
         diagramPath = "pro-direct";
         recordPath("pro-direct", r.costInr, r.timeMs);
@@ -587,7 +622,7 @@ export async function POST(request: NextRequest) {
       }
 
       // Flash first.
-      const flash = await runBatchOnModel(prompt, "flash");
+      const flash = await runBatchOnModel(prompt, "flash", 2, "flash-direct");
       batchCostInr += flash.costInr;
 
       // A clean Flash result = parsed OK and (no SVG expected, or every SVG
@@ -628,7 +663,7 @@ export async function POST(request: NextRequest) {
       console.warn(
         `[ppt/batch] Flash diagram rejected (kind=${flash.kind}, parseFailed=${flashParseFailed}, svgSparse=${svgSparse}, mermaidSparse=${mermaidSparse}) — escalating single slide to Pro`
       );
-      const pro = await runBatchOnModel(prompt, "pro");
+      const pro = await runBatchOnModel(prompt, "pro", 2, "escalated");
       batchCostInr += pro.costInr;
       // Distinguish escalation causes in telemetry so `[ppt/batch][diagram-path]`
       // lets the failure modes be counted apart.
@@ -799,7 +834,12 @@ export async function POST(request: NextRequest) {
             customTopic,
             moduleDescription,
           });
-          const retryResult = await runBatchOnModel(retryPrompt, "flash", 1);
+          const retryResult = await runBatchOnModel(
+            retryPrompt,
+            "flash",
+            1,
+            "content-flash-empty-retry"
+          );
           batchCostInr += retryResult.costInr;
           if (retryResult.kind === "ok" && retryResult.slides.length > 0) {
             const recovered = retryResult.slides[0];

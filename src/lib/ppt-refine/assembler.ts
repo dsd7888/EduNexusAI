@@ -273,16 +273,19 @@ function ensureNormAutofit(spXml: string, fontScale?: number): string {
 }
 
 /** Read a shape's own <a:xfrm> offset/extent (EMU). NaN where unspecified. */
-function getShapeXfrm(spXml: string): { y: number; cx: number; cy: number } | null {
+function getShapeXfrm(
+  spXml: string
+): { x: number; y: number; cx: number; cy: number } | null {
   const xf = getInnerRange(spXml, 'a:xfrm');
   if (!xf) return null;
   const xfXml = spXml.slice(xf.outerStart, xf.outerEnd);
   const offTag = /<a:off\b[^>]*\/>/.exec(xfXml)?.[0] ?? '';
   const extTag = /<a:ext\b[^>]*\/>/.exec(xfXml)?.[0] ?? '';
+  const x = Number(/\bx="(-?\d+)"/.exec(offTag)?.[1] ?? NaN);
   const y = Number(/\by="(-?\d+)"/.exec(offTag)?.[1] ?? NaN);
   const cx = Number(/\bcx="(\d+)"/.exec(extTag)?.[1] ?? NaN);
   const cy = Number(/\bcy="(\d+)"/.exec(extTag)?.[1] ?? NaN);
-  return { y, cx, cy };
+  return { x, y, cx, cy };
 }
 
 /** Set the cy (height) on a shape's own <a:xfrm> <a:ext>. */

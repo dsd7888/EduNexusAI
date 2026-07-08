@@ -1,4 +1,5 @@
 import { apiError, apiSuccess, requireRole } from "@/lib/api/helpers";
+import { backfillRelatedContentId } from "@/lib/ai/costLogger";
 import { createAdminClient } from "@/lib/db/supabase-server";
 import { generateExplainerContent } from "@/lib/explainer/scriptGenerator";
 import { generateVoiceover } from "@/lib/explainer/tts";
@@ -13,6 +14,7 @@ import type {
   GeneratedExplainer,
   SubjectContext,
 } from "@/lib/explainer/types";
+import type { AILogContext } from "@/lib/ai/providers/types";
 
 // Explainers are reusable content — sign for 7 days.
 const SIGNED_URL_TTL_SECONDS = 7 * 24 * 60 * 60;
@@ -92,7 +94,7 @@ function injectAudio(html: string, audioSegments: (string | null)[]): string {
 export async function POST(request: Request) {
   const auth = await requireRole(["faculty", "superadmin", "dean", "hod"]);
   if (auth instanceof Response) return auth;
-  const { user, adminClient } = auth;
+  const { user, profile, adminClient } = auth;
 
   // ── 1. Parse + validate body ──
   let body: Partial<ExplainerRequest>;
@@ -115,9 +117,11 @@ export async function POST(request: Request) {
         ? body.audience_semester
         : undefined,
   };
+  const jobId = crypto.randomUUID();
 
   // ── 2. Subject context (admin client; bypasses RLS) ──
   let subjectContext: SubjectContext | undefined;
+  let subjectCode: string | null = null;
   if (req.subject_id) {
     try {
       subjectContext = await loadSubjectContext(
@@ -125,15 +129,34 @@ export async function POST(request: Request) {
         req.subject_id,
         req.module_id
       );
+      const { data: subjectForLog } = await adminClient
+        .from("subjects")
+        .select("code")
+        .eq("id", req.subject_id)
+        .maybeSingle();
+      subjectCode =
+        typeof (subjectForLog as { code?: unknown } | null)?.code === "string"
+          ? ((subjectForLog as { code: string }).code || null)
+          : null;
     } catch (e) {
       console.warn("[explainer/generate] subject context load failed", e);
     }
   }
+  const logContext: AILogContext = {
+    userId: user.id,
+    userEmail: user.email ?? null,
+    userRole: profile.role,
+    subjectId: req.subject_id ?? null,
+    subjectCode,
+    jobId,
+    relatedContentId: null,
+    feature: "explainer",
+  };
 
   // ── 3. Content (two-call pipeline) ──
   let content;
   try {
-    content = await generateExplainerContent(req, subjectContext);
+    content = await generateExplainerContent(req, subjectContext, logContext);
   } catch (e) {
     console.error("[explainer/generate] content generation failed:", e);
     return apiError(
@@ -217,6 +240,7 @@ export async function POST(request: Request) {
     return apiError("Failed to save explainer", 500);
   }
   const inserted = row as { id: string; created_at: string };
+  await backfillRelatedContentId(jobId, inserted.id);
 
   // ── 10. Return GeneratedExplainer ──
   const result: GeneratedExplainer = {

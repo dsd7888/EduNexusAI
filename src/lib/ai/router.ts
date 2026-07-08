@@ -1,5 +1,7 @@
+import { after } from "next/server";
 import { getGeminiProvider, isGeminiRateLimitError } from "./providers/gemini";
 import type { ChatParams, ChatResponse } from "./providers/types";
+import { logAICall } from "./costLogger";
 
 const TASK_TO_MODEL: Record<string, "flash" | "pro"> = {
   chat: "flash",
@@ -22,6 +24,7 @@ const TASK_TO_MODEL: Record<string, "flash" | "pro"> = {
   module_co_classify: "flash",
   explainer_ideate: "flash",
   explainer_extract: "pro",
+  qbank_image_question: "flash",
 };
 
 const DEFAULT_MODEL: "flash" | "pro" = "flash";
@@ -78,9 +81,23 @@ export function routeDiagramBatchModel(
   return slides.some((s) => routeDiagramModel(s) === "pro") ? "pro" : "flash";
 }
 
+function truncateErrorMessage(err: unknown): string {
+  const msg = err instanceof Error ? err.message : String(err);
+  return msg.length > 500 ? `${msg.slice(0, 500)}…` : msg;
+}
+
+function scheduleLog(
+  ...args: Parameters<typeof logAICall>
+): void {
+  after(() => {
+    void logAICall(...args);
+  });
+}
+
 /**
  * Routes an AI task to the appropriate provider and model.
  * Sets params.model based on task mapping if not already set.
+ * Every call (success, error, rate_limited) is logged to ai_call_logs via after().
  */
 export async function routeAI(
   task: string,
@@ -126,7 +143,9 @@ export async function routeAI(
                                 ? 16384
                                 : task === "explainer_ideate"
                                   ? 8192
-                                  : 4096),
+                                  : task === "qbank_image_question"
+                                    ? 4096
+                                    : 4096),
   };
 
   const providerName =
@@ -139,19 +158,55 @@ export async function routeAI(
   }
 
   const provider = getGeminiProvider();
+  const modelKey = resolvedParams.model ?? DEFAULT_MODEL;
+  const startedAt = Date.now();
 
   try {
     const response = await provider.chat(resolvedParams);
+    const latencyMs = Date.now() - startedAt;
 
     console.log(
       `[routeAI] task=${task} model=${response.modelUsed} ` +
         `inputTokens=${response.tokensUsed.input} outputTokens=${response.tokensUsed.output} ` +
+        `thinkingTokens=${response.tokensUsed.thinking} ` +
         `costInr=${response.costInr.toFixed(4)}`
     );
 
+    scheduleLog({
+      logContext: resolvedParams.logContext,
+      task,
+      model: modelKey,
+      unitType: "tokens",
+      inputTokens: response.tokensUsed.input,
+      outputTokens: response.tokensUsed.output,
+      thinkingTokens: response.tokensUsed.thinking,
+      costUsd: response.costUsd,
+      costInr: response.costInr,
+      status: "success",
+      latencyMs,
+    });
+
     return response;
   } catch (error) {
-    if (isGeminiRateLimitError(error)) {
+    const latencyMs = Date.now() - startedAt;
+    const rateLimited = isGeminiRateLimitError(error);
+
+    scheduleLog({
+      logContext: resolvedParams.logContext,
+      task,
+      model: modelKey,
+      unitType: "tokens",
+      inputTokens: 0,
+      outputTokens: 0,
+      thinkingTokens: 0,
+      costUsd: 0,
+      costInr: 0,
+      status: rateLimited ? "rate_limited" : "error",
+      errorMessage: truncateErrorMessage(error),
+      latencyMs,
+    });
+
+    if (rateLimited) {
       console.warn("[routeAI] Gemini rate limited");
       throw error;
     }

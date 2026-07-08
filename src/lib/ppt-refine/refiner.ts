@@ -2,6 +2,7 @@ import { routeAI } from '@/lib/ai/router';
 import { generateImagenImage, buildImagenPrompt } from '@/lib/ai/imagen';
 import { hasLatex, findUnsupportedNotation } from '@/lib/text/latexSegments';
 import { NO_CHANGE_SUMMARY, BATCH_FAILURE_SUMMARY, NOT_SELECTED_SUMMARY, CHAT_EDITED_SUMMARY } from './types';
+import type { AILogContext } from '@/lib/ai/providers/types';
 import type {
   ExtractedDeck,
   ExtractedSlide,
@@ -582,6 +583,7 @@ async function processOneBatch(
   ctx: SubjectContext | undefined,
   isFirstBatch: boolean,
   isLastBatch: boolean,
+  logContext: AILogContext,
   maxRetries = 2
 ): Promise<BatchResponse> {
   const prompt = buildBatchPrompt(
@@ -609,6 +611,16 @@ async function processOneBatch(
         // not balloon to the old 16384 cap before the parse failure is caught.
         maxTokens: options.add_visuals ? 8192 : 4096,
         responseSchema: BATCH_RESPONSE_SCHEMA,
+        logContext: {
+          ...logContext,
+          attemptNumber: attempt,
+          metadata: {
+            ...(logContext.metadata ?? {}),
+            action: 'batch_refine',
+            batch_start: batch[0].index,
+            batch_end: batch[batch.length - 1].index,
+          },
+        },
       });
 
       const text = String(ai.content ?? '');
@@ -649,7 +661,8 @@ async function processOneBatch(
 
 async function runImagenPass(
   slides: RefinedSlide[],
-  deck: ExtractedDeck
+  deck: ExtractedDeck,
+  logContext: AILogContext
 ): Promise<void> {
   const imagenSlides = slides.filter((s) => s.visual?.type === 'imagen');
   if (imagenSlides.length === 0) return;
@@ -670,7 +683,16 @@ async function runImagenPass(
       });
 
       try {
-        const base64 = await generateImagenImage(fullPrompt);
+        const base64 = await generateImagenImage(fullPrompt, {
+          logContext: {
+            ...logContext,
+            metadata: {
+              ...(logContext.metadata ?? {}),
+              action: 'imagen_refine',
+              slide_index: slide.index,
+            },
+          },
+        });
 
         if (base64 && base64.length >= MIN_IMAGEN_B64_LEN) {
           visual.content = base64;
@@ -696,7 +718,8 @@ async function runImagenPass(
 
 async function generateSummarySlide(
   refinedSlides: RefinedSlide[],
-  deck: ExtractedDeck
+  deck: ExtractedDeck,
+  logContext: AILogContext
 ): Promise<RefinedSlide | null> {
   const titlesBlock = refinedSlides
     .filter((s) => !s.is_new)
@@ -714,6 +737,13 @@ async function generateSummarySlide(
     const ai = await routeAI('ppt_refine', {
       messages: [{ role: 'user', content: prompt }],
       maxTokens: 1024,
+      logContext: {
+        ...logContext,
+        metadata: {
+          ...(logContext.metadata ?? {}),
+          action: 'summary_slide',
+        },
+      },
     });
 
     const text = String(ai.content ?? '');
@@ -790,9 +820,17 @@ function assembleRefinedDeck(
   const base: RefinedSlide[] = originalSlides.map((s) => {
     const bs = makeBaseSlide(s);
     if (selectedSet && !selectedSet.has(s.index)) {
-      bs.change_summary = chatEditedSet?.has(s.index)
-        ? CHAT_EDITED_SUMMARY
-        : NOT_SELECTED_SUMMARY;
+      const isChatEdited = chatEditedSet?.has(s.index);
+      bs.change_summary = isChatEdited ? CHAT_EDITED_SUMMARY : NOT_SELECTED_SUMMARY;
+      // A chat-edited slide never enters an AI batch, so this base slide is the
+      // final one the assembler sees. Carry any visual the single-slide chat
+      // attached (the client bakes it onto the inline deck) through so it gets
+      // embedded — the batch/new-slide paths already set `visual` from the AI
+      // response; this closes the same export gap for chat-only edits.
+      if (isChatEdited) {
+        const chatVisual = (s as ExtractedSlide & { visual?: SlideVisual }).visual;
+        if (chatVisual) bs.visual = chatVisual;
+      }
     }
     return bs;
   });
@@ -864,18 +902,19 @@ function assembleRefinedDeck(
 export async function refineDeck(
   deck: ExtractedDeck,
   options: RefinementOptions,
-  subjectContext?: SubjectContext,
+  subjectContext: SubjectContext | undefined,
   // Which original slide indices to send to the AI. `undefined` = refine the
   // whole deck (the default, behaviourally identical to before this feature). An
   // explicit list refines ONLY those slides; every other slide is stamped
   // NOT_SELECTED_SUMMARY, never batched (no AI call, no cost) and left untouched.
-  selectedIndices?: number[],
+  selectedIndices: number[] | undefined,
   // Slide indices that were edited interactively via the single-slide chat this
   // session. Those NOT also in `selectedIndices` are excluded from the AI batch
   // (no re-refine, no cost) but stamped CHAT_EDITED_SUMMARY instead of
   // NOT_SELECTED_SUMMARY, so the assembler patches their edited title/body
   // (already present on the incoming deck.slides) rather than skipping them.
-  chatEditedIndices?: number[]
+  chatEditedIndices: number[] | undefined,
+  logContext: AILogContext
 ): Promise<RefinedDeck> {
   // null → "all selected"; a Set → refine only these indices. Kept as null (not
   // a full Set) for the default so the whole path stays identical to before.
@@ -921,7 +960,8 @@ export async function refineDeck(
         deck,
         subjectContext,
         idx === 0,
-        idx === batches.length - 1
+        idx === batches.length - 1,
+        logContext
       )
     )
   );
@@ -933,7 +973,7 @@ export async function refineDeck(
 
   // Imagen pass — separate Pro-tier generation for slides that need real images
   if (options.add_visuals) {
-    await runImagenPass(intermediateSlides, deck);
+    await runImagenPass(intermediateSlides, deck, logContext);
   }
 
   // Summary slide — if any batch flagged needs_summary and option is active
@@ -945,7 +985,7 @@ export async function refineDeck(
 
   if (needsSummary) {
     console.log('[ppt-refine/refiner] Generating summary slide...');
-    summarySlide = await generateSummarySlide(intermediateSlides, deck);
+    summarySlide = await generateSummarySlide(intermediateSlides, deck, logContext);
   }
 
   // Final assembly with summary
@@ -1016,6 +1056,7 @@ export interface SingleSlideContext {
   neighboringTitles: string[];
   /** 0-based index of the slide within the deck (rendered 1-based in the prompt). */
   slideIndex: number;
+  logContext: AILogContext;
 }
 
 // Single-object mirror of one BATCH_RESPONSE_SCHEMA slide item (same caps), so
@@ -1233,6 +1274,14 @@ export async function refineSingleSlide(
     messages: [{ role: 'user', content: prompt }],
     maxTokens: needsVisual ? 8192 : 4096,
     responseSchema: SINGLE_SLIDE_SCHEMA,
+    logContext: {
+      ...ctx.logContext,
+      metadata: {
+        ...(ctx.logContext.metadata ?? {}),
+        action: 'single_slide_refine',
+        slide_index: ctx.slideIndex,
+      },
+    },
   });
 
   const parsed = parseSingleSlideResponse(String(ai.content ?? ''));

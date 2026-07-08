@@ -16,6 +16,7 @@
  */
 
 import { routeAI } from "@/lib/ai/router";
+import type { AILogContext } from "@/lib/ai/providers/types";
 import type {
   ExplainerPattern,
   ExplainerRequest,
@@ -125,7 +126,8 @@ have 5 minutes to understand this concept before their exam.`;
 
 async function getPedagogicalNarrative(
   request: ExplainerRequest,
-  subjectContext: SubjectContext | undefined
+  subjectContext: SubjectContext | undefined,
+  logContext: AILogContext
 ): Promise<string> {
   const semester =
     request.audience_semester ?? subjectContext?.semester ?? 3;
@@ -176,6 +178,13 @@ Be natural. Be specific. Be a teacher, not a textbook.`;
     thinkingBudget: 2048,
     systemPrompt: IDEATE_SYSTEM_PROMPT,
     messages: [{ role: "user", content: userPrompt }],
+    logContext: {
+      ...logContext,
+      metadata: {
+        ...(logContext.metadata ?? {}),
+        stage: "ideate",
+      },
+    },
   });
 
   return String(result.content ?? "");
@@ -192,7 +201,8 @@ Do not invent data not present in the explanation.`;
 async function extractStructuredContent(
   narrative: string,
   request: ExplainerRequest,
-  subjectContext: SubjectContext | undefined
+  subjectContext: SubjectContext | undefined,
+  logContext: AILogContext
 ): Promise<ExtractedContent> {
   const subjectName = subjectContext?.subject_name ?? request.topic;
 
@@ -237,6 +247,13 @@ Output valid JSON matching the ExtractedContent type exactly.`;
     systemPrompt: EXTRACT_SYSTEM_PROMPT,
     responseSchema: EXTRACT_RESPONSE_SCHEMA,
     messages: [{ role: "user", content: userPrompt }],
+    logContext: {
+      ...logContext,
+      metadata: {
+        ...(logContext.metadata ?? {}),
+        stage: "extract",
+      },
+    },
   });
 
   const raw = String(result.content ?? "");
@@ -281,13 +298,19 @@ Output valid JSON matching the ExtractedContent type exactly.`;
 
 export async function generateExplainerContent(
   request: ExplainerRequest,
-  subjectContext?: SubjectContext
+  subjectContext: SubjectContext | undefined,
+  logContext: AILogContext
 ): Promise<ExtractedContent> {
-  const narrative = await getPedagogicalNarrative(request, subjectContext);
+  const narrative = await getPedagogicalNarrative(
+    request,
+    subjectContext,
+    logContext
+  );
   const content = await extractStructuredContent(
     narrative,
     request,
-    subjectContext
+    subjectContext,
+    logContext
   );
 
   // Backfill

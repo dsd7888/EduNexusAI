@@ -8,6 +8,7 @@ import {
 import { tagQuestions } from "@/lib/qbank/tagger";
 import { hasUnsupportedNotation } from "@/lib/text/latexSegments";
 import type { MCQOption, QuestionSource, QuestionType } from "@/lib/qbank/types";
+import type { AILogContext } from "@/lib/ai/providers/types";
 import type { NextRequest } from "next/server";
 
 const VALID_TYPES = new Set([
@@ -38,7 +39,7 @@ export async function POST(request: NextRequest) {
       "hod",
     ]);
     if (authResult instanceof Response) return authResult;
-    const { user, adminClient } = authResult;
+    const { user, profile, adminClient } = authResult;
 
     let body: Record<string, unknown>;
     try {
@@ -173,7 +174,18 @@ export async function POST(request: NextRequest) {
               co_code: string;
               description: string;
             }[],
-          }
+          },
+          {
+            userId: user.id,
+            userEmail: user.email ?? null,
+            userRole: profile.role,
+            subjectId,
+            subjectCode: null,
+            jobId: crypto.randomUUID(),
+            relatedContentId: null,
+            feature: "qbank",
+            metadata: { action: "add_manual_tag" },
+          } satisfies AILogContext
         );
         if (tagged.length > 0) {
           finalCoCode = coCode ?? tagged[0].inferred_co_code;

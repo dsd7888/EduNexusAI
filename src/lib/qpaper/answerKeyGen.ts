@@ -28,6 +28,7 @@ import { isPoolItemMcqLike, type PoolItem } from "./templates";
 import { poolItemLabel, poolMarksPerItem } from "./poolRender";
 import { mcqSubSlotKey } from "./moduleAssignment";
 import { imageDisplaySize, type PaperImageMap } from "./qpaperImages";
+import type { AILogContext } from "@/lib/ai/providers/types";
 
 // ─── Public types ───────────────────────────────────────────────────────────
 
@@ -88,6 +89,7 @@ export interface AnswerKeySectionInput {
   referenceBooks: string;
   sectionQuestions: GeneratedQuestion[];
   modules: AnswerKeyModuleInfo[];
+  logContext: AILogContext;
 }
 
 export interface AnswerKeyGenSectionResult {
@@ -755,6 +757,14 @@ export async function generateAnswerKeySection(
 
   const emptyBlock = (kind: BlockKind): Promise<BlockResult> =>
     Promise.resolve({ kind, entries: [] });
+  const blockLogContext = (block: "mcq" | "main" | "alt"): AILogContext => ({
+    ...input.logContext,
+    metadata: {
+      ...(input.logContext.metadata ?? {}),
+      block,
+      section: input.sectionName,
+    },
+  });
 
   const mcqPromise: Promise<BlockResult> =
     split.mcq.length > 0
@@ -772,6 +782,7 @@ export async function generateAnswerKeySection(
             systemPrompt: ANSWER_KEY_MCQ_SYSTEM_PROMPT,
             temperature: 0.4,
             maxTokens: mcqBudget,
+            logContext: blockLogContext("mcq"),
           })
         )
       : emptyBlock("mcq");
@@ -785,6 +796,7 @@ export async function generateAnswerKeySection(
             systemPrompt: ANSWER_KEY_SYSTEM_PROMPT,
             temperature: 0.4,
             maxTokens: mainBudget,
+            logContext: blockLogContext("main"),
           })
         )
       : emptyBlock("main");
@@ -798,6 +810,7 @@ export async function generateAnswerKeySection(
             systemPrompt: ANSWER_KEY_SYSTEM_PROMPT,
             temperature: 0.4,
             maxTokens: altBudget,
+            logContext: blockLogContext("alt"),
           })
         )
       : emptyBlock("alt");

@@ -1,6 +1,7 @@
 import { requireRole, apiError } from '@/lib/api/helpers';
 import { refineSingleSlide } from '@/lib/ppt-refine/refiner';
 import type { ExtractedSlide, SlideType } from '@/lib/ppt-refine/types';
+import type { AILogContext } from '@/lib/ai/providers/types';
 import type { NextRequest } from 'next/server';
 
 // A single Flash call — well under a minute. Kept generous for the diagram case.
@@ -28,6 +29,7 @@ export async function POST(request: NextRequest) {
   try {
     const authResult = await requireRole(['faculty', 'superadmin', 'dept_admin', 'dean', 'hod']);
     if (authResult instanceof Response) return authResult;
+    const { user, profile, adminClient } = authResult;
 
     let body: Record<string, unknown>;
     try {
@@ -41,6 +43,11 @@ export async function POST(request: NextRequest) {
     const instruction = instructionRaw.trim();
     if (!instruction) {
       return apiError('Instruction is required', 400);
+    }
+    const extractionId =
+      typeof body.extraction_id === 'string' ? body.extraction_id.trim() : '';
+    if (!extractionId) {
+      return apiError('extraction_id is required for cost logging', 400);
     }
 
     // ─── Validate slide index + current slide ─────────────────────────────────
@@ -84,6 +91,22 @@ export async function POST(request: NextRequest) {
       typeof body.subject_name === 'string' && body.subject_name.trim()
         ? body.subject_name.trim()
         : 'this subject';
+    const subjectId =
+      typeof body.subject_id === 'string' && body.subject_id.trim()
+        ? body.subject_id.trim()
+        : null;
+    let subjectCode: string | null = null;
+    if (subjectId) {
+      const { data: subjectRow } = await adminClient
+        .from('subjects')
+        .select('code')
+        .eq('id', subjectId)
+        .maybeSingle();
+      subjectCode =
+        typeof (subjectRow as { code?: unknown } | null)?.code === 'string'
+          ? ((subjectRow as { code: string }).code || null)
+          : null;
+    }
     const topic = typeof body.topic === 'string' ? body.topic.trim() : '';
     const level = typeof body.level === 'string' && body.level.trim() ? body.level.trim() : 'intermediate';
     const neighboringTitles = Array.isArray(body.neighboring_titles)
@@ -100,6 +123,16 @@ export async function POST(request: NextRequest) {
       level,
       neighboringTitles,
       slideIndex,
+      logContext: {
+        userId: user.id,
+        userEmail: user.email ?? null,
+        userRole: profile.role,
+        subjectId,
+        subjectCode,
+        jobId: extractionId,
+        relatedContentId: null,
+        feature: 'ppt_refine',
+      } satisfies AILogContext,
     });
 
     return Response.json({

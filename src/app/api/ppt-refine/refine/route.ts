@@ -1,8 +1,9 @@
 import { requireRole, apiError } from '@/lib/api/helpers';
-import { createAdminClient } from '@/lib/db/supabase-server';
+import { backfillRelatedContentId } from '@/lib/ai/costLogger';
 import { refineDeck } from '@/lib/ppt-refine/refiner';
 import { assemblePptx } from '@/lib/ppt-refine/assembler';
 import type { SubjectContext } from '@/lib/ppt-refine/refiner';
+import type { AILogContext } from '@/lib/ai/providers/types';
 import type { ExtractedDeck, RefinementOptions } from '@/lib/ppt-refine/types';
 import type { NextRequest } from 'next/server';
 
@@ -15,7 +16,7 @@ export async function POST(request: NextRequest) {
 
     const authResult = await requireRole(['faculty', 'superadmin', 'dept_admin', 'dean', 'hod']);
     if (authResult instanceof Response) return authResult;
-    const { user, adminClient } = authResult;
+    const { user, profile, adminClient } = authResult;
 
     // ─── Parse body ──────────────────────────────────────────────────────────
     let body: Record<string, unknown>;
@@ -130,13 +131,14 @@ export async function POST(request: NextRequest) {
     // Use stored context as baseline; re-fetch if subject_id is provided
     let subjectContext: SubjectContext | undefined =
       storedCtx ?? undefined;
+    let subjectCode: string | null = null;
 
     if (options.subject_id) {
       try {
         const [subjectRes, modulesRes, coRes] = await Promise.all([
           adminClient
             .from('subjects')
-            .select('name')
+            .select('name, code')
             .eq('id', options.subject_id)
             .maybeSingle(),
           adminClient
@@ -161,7 +163,8 @@ export async function POST(request: NextRequest) {
         }
 
         if (subjectRes.data) {
-          const sub = subjectRes.data as { name: string };
+          const sub = subjectRes.data as { name: string; code?: string | null };
+          subjectCode = sub.code || null;
           subjectContext = {
             subject_name: sub.name,
             modules: ((modulesRes.data ?? []) as Array<{ name: string; description: string | null }>).map(
@@ -227,7 +230,25 @@ export async function POST(request: NextRequest) {
       `[ppt-refine/refine] Refining ${selectedIndices?.length ?? deck.slide_count}/${deck.slide_count} slides for user ${user.id}`
     );
 
-    const refinedDeck = await refineDeck(deck as ExtractedDeck, options, subjectContext, selectedIndices, chatEditedIndices);
+    const logContext: AILogContext = {
+      userId: user.id,
+      userEmail: user.email ?? null,
+      userRole: profile.role,
+      subjectId: options.subject_id ?? null,
+      subjectCode,
+      jobId: extractionId,
+      relatedContentId: null,
+      feature: 'ppt_refine',
+    };
+
+    const refinedDeck = await refineDeck(
+      deck as ExtractedDeck,
+      options,
+      subjectContext,
+      selectedIndices,
+      chatEditedIndices,
+      logContext
+    );
 
     // ─── Assemble PPTX (patch the original in place) ─────────────────────────
     console.log('[ppt-refine/refine] Assembling PPTX...');
@@ -272,7 +293,7 @@ export async function POST(request: NextRequest) {
     }
 
     // ─── Log to generated_content ────────────────────────────────────────────
-    const { error: insertError } = await adminClient
+    const { data: insertedContent, error: insertError } = await adminClient
       .from('generated_content')
       .insert({
         subject_id: options.subject_id ?? null,
@@ -304,11 +325,15 @@ export async function POST(request: NextRequest) {
         },
         generated_by: user.id,
         status: 'completed',
-      });
+      })
+      .select('id')
+      .single();
 
     if (insertError) {
       // Non-fatal — download URL is already generated
       console.warn('[ppt-refine/refine] generated_content insert failed:', insertError.message);
+    } else if (insertedContent?.id) {
+      await backfillRelatedContentId(extractionId, insertedContent.id);
     }
 
     console.log(

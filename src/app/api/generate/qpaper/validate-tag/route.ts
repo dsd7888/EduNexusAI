@@ -5,6 +5,7 @@ import {
   resolveCoDescription,
 } from "@/lib/qpaper/validateTags";
 import type { CourseOutcomeRow } from "@/lib/qpaper/builder";
+import type { AILogContext } from "@/lib/ai/providers/types";
 import type { NextRequest } from "next/server";
 
 /**
@@ -25,8 +26,33 @@ export async function POST(request: NextRequest) {
       "hod",
     ]);
     if (authResult instanceof Response) return authResult;
+    const { user, profile, adminClient } = authResult;
 
     const body = (await request.json()) as Record<string, unknown>;
+    const subjectId =
+      typeof body.subjectId === "string" && body.subjectId.trim()
+        ? body.subjectId.trim()
+        : typeof body.subject_id === "string" && body.subject_id.trim()
+          ? body.subject_id.trim()
+          : null;
+    const contentId =
+      typeof body.contentId === "string" && body.contentId.trim()
+        ? body.contentId.trim()
+        : typeof body.content_id === "string" && body.content_id.trim()
+          ? body.content_id.trim()
+          : null;
+    let subjectCode: string | null = null;
+    if (subjectId) {
+      const { data: subjectRow } = await adminClient
+        .from("subjects")
+        .select("code")
+        .eq("id", subjectId)
+        .maybeSingle();
+      subjectCode =
+        typeof (subjectRow as { code?: unknown } | null)?.code === "string"
+          ? ((subjectRow as { code: string }).code || null)
+          : null;
+    }
     const questionText = String(body.questionText ?? "").trim();
     const claimedCO =
       body.claimedCO != null && String(body.claimedCO).trim()
@@ -51,7 +77,18 @@ export async function POST(request: NextRequest) {
         claimedDescription: resolveCoDescription(claimedCO, courseOutcomes),
         allOutcomes: courseOutcomes,
       },
-      moduleContent
+      moduleContent,
+      {
+        userId: user.id,
+        userEmail: user.email ?? null,
+        userRole: profile.role,
+        subjectId,
+        subjectCode,
+        jobId: crypto.randomUUID(),
+        relatedContentId: contentId,
+        feature: "qpaper",
+        metadata: { action: "validate_tag" },
+      } satisfies AILogContext
     );
 
     const resolved = resolveTagValidation(

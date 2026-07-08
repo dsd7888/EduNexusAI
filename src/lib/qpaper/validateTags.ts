@@ -17,6 +17,7 @@ import type {
   QuestionPart,
   SubQuestion,
 } from "./builder";
+import type { AILogContext } from "@/lib/ai/providers/types";
 
 export interface TagValidation {
   /** True when the claimed CO and BTL both genuinely fit the question. */
@@ -170,7 +171,8 @@ export function resolveCoDescription(
 export async function validateQuestionTags(
   question: QuestionTagInput,
   courseOutcome: CourseOutcomeContext,
-  moduleContent: string
+  moduleContent: string,
+  logContext: AILogContext
 ): Promise<TagValidation> {
   const text = question.questionText.trim();
   // Nothing to judge against → treat as a pass (no flag, no noise).
@@ -220,6 +222,7 @@ Set matches=false ONLY when the CO or the BTL is clearly wrong and your confiden
       thinkingBudget: 0,
       maxTokens: 512,
       responseSchema: RESPONSE_SCHEMA,
+      logContext,
     });
 
     const parsed = JSON.parse(
@@ -282,7 +285,8 @@ Set matches=false ONLY when the CO or the BTL is clearly wrong and your confiden
 export async function attachTagValidations(
   sections: GeneratedSection[],
   outcomes: CourseOutcomeRow[],
-  moduleContentBySection: string[]
+  moduleContentBySection: string[],
+  logContext: AILogContext
 ): Promise<void> {
   type Unit = SubQuestion | QuestionPart;
   const jobs: Array<{ unit: Unit; moduleContent: string }> = [];
@@ -317,7 +321,7 @@ export async function attachTagValidations(
   if (jobs.length === 0) return;
 
   await Promise.all(
-    jobs.map(async ({ unit, moduleContent }) => {
+    jobs.map(async ({ unit, moduleContent }, idx) => {
       const validation = await validateQuestionTags(
         {
           questionText: unit.question,
@@ -328,7 +332,15 @@ export async function attachTagValidations(
           claimedDescription: resolveCoDescription(unit.co ?? null, outcomes),
           allOutcomes: outcomes,
         },
-        moduleContent
+        moduleContent,
+        {
+          ...logContext,
+          metadata: {
+            ...(logContext.metadata ?? {}),
+            validator: "batch",
+            unit_index: idx,
+          },
+        }
       );
       if (!validation.matches) {
         const resolved = resolveTagValidation(

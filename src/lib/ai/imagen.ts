@@ -1,4 +1,8 @@
+import { after } from 'next/server'
 import { GoogleGenAI, Modality } from '@google/genai'
+import { logAICall } from './costLogger'
+import { calculateImageCostInr } from './pricing'
+import type { AILogContext } from './providers/types'
 
 // Migrated to the unified @google/genai SDK. gemini.ts still uses the legacy
 // @google/generative-ai SDK; both can coexist while that file is migrated
@@ -32,6 +36,12 @@ export interface GenerateImageOptions {
   aspectRatio?: '16:9' | '4:3' | '1:1'
   /** Diagram intricacy tag from the outline — selects the image-model tier. */
   complexity?: ImageComplexity
+  /**
+   * When provided, each successful (or fully-failed) image generation writes
+   * one ai_call_logs row via after(). Callers in the PPT pipeline pass the
+   * same contentId/job_id as the text-model calls for that deck.
+   */
+  logContext?: AILogContext
 }
 
 /**
@@ -50,8 +60,10 @@ export async function generateImagenImage(
   const aspectRatio = opts.aspectRatio ?? '16:9'
   const complexity: ImageComplexity = opts.complexity ?? 'standard'
   const chain = IMAGE_MODEL_CHAIN[complexity]
+  const startedAt = Date.now()
 
   const ai = getGenAI()
+  let lastError: string | null = null
 
   for (const modelName of chain) {
     try {
@@ -71,13 +83,64 @@ export async function generateImagenImage(
           console.log(
             `[imagen] Generated via ${modelName} (tier=${complexity})`
           )
+          if (opts.logContext) {
+            const { costUsd, costInr } = calculateImageCostInr(complexity, 1)
+            const latencyMs = Date.now() - startedAt
+            after(() => {
+              void logAICall({
+                logContext: {
+                  ...opts.logContext!,
+                  metadata: {
+                    ...(opts.logContext!.metadata ?? {}),
+                    imageModel: modelName,
+                    tier: complexity,
+                  },
+                },
+                task: 'ppt_imagen',
+                model: 'imagen',
+                unitType: 'images',
+                imageCount: 1,
+                costUsd,
+                costInr,
+                status: 'success',
+                latencyMs,
+              })
+            })
+          }
           return inlineData.data
         }
       }
       console.warn(`[imagen] ${modelName}: no image parts in response`)
+      lastError = `${modelName}: no image parts in response`
     } catch (err: any) {
       console.warn(`[imagen] ${modelName} failed:`, err?.message ?? err)
+      lastError = err?.message ? String(err.message) : String(err)
     }
+  }
+
+  if (opts.logContext) {
+    const latencyMs = Date.now() - startedAt
+    const errMsg = (lastError ?? 'all image models failed').slice(0, 500)
+    after(() => {
+      void logAICall({
+        logContext: {
+          ...opts.logContext!,
+          metadata: {
+            ...(opts.logContext!.metadata ?? {}),
+            tier: complexity,
+          },
+        },
+        task: 'ppt_imagen',
+        model: 'imagen',
+        unitType: 'images',
+        imageCount: 0,
+        costUsd: 0,
+        costInr: 0,
+        status: 'error',
+        errorMessage: errMsg,
+        latencyMs,
+      })
+    })
   }
 
   return null

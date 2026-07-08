@@ -108,8 +108,19 @@ export async function GET(request: NextRequest) {
       moduleName,
     });
 
+    const jobId = crypto.randomUUID();
     const ai = await routeAI("chat", {
       messages: [{ role: "user", content: prompt }],
+      logContext: {
+        userId: user.id,
+        userEmail: user.email ?? null,
+        userRole: profile.role,
+        subjectId,
+        subjectCode: null,
+        jobId,
+        relatedContentId: null,
+        feature: "chat",
+      },
     });
     const aiResponse = String(ai.content ?? "").trim();
 

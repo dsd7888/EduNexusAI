@@ -7,7 +7,7 @@ export async function POST(request: NextRequest) {
   try {
     const authResult = await requireRole(["superadmin", "dept_admin"]);
     if (authResult instanceof Response) return authResult;
-    const { adminClient } = authResult;
+    const { user, profile, adminClient } = authResult;
 
     const body = (await request.json().catch(() => ({}))) as {
       subject_id?: string;
@@ -63,7 +63,11 @@ export async function POST(request: NextRequest) {
     // Respond immediately; run all classifications after the response is sent.
     after(async () => {
       for (const id of subjectIds) {
-        await classifyModulesForSubject(id);
+        await classifyModulesForSubject(id, {
+          userId: user.id,
+          userEmail: user.email ?? null,
+          userRole: profile.role,
+        });
       }
     });
 

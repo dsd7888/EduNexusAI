@@ -81,7 +81,8 @@ export async function POST(request: NextRequest) {
     // 1. Auth check — student only
     const authResult = await requireRole(["student"]);
     if (authResult instanceof Response) return authResult;
-    const { user, adminClient } = authResult;
+    const { user, profile: authProfile, adminClient } = authResult;
+    const jobId = crypto.randomUUID();
     const { data: profile, error: profileError } = await adminClient
       .from("profiles")
       .select("role, branch, semester")
@@ -321,6 +322,16 @@ Begin with [ and end with ]. Nothing else.`;
     // 7. Call routeAI('placement_gen', { ... })
     const result = await routeAI("placement_gen", {
       messages: [{ role: "user", content: prompt }],
+      logContext: {
+        userId: user.id,
+        userEmail: user.email ?? null,
+        userRole: authProfile.role,
+        subjectId: null,
+        subjectCode: null,
+        jobId,
+        relatedContentId: null,
+        feature: "placement_practice",
+      },
     });
 
     const rawText = String(result.content ?? "");

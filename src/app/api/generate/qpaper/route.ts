@@ -38,6 +38,7 @@ import {
   type SourceCategory,
 } from "@/lib/qpaper/sourcing";
 import { attachTagValidations } from "@/lib/qpaper/validateTags";
+import { backfillRelatedContentId } from "@/lib/ai/costLogger";
 import {
   attachQuestionImageUrls,
   loadPaperImages,
@@ -45,6 +46,7 @@ import {
 import { renderPaperMath } from "@/lib/qpaper/paperMath";
 import { rowToBankQuestion, type FqbRow } from "@/lib/qbank/row";
 import type { BankQuestion } from "@/lib/qbank/types";
+import type { AILogContext } from "@/lib/ai/providers/types";
 import type { NextRequest } from "next/server";
 
 interface ModuleRow {
@@ -130,7 +132,7 @@ export async function POST(request: NextRequest) {
 
     const authResult = await requireRole(["faculty", "superadmin", "dean", "hod"]);
     if (authResult instanceof Response) return authResult;
-    const { user, adminClient } = authResult;
+    const { user, profile, adminClient } = authResult;
 
     let body: Record<string, unknown>;
     try {
@@ -141,6 +143,7 @@ export async function POST(request: NextRequest) {
 
     const subjectId = String(body.subjectId ?? "").trim();
     if (!subjectId) return apiError("subjectId is required", 400);
+    const jobId = crypto.randomUUID();
     const templateId =
       typeof body.templateId === "string" ? body.templateId.trim() : "";
     const fromBank =
@@ -241,6 +244,16 @@ export async function POST(request: NextRequest) {
     if (subjectError || !subject) return apiError("Subject not found", 404);
     const subjectName = (subject as { name: string }).name;
     const subjectCode = (subject as { code: string }).code;
+    const baseLogContext: AILogContext = {
+      userId: user.id,
+      userEmail: user.email ?? null,
+      userRole: profile.role,
+      subjectId,
+      subjectCode: subjectCode || null,
+      jobId,
+      relatedContentId: null,
+      feature: "qpaper",
+    };
 
     // ── Step 1b: subject_content (syllabus, ref books) ────────────────────
     const { data: contentRow } = await adminClient
@@ -575,6 +588,7 @@ export async function POST(request: NextRequest) {
           btlRange,
           coTargets: sectionCoTargetsFor(section),
           difficultyTargets,
+          logContext: baseLogContext,
         });
         return { questions, warnings, error: null as string | null };
       } catch (err) {
@@ -698,7 +712,8 @@ export async function POST(request: NextRequest) {
           co_code: c.co_code,
           description: c.description,
         })),
-        moduleContentBySection
+        moduleContentBySection,
+        baseLogContext
       );
     } catch (err) {
       console.error("[qpaper] tag validation batch failed:", err);
@@ -762,22 +777,29 @@ export async function POST(request: NextRequest) {
       0
     );
 
-    await adminClient.from("generated_content").insert({
-      subject_id: subjectId,
-      module_id: null,
-      type: "qpaper",
-      title: paperTitle,
-      file_path: filePath,
-      metadata: {
-        totalMarks,
-        totalQuestions,
-        sections: generatedSections.length,
-        templateId: template?.id ?? null,
-        downloadUrl: urlData.publicUrl,
-      },
-      generated_by: user.id,
-      status: "completed",
-    });
+    const { data: insertedContent } = await adminClient
+      .from("generated_content")
+      .insert({
+        subject_id: subjectId,
+        module_id: null,
+        type: "qpaper",
+        title: paperTitle,
+        file_path: filePath,
+        metadata: {
+          totalMarks,
+          totalQuestions,
+          sections: generatedSections.length,
+          templateId: template?.id ?? null,
+          downloadUrl: urlData.publicUrl,
+        },
+        generated_by: user.id,
+        status: "completed",
+      })
+      .select("id")
+      .single();
+    if (insertedContent?.id) {
+      await backfillRelatedContentId(jobId, insertedContent.id);
+    }
 
     return Response.json({
       success: true,

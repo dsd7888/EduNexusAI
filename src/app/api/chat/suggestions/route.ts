@@ -18,12 +18,14 @@ export async function POST(request: NextRequest) {
     });
 
   try {
+    let authUser: { id: string; email?: string } | null = null;
     // Auth check - user must be authenticated, but we never error; we just fall back to defaults if not.
     try {
       const authResult = await requireAuth();
       if (authResult instanceof Response) {
         return safeReturn();
       }
+      authUser = authResult.user;
     } catch {
       // If auth fails for any reason, just return defaults.
       return safeReturn();
@@ -33,14 +35,25 @@ export async function POST(request: NextRequest) {
     const subjectId = String(body?.subjectId ?? "").trim();
     const syllabusContent = String(body?.syllabusContent ?? "").trim();
 
-    if (!subjectId || !syllabusContent) {
+    if (!authUser || !subjectId || !syllabusContent) {
       return safeReturn();
     }
 
     const prompt = buildSuggestedPromptsRequest({ subjectId, syllabusContent });
 
+    const jobId = crypto.randomUUID();
     const aiResponse = await routeAI("chat", {
       messages: [{ role: "user", content: prompt }],
+      logContext: {
+        userId: authUser.id,
+        userEmail: authUser.email ?? null,
+        userRole: null,
+        subjectId,
+        subjectCode: null,
+        jobId,
+        relatedContentId: null,
+        feature: "chat",
+      },
     });
 
     let raw = String(aiResponse.content ?? "").trim();

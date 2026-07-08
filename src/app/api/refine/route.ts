@@ -14,7 +14,7 @@ export async function POST(request: NextRequest) {
   try {
     const authResult = await requireRole(["faculty", "superadmin", "dean", "hod"]);
     if (authResult instanceof Response) return authResult;
-    const { user, adminClient } = authResult;
+    const { user, profile, adminClient } = authResult;
 
     const body = await request.json().catch(() => ({} as any));
     const subjectId = String(body?.subjectId ?? "").trim();
@@ -96,8 +96,19 @@ export async function POST(request: NextRequest) {
     console.log("[refine] Types:", validTypes.join(", "));
     console.log("[refine] Content length:", contentToRefine.length, "chars");
 
+    const jobId = crypto.randomUUID();
     const ai = await routeAI("refine", {
       messages: [{ role: "user", content: prompt }],
+      logContext: {
+        userId: user.id,
+        userEmail: user.email ?? null,
+        userRole: profile.role,
+        subjectId: subjectId || null,
+        subjectCode: null,
+        jobId,
+        relatedContentId: null,
+        feature: "refine",
+      },
     });
 
     const aiResponse = String(ai.content ?? "");

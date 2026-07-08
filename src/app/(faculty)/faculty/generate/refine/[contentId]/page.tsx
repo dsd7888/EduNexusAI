@@ -282,6 +282,7 @@ export default function RefinePresentationPage() {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
+            contentId,
             operation: opForCall,
             slideIndex: selectedSlideIndex,
             instruction: trimmed,

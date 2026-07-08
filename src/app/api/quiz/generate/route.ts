@@ -3,6 +3,7 @@ import {
   normalizeQuizQuestions,
 } from "@/lib/quiz/generator";
 import { routeAI } from "@/lib/ai/router";
+import { backfillRelatedContentId } from "@/lib/ai/costLogger";
 import {
   createAdminClient,
   createServerClient,
@@ -70,7 +71,7 @@ export async function POST(request: NextRequest) {
   try {
     const authResult = await requireRole(["student"]);
     if (authResult instanceof Response) return authResult;
-    const { user, adminClient } = authResult;
+    const { user, profile, adminClient } = authResult;
 
     const rateCheck = await checkRateLimit({
       userId: user.id,
@@ -205,8 +206,19 @@ export async function POST(request: NextRequest) {
       focusTopic,
     });
 
+    const jobId = crypto.randomUUID();
     const ai = await routeAI("quiz_gen", {
       messages: [{ role: "user", content: prompt }],
+      logContext: {
+        userId: user.id,
+        userEmail: user.email ?? null,
+        userRole: profile.role,
+        subjectId: primary.subjectId,
+        subjectCode: primary.code || null,
+        jobId,
+        relatedContentId: null,
+        feature: "quiz",
+      },
     });
 
     const rawText = String(ai.content ?? "");
@@ -288,6 +300,8 @@ export async function POST(request: NextRequest) {
       console.error("[quiz/generate] insert error:", insertError);
       return apiError("Failed to save quiz", 500);
     }
+
+    await backfillRelatedContentId(jobId, quiz.id);
 
     return Response.json({
       quizId: quiz.id,

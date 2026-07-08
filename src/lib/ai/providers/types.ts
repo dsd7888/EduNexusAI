@@ -10,6 +10,19 @@ export interface ChatAttachment {
   data: string;
 }
 
+export interface AILogContext {
+  userId: string | null;
+  userEmail: string | null;
+  userRole: string | null;
+  subjectId: string | null;
+  subjectCode: string | null;
+  jobId: string; // caller-generated UUID, or an existing stable id
+  relatedContentId: string | null;
+  feature: string; // see feature column comment on ai_call_logs
+  attemptNumber?: number; // defaults to 1 if omitted
+  metadata?: Record<string, unknown>;
+}
+
 export interface ChatParams {
   messages: ChatMessage[];
   systemPrompt?: string;
@@ -32,11 +45,18 @@ export interface ChatParams {
    * for tasks that need reasoning but must leave headroom for content output.
    */
   thinkingBudget?: number;
+  /**
+   * Required attribution context for ai_call_logs. Every routeAI caller must
+   * supply this — the field is required so missing sites fail TypeScript instead
+   * of silently skipping cost logging.
+   */
+  logContext: AILogContext;
 }
 
 export interface ChatResponse {
   content: string;
-  tokensUsed: { input: number; output: number };
+  tokensUsed: { input: number; output: number; thinking: number };
+  costUsd: number;
   costInr: number;
   modelUsed: string;
 }
