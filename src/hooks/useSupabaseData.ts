@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { createBrowserClient } from "@/lib/db/supabase-browser";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -76,35 +76,53 @@ export function useCurrentUser() {
 export function useFacultySubjects() {
   const [subjects, setSubjects] = useState<SubjectRow[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [refetchToken, setRefetchToken] = useState(0);
 
   useEffect(() => {
+    let cancelled = false;
+    setIsLoading(true);
+    setError(null);
+
     const supabase = createBrowserClient();
-    supabase.auth.getUser().then(async ({ data: { user } }) => {
-      if (!user) { setIsLoading(false); return; }
+    supabase.auth.getUser()
+      .then(async ({ data: { user } }) => {
+        if (cancelled) return;
+        if (!user) { setIsLoading(false); return; }
 
-      const { data: assignments } = await supabase
-        .from("faculty_assignments")
-        .select("subject_id")
-        .eq("faculty_id", user.id);
+        const { data: assignments } = await supabase
+          .from("faculty_assignments")
+          .select("subject_id")
+          .eq("faculty_id", user.id);
 
-      const ids = [...new Set(
-        (assignments ?? []).map((a) => a.subject_id).filter(Boolean)
-      )];
+        const ids = [...new Set(
+          (assignments ?? []).map((a) => a.subject_id).filter(Boolean)
+        )];
 
-      if (ids.length === 0) { setIsLoading(false); return; }
+        if (ids.length === 0) { if (!cancelled) setIsLoading(false); return; }
 
-      const { data: subs } = await supabase
-        .from("subjects")
-        .select("id, name, code")
-        .in("id", ids)
-        .order("code");
+        const { data: subs } = await supabase
+          .from("subjects")
+          .select("id, name, code")
+          .in("id", ids)
+          .order("code");
 
-      setSubjects((subs ?? []) as SubjectRow[]);
-      setIsLoading(false);
-    });
-  }, []);
+        if (cancelled) return;
+        setSubjects((subs ?? []) as SubjectRow[]);
+        setIsLoading(false);
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        setError(err instanceof Error ? err.message : "Failed to load subjects");
+        setIsLoading(false);
+      });
 
-  return { subjects, isLoading };
+    return () => { cancelled = true; };
+  }, [refetchToken]);
+
+  const refetch = useCallback(() => setRefetchToken((t) => t + 1), []);
+
+  return { subjects, isLoading, error, refetch };
 }
 
 /**

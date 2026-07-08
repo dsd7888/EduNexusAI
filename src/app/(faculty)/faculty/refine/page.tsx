@@ -1,6 +1,7 @@
 "use client";
 
 import ReactMarkdown from "react-markdown";
+import { RichQuestionText } from "@/components/RichQuestionText";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -189,7 +190,7 @@ function SlideVisualPreview({ visual }: { visual: SlideVisual }) {
 // ─── PPT REFINEMENT TAB ───────────────────────────────────────────────────────
 
 function PptRefinementTab() {
-  const { subjects } = useFacultySubjects();
+  const { subjects, isLoading: subjectsLoading, error: subjectsError, refetch: refetchSubjects } = useFacultySubjects();
 
   // Stage machine
   const [stage, setStage] = useState<PptStage>("upload");
@@ -221,6 +222,10 @@ function PptRefinementTab() {
   // ── File selection ──
 
   const handleFileSelect = useCallback(async (f: File) => {
+    if (!selectedSubjectId) {
+      toast.error("Select a subject before uploading");
+      return;
+    }
     if (!f.name.toLowerCase().endsWith(".pptx")) {
       toast.error("Only .pptx files are supported");
       return;
@@ -429,20 +434,35 @@ function PptRefinementTab() {
         {/* Step 1 — Subject selector */}
         <Card>
           <CardHeader className="pb-3">
-            <CardTitle className="text-sm font-medium">1. Link to a Subject <span className="text-muted-foreground font-normal">(recommended)</span></CardTitle>
-            <CardDescription className="text-xs">Linking enables syllabus-aware refinement — better examples, aligned outcomes</CardDescription>
+            <CardTitle className="text-sm font-medium">1. Link to a Subject <span className="text-red-400 font-normal">(required)</span></CardTitle>
+            <CardDescription className="text-xs">Required for syllabus-aware refinement and so this presentation appears in your history</CardDescription>
           </CardHeader>
           <CardContent>
-            <Select value={selectedSubjectId} onValueChange={setSelectedSubjectId}>
-              <SelectTrigger>
-                <SelectValue placeholder="Select a subject (optional)…" />
-              </SelectTrigger>
-              <SelectContent>
-                {subjects.map(s => (
-                  <SelectItem key={s.id} value={s.id}>{s.code} — {s.name}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+            {subjectsError ? (
+              <div className="flex items-center justify-between gap-3 rounded-md border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-400">
+                <span>Couldn&apos;t load your subjects — {subjectsError}</span>
+                <button onClick={refetchSubjects} className="shrink-0 text-xs underline hover:text-red-300">Retry</button>
+              </div>
+            ) : subjectsLoading ? (
+              <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                <Loader2 className="size-4 animate-spin" /> Loading subjects…
+              </div>
+            ) : subjects.length === 0 ? (
+              <div className="rounded-md border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-400">
+                No subjects assigned — contact your admin to get a subject assigned before refining presentations.
+              </div>
+            ) : (
+              <Select value={selectedSubjectId} onValueChange={setSelectedSubjectId}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Select a subject…" />
+                </SelectTrigger>
+                <SelectContent>
+                  {subjects.map(s => (
+                    <SelectItem key={s.id} value={s.id}>{s.code} — {s.name}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            )}
           </CardContent>
         </Card>
 
@@ -451,20 +471,26 @@ function PptRefinementTab() {
           <p className="text-sm font-medium text-foreground">2. Upload your presentation</p>
           <div
             className={cn(
-              "flex flex-col items-center justify-center rounded-xl border-2 border-dashed transition-all cursor-pointer min-h-[280px] px-8",
-              isDragging
-                ? "border-indigo-400 bg-indigo-500/10"
-                : isExtracting
-                ? "border-border bg-muted/20 cursor-wait"
-                : "border-border hover:border-indigo-400/60 hover:bg-muted/10"
+              "flex flex-col items-center justify-center rounded-xl border-2 border-dashed transition-all min-h-[280px] px-8",
+              !selectedSubjectId
+                ? "border-border bg-muted/10 cursor-not-allowed opacity-60"
+                : cn(
+                    "cursor-pointer",
+                    isDragging
+                      ? "border-indigo-400 bg-indigo-500/10"
+                      : isExtracting
+                      ? "border-border bg-muted/20 cursor-wait"
+                      : "border-border hover:border-indigo-400/60 hover:bg-muted/10"
+                  )
             )}
-            onDragOver={e => { e.preventDefault(); setIsDragging(true); }}
+            onDragOver={e => { e.preventDefault(); if (selectedSubjectId) setIsDragging(true); }}
             onDragLeave={() => setIsDragging(false)}
-            onDrop={handleDrop}
-            onClick={() => !isExtracting && fileInputRef.current?.click()}
+            onDrop={e => { if (selectedSubjectId) handleDrop(e); else e.preventDefault(); }}
+            onClick={() => selectedSubjectId && !isExtracting && fileInputRef.current?.click()}
             role="button"
-            tabIndex={0}
-            onKeyDown={e => e.key === "Enter" && !isExtracting && fileInputRef.current?.click()}
+            tabIndex={selectedSubjectId ? 0 : -1}
+            aria-disabled={!selectedSubjectId}
+            onKeyDown={e => e.key === "Enter" && selectedSubjectId && !isExtracting && fileInputRef.current?.click()}
             aria-label="Upload PPTX file"
           >
             <input
@@ -472,10 +498,18 @@ function PptRefinementTab() {
               type="file"
               accept=".pptx"
               className="hidden"
+              disabled={!selectedSubjectId}
               onChange={e => { const f = e.target.files?.[0]; if (f) handleFileSelect(f); }}
             />
 
-            {isExtracting ? (
+            {!selectedSubjectId ? (
+              <div className="flex flex-col items-center gap-3 text-center">
+                <div className="rounded-full bg-muted p-4 border border-border">
+                  <Presentation className="size-8 text-muted-foreground" />
+                </div>
+                <p className="text-sm font-medium text-muted-foreground">Select a subject to continue</p>
+              </div>
+            ) : isExtracting ? (
               <div className="flex flex-col items-center gap-4 text-center">
                 <Loader2 className="size-10 text-indigo-400 animate-spin" />
                 <div>
@@ -820,7 +854,7 @@ function PptRefinementTab() {
                     <div className="flex items-center gap-2 min-w-0">
                       <span className="text-[10px] text-muted-foreground w-5 shrink-0 text-right">{s.index + 1}</span>
                       <SlideTypeBadge type={s.type} />
-                      <span className="text-xs font-medium truncate flex-1">{s.refined_title}</span>
+                      <span className="text-xs font-medium truncate flex-1"><RichQuestionText text={s.refined_title} /></span>
                       {s.is_new && <span className="text-[9px] text-emerald-400 shrink-0">✦</span>}
                     </div>
                     {s.change_summary && s.change_summary !== "No changes needed." && (
@@ -859,7 +893,7 @@ function PptRefinementTab() {
                 {/* Slide content card */}
                 <Card className="overflow-hidden">
                   <CardHeader className="pb-3 bg-indigo-500/5 border-b border-border">
-                    <CardTitle className="text-base font-semibold">{selectedSlide.refined_title}</CardTitle>
+                    <CardTitle className="text-base font-semibold"><RichQuestionText text={selectedSlide.refined_title} /></CardTitle>
                   </CardHeader>
                   <CardContent className="pt-4 space-y-4">
                     {/* Body bullets */}
@@ -871,7 +905,7 @@ function PptRefinementTab() {
                           return (
                             <li key={i} className="flex items-start gap-2 text-sm">
                               <span className="mt-1.5 size-1.5 rounded-full bg-indigo-400/60 shrink-0" />
-                              <span className="text-foreground/90">{bullet}</span>
+                              <span className="text-foreground/90"><RichQuestionText text={bullet} /></span>
                             </li>
                           );
                         })}
@@ -883,7 +917,7 @@ function PptRefinementTab() {
                       <div className="rounded-lg bg-indigo-500/10 border border-indigo-500/30 p-3">
                         <p className="text-xs font-bold text-indigo-300 uppercase tracking-wide mb-1">💡 Key Insight</p>
                         <p className="text-sm text-foreground/90">
-                          {selectedSlide.refined_body.find(b => /^key insight:/i.test(b.trim()))?.replace(/^key insight:\s*/i, "")}
+                          <RichQuestionText text={selectedSlide.refined_body.find(b => /^key insight:/i.test(b.trim()))?.replace(/^key insight:\s*/i, "") ?? ""} />
                         </p>
                       </div>
                     )}
