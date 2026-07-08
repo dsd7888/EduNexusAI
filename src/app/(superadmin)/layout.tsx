@@ -8,6 +8,7 @@ import {
   Upload,
   Users,
   BarChart2,
+  LineChart,
 } from "lucide-react";
 
 import { NavLink } from "@/components/layout/NavLink";
@@ -59,6 +60,10 @@ export default function SuperadminLayout({ children }: LayoutProps) {
           <NavLink href="/superadmin/analytics">
             <BarChart2 className="size-4" />
             <span>Analytics</span>
+          </NavLink>
+          <NavLink href="/superadmin/pilot-analysis">
+            <LineChart className="size-4" />
+            <span>Pilot Analysis</span>
           </NavLink>
         </nav>
 
