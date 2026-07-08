@@ -148,9 +148,10 @@ function suggestionsForType(t: SlideType): string[] {
   return CHAT_SUGGESTIONS_BY_TYPE[t] ?? DEFAULT_CHAT_SUGGESTIONS;
 }
 
-// A slide edited via the single-slide chat this session. Only title/body_text
-// flow back into the bulk pass (the export-embedding gap for `visual` is
-// Increment 6's job); `visual` here drives the live preview only.
+// A slide edited via the single-slide chat this session. title/body_text AND any
+// chat-attached `visual` flow back into the bulk pass: the visual is baked onto
+// the inline deck below so the assembler rasterizes + embeds it into the export
+// (it also drives the live preview here).
 interface ChatEditedSlide {
   title: string;
   body_text: string[];
@@ -726,7 +727,11 @@ function PptRefinementTab() {
           ...extraction.extracted_deck,
           slides: (extraction.extracted_deck as ExtractedDeck).slides.map((s) => {
             const edit = chatEdits[s.index];
-            return edit ? { ...s, title: edit.title, body_text: edit.body_text } : s;
+            // Bake the edited title/body AND any chat-attached visual onto the
+            // inline deck so the assembler embeds the visual (not just previews it).
+            return edit
+              ? { ...s, title: edit.title, body_text: edit.body_text, visual: edit.visual }
+              : s;
           }),
         };
         body.extracted_deck = editedDeck;

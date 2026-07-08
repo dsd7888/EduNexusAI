@@ -1,5 +1,6 @@
 import AdmZip from 'adm-zip';
 import { parseSlideSize, type SlideCanvas } from './slide-size';
+import { rasterizeVisual, type RasterizedVisual } from './visual-raster';
 import {
   NO_CHANGE_SUMMARY,
   BATCH_FAILURE_SUMMARY,
@@ -30,11 +31,22 @@ import type { RefinedDeck, RefinedSlide } from './types';
  *   text spans we guarantee every other byte is identical to the original, and
  *   any uncertainty makes us bail and keep the original slide untouched.
  *
- * NOTE ON SCOPE: visual (<p:pic>) injection and bottom "KEY INSIGHT" callout
- * boxes are intentionally NOT injected into existing slides — an absolutely
- * positioned box would cover the original footer/logo and clash with the
- * preserved theme. Refined visual/insight content still flows through as body
- * text. New slides are built text-only so they always open cleanly.
+ * VISUAL EMBEDDING: an AI-generated visual (RefinedSlide.visual — SVG, Imagen
+ * PNG or Mermaid) IS now rasterized to PNG and embedded as a <p:pic>:
+ *   - Existing slides: only when the slide has no pre-existing image/diagram
+ *     (double-guarded by has_image/has_diagram AND an actual <p:pic> scan), and
+ *     only when the refined body text still fits after reserving room for the
+ *     picture (the visual is DROPPED, text kept whole, if it wouldn't — we never
+ *     spill text to a continuation just to fit a picture). The picture sits in
+ *     the freed bottom of the body box, sized against the deck's real canvas.
+ *   - New/AI-proposed slides: the <p:pic> is added directly during
+ *     buildNewSlideXml, positioned/sized from the same real canvas.
+ * Media parts (ppt/media/imageN.png), [Content_Types].xml coverage and the
+ * slide-level .rels relationships are added via the same rId/part allocation
+ * helpers the new-slide append pass uses. Bottom "KEY INSIGHT" callout boxes
+ * remain text-only (never injected as absolutely positioned boxes). A visual
+ * that fails to rasterize (malformed SVG, mermaid.ink outage) is skipped with a
+ * logged warning — one bad diagram never fails the whole export.
  */
 
 // ─── Text helpers ───────────────────────────────────────────────────────────
@@ -511,6 +523,13 @@ export interface PatchResult {
   /** True when the refined BODY specifically was dropped back to the original
    *  (no continuation split was possible either). Independent of titleReverted. */
   bodyReverted?: boolean;
+  /** EMU box where an embedded visual should be placed on this existing slide.
+   *  Set ONLY when opts.visual was supplied, the slide had room, AND the refined
+   *  body still fits after reserving that room. The caller (assemblePptx) owns
+   *  the media-part / rels / <p:pic> mechanics; patchSlideXml owns the geometry
+   *  and the fits-or-drop decision. Undefined → no visual placed (none supplied,
+   *  slide already had an image, or the text wouldn't fit alongside it). */
+  visualBox?: Geometry;
 }
 
 /**
@@ -532,11 +551,20 @@ export interface PatchResult {
 export function patchSlideXml(
   originalXml: string,
   slide: RefinedSlide,
-  opts: { allowNewSlides?: boolean; canvas?: SlideCanvas } = {}
+  opts: {
+    allowNewSlides?: boolean;
+    canvas?: SlideCanvas;
+    /** Pixel dimensions of a rasterized visual to embed on this slide. When
+     *  supplied (and the slide has no pre-existing image and the text still
+     *  fits), patchSlideXml reserves the bottom of the body box and returns the
+     *  placement geometry as `visualBox`. */
+    visual?: { widthPx: number; heightPx: number };
+  } = {}
 ): PatchResult {
   let continuation: ContinuationSpec | undefined;
   let titleReverted = false;
   let bodyReverted = false;
+  let visualBox: Geometry | undefined;
   try {
     const spTree = getInnerRange(originalXml, 'p:spTree');
     if (!spTree) return { xml: originalXml };
@@ -640,7 +668,63 @@ export function patchSlideXml(
       if (!Number.isFinite(bodyFontPt) || bodyFontPt <= 0) bodyFontPt = DEFAULT_BODY_FONT_PT;
 
       const cleanedBody = newBody.map((b) => cleanText(b)).filter(Boolean);
-      const fit = assessTextFit(bodyShape.spXml, cleanedBody, effectiveCy, DEFAULT_BODY_FONT_PT);
+      let fit = assessTextFit(bodyShape.spXml, cleanedBody, effectiveCy, DEFAULT_BODY_FONT_PT);
+
+      // ── Visual reservation ──────────────────────────────────────────────
+      // If a rasterized visual is available for this slide, reserve the bottom
+      // of the body box for it and re-check that the refined text still fits the
+      // reduced region. Double-guarded so we NEVER place a second image over an
+      // existing one (has_image/has_diagram flags AND an actual <p:pic> scan), and
+      // we only proceed when the text currently fits — no point starving already-
+      // tight text for a decorative picture. If the text would overflow the
+      // reduced region, the visual is DROPPED (logged) and the text kept whole:
+      // continuation slides stay reserved for genuine text overflow, never for
+      // making room for an AI visual (a deliberate judgment call — the faculty's
+      // text is the load-bearing payload; the visual is additive).
+      const hasExistingPic = /<p:pic\b/.test(originalXml);
+      const canPlaceVisual =
+        !!opts.visual &&
+        !slide.has_image &&
+        !slide.has_diagram &&
+        !hasExistingPic &&
+        !!bodyXf &&
+        Number.isFinite(bodyXf.x) &&
+        Number.isFinite(bodyXf.y) &&
+        Number.isFinite(effectiveCy) &&
+        Number.isFinite(cxBody);
+
+      if (canPlaceVisual && fit.kind !== 'overflow') {
+        const fullCy = effectiveCy;
+        const reservedCy = Math.round(fullCy * VISUAL_RESERVE_FRACTION);
+        const textCy = fullCy - reservedCy - VISUAL_GAP_EMU;
+        if (textCy >= MIN_TEXT_CY_EMU) {
+          const textFit = fitScaleForBox(cleanedBody, cxBody, textCy, bodyFontPt);
+          if (textFit.kind !== 'overflow') {
+            shrunkCy = textCy; // emitBody will shrink the body box to the text region
+            fit = textFit;
+            const regionTop = bodyXf!.y + textCy + VISUAL_GAP_EMU;
+            visualBox = fitPicInRegion(
+              { x: bodyXf!.x, y: regionTop, cx: cxBody, cy: reservedCy },
+              opts.visual!.widthPx,
+              opts.visual!.heightPx
+            );
+            console.log(
+              `[ppt-refine/assembler] slide ${slide.index}: reserved ` +
+                `${(reservedCy / 914400).toFixed(2)}" of body for embedded visual`
+            );
+          } else {
+            console.warn(
+              `[ppt-refine/assembler] slide ${slide.index}: refined body wouldn't fit ` +
+                `alongside a visual — dropping the visual, keeping text whole`
+            );
+          }
+        } else {
+          console.warn(
+            `[ppt-refine/assembler] slide ${slide.index}: body box too short to host a ` +
+              `visual — dropping the visual`
+          );
+        }
+      }
 
       // Emit the body edit for a given bullet list at a given fit result.
       const emitBody = (bullets: string[], bodyFit: FitResult) => {
@@ -726,7 +810,14 @@ export function patchSlideXml(
     edits.sort((a, b) => b.start - a.start);
     let out = originalXml;
     for (const e of edits) out = out.slice(0, e.start) + e.text + out.slice(e.end);
-    return { xml: out, continuation, reverted: titleReverted || bodyReverted, titleReverted, bodyReverted };
+    return {
+      xml: out,
+      continuation,
+      reverted: titleReverted || bodyReverted,
+      titleReverted,
+      bodyReverted,
+      visualBox,
+    };
   } catch (err) {
     console.warn('[ppt-refine/assembler] patchSlideXml failed, keeping original:', err);
     return { xml: originalXml };
@@ -868,7 +959,14 @@ function safeCanvas(canvas: SlideCanvas): SlideCanvas {
 export function buildNewSlideXml(
   slide: RefinedSlide,
   canvas: SlideCanvas,
-  opts: { bodyFontScale?: number; isContinuation?: boolean } = {}
+  opts: {
+    bodyFontScale?: number;
+    isContinuation?: boolean;
+    /** An embedded visual for this new slide: the (already-added) image
+     *  relationship id plus pixel aspect. When set, the body box is shrunk and a
+     *  <p:pic> is placed in the freed bottom region, sized from the real canvas. */
+    visual?: { rId: string; widthPx: number; heightPx: number };
+  } = {}
 ): string {
   let title = cleanText(slide.refined_title || slide.title || 'Slide');
   // A continuation slide's title already carries "(cont'd)" — don't also prefix
@@ -898,6 +996,27 @@ export function buildNewSlideXml(
   const t = scaleBox(TITLE_REF, widthEmu, heightEmu);
   const b = scaleBox(BODY_REF, widthEmu, heightEmu);
 
+  // If a visual is embedded, reserve the bottom of the body box for it (same
+  // fraction/gap as the existing-slide path) and place a <p:pic> there. The body
+  // text box is shrunk to the freed top region so text and picture never overlap.
+  let bodyCy = b.cy;
+  let picXml = '';
+  if (opts.visual) {
+    const reservedCy = Math.round(b.cy * VISUAL_RESERVE_FRACTION);
+    const textCy = b.cy - reservedCy - VISUAL_GAP_EMU;
+    if (textCy >= MIN_TEXT_CY_EMU) {
+      bodyCy = textCy;
+      const region: Geometry = {
+        x: b.x,
+        y: b.y + textCy + VISUAL_GAP_EMU,
+        cx: b.cx,
+        cy: reservedCy,
+      };
+      const picBox = fitPicInRegion(region, opts.visual.widthPx, opts.visual.heightPx);
+      picXml = buildPicXml(opts.visual.rId, picBox, 4);
+    }
+  }
+
   // Explicit positioned shapes (NOT <p:ph> placeholders) so font sizes are
   // deterministic instead of inherited from the master. Positions/sizes are
   // scaled to the source deck's canvas; font sizes are intentionally NOT scaled.
@@ -921,9 +1040,11 @@ export function buildNewSlideXml(
     // Body — explicit position, 16pt regular / 14pt sub-bullets, autofit
     `<p:sp><p:nvSpPr><p:cNvPr id="3" name="Body"/>` +
     `<p:cNvSpPr><a:spLocks noGrp="1"/></p:cNvSpPr><p:nvPr/></p:nvSpPr>` +
-    `<p:spPr><a:xfrm><a:off x="${b.x}" y="${b.y}"/><a:ext cx="${b.cx}" cy="${b.cy}"/></a:xfrm>` +
+    `<p:spPr><a:xfrm><a:off x="${b.x}" y="${b.y}"/><a:ext cx="${b.cx}" cy="${bodyCy}"/></a:xfrm>` +
     `<a:prstGeom prst="rect"><a:avLst/></a:prstGeom><a:noFill/></p:spPr>` +
     `<p:txBody><a:bodyPr>${bodyAutofit}</a:bodyPr><a:lstStyle/>${body}</p:txBody></p:sp>` +
+    // Optional embedded visual (<p:pic>) in the reserved bottom region.
+    picXml +
     `</p:spTree></p:cSld>` +
     `<p:clrMapOvr><a:masterClrMapping/></p:clrMapOvr></p:sld>`
   );
@@ -957,13 +1078,19 @@ function makeContinuationSlide(source: RefinedSlide, bullets: string[]): Refined
   };
 }
 
-function buildSlideRels(layoutTarget: string): string {
+function buildSlideRels(layoutTarget: string, imageMediaNum?: number): string {
+  // rId1 = slideLayout (always). rId2 = embedded image (only when the new slide
+  // carries a visual) — buildNewSlideXml references it via <a:blip r:embed="rId2">.
+  const imageRel =
+    imageMediaNum !== undefined
+      ? `<Relationship Id="rId2" Type="${IMAGE_REL_TYPE}" Target="../media/image${imageMediaNum}.png"/>`
+      : '';
   return (
     `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
     `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">` +
     `<Relationship Id="rId1" ` +
     `Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideLayout" ` +
-    `Target="${layoutTarget}"/></Relationships>`
+    `Target="${layoutTarget}"/>${imageRel}</Relationships>`
   );
 }
 
@@ -997,6 +1124,113 @@ function maxSldId(presXml: string): number {
     max = Math.max(max, parseInt(m[1], 10));
   return max;
 }
+
+// ─── Media / <p:pic> embedding helpers ──────────────────────────────────────
+// A rasterized visual becomes a package media part (ppt/media/imageN.png), a
+// slide-level relationship (../media/imageN.png), a [Content_Types].xml Default
+// for the png extension, and a <p:pic> shape referencing the rel via <a:blip>.
+// These reuse the same rId-allocation / part-adding style as the new-slide pass.
+
+const IMAGE_REL_TYPE =
+  'http://schemas.openxmlformats.org/officeDocument/2006/relationships/image';
+const PNG_DEFAULT_CT = '<Default Extension="png" ContentType="image/png"/>';
+
+/** Highest existing ppt/media/imageN.<ext> number in the package (0 if none). */
+function maxMediaNum(zip: AdmZip): number {
+  let max = 0;
+  for (const e of zip.getEntries()) {
+    const m = e.entryName.match(/^ppt\/media\/image(\d+)\.[A-Za-z0-9]+$/);
+    if (m) max = Math.max(max, parseInt(m[1], 10));
+  }
+  return max;
+}
+
+/** Ensure [Content_Types].xml declares a Default for the png extension. Most
+ *  decks with any existing image already carry one — only add if absent so we
+ *  never duplicate. */
+function ensurePngDefault(ctXml: string): string {
+  if (/<Default\b[^>]*\bExtension="png"/i.test(ctXml)) return ctXml;
+  return ctXml.replace(/(<Types\b[^>]*>)/, `$1${PNG_DEFAULT_CT}`);
+}
+
+/** Highest numeric cNvPr/shape id used anywhere in a slide's XML (for a fresh,
+ *  collision-free <p:pic> id). Falls back to 1 so the pic gets ≥ 2. */
+function maxShapeId(slideXml: string): number {
+  let max = 1;
+  for (const m of slideXml.matchAll(/\bid="(\d+)"/g)) max = Math.max(max, parseInt(m[1], 10));
+  return max;
+}
+
+/** Add an image relationship to an existing slide's .rels (creating the file if
+ *  somehow absent), returning the rId to reference from <a:blip>. */
+function addImageRelToSlide(zip: AdmZip, slideFileNum: number, mediaNum: number): string {
+  const relsName = `ppt/slides/_rels/slide${slideFileNum}.xml.rels`;
+  const existing = zip.getEntry(relsName);
+  let relsXml = existing
+    ? zip.readAsText(relsName)
+    : `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
+      `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"></Relationships>`;
+  const rId = `rId${maxRelId(relsXml) + 1}`;
+  const rel = `<Relationship Id="${rId}" Type="${IMAGE_REL_TYPE}" Target="../media/image${mediaNum}.png"/>`;
+  relsXml = relsXml.replace('</Relationships>', `${rel}</Relationships>`);
+  if (existing) zip.updateFile(relsName, Buffer.from(relsXml, 'utf-8'));
+  else zip.addFile(relsName, Buffer.from(relsXml, 'utf-8'));
+  return rId;
+}
+
+/**
+ * Fit an image of pixel aspect (widthPx × heightPx) inside a region box (EMU),
+ * centered both axes, preserving aspect ratio. Returns the placed picture box.
+ */
+function fitPicInRegion(
+  region: Geometry,
+  widthPx: number,
+  heightPx: number
+): Geometry {
+  const aspect = widthPx > 0 && heightPx > 0 ? widthPx / heightPx : 4 / 3;
+  let cx = region.cx;
+  let cy = Math.round(cx / aspect);
+  if (cy > region.cy) {
+    cy = region.cy;
+    cx = Math.round(cy * aspect);
+  }
+  const x = region.x + Math.round((region.cx - cx) / 2);
+  const y = region.y + Math.round((region.cy - cy) / 2);
+  return { x, y, cx, cy };
+}
+
+/** Build a <p:pic> shape referencing an embedded image relationship. */
+function buildPicXml(rId: string, box: Geometry, id: number, name = 'Visual'): string {
+  return (
+    `<p:pic>` +
+    `<p:nvPicPr>` +
+    `<p:cNvPr id="${id}" name="${name} ${id}"/>` +
+    `<p:cNvPicPr><a:picLocks noChangeAspect="1"/></p:cNvPicPr>` +
+    `<p:nvPr/>` +
+    `</p:nvPicPr>` +
+    `<p:blipFill><a:blip r:embed="${rId}"/><a:stretch><a:fillRect/></a:stretch></p:blipFill>` +
+    `<p:spPr>` +
+    `<a:xfrm><a:off x="${box.x}" y="${box.y}"/><a:ext cx="${box.cx}" cy="${box.cy}"/></a:xfrm>` +
+    `<a:prstGeom prst="rect"><a:avLst/></a:prstGeom>` +
+    `</p:spPr>` +
+    `</p:pic>`
+  );
+}
+
+/** Insert a <p:pic> as the last child of the slide's <p:spTree> (top of z-order,
+ *  after title/body so it draws over the background but its own box). */
+function insertPicIntoSpTree(slideXml: string, picXml: string): string {
+  const idx = slideXml.lastIndexOf('</p:spTree>');
+  if (idx === -1) return slideXml;
+  return slideXml.slice(0, idx) + picXml + slideXml.slice(idx);
+}
+
+/** ~0.08" gap (EMU) between the shrunk body text and a reserved visual region. */
+const VISUAL_GAP_EMU = 73152;
+/** Fraction of the body box reserved for an embedded visual on an existing slide. */
+const VISUAL_RESERVE_FRACTION = 0.42;
+/** Never reserve a visual when the leftover text region would be thinner than this. */
+const MIN_TEXT_CY_EMU = 457200; // 0.5"
 
 function findDefaultLayoutTarget(zip: AdmZip): string {
   const layouts = zip
@@ -1042,6 +1276,50 @@ function insertSldId(
   return presXml.replace('</p:sldIdLst>', `${el}</p:sldIdLst>`);
 }
 
+// ─── Visual rasterization pass ──────────────────────────────────────────────
+
+/**
+ * Rasterize every embeddable visual on the deck up front (in parallel), keyed by
+ * the slide object so the patch/append passes can look each one up by reference.
+ * Slides the extractor already flagged has_image/has_diagram are skipped — the
+ * refiner tries not to generate a visual for them, and this is the first of the
+ * two embedding-time guards against placing a second image over an existing one.
+ * Never throws: a visual that can't be rasterized is simply absent from the map.
+ * Logs per-visual and total duration so a many-visual deck can be checked against
+ * the route's maxDuration.
+ */
+async function rasterizeDeckVisuals(
+  slides: RefinedSlide[]
+): Promise<Map<RefinedSlide, RasterizedVisual>> {
+  const out = new Map<RefinedSlide, RasterizedVisual>();
+  const targets = slides.filter((s) => s.visual && !s.has_image && !s.has_diagram);
+  if (targets.length === 0) return out;
+
+  const startAll = Date.now();
+  const results = await Promise.allSettled(
+    targets.map(async (s) => {
+      const t0 = Date.now();
+      const raster = await rasterizeVisual(s.visual!, s.index);
+      if (raster) {
+        console.log(
+          `[ppt-refine/assembler] rasterized ${s.visual!.type} visual for slide ${s.index} ` +
+            `(${raster.widthPx}×${raster.heightPx}px, ${(raster.buffer.length / 1024).toFixed(1)}KB) ` +
+            `in ${Date.now() - t0}ms`
+        );
+      }
+      return { slide: s, raster };
+    })
+  );
+  for (const res of results) {
+    if (res.status === 'fulfilled' && res.value.raster) out.set(res.value.slide, res.value.raster);
+  }
+  console.log(
+    `[ppt-refine/assembler] visual rasterization: ${out.size}/${targets.length} succeeded in ` +
+      `${Date.now() - startAll}ms total`
+  );
+  return out;
+}
+
 // ─── Main export ────────────────────────────────────────────────────────────
 
 const SLIDE_CONTENT_TYPE =
@@ -1072,6 +1350,31 @@ export async function assemblePptx(
   // scaling new-slide geometry (same parser + fallback as the extractor).
   const canvas = parseSlideSize(zip.readAsText('ppt/presentation.xml'));
 
+  // Rasterize every embeddable visual up front (guarded, never throws), keyed by
+  // slide reference for lookup in the patch/append passes below.
+  const visualRasters = await rasterizeDeckVisuals(deck.slides);
+
+  // Package-global media + [Content_Types].xml state, shared by the existing-slide
+  // embeds and the new-slide append pass so a png Default added for one path is
+  // not clobbered by the other. Content-types is written ONCE at the end.
+  const ctName = '[Content_Types].xml';
+  let ctXml = zip.readAsText(ctName);
+  let ctDirty = false;
+  let mediaNum = maxMediaNum(zip);
+  let embeddedVisuals = 0;
+  /** Add a media part for a rasterized visual, ensuring png content-type
+   *  coverage, and return its imageN number. Reuses the shared counters so
+   *  existing-slide and new-slide embeds never collide on a media filename. */
+  const registerMedia = (raster: RasterizedVisual): number => {
+    mediaNum += 1;
+    zip.addFile(`ppt/media/image${mediaNum}.png`, raster.buffer);
+    if (!/<Default\b[^>]*\bExtension="png"/i.test(ctXml)) {
+      ctXml = ensurePngDefault(ctXml);
+      ctDirty = true;
+    }
+    return mediaNum;
+  };
+
   // ─── Patch existing slides in place; collect continuation overflow ────────
   // `augmented` is deck order with any continuation slide interleaved directly
   // after its source, so the append pass below anchors everything correctly.
@@ -1095,12 +1398,25 @@ export async function assemblePptx(
     if (s.change_summary === NOT_SELECTED_SUMMARY) continue;
     try {
       const xml = zip.readAsText(file.name);
-      const { xml: next, continuation, reverted, titleReverted, bodyReverted } = patchSlideXml(xml, s, {
-        allowNewSlides,
-        canvas,
-      });
-      if (next !== xml) {
-        zip.updateFile(file.name, Buffer.from(next, 'utf-8'));
+      const raster = visualRasters.get(s);
+      const { xml: next, continuation, reverted, titleReverted, bodyReverted, visualBox } =
+        patchSlideXml(xml, s, {
+          allowNewSlides,
+          canvas,
+          visual: raster ? { widthPx: raster.widthPx, heightPx: raster.heightPx } : undefined,
+        });
+      // If patchSlideXml reserved room and returned a placement box, embed the
+      // rasterized visual: add the media part + slide-level rel, then inject the
+      // <p:pic> into the (already text-patched) slide XML.
+      let outXml = next;
+      if (visualBox && raster) {
+        const mNum = registerMedia(raster);
+        const rId = addImageRelToSlide(zip, file.num, mNum);
+        outXml = insertPicIntoSpTree(outXml, buildPicXml(rId, visualBox, maxShapeId(outXml) + 1));
+        embeddedVisuals++;
+      }
+      if (outXml !== xml) {
+        zip.updateFile(file.name, Buffer.from(outXml, 'utf-8'));
         patched++;
         // Partial revert: the file DID change (so this still counts as
         // "Enhanced"), but title or body specifically was dropped back to the
@@ -1144,8 +1460,6 @@ export async function assemblePptx(
   if (augmented.some((s) => s.is_new)) {
     let presXml = zip.readAsText('ppt/presentation.xml');
     let relsXml = zip.readAsText('ppt/_rels/presentation.xml.rels');
-    const ctName = '[Content_Types].xml';
-    let ctXml = zip.readAsText(ctName);
 
     const ridToTarget = parseRels(relsXml);
     const fileNumToRid = new Map<number, string>();
@@ -1189,16 +1503,26 @@ export async function assemblePptx(
       // Continuation slides carry a baked body fontScale and skip the practice/
       // example title relabel; AI-proposed slides use the default build.
       const isContinuation = contScale.has(s);
-      const xmlBody = buildNewSlideXml(
-        s,
-        canvas,
-        isContinuation ? { bodyFontScale: contScale.get(s), isContinuation: true } : {}
-      );
+      // Embed a visual if this new/AI-proposed slide carries one (continuation
+      // slides never do — makeContinuationSlide clears it). rId2 is the image rel
+      // buildSlideRels adds; buildNewSlideXml references it via <a:blip>.
+      const raster = visualRasters.get(s);
+      let imageMediaNum: number | undefined;
+      if (raster) {
+        imageMediaNum = registerMedia(raster);
+        embeddedVisuals++;
+      }
+      const xmlBody = buildNewSlideXml(s, canvas, {
+        ...(isContinuation ? { bodyFontScale: contScale.get(s), isContinuation: true } : {}),
+        ...(raster
+          ? { visual: { rId: 'rId2', widthPx: raster.widthPx, heightPx: raster.heightPx } }
+          : {}),
+      });
 
       zip.addFile(`ppt/slides/slide${fileNum}.xml`, Buffer.from(xmlBody, 'utf-8'));
       zip.addFile(
         `ppt/slides/_rels/slide${fileNum}.xml.rels`,
-        Buffer.from(buildSlideRels(layoutTarget), 'utf-8')
+        Buffer.from(buildSlideRels(layoutTarget, imageMediaNum), 'utf-8')
       );
 
       relAdds.push(
@@ -1215,11 +1539,15 @@ export async function assemblePptx(
 
     relsXml = relsXml.replace('</Relationships>', `${relAdds.join('')}</Relationships>`);
     ctXml = ctXml.replace('</Types>', `${ctAdds.join('')}</Types>`);
+    ctDirty = true;
 
     zip.updateFile('ppt/presentation.xml', Buffer.from(presXml, 'utf-8'));
     zip.updateFile('ppt/_rels/presentation.xml.rels', Buffer.from(relsXml, 'utf-8'));
-    zip.updateFile(ctName, Buffer.from(ctXml, 'utf-8'));
   }
+
+  // Write [Content_Types].xml once — covers a png Default added for an existing-
+  // slide visual AND the new-slide Override entries from the append pass.
+  if (ctDirty) zip.updateFile(ctName, Buffer.from(ctXml, 'utf-8'));
 
   // Fold any continuation slides back into the deck (returned to the results
   // view) so stats/counters and the slide list reflect what's in the file.
@@ -1230,7 +1558,8 @@ export async function assemblePptx(
 
   console.log(
     `[ppt-refine/assembler] patched=${patched} appended=${appended} ` +
-      `continuations=${contScale.size} total=${sortedSlideFiles.length + appended}`
+      `continuations=${contScale.size} embeddedVisuals=${embeddedVisuals} ` +
+      `total=${sortedSlideFiles.length + appended}`
   );
 
   return zip.toBuffer();
