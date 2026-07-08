@@ -16,12 +16,13 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { useFacultySubjects } from "@/hooks/useSupabaseData";
 import { RefinementType, REFINEMENT_LABELS } from "@/lib/refine/generator";
+import { SlideChatConsole } from "@/components/refine/SlideChatConsole";
 import { NO_CHANGE_SUMMARY, BATCH_FAILURE_SUMMARY, REVERT_SUMMARY, NOT_SELECTED_SUMMARY, CHAT_EDITED_SUMMARY } from "@/lib/ppt-refine/types";
 import type { ExtractedDeck, ExtractedSlide, RefinedDeck, RefinedSlide, RefinementOptions, SlideType, SlideVisual } from "@/lib/ppt-refine/types";
 import { cn } from "@/lib/utils";
 import {
   ArrowLeft, ArrowRight, CheckCircle, ChevronLeft, Copy,
-  Download, FileUp, Loader2, MessageSquare, Presentation, RotateCcw, Send, Sparkles,
+  Download, FileUp, Loader2, MessageSquare, Presentation, RotateCcw, Sparkles,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
@@ -300,14 +301,6 @@ function SlideChatPanel({
   isRefining: boolean;
   messages: ChatMessage[];
 }) {
-  const suggestions = suggestionsForType(slide.type);
-  const canSend = !!input.trim() && !isRefining;
-
-  const send = () => {
-    if (!input.trim() || isRefining) return; // empty guard + in-flight lock
-    onSend(input);
-  };
-
   return (
     <div className="flex flex-col gap-4">
       <div className="flex items-center gap-2">
@@ -362,77 +355,21 @@ function SlideChatPanel({
         </CardContent>
       </Card>
 
-      {/* Message log */}
-      {messages.length > 0 && (
-        <div className="space-y-1.5 max-h-40 overflow-y-auto rounded-lg border border-border bg-muted/20 p-2">
-          {messages.map((m, i) => (
-            <div
-              key={i}
-              className={cn(
-                "text-xs rounded-md px-2 py-1.5",
-                m.role === "user"
-                  ? "bg-indigo-500/15 text-foreground/90 ml-6"
-                  : m.isError
-                  ? "bg-red-500/10 text-red-400 mr-6"
-                  : "bg-muted/50 text-muted-foreground mr-6"
-              )}
-            >
-              {m.content}
-            </div>
-          ))}
-          {isRefining && (
-            <div className="text-xs rounded-md px-2 py-1.5 bg-muted/50 text-muted-foreground mr-6 flex items-center gap-2">
-              <Loader2 className="size-3 animate-spin" /> Applying your change…
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* Suggestion chips */}
-      <div className="flex flex-wrap gap-1.5">
-        {suggestions.map((s) => (
-          <button
-            key={s}
-            type="button"
-            disabled={isRefining}
-            onClick={() => onSend(s)}
-            className={cn(
-              "text-[11px] px-2.5 py-1 rounded-full border transition-colors",
-              isRefining
-                ? "border-border text-muted-foreground/50 cursor-not-allowed"
-                : "border-indigo-500/30 text-indigo-300 hover:bg-indigo-500/10"
-            )}
-          >
-            {s}
-          </button>
-        ))}
-      </div>
-
-      {/* Free-text input */}
-      <div className="flex items-end gap-2">
-        <Textarea
-          rows={2}
-          value={input}
-          disabled={isRefining}
-          onChange={(e) => setInput(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && !e.shiftKey) {
-              e.preventDefault();
-              send();
-            }
-          }}
+      {/* Shared chat console — a slide is always active here (chat mode = 1
+          selected), so chips render as the "Try" empty state; chipBehavior="send"
+          keeps 5a's instant-patch UX while the look matches the post-gen flow. */}
+      <div className="flex flex-col h-[380px] rounded-lg border border-border overflow-hidden">
+        <SlideChatConsole
+          hasSelection
+          messages={messages}
+          suggestions={suggestionsForType(slide.type)}
+          input={input}
+          onInputChange={setInput}
+          onSend={onSend}
+          isBusy={isRefining}
+          chipBehavior="send"
           placeholder='Describe a change — e.g. "Add a real-world example"'
-          className="resize-none text-sm"
         />
-        <Button
-          size="icon"
-          onClick={send}
-          disabled={!canSend}
-          className="bg-indigo-600 hover:bg-indigo-700 text-white shrink-0"
-          aria-label="Send instruction"
-        >
-          {isRefining ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />}
-        </Button>
       </div>
     </div>
   );

@@ -3,17 +3,16 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { useRouter, useParams } from "next/navigation";
 import { Button } from "@/components/ui/button";
-import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import SlidePreview from "@/components/ppt/SlidePreview";
 import { RichQuestionText } from "@/components/RichQuestionText";
+import { SlideChatConsole } from "@/components/refine/SlideChatConsole";
 import {
   ChevronLeft,
   ChevronUp,
   ChevronDown,
   Trash2,
   Download,
-  Wand2,
   Loader2,
   AlertCircle,
   X,
@@ -118,7 +117,6 @@ export default function RefinePresentationPage() {
   const [inputValue, setInputValue] = useState("");
 
   const chatInputRef = useRef<HTMLTextAreaElement | null>(null);
-  const messagesEndRef = useRef<HTMLDivElement | null>(null);
 
   // ─── ADD MESSAGE HELPER ─────────────────────────────────────────────────────
   const addMessage = useCallback(
@@ -204,11 +202,6 @@ export default function RefinePresentationPage() {
     window.addEventListener("beforeunload", handler);
     return () => window.removeEventListener("beforeunload", handler);
   }, [hasChanges]);
-
-  // ─── AUTO-SCROLL MESSAGES ──────────────────────────────────────────────────
-  useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages.length, isRefining]);
 
   // ─── BACK NAV ───────────────────────────────────────────────────────────────
   const handleBack = useCallback(() => {
@@ -426,22 +419,6 @@ export default function RefinePresentationPage() {
       );
     },
     [addMessage]
-  );
-
-  // ─── INPUT HANDLERS ─────────────────────────────────────────────────────────
-  const handleSend = useCallback(() => {
-    if (!inputValue.trim()) return;
-    void sendMessage(inputValue);
-  }, [inputValue, sendMessage]);
-
-  const handleKeyDown = useCallback(
-    (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-      if (e.key === "Enter" && !e.shiftKey) {
-        e.preventDefault();
-        handleSend();
-      }
-    },
-    [handleSend]
   );
 
   // ─── EARLY RETURNS ──────────────────────────────────────────────────────────
@@ -729,92 +706,17 @@ export default function RefinePresentationPage() {
               )}
             </div>
 
-            {/* MESSAGES */}
-          <div className="flex-1 overflow-y-auto min-h-0 px-4 py-4 space-y-3">
-            {messages.length === 0 && selectedSlideIndex === null ? (
-              <div className="flex h-full flex-col items-center justify-center gap-2 text-center text-muted-foreground">
-                <Wand2 className="h-10 w-10 opacity-40" />
-                <p className="text-sm">
-                  Select any slide to start refining
-                </p>
-              </div>
-            ) : null}
-
-            {messages.length === 0 && selectedSlideIndex !== null ? (
-              <div className="flex flex-col items-center gap-3 py-6 text-center">
-                <p className="text-xs uppercase tracking-wide text-muted-foreground">
-                  Try
-                </p>
-                <div className="flex flex-wrap justify-center gap-2">
-                  {currentSuggestions.map((s) => (
-                    <button
-                      key={s}
-                      type="button"
-                      onClick={() => {
-                        setInputValue(s);
-                        chatInputRef.current?.focus();
-                      }}
-                      className="rounded-full border bg-white px-3 py-1.5 text-xs text-foreground transition hover:bg-muted"
-                    >
-                      {s}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            ) : null}
-
-            {messages.map((m, i) =>
-              m.role === "user" ? (
-                <div
-                  key={i}
-                  className="ml-auto max-w-[80%] rounded-2xl rounded-tr-sm bg-primary px-3 py-2 text-sm text-primary-foreground"
-                >
-                  {m.content}
-                </div>
-              ) : (
-                <div
-                  key={i}
-                  className={cn(
-                    "max-w-[80%] rounded-2xl rounded-tl-sm px-3 py-2 text-sm",
-                    m.isError
-                      ? "border border-red-200 bg-red-50 text-red-700"
-                      : "bg-muted text-foreground"
-                  )}
-                >
-                  {m.content}
-                </div>
-              )
-            )}
-
-            {isRefining ? (
-              <div className="flex max-w-[80%] items-center gap-1 rounded-2xl rounded-tl-sm bg-muted px-4 py-3">
-                <span
-                  className="h-1.5 w-1.5 animate-bounce rounded-full bg-muted-foreground/60"
-                  style={{ animationDelay: "0ms" }}
-                />
-                <span
-                  className="h-1.5 w-1.5 animate-bounce rounded-full bg-muted-foreground/60"
-                  style={{ animationDelay: "150ms" }}
-                />
-                <span
-                  className="h-1.5 w-1.5 animate-bounce rounded-full bg-muted-foreground/60"
-                  style={{ animationDelay: "300ms" }}
-                />
-              </div>
-            ) : null}
-
-            <div ref={messagesEndRef} />
-          </div>
-
-          {/* INPUT */}
-          <div className="shrink-0 border-t px-4 py-3 bg-background flex gap-2 items-end">
-            <Textarea
-              ref={chatInputRef}
-              rows={2}
-              value={inputValue}
-              onChange={(e) => setInputValue(e.target.value)}
-              onKeyDown={handleKeyDown}
-              disabled={selectedSlideIndex === null || isRefining}
+            {/* MESSAGES + INPUT — shared console (identical markup/behaviour) */}
+            <SlideChatConsole
+              hasSelection={selectedSlideIndex !== null}
+              messages={messages}
+              suggestions={currentSuggestions}
+              input={inputValue}
+              onInputChange={setInputValue}
+              onSend={sendMessage}
+              isBusy={isRefining}
+              chipBehavior="fill"
+              inputRef={chatInputRef}
               placeholder={
                 selectedSlideIndex === null
                   ? "Select a slide first..."
@@ -822,22 +724,7 @@ export default function RefinePresentationPage() {
                     ? "Describe the new slide to add..."
                     : `Describe how to change slide ${selectedSlideIndex + 1}...`
               }
-              className="flex-1 resize-none"
             />
-            <Button
-              onClick={handleSend}
-              disabled={
-                !inputValue.trim() ||
-                selectedSlideIndex === null ||
-                isRefining
-              }
-              size="icon"
-              className="shrink-0"
-              aria-label="Send"
-            >
-              <Wand2 className="h-4 w-4" />
-            </Button>
-          </div>
           </div>
         </div>
       </div>
