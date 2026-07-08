@@ -337,6 +337,19 @@ export function ReviewAndValidateStage({
       .map((m) => `Module ${m.module_number}: ${m.name}`)
       .join("\n");
 
+  // Surface any server-side CO auto-corrections (a hallucinated/non-code CO
+  // coerced back to a real one) so faculty see the fix rather than a silent
+  // relabel. Non-blocking — the regeneration itself already succeeded.
+  const notifyCoCorrections = (warnings?: string[]) => {
+    if (!warnings || warnings.length === 0) return;
+    toast.warning(
+      warnings.length === 1
+        ? warnings[0]
+        : `${warnings.length} CO tags were auto-corrected`,
+      { description: warnings.length === 1 ? undefined : warnings.join("\n") }
+    );
+  };
+
   // ─── Regenerate single question ────────────────────────────────────────
   // `targetTags` (optional) steers the new question toward a specific CO/BTL —
   // used by the tag-mismatch flag's "Regenerate instead" action.
@@ -369,7 +382,10 @@ export function ReviewAndValidateStage({
         }),
       });
       if (!res.ok) throw new Error(await res.text());
-      const data = (await res.json()) as { question: GeneratedQuestion };
+      const data = (await res.json()) as {
+        question: GeneratedQuestion;
+        warnings?: string[];
+      };
       setPaper((prev) => {
         if (!prev) return prev;
         const next = { ...prev, sections: prev.sections.map((s) => ({ ...s })) };
@@ -382,6 +398,7 @@ export function ReviewAndValidateStage({
         return next;
       });
       toast.success("Question regenerated");
+      notifyCoCorrections(data.warnings);
     } catch (err) {
       console.error(err);
       toast.error("Failed to regenerate question");
@@ -429,7 +446,10 @@ export function ReviewAndValidateStage({
         }),
       });
       if (!res.ok) throw new Error(await res.text());
-      const data = (await res.json()) as { question: GeneratedQuestion };
+      const data = (await res.json()) as {
+        question: GeneratedQuestion;
+        warnings?: string[];
+      };
       const newSub = data.question.sub_parts?.[0];
       if (!newSub) throw new Error("No sub-question returned");
       setPaper((prev) => {
@@ -449,6 +469,7 @@ export function ReviewAndValidateStage({
         return next;
       });
       toast.success("Sub-question regenerated");
+      notifyCoCorrections(data.warnings);
     } catch (err) {
       console.error(err);
       toast.error("Failed to regenerate sub-question");
@@ -501,7 +522,10 @@ export function ReviewAndValidateStage({
         }),
       });
       if (!res.ok) throw new Error(await res.text());
-      const data = (await res.json()) as { question: GeneratedQuestion };
+      const data = (await res.json()) as {
+        question: GeneratedQuestion;
+        warnings?: string[];
+      };
       const newPart = data.question.parts?.[0];
       if (!newPart) throw new Error("No part returned");
       setPaper((prev) => {
@@ -535,6 +559,7 @@ export function ReviewAndValidateStage({
         return next;
       });
       toast.success("Part regenerated");
+      notifyCoCorrections(data.warnings);
     } catch (err) {
       console.error(err);
       toast.error("Failed to regenerate part");
@@ -591,7 +616,10 @@ export function ReviewAndValidateStage({
         }),
       });
       if (!res.ok) throw new Error(await res.text());
-      const data = (await res.json()) as { question: GeneratedQuestion };
+      const data = (await res.json()) as {
+        question: GeneratedQuestion;
+        warnings?: string[];
+      };
       const newItem = data.question.items?.[0];
       if (!newItem) throw new Error("No pool item returned");
       setPaper((prev) => {
@@ -618,6 +646,7 @@ export function ReviewAndValidateStage({
         return next;
       });
       toast.success("Pool item regenerated");
+      notifyCoCorrections(data.warnings);
     } catch (err) {
       console.error(err);
       toast.error("Failed to regenerate pool item");
@@ -1484,6 +1513,7 @@ export function ReviewAndValidateStage({
                   ? String(part.label).replace(/^\(/, "").replace(/\)$/, "")
                   : null;
                 const isEditing = editingKey === k && editDraft;
+                const isBlank = (part.question ?? "").trim().length === 0;
                 return (
                   <div key={pi}>
                     {showOrSeparator && (
@@ -1531,6 +1561,34 @@ export function ReviewAndValidateStage({
                           }
                           savingBank={savingBankKey === k}
                         />
+                      </div>
+                    ) : isBlank ? (
+                      <div className="ml-3 flex items-center justify-between gap-3 rounded border border-dashed border-amber-300 bg-amber-50/50 px-3 py-2">
+                        <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                          {labelClean && (
+                            <span className="font-mono">({labelClean})</span>
+                          )}
+                          <span className="italic">
+                            Not generated yet — this item came up short.
+                          </span>
+                          <Badge variant="outline" className="text-[10px]">
+                            [{String(part.marks).padStart(2, "0")}]
+                          </Badge>
+                        </div>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="h-7 shrink-0 text-xs"
+                          disabled={regenUnitKeys.has(k)}
+                          onClick={() => regeneratePart(sIdx, qIdx, pi)}
+                        >
+                          {regenUnitKeys.has(k) ? (
+                            <Loader2 className="size-3 mr-1 animate-spin" />
+                          ) : (
+                            <RefreshCw className="size-3 mr-1" />
+                          )}
+                          Generate this item
+                        </Button>
                       </div>
                     ) : (
                       <div className="ml-3 flex items-start justify-between gap-3">

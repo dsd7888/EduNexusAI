@@ -1,6 +1,6 @@
 # EduNexus AI — Complete Project Context
 
-*Last updated: July 6, 2026 | Solo developer: Dhruv | Stack: Next.js 16 + Supabase + Gemini*
+*Last updated: July 8, 2026 | Solo developer: Dhruv | Stack: Next.js 16 + Supabase + Gemini*
 *This document is the single source of truth for any Claude instance working on EduNexus AI.*
 
 --- 
@@ -46,6 +46,8 @@ EduNexus AI is a **syllabus-locked, role-aware institutional intelligence platfo
 | Drag-and-drop | @dnd-kit/core (Q paper builder + Q bank staging) |
 | PDF Export | Custom PDFBuilder class in /lib/pdf/builder.ts |
 | Word Export | docx v9 (Q paper .docx export) |
+| Math (screen) | KaTeX + mhchem via remark-math/rehype-katex (shared with chat) |
+| Math (print/export) | MathJax → self-contained SVG → sharp → PNG @ 300 DPI (katexRender.ts, server-only) |
 | PDF Parsing | LlamaParse (notes/syllabus), Gemini Flash (PYQ structured extraction) |
 | Deployment | Vercel (with vercel.json timeout configs) |
 | Dev tools | Cursor Pro chat (targeted single-file changes), Claude Code (multi-file architectural work) |
@@ -282,7 +284,8 @@ edunexus-ai/
 │   │       └── placement/practice/generate/ + submit/ + export/ ✅
 │   ├── components/ui/ + layout/ + chat/ + ppt/ + ErrorBoundary.tsx ✅
 │   ├── components/layout/FacultyShell.tsx           ✅ collapsible faculty nav shell
-│   ├── components/RichQuestionText.tsx             ✅ renders AI question text with table/list/bold support via markdownLite
+│   ├── components/RichQuestionText.tsx             ✅ renders AI question text (table/list/bold via markdownLite + KaTeX/mhchem math, incl. MCQ options)
+│   ├── components/MathToolbar.tsx + MathTextarea.tsx ✅ cursor-insert worked-example snippets + live KaTeX preview; collapsible
 │   ├── hooks/useSupabaseData.ts                    ✅
 │   └── lib/
 │       ├── ai/providers/types.ts + gemini.ts       ✅ (responseSchema + thinkingBudget added to ChatParams)
@@ -291,17 +294,19 @@ edunexus-ai/
 │       ├── api/helpers.ts                          ✅
 │       ├── db/supabase-browser.ts + server.ts + types.ts ✅
 │       ├── pdf/builder.ts                          ✅
-│       ├── ppt/generator.ts                        ✅
+│       ├── ppt/generator.ts + pptMath.ts           ✅ (pptMath: LaTeX→PNG rasterization for slide text)
 │       ├── ppt-refine/types.ts + extractor.ts + refiner.ts + assembler.ts ✅
 │       ├── qbank/types.ts + tagger.ts + generator.ts + parser.ts + row.ts ✅
 │       ├── qbank/image-storage.ts                  ✅ uploadQuestionImage, createQuestionImageSignedUrl, downloadQuestionImage
-│       ├── explainer/                              ⚠️ PARTIALLY BUILT — see §16 for status
+│       ├── explainer/                              ⚠️ PARTIALLY BUILT — see §15 for status
 │       │   ├── types.ts                            ← ExtractedContent + 14 PatternData types
 │       │   ├── scriptGenerator.ts                  ← two-call: ideate (Flash+thinking) → extract (Pro+responseSchema)
 │       │   ├── renderer.ts                         ← pattern-based renderers (8 patterns, UNDER DEVELOPMENT)
 │       │   ├── tts.ts                              ← Google Cloud TTS (optional)
 │       │   └── storage.ts                          ← short-code alloc + HTML upload/stream
 │       ├── text/markdownLite.ts                    ✅ parseMarkdownLite() — pipe-table/list/bold/code parser for AI text
+│       ├── text/katexRender.ts                     ✅ server-only; MathJax→SVG→sharp→PNG @300DPI (renderLatexToImage, shouldRenderInline)
+│       ├── text/latexSegments.ts                   ✅ client-safe; extractLatexSegments, hasLatex, findUnsupportedNotation, MATH_CHEM_NOTATION_GUIDE
 │       ├── qpaper/generator.ts + sectionGen.ts + moduleAssignment.ts + answerKeyGen.ts ✅
 │       │   + templates.ts + builder.ts + bankFill.ts + docxBuilder.ts                  ✅
 │       │   + sourcing.ts (allocateSlotSources, Hamilton apportionment)                  ✅
@@ -309,6 +314,8 @@ edunexus-ai/
 │       │   + validateTags.ts (validateQuestionTags — Flash CO/BTL judge; confidence field, auto-apply ≥90%) ✅
 │       │   + moduleCoClassifier.ts (classifyModulesForSubject — dual-pass Flash CO classifier)     ✅
 │       │   + qpaperImages.ts (loadPaperImages, attachQuestionImageUrls, imageDisplaySize)          ✅
+│       │   + paperMath.ts (pre-render pass — dedupe+rasterize all unique math/chem spans once per paper) ✅
+│       │   + archetypes.ts (subject-family classification for PYQ-archetype generation fallback)   ✅
 │       ├── syllabus/types.ts + prompts.ts + parser.ts + reconstruct.ts ✅
 │       ├── quiz/generator.ts                       ✅
 │       ├── placement/generator.ts + bankManager.ts + fallbackSyllabus.ts + modules.ts ✅
@@ -673,6 +680,13 @@ Template composition (defined at structure-stage) is authoritative over AI-retur
 - BTL achievability capped by module weightage share — not treated as binary
 - Section-relative slot keys Q1–Q4 per section
 - CO normalization: "CO1", "CO 1", "01", "co1" all → "01"
+- CO tag validation is a **hard gate** (`validateCoOrNull`), not fallback-coercion: an
+  AI-tagged CO that fails format validation becomes `null` + a warning, never a guessed
+  nearest-fit value. Covers bulk generation, the regen-question route, and
+  `resolveTagValidation`'s AI-suggested-CO path. (Distinct from the module→CO *picker*
+  fallback in moduleAssignment.ts — see §17 Key Learnings.)
+- Math/chemistry in question text renders across all surfaces via the LaTeX/mhchem
+  pipeline — see §13.
 - `answer_key_descriptive` task added to `isStructuredTask` allowlist — prevents Flash thinking from silently truncating answer JSON
 
 ### BTL Range / CO% / Difficulty% Targeting (July 2026 — replaces BTL-tier presets)
@@ -691,7 +705,60 @@ Three secondary directives, set per-paper in `ScopeAndDifficultyStage`, flow thr
 
 ---
 
-## 13. RLS Architecture
+## 13. Math & Chemistry Rendering (LaTeX / mhchem)
+
+This is the system that renders mathematical notation and chemical formulae consistently across every surface — screen, PDF, Word, PPT, and answer key. It replaces the old "research spike deferred" status: equation/chemistry rendering is now **implemented and shipping**, not a future item.
+
+### The deliberate two-library split (NOT an inconsistency)
+- **Screen rendering: KaTeX + mhchem** — reuses the existing chat rendering pipeline (`remark-math` / `rehype-katex`). Fast, client-side, already proven in the chat surface.
+- **Print / export rendering: MathJax → self-contained SVG → `sharp` → PNG at 300 DPI** (`src/lib/text/katexRender.ts`, server-only). KaTeX **cannot** server-render to SVG, so print/export uses MathJax instead. Both libraries consume the **identical LaTeX source** — screen stays KaTeX, print/export stays MathJax, by design. Do not "unify" these onto one library; the split is load-bearing.
+
+### Authoring convention (single source of truth)
+- Math wrapped in `$...$` (inline) / `$$...$$` (display).
+- Chemistry via **bare `\ce{...}`** (no `$` wrapper) — mhchem handles subscripts, charges, reaction arrows, equilibrium arrows, isotopes.
+- The canonical notation reference is `MATH_CHEM_NOTATION_GUIDE`, the single exported constant in `src/lib/text/latexSegments.ts`. It is consumed everywhere the same rules must be stated: generation prompts, CSV import docs, and in-app help. Update it in one place; all consumers follow.
+
+### New files
+- `src/lib/text/katexRender.ts` — server-only. `renderLatexToImage`, `shouldRenderInline`. MathJax→SVG→sharp→PNG rasterization.
+- `src/lib/text/latexSegments.ts` — client-safe. `extractLatexSegments`, `hasLatex`, `findUnsupportedNotation`, and the `MATH_CHEM_NOTATION_GUIDE` constant.
+- `src/lib/qpaper/paperMath.ts` — pre-render pass. Dedupes and rasterizes every unique math/chem span **once per paper** before the synchronous PDF/Word builders run (builders are sync, so all image bytes must exist up front).
+- `src/lib/qpaper/archetypes.ts` — subject-family classification, used by the PYQ-archetype generation fallback (below).
+
+### Consumers wired (all gated on `hasLatex()` fast-path — untouched behavior when no math present)
+- **Screen:** `RichQuestionText` — including MCQ option text (a gap found and fixed mid-session).
+- **Q paper PDF:** `builder.ts`.
+- **Q paper Word:** `docxBuilder.ts`.
+- **Answer-key PDF:** `pdf/builder.ts`.
+- **PPT:** `ppt/generator.ts` + `pptMath.ts`.
+- Coverage includes table cells and marking-scheme / justification fields — not just question stems.
+
+### Authoring UI: MathToolbar / MathTextarea
+Cursor-insert snippet buttons (each button inserts a **complete worked example**, not a bare token), a live KaTeX preview, collapsible by default. Wired into:
+- Q Bank manual entry.
+- Every editable unit level in `ReviewAndValidateStage.tsx`.
+- Both PPT Refine surfaces (`SlidePreview.tsx` and `/faculty/refine`).
+
+### CSV import
+Sample template restructured into `### Mathematics ###` / `### Chemistry ###` marker-row sections with worked examples. Row-level preview renders through `RichQuestionText`. `findUnsupportedNotation` flags malformed rows as needs-review rather than importing broken LaTeX silently.
+
+### PYQ-archetype generation fallback
+When PYQ coverage for a module is thin or absent, a subject-family-keyed archetype hint (from `archetypes.ts`) **supplements** generation — it never overrides real PYQ mirroring where PYQs exist. Hints by family:
+- **Math:** derive/prove-with-steps, solve-with-given-coefficients, compute-on-concrete-instance.
+- **Chemistry:** balance-and-classify, predict-product, stoichiometric-calc.
+
+Note: `reference_books` is **title-only** (not excerpt content) — confirmed not usable as a style source, left as passive context only.
+
+### Boundaries (explicitly OUT of scope)
+- Skeletal chemical structures / drawn diagrams stay **image-upload-only**.
+- Isotope pre-subscript/superscript notation deferred.
+- Diagram-generated content (SVG / Mermaid node labels) does **not** render LaTeX inside labels.
+
+### Verification status — REAL REMAINING GAP
+Not yet live-tested: **no chemistry subject is seeded in the system.** Everything chemistry-related is verified only synthetically (unit tests on `\ce{}` parsing) or by shared-infrastructure inference from the working math path. Chemistry needs one full live generation cycle (Q Bank → Q Paper → PPT) against a seeded chemistry subject before the math/chem work can be considered fully verified. This is a genuine open gap, not a completed item.
+
+---
+
+## 14. RLS Architecture
 
 RLS enabled on all tables. `get_my_role()` SECURITY DEFINER function prevents recursion.
 
@@ -720,7 +787,7 @@ Check pg_policies (not migration files) to verify live RLS state.
 
 ---
 
-## 14. Animated Explainer Architecture (For Next Session)
+## 15. Animated Explainer Architecture (For Next Session)
 
 ### Pipeline (correct, do not change)
 ```
@@ -766,7 +833,7 @@ Canvas: 960px wide, 16:9, dark bg, caption bar below
 
 ---
 
-## 15. Placement Module (Agentic Rebuild — COMPLETE)
+## 16. Placement Module (Agentic Rebuild — COMPLETE)
 
 ### What's built (June 2026 session)
 
@@ -850,9 +917,23 @@ API routes:
 
 ---
 
-## 16. Active Feature Roadmap
+## 17. Active Feature Roadmap
 
 ### Recently Shipped (July 2026)
+- **Math & Chemistry rendering (LaTeX / mhchem)** — full cross-surface system: KaTeX (screen) + MathJax→SVG→sharp→PNG (print/export), `$...$` math + bare `\ce{...}` chemistry, `MATH_CHEM_NOTATION_GUIDE` single source of truth, MathToolbar/MathTextarea authoring UI, CSV `### Mathematics ###`/`### Chemistry ###` sections, PYQ-archetype generation fallback (`archetypes.ts`). Wired into screen/PDF/Word/answer-key/PPT. **Complete for math; chemistry not yet live-tested (no chemistry subject seeded) — see §13.**
+- **Q paper PDF pagination/metadata bug fixes (this session):**
+  - Header/instruction wrap not advancing the cursor (`drawPool`, `drawAttemptAnyOne`, `drawMCQRow`) — audited exhaustively via grep for `maxWidth:`, no fourth instance.
+  - Wrong-page metadata: marks/CO/BTL/PO drawn at a stale pre-pagebreak `startY` when a question body crosses a page boundary (`drawSinglePart`, `drawTaggedSubRow`, `drawTaggedOptionRow`) — fixed via `drawQuestionText` returning `{startY, startPage}`.
+  - `drawCentered`/`drawSectionHeader` now wrap on overflow instead of running off-page.
+- **Q paper generation-quality fixes (this session):**
+  - Pool/attempt-any-one shortfall detection generalized — both block types now show a "Generate this item" affordance for blank items (was pool-only).
+  - Duplicate-stem detection (`detectDuplicateStems`, `buildDistinctnessBlock`) catches near-identical AI slots.
+  - **CO validation hardened:** fallback-coercion (nearest-fit guessing) replaced with a hard gate `validateCoOrNull` — invalid CO becomes `null` + warning, never a guessed value. Now covers bulk generation, the regen-question route, and `resolveTagValidation`'s AI-suggested-CO path (all three previously leaked).
+  - BTL-retry corrections (`buildCorrectionsBlock`) now cite the specific violation instead of blind re-rolling.
+  - Bank-to-paper shadowing prevention (`buildBankExclusionBlock`) — fresh generation excludes already-placed bank content.
+  - Regen concurrency: per-unit lock (`regenUnitKeys` Set) so firing regenerate on multiple items doesn't cross-contaminate siblings.
+- **Q Bank review UX (this session):** `ReviewFlowDialog` gained a distinct audited Reject action (vs. Skip/Approve); `BankQuestionCard` gained quick-approve for `is_verified: false` rows.
+- **PPT generation robustness (this session):** content-batch generation migrated to `responseSchema` (fixes LaTeX-backslash JSON-escaping failures), then `CONTENT_BATCH_SCHEMA` **narrowed to text-only fields** — the original monolithic schema carrying unused visual fields (e.g. free-form `svgCode`) caused runaway token consumption on text slides (~18× slower, ~12× costlier before narrowing). `DIAGRAM_BATCH_SCHEMA` given an explicit `maxLength` on `svgCode`. Empty-bullet floor check relocated into `generatePPTXBuffer` so it covers the rebuild path too. Illustration-fallback and mermaid-render-failure now set `_needsReview` with an on-slide banner (matching text-content failure flag).
 - Q paper BTL-tier presets → BTL Range + CO% + Difficulty% targeting: `moduleAssignment.ts` (`btlRange`/`coTargets`/`difficultyTargets` on `SlotAssignmentContext`, CO-aware `makePicker` with a weightage-primary 5%-threshold tiebreak, `apportionDifficulty`, `targetCo`/`targetDifficulty` on `QuestionSlot`) → `sectionGen.ts` (threaded through + consumed in the per-slot prompt block) → `route.ts` (parses `btlRange`/`coTargets`/`difficultyTargets`, prorates CO% to each section) → full UI replacement in `ScopeAndDifficultyStage.tsx` (BTL Range fields, CO% rows with live achievability preview, Difficulty% split) → persisted in `qpaper_templates.structure` and `qpaper_drafts.builder_state` (no migration). Old preset types/functions kept exported for back-compat, no longer reachable from the UI. **Complete.**
 - Q Bank image support (Phases 1, 2, 3 + answer key): faculty image upload (question-images bucket), Bulk Images add-mode with per-card AI draft generation, images embedded across PDF/Word/web preview/answer key. **Complete.**
 - Per-question and per-pool-row module pinning (`pinnedModuleId`), bypassing auto-assignment for pinned slots. **Complete.**
@@ -861,7 +942,7 @@ API routes:
 - Per-subpart MCQ regeneration (`regenerateSubPart`) in ReviewAndValidateStage. **Complete.**
 - Stale-PDF warning banner + "Update PDF" flow (`paperEditedSinceGeneration`). **Complete.**
 - Faculty Syllabus Viewer (`/faculty/syllabus`) with confidence-coded CO mapping display + faculty editing. **Complete.**
-- 15-table RLS audit — fixed tables with RLS enabled but zero policies (see §13).
+- 15-table RLS audit — fixed tables with RLS enabled but zero policies (see §14).
 
 ### Recently Shipped (June 2026)
 - CSE Sem 1–7 fully seeded (52 subjects, 285 modules, 228 COs)
@@ -889,22 +970,53 @@ API routes:
 **Tier 2 — Depth at PPSU:**
 9. Q bank UX simplification (too many steps for daily faculty use)
 10. Per-module difficulty ceiling UI (popover on module chips) — designed, not built
-11. Equation/chemistry rendering (LaTeX → PDF/Word) — research spike deferred
+11. Chemistry live-test: seed one chemistry subject + run a full Q Bank / Q Paper / PPT
+    cycle to verify the math/chem rendering path against real chemistry content (math
+    path already shipped and verified — see §13)
 
 **Tier 3 — High institutional value:**
 12. NAAC auto-report generator (Criterion 2 from existing data — changes Dean's buying decision)
 13. Animated explainer renderer rewrite (dedicated session, start with array_sort pattern)
 14. Curriculum quality validator tool — deferred until Q Paper fully end-to-end verified
+15. **Content Refinement Tab** — explicitly deferred; scope to be defined by Dhruv in a
+    future session. Do NOT start or scope further until directed. (Distinct from the
+    existing text/PPT refinement in §7.)
+16. **Auto-regen-loop for PPT slides** (flagged, not built) — after slides are marked
+    done, run a deterministic-first / AI-fallback-second validity pass so flagged/`null`
+    slides self-heal in the same generation loop rather than needing manual Refine. Logged
+    as a future practical improvement, not yet scoped.
 
 **Tier 4 — Agentic placement (after foundation):**
-15. Placement Agent (Gemini function-calling, multi-turn)
-16. Company Arrival Mode (full drive countdown auto-shift)
-17. Commerce/Architecture mini-project guides
+17. Placement Agent (Gemini function-calling, multi-turn)
+18. Company Arrival Mode (full drive countdown auto-shift)
+19. Commerce/Architecture mini-project guides
 
 **Tier 5 — Growth:**
-18. Dean/HOD provisioning UI, JD Gap Analysis, Credential Passport, Mock Interview, Multi-tenant
+20. Dean/HOD provisioning UI, JD Gap Analysis, Credential Passport, Mock Interview, Multi-tenant
 
 ### Key Learnings
+
+- **Generic-over-block-type, not per-type patches:** shortfall/validity/duplicate
+  detection built for one block type (pool) had to be separately rediscovered missing
+  from siblings (attempt-any-one, plain descriptive/MCQ) three times in one session. Any
+  new detection logic should default to covering **every** block type unless there's a
+  stated reason a type is exempt.
+
+- **Fallback-coercion is fragile; hard validation gates are not.** The CO leak survived
+  two rounds of "smarter fallback" fixes because each depended on correctly enumerating
+  every code path. A hard format-validate-or-null gate (`validateCoOrNull`) closed it in
+  one pass. Prefer a gate over ever-smarter guessing.
+
+- **Schema shape can cause runaway generation independent of `thinkingBudget`.** A
+  responseSchema that includes optional fields irrelevant to a given content type (e.g.
+  free-form `svgCode` on a text slide) gives the model no natural stopping pressure under
+  constrained decoding — a distinct failure mode from the known thinking-token issue, and
+  it must be checked separately. Narrow schemas to the fields a given call actually needs.
+
+- **Visual/rendered inspection is the only authoritative check for document outputs.**
+  Text-extraction tools are unreliable once inline images / embedded objects are mixed
+  into a paragraph — this session a fix nearly shipped for a bug that didn't exist, based
+  on trusting extracted text over an actual render. Always inspect the rendered artifact.
 
 - **module_co_mapping gap:** For modules with no clean CO match (e.g. OOP-Java
   Thread/Applet/IO), faculty confirmed this is a curriculum-design issue being
@@ -926,7 +1038,7 @@ API routes:
 
 ---
 
-## 17. Known Issues
+## 18. Known Issues
 
 | Issue | Status | Fix |
 |---|---|---|
@@ -941,14 +1053,14 @@ API routes:
 | CO-PO/PSO column alignment Sem 1–4 | Active | Fix via superadmin UI before accreditation |
 | CO-PO/PSO missing Sem 5–7 electives | Active | Add via superadmin UI before accreditation |
 | Animated explainer visuals broken | Shelved | Full renderer rewrite in dedicated session |
-| Equation/chemistry rendering (LaTeX → PDF/Word) | Deferred | Research spike deferred |
+| Chemistry rendering not live-tested | Open gap | Math path shipped (§13); no chemistry subject seeded — needs one full Q Bank/Q Paper/PPT cycle to verify `\ce{}` end-to-end |
 | Per-module difficulty ceiling UI (popover on module chips) | Designed, not built | Build UI once prioritized |
 | Placement module bugs (branch matching, gap tag display, setup redirect) | Active | Unresolved |
 | Curriculum quality validator tool | Deferred | Deferred until Q Paper fully end-to-end verified |
 
 ---
 
-## 18. Architectural Decisions (DO NOT CHANGE)
+## 19. Architectural Decisions (DO NOT CHANGE)
 
 | Decision | Reason |
 |---|---|
@@ -983,10 +1095,15 @@ API routes:
 | Template `scope` column (personal/school/dept) | Enables future cross-subject template sharing without a separate table |
 | Weightage always primary in `makePicker` (5% shortfall threshold before CO score breaks ties) | CO% targeting must never let mark distribution drift from syllabus weightage — the whole product's credibility rests on weightage compliance |
 | btlRange/coTargetsPct/difficultyTargets stored in `qpaper_templates.structure` jsonb, not new columns | `structure` is already unvalidated jsonb passed through as-is by the templates route — adding keys there needs no migration and degrades gracefully for old rows |
+| Math: KaTeX on screen, MathJax→SVG→PNG for print/export (two libraries, one LaTeX source) | KaTeX cannot server-render to SVG; MathJax can. Both consume identical `$...$`/`\ce{}` source. Not an inconsistency — do not "unify" onto one library |
+| Chemistry authored as bare `\ce{...}` (no `$` wrapper) | mhchem convention; wrapping in `$` breaks its subscript/charge/arrow handling |
+| `MATH_CHEM_NOTATION_GUIDE` is the single exported notation constant | One source consumed by generation prompts, CSV docs, and in-app help — never restate the rules inline elsewhere |
+| `paperMath.ts` pre-renders all math spans before PDF/Word build | PDF/Word builders are synchronous — all rasterized image bytes must exist up front; dedupe rasterizes each unique span once per paper |
+| responseSchema narrowed to only the fields a call needs (CONTENT_BATCH_SCHEMA text-only, svgCode maxLength-bounded) | Irrelevant optional fields in a schema remove the model's natural stopping pressure under constrained decoding → runaway token cost (~18× slower/~12× costlier observed). Distinct from the thinkingBudget failure mode |
 
 ---
 
-## 19. Environment Variables
+## 20. Environment Variables
 
 ```bash
 NEXT_PUBLIC_SUPABASE_URL=
@@ -1000,7 +1117,7 @@ GOOGLE_CLOUD_TTS_KEY=          # Optional — for animated explainer voiceover
 
 ---
 
-## 20. External / Non-Technical Context
+## 21. External / Non-Technical Context
 
 **Competitive positioning:** Not ChatGPT for students (no syllabus lock). Not Redrob or Connect AI (generic aptitude, no syllabus context). EduNexus is the institutional layer — Dean buys for accreditation, placement outcomes, faculty time savings.
 
@@ -1012,7 +1129,7 @@ GOOGLE_CLOUD_TTS_KEY=          # Optional — for animated explainer voiceover
 
 ---
 
-## 21. How Dhruv Works (Development Patterns)
+## 22. How Dhruv Works (Development Patterns)
 
 1. Cursor-primary workflow — runs prompts, shares logs/screenshots, Claude verifies, iterates
 2. Simplicity over complexity — rejects solutions that add layers without solving root problem
@@ -1026,7 +1143,7 @@ GOOGLE_CLOUD_TTS_KEY=          # Optional — for animated explainer voiceover
 
 ---
 
-## 22. How to Start Working
+## 23. How to Start Working
 
 ```
 I am building EduNexus AI, a university AI tutor + institutional intelligence platform.
@@ -1061,3 +1178,8 @@ logs/screenshots, you verify before proceeding.
 - `qpaper_history` stores Storage paths, not URLs — never store signed URLs in DB
 - `ppt_diagram` model is complexity-based (Flash/Pro per `routeDiagramBatchModel`) — not a blanket Pro rule
 - Q paper CO%/difficulty% targeting is secondary to weightage — never let it override the 5%-shortfall-threshold rule in `makePicker` (moduleAssignment.ts)
+- Math renders via KaTeX on screen, MathJax→SVG→PNG for print/export — two libraries, one LaTeX source; don't unify them (§13)
+- Chemistry is authored as bare `\ce{...}` (no `$` wrapper); `MATH_CHEM_NOTATION_GUIDE` in latexSegments.ts is the single notation source
+- CO tag validation is a hard `validateCoOrNull` gate (invalid → null + warning), never nearest-fit guessing
+- Keep responseSchemas narrow — irrelevant optional fields cause runaway token cost independent of thinkingBudget
+- Chemistry rendering is NOT yet live-tested (no chemistry subject seeded) — treat it as an open gap

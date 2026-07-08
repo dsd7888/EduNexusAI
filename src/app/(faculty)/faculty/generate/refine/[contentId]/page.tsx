@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import SlidePreview from "@/components/ppt/SlidePreview";
+import { RichQuestionText } from "@/components/RichQuestionText";
 import {
   ChevronLeft,
   ChevronUp,
@@ -644,7 +645,7 @@ export default function RefinePresentationPage() {
                       </Button>
                     </div>
                     <p className="mt-1 line-clamp-2 text-xs font-medium leading-snug">
-                      {slide.title || "Untitled"}
+                      <RichQuestionText text={slide.title || "Untitled"} />
                     </p>
                     {isSelected ? (
                       <button

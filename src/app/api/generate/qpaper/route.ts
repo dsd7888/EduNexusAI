@@ -544,6 +544,18 @@ export async function POST(request: NextRequest) {
 
     const runAi = async (section: TemplateSection, sIdx: number) => {
       const sectionModules = modulesForSection(modules, section);
+      // Bank questions already placed into this section's slots — passed to the
+      // AI as an explicit exclusion so a fresh/AI slot doesn't regenerate (i.e.
+      // "shadow") a bank question's content. Bank overlay happens AFTER this AI
+      // call, so without this the AI generates blind to the bank's contribution.
+      const alloc = allocations[sIdx];
+      const placedBankQuestions = alloc
+        ? Array.from(
+            new Set(
+              Array.from(alloc.bySlot.values()).map((b) => b.question_text)
+            )
+          )
+        : [];
       try {
         const { questions, warnings } = await generateSection({
           sectionName: section.section_name,
@@ -556,6 +568,7 @@ export async function POST(request: NextRequest) {
           subjectName,
           subjectCode,
           slotStyles: styleBySection[sIdx],
+          placedBankQuestions,
           difficultyPreset,
           customBtlWeights,
           moduleCoMap,

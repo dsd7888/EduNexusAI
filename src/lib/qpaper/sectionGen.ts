@@ -15,7 +15,10 @@
 
 import { routeAI } from "@/lib/ai/router";
 import { estimateMaxOutputTokens } from "@/lib/ai/tokenBudget";
-import { MATH_CHEM_NOTATION_GUIDE } from "@/lib/text/latexSegments";
+import {
+  MATH_CHEM_NOTATION_GUIDE,
+  findUnsupportedNotation,
+} from "@/lib/text/latexSegments";
 import {
   archetypeHintForSubject,
   classifySubjectFamily,
@@ -110,6 +113,15 @@ export interface SectionGenInput {
    * with no entry get no per-slot style directive (legacy behaviour).
    */
   slotStyles?: Map<string, "fresh" | "pyq_style">;
+  /**
+   * Question text of Q Bank questions already placed into this section's bank
+   * slots (from allocateBankForSection). Passed as an explicit exclusion so the
+   * AI does not regenerate — verbatim or paraphrased — a bank question's content
+   * into one of this section's fresh/AI slots ("bank-to-paper shadowing"). The
+   * bank content is overlaid onto the AI section *after* generation, so without
+   * this the AI generates blind to what the bank will contribute.
+   */
+  placedBankQuestions?: string[];
   /** When set, biases per-slot BTL targets toward the preset's tier weights. */
   difficultyPreset?: DifficultyPreset;
   /** Tier weights to use when difficultyPreset === "custom". */
@@ -317,6 +329,33 @@ define, another may apply, another may compare) and never reuse the same questio
 stem, scenario, or data across two slots. Two slots returning the same or paraphrased
 question is a paper-design defect that will be rejected.
 </cross_slot_distinctness>`;
+}
+
+/**
+ * Explicit bank-content exclusion roster. Q Bank questions are placed into their
+ * slots *after* the AI generates the section (overlayBankOntoSection), so the AI
+ * generates blind to what the bank will contribute. Without telling the model
+ * the actual text of those placed bank questions, a fresh/AI slot elsewhere in
+ * the same section can end up repeating or paraphrasing a bank question's
+ * content — "bank-to-paper shadowing". This lists the already-placed bank
+ * questions verbatim and forbids regenerating their content, the same
+ * "don't repeat this content" mechanism as buildDistinctnessBlock.
+ */
+function buildBankExclusionBlock(placed: string[]): string {
+  const cleaned = placed.map((t) => t.trim()).filter(Boolean);
+  if (cleaned.length === 0) return "";
+  const rows = cleaned.map((t, i) => `  ${i + 1}. ${t}`).join("\n");
+  return `<bank_content_exclusion>
+The following ${cleaned.length} question(s) are ALREADY placed into this section from the question bank and WILL appear in the final paper. You are generating the remaining slots.
+${rows}
+
+MANDATORY: None of the questions you generate may duplicate or paraphrase any of
+the bank questions listed above — not the same topic instance, concept probe,
+scenario, or data. Treat each listed bank question as if it already occupies a
+slot in this section: your questions must be as DISTINCT from them as they must
+be from each other. A generated question that restates or closely mirrors a
+listed bank question is a paper-design defect that will be rejected.
+</bank_content_exclusion>`;
 }
 
 /** Explicit per-block pool composition plan injected into the prompt. */
@@ -601,6 +640,9 @@ function buildUserPrompt(
     input.sectionTemplate.questions
   );
   const distinctnessBlock = buildDistinctnessBlock(slots);
+  const bankExclusionBlock = buildBankExclusionBlock(
+    input.placedBankQuestions ?? []
+  );
   const hasStyleTags = slots.some((s) => s.style != null);
   const questionBlockCount = input.sectionTemplate.questions.length;
   const hasPool = input.sectionTemplate.questions.some((t) => t.type === "pool");
@@ -618,7 +660,7 @@ ${hasPool ? "Pool blocks: each pool block produces ONE JSON object with an items
   const partB = `<module_question_assignment>
 MANDATORY: The following assignment is derived from the official syllabus weightage. Generate questions ONLY from the assigned module for each slot. Deviation from this assignment produces an invalid examination paper that will be rejected by the examination committee.
 ${poolCompositionBlock ? `${poolCompositionBlock}\n` : ""}${slotsBlock}
-${distinctnessBlock ? `\n${distinctnessBlock}\n` : ""}
+${distinctnessBlock ? `\n${distinctnessBlock}\n` : ""}${bankExclusionBlock ? `\n${bankExclusionBlock}\n` : ""}
 Before finalising output: verify every question's slot key matches its assigned module. A question about Module 3 content must not appear in a slot assigned to Module 1.
 </module_question_assignment>`;
 
@@ -1323,6 +1365,38 @@ export function detectDuplicateStems(
 }
 
 /**
+ * Surface unsupported/malformed LaTeX or chemistry notation in generated
+ * question text — the same detect-and-warn pattern as duplicate-stem
+ * detection, generic over every block type (mcq sub-parts, descriptive/OR
+ * parts, pool items, attempt-any-one options). This is detection only: it
+ * does not touch renderLatexToImage's existing graceful-degradation behavior
+ * or attempt to auto-correct the notation, it just flags it for faculty
+ * review, same as CSV import / manual entry.
+ */
+export function detectUnsupportedNotation(
+  questions: GeneratedQuestion[]
+): string[] {
+  const warnings: string[] = [];
+  const check = (label: string, text: string | undefined | null) => {
+    const reason = findUnsupportedNotation(String(text ?? ""));
+    if (reason) warnings.push(`${label}: ${reason} — needs faculty review.`);
+  };
+  for (const q of questions) {
+    const base = q.display_label ?? `Q${q.q_number}`;
+    (q.sub_parts ?? []).forEach((sp) =>
+      check(`${base} ${sp.label ?? ""}`.trim(), sp.question)
+    );
+    (q.parts ?? []).forEach((p) =>
+      check(`${base}${p.label ? ` (${p.label})` : ""}`, p.question)
+    );
+    (q.items ?? []).forEach((it, i) =>
+      check(`${base} (${ROMAN[i] ?? i + 1})`, it.question_text)
+    );
+  }
+  return warnings;
+}
+
+/**
  * Normalize CO codes to a canonical form for cross-format comparison.
  * "CO1", "CO 1", "co1", "1", "01" → "01".
  * Two-digit codes ("CO11", "11") stay two-digit.
@@ -1337,14 +1411,62 @@ function normalizeCoCode(co: string): string {
 }
 
 /**
- * Mutates generated question parts in place, replacing any `co` value that
- * doesn't match a real course-outcome code for this subject with the nearest
- * valid CO for that slot's assigned module — the same fallback chain used when
- * a module has no mapped COs at all (slot.targetCo → slot.cos[0] → the
- * subject's first CO). The AI occasionally emits a malformed/hallucinated CO
- * string instead of a real code (observed: "CO_Module4_MathematicalLogic") —
- * that must never reach the rendered paper, so this replaces rather than
- * merely warns.
+ * The single source of truth for CO validity across the entire qpaper pipeline.
+ *
+ * Returns the subject's canonical spelling of `coValue` (e.g. "CO1") when it
+ * normalize-matches a real course-outcome code, and `null` otherwise. There is
+ * deliberately **no fallback chain, no nearest-fit guessing, and no retag
+ * target** here: an unrecognised or malformed CO (a hallucinated string, a full
+ * sentence, "CO_Module4_MathematicalLogic", …) resolves to `null`, which the
+ * pipeline renders as an absent CO tag plus a "please assign manually" warning
+ * rather than silently coercing it to a wrong-but-plausible code. Every code
+ * path that produces or touches a `co` value must route it through this one
+ * function so a malformed CO can never reach the rendered paper.
+ */
+export function validateCoOrNull(
+  coValue: string | number | null | undefined,
+  validCoCodes: string[]
+): string | null {
+  if (coValue == null) return null;
+  const raw = String(coValue).trim();
+  if (!raw) return null;
+  const canonicalByNorm = new Map(
+    validCoCodes.map((c) => [normalizeCoCode(c), c])
+  );
+  return canonicalByNorm.get(normalizeCoCode(raw)) ?? null;
+}
+
+const CO_UNRESOLVED_WARNING = "CO could not be determined — please assign manually";
+
+/**
+ * Human-readable part identifier for a warning ("Q3", "Q3(ii)", "Q3b") built
+ * from the section-relative question number and, when the block has more than
+ * one CO-bearing unit, that unit's own label (or a positional a/b/c fallback).
+ */
+function coWarnPartLabel(
+  sectionQNum: number,
+  holderLabel: string | null | undefined,
+  index: number,
+  holderCount: number
+): string {
+  if (holderCount <= 1) return `Q${sectionQNum}`;
+  const label =
+    typeof holderLabel === "string" && holderLabel.trim()
+      ? holderLabel.trim()
+      : "abcdefghij"[index] ?? String(index + 1);
+  return `Q${sectionQNum}${label}`;
+}
+
+/**
+ * Mutates generated question parts in place, routing every `co` value through
+ * the shared {@link validateCoOrNull} gate. A value that matches a real
+ * course-outcome code is canonicalised to the subject's spelling ("01" → "CO1");
+ * anything that doesn't match — a hallucinated/malformed CO string (observed:
+ * "CO_Module4_MathematicalLogic") — is set to `null` (rendered as an absent CO
+ * tag) and a "please assign manually" warning is emitted. There is no
+ * fallback/nearest-fit coercion: a malformed CO must never reach the rendered
+ * paper, but neither is it silently guessed. Returns one warning per unresolved
+ * CO so the caller can surface it in the paper's warnings list.
  */
 function sanitizeCoCodes(
   questions: GeneratedQuestion[],
@@ -1352,24 +1474,21 @@ function sanitizeCoCodes(
   templates: TemplateQuestionBlock[],
   validCoCodes: string[]
 ): string[] {
-  const fixes: string[] = [];
-  const slotMap = new Map(slots.map((s) => [s.slotKey, s]));
-  const validCoNormalized = new Set(validCoCodes.map(normalizeCoCode));
-  const subjectFallbackCo = validCoCodes[0] ?? null;
+  const warnings: string[] = [];
 
-  const nearestCoFor = (slotKey: string): string | null => {
-    const slot = slotMap.get(slotKey);
-    const candidate = slot?.targetCo ?? slot?.cos[0] ?? subjectFallbackCo;
-    return candidate ? normalizeCoCode(candidate) : null;
-  };
-
-  const fix = (slotKey: string, holder: { co?: string | null }) => {
-    const co = holder.co;
-    if (!co || validCoNormalized.has(normalizeCoCode(co))) return;
-    const replacement = nearestCoFor(slotKey);
-    if (!replacement) return;
-    fixes.push(`Corrected malformed CO "${co}" in ${slotKey} → "${replacement}"`);
-    holder.co = replacement;
+  const fix = (
+    partLabel: string,
+    holder: { co?: string | null }
+  ) => {
+    const original = holder.co;
+    if (original == null || String(original).trim() === "") return; // untagged — leave absent
+    const valid = validateCoOrNull(original, validCoCodes);
+    if (valid == null) {
+      holder.co = null;
+      warnings.push(`${partLabel}: ${CO_UNRESOLVED_WARNING}`);
+    } else if (valid !== original) {
+      holder.co = valid; // canonicalise spelling so tags render consistently
+    }
   };
 
   questions.forEach((q, qi) => {
@@ -1377,33 +1496,72 @@ function sanitizeCoCodes(
     if (!t) return;
     const sectionQNum = qi + 1;
     if (q.type === "mcq") {
-      (q.sub_parts ?? []).forEach((sp, i) => fix(mcqSubSlotKey(sectionQNum, i), sp));
-      return;
-    }
-    if (q.type === "descriptive_with_or") {
-      const primaryCount = (t.parts ?? ["a", "b"]).length;
-      (q.parts ?? []).forEach((p, i) => {
-        const slotKey = p.is_or_alternative
-          ? orAlternativeSlotKey(sectionQNum, i - primaryCount)
-          : orPrimarySlotKey(sectionQNum, i);
-        fix(slotKey, p);
-      });
-      return;
-    }
-    if (q.type === "attempt_any_one") {
-      const parentKey = descriptiveSlotKey(sectionQNum);
-      (q.parts ?? []).forEach((p) => fix(parentKey, p));
+      const subs = q.sub_parts ?? [];
+      subs.forEach((sp, i) =>
+        fix(coWarnPartLabel(sectionQNum, sp.label, i, subs.length), sp)
+      );
       return;
     }
     if (q.type === "pool") {
-      (q.items ?? []).forEach((item, i) => fix(mcqSubSlotKey(sectionQNum, i), item));
+      // Pool items have no label field — the positional a/b/c fallback applies.
+      const items = q.items ?? [];
+      items.forEach((item, i) =>
+        fix(coWarnPartLabel(sectionQNum, null, i, items.length), item)
+      );
       return;
     }
-    const head = q.parts?.[0];
-    if (head) fix(descriptiveSlotKey(sectionQNum), head);
+    // descriptive, descriptive_with_or, attempt_any_one, and any fallback all
+    // carry their CO tags on parts[].
+    const parts = q.parts ?? [];
+    parts.forEach((p, i) =>
+      fix(coWarnPartLabel(sectionQNum, p.label, i, parts.length), p)
+    );
   });
 
-  return fixes;
+  return warnings;
+}
+
+/** Every mutable CO-bearing unit of a question, regardless of block type. */
+function coHoldersOf(q: GeneratedQuestion): Array<{ co?: string | null }> {
+  if (q.type === "mcq") return q.sub_parts ?? [];
+  if (q.type === "pool") return q.items ?? [];
+  // descriptive, descriptive_with_or, attempt_any_one, and any fallback all
+  // carry their CO tags on parts[].
+  return q.parts ?? [];
+}
+
+/**
+ * Single-question analogue of {@link sanitizeCoCodes} for callers that have no
+ * slot context — chiefly the regenerate-question route, which builds one
+ * question through {@link normaliseQuestion} and never runs the section
+ * pipeline. Routes every `co` through the shared {@link validateCoOrNull} gate:
+ * a real code is canonicalised to the subject's spelling; anything unresolvable
+ * is set to `null` (rendered as an absent CO tag) with a "please assign
+ * manually" warning. No fallback/coercion — covers every block type via
+ * {@link coHoldersOf}. Mutates in place and returns one warning per unresolved
+ * CO so the caller can surface it rather than the change happening invisibly.
+ */
+export function sanitizeQuestionCoCodes(
+  question: GeneratedQuestion,
+  validCoCodes: string[]
+): string[] {
+  const warnings: string[] = [];
+  if (validCoCodes.length === 0) return warnings;
+  const base = question.display_label ?? `Q${question.q_number}`;
+  const holders = coHoldersOf(question);
+  holders.forEach((holder, i) => {
+    const original = holder.co;
+    if (original == null || String(original).trim() === "") return; // untagged — leave absent
+    const valid = validateCoOrNull(original, validCoCodes);
+    if (valid == null) {
+      holder.co = null;
+      const partLabel = holders.length > 1 ? `${base} part ${i + 1}` : base;
+      warnings.push(`${partLabel}: ${CO_UNRESOLVED_WARNING}`);
+    } else if (valid !== original) {
+      holder.co = valid; // canonicalise spelling
+    }
+  });
+  return warnings;
 }
 
 export function validateGeneratedSection(
@@ -1498,6 +1656,7 @@ export function validateGeneratedSection(
   // (non-fatal), so a section where two slots came back the same doesn't pass
   // through silently. Same detect-and-surface pattern as the pool shortfall.
   warnings.push(...detectDuplicateStems(questions));
+  warnings.push(...detectUnsupportedNotation(questions));
 
   return { valid: errors.length === 0, errors, warnings };
 }
@@ -1673,11 +1832,11 @@ export async function generateSection(
       );
     }
     const questions = convertResponse(arr, templates);
-    const coFixes = sanitizeCoCodes(questions, slots, templates, validCoCodes);
-    if (coFixes.length > 0) {
+    const coWarnings = sanitizeCoCodes(questions, slots, templates, validCoCodes);
+    if (coWarnings.length > 0) {
       console.warn(
-        `[generateSection] ${input.sectionName} ${label} CO corrections:\n  ` +
-          coFixes.join("\n  ")
+        `[generateSection] ${input.sectionName} ${label} unresolved COs:\n  ` +
+          coWarnings.join("\n  ")
       );
     }
     const validation = validateGeneratedSection(
@@ -1686,12 +1845,15 @@ export async function generateSection(
       templates,
       validCoCodes
     );
-    return { questions, validation };
+    return { questions, validation, coWarnings };
   };
 
   const first = await attempt("attempt 1");
   if (first.validation.valid) {
-    return { questions: first.questions, warnings: first.validation.warnings };
+    return {
+      questions: first.questions,
+      warnings: [...first.validation.warnings, ...first.coWarnings],
+    };
   }
   console.warn(
     `[generateSection] ${input.sectionName} validation errors on attempt 1:\n  ` +
@@ -1700,7 +1862,10 @@ export async function generateSection(
 
   const retry = await attempt("attempt 2 (retry)", first.validation.errors);
   if (retry.validation.valid) {
-    return { questions: retry.questions, warnings: retry.validation.warnings };
+    return {
+      questions: retry.questions,
+      warnings: [...retry.validation.warnings, ...retry.coWarnings],
+    };
   }
   console.warn(
     `[generateSection] ${input.sectionName} validation errors on retry — proceeding with warnings:\n  ` +
@@ -1708,7 +1873,11 @@ export async function generateSection(
   );
   return {
     questions: retry.questions,
-    warnings: [...retry.validation.warnings, ...retry.validation.errors],
+    warnings: [
+      ...retry.validation.warnings,
+      ...retry.coWarnings,
+      ...retry.validation.errors,
+    ],
   };
 }
 

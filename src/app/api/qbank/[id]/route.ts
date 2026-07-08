@@ -131,8 +131,8 @@ export async function PATCH(request: NextRequest, ctx: RouteContext) {
 
     // Log a verification event (best-effort; never blocks the response).
     if (verifiedTransition) {
-      await logVerification(adminClient, user.id, owned.subject_id).catch((e) =>
-        console.error("[qbank patch] usage_analytics error:", e)
+      await logReviewEvent(adminClient, user.id, owned.subject_id, "qbank_verify").catch(
+        (e) => console.error("[qbank patch] usage_analytics error:", e)
       );
     }
 
@@ -145,7 +145,7 @@ export async function PATCH(request: NextRequest, ctx: RouteContext) {
   }
 }
 
-export async function DELETE(_request: NextRequest, ctx: RouteContext) {
+export async function DELETE(request: NextRequest, ctx: RouteContext) {
   try {
     const authResult = await requireRole(["faculty", "superadmin", "dean", "hod"]);
     if (authResult instanceof Response) return authResult;
@@ -154,6 +154,16 @@ export async function DELETE(_request: NextRequest, ctx: RouteContext) {
 
     const owned = await loadOwned(adminClient, id, user.id, profile.role);
     if (owned instanceof Response) return owned;
+
+    // A "reason=rejected" delete is an explicit review decision (distinct from
+    // a plain destructive delete elsewhere in the UI) — log it the same way
+    // approvals are logged, before the row is gone.
+    const isReject = request.nextUrl.searchParams.get("reason") === "rejected";
+    if (isReject) {
+      await logReviewEvent(adminClient, user.id, owned.subject_id, "qbank_reject").catch(
+        (e) => console.error("[qbank delete] usage_analytics error:", e)
+      );
+    }
 
     const { error: deleteError } = await adminClient
       .from("faculty_question_bank")
@@ -173,11 +183,12 @@ export async function DELETE(_request: NextRequest, ctx: RouteContext) {
   }
 }
 
-/** Upsert-increment a per-day qbank_verify event in usage_analytics. */
-async function logVerification(
+/** Upsert-increment a per-day review-decision event in usage_analytics. */
+async function logReviewEvent(
   adminClient: AdminClient,
   userId: string,
-  subjectId: string
+  subjectId: string,
+  eventType: "qbank_verify" | "qbank_reject"
 ): Promise<void> {
   const today = new Date().toISOString().slice(0, 10);
   const { data: existing } = await adminClient
@@ -186,7 +197,7 @@ async function logVerification(
     .eq("date", today)
     .eq("user_id", userId)
     .eq("subject_id", subjectId)
-    .eq("event_type", "qbank_verify")
+    .eq("event_type", eventType)
     .maybeSingle();
 
   if (existing) {
@@ -201,7 +212,7 @@ async function logVerification(
       date: today,
       user_id: userId,
       subject_id: subjectId,
-      event_type: "qbank_verify",
+      event_type: eventType,
       event_count: 1,
     });
   }

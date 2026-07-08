@@ -20,6 +20,8 @@ import {
   hasLatex,
   renderPptTextImage,
 } from "./pptMath";
+import { MATH_CHEM_NOTATION_GUIDE } from "@/lib/text/latexSegments";
+import { classifySubjectFamily } from "@/lib/qpaper/archetypes";
 
 // ── TYPES ──────────────────────────────────────────────────
 
@@ -75,6 +77,14 @@ export interface SlideContent {
     explanation: string;
   };
   note?: string;
+  /**
+   * Set by the final content-validation pass (sanitizeAndValidateSlides) when a
+   * slide degraded to a low-content state that a human should regenerate — an
+   * unresolvable unclosed-`$` math span, or a diagram that fell all the way
+   * through to the caption-only placeholder. Drives the on-slide review banner.
+   * Mirrors the batch route's `_failed` marker for text-content failures.
+   */
+  _needsReview?: boolean;
 }
 
 export interface PPTSlideJSON {
@@ -385,6 +395,8 @@ Rules:
 
 export function buildBatchContentPrompt(options: {
   subjectName: string;
+  /** Optional subject code — gates math/chemistry notation injection via classifySubjectFamily. */
+  subjectCode?: string;
   /** Full subject syllabus; first 3000 chars used for batch context. */
   fullSyllabus: string;
   depth: string;
@@ -407,6 +419,7 @@ export function buildBatchContentPrompt(options: {
 }): string {
   const {
     subjectName,
+    subjectCode,
     fullSyllabus,
     depth,
     slides,
@@ -418,6 +431,19 @@ export function buildBatchContentPrompt(options: {
 
   const focusLabel = moduleName ?? customTopic ?? "";
   const syllabusContext = fullSyllabus.slice(0, 3000);
+
+  const notationBlock =
+    classifySubjectFamily(subjectName, subjectCode) !== null
+      ? `
+<math_chemistry_notation>
+When this slide's content contains mathematics or chemistry, write the
+notation using this exact convention so it renders correctly on the slide
+(these math/chemistry delimiters are required and are NOT considered "markdown"):
+
+${MATH_CHEM_NOTATION_GUIDE}
+</math_chemistry_notation>
+`
+      : "";
 
   const referenceBlock =
     referenceBooks.trim().length > 0
@@ -504,7 +530,7 @@ damage student understanding and institutional trust.
 
 ${BATCH_PROMPT_COMPLETENESS}
 </accuracy_mandate>
-
+${notationBlock}
 You are an expert Indian academic with deep pedagogical training, fluent in how Indian university curricula (GTU, AICTE-pattern, and similar) are actually structured, taught, and examined. You are also a senior university lecturer with deep expertise across all disciplines, creating detailed slide content for ${subjectName}.
 
 FULL SUBJECT SYLLABUS (for context and cross-referencing):
@@ -1078,6 +1104,199 @@ function normalizeSlideBullets(bullets: string[] | undefined): string[] {
     .slice(0, 7);
 }
 
+/**
+ * Scan from `from` for the next unescaped `$` / `$$` closer, mirroring
+ * latexSegments.findClosing (which is private to that module). Returns the index
+ * of the closer, or -1 when the opener is never closed.
+ */
+function scanClosingDollar(text: string, from: number, delim: "$" | "$$"): number {
+  let i = from;
+  while (i < text.length) {
+    if (text[i] === "\\") {
+      i += 2;
+      continue;
+    }
+    if (text.startsWith(delim, i)) return i;
+    i += 1;
+  }
+  return -1;
+}
+
+/**
+ * Repair or flag an inline-math delimiter imbalance in a single line.
+ *
+ * extractLatexSegments treats an UNMATCHED `$` opener as literal text, so a line
+ * like `The value $x = 5 grows` would otherwise ship a stray, un-rendered `$`
+ * into the final PPTX. Same "detect and surface, never silently ship broken
+ * content" rule the rest of the pipeline follows:
+ *
+ *   • Exactly one dangling inline `$` and nothing meaningful after it → the `$`
+ *     is a stray delimiter; strip it (unambiguous, no review needed).
+ *   • Exactly one dangling inline `$` WITH content after it → unambiguous
+ *     auto-close: append the missing `$` so the span renders as intended.
+ *   • Anything more complex (a dangling `$$` block, or multiple danglers) is
+ *     ambiguous → leave the text untouched and mark the slide for review.
+ */
+function fixInlineMathDelimiters(text: string): {
+  text: string;
+  needsReview: boolean;
+} {
+  // Guard against currency false-positives: a lone `$` in prose ("costs $5") is
+  // a literal dollar that already ships fine as text. Only treat an unmatched `$`
+  // as broken math when the line actually contains LaTeX syntax (a command
+  // backslash, super/subscript, or braces) — real academic math effectively
+  // always does (\frac, x^2, x_n, \int, …), while a price never does.
+  if (!/[\\^_{}]/.test(text)) return { text, needsReview: false };
+
+  let i = 0;
+  const n = text.length;
+  let danglingInline = 0;
+  let danglingBlock = 0;
+  let lastDanglingPos = -1;
+  while (i < n) {
+    const ch = text[i];
+    if (ch === "\\" && text[i + 1] === "$") {
+      i += 2; // escaped literal dollar
+      continue;
+    }
+    if (ch === "$" && text[i + 1] === "$") {
+      const end = scanClosingDollar(text, i + 2, "$$");
+      if (end !== -1) {
+        i = end + 2;
+        continue;
+      }
+      danglingBlock += 1;
+      lastDanglingPos = i;
+      i += 2;
+      continue;
+    }
+    if (ch === "$") {
+      const end = scanClosingDollar(text, i + 1, "$");
+      if (end !== -1) {
+        i = end + 1;
+        continue;
+      }
+      danglingInline += 1;
+      lastDanglingPos = i;
+      i += 1;
+      continue;
+    }
+    i += 1;
+  }
+
+  if (danglingBlock === 0 && danglingInline === 0) {
+    return { text, needsReview: false };
+  }
+  // Single unmatched inline opener → resolvable without ambiguity.
+  if (danglingBlock === 0 && danglingInline === 1) {
+    const after = text.slice(lastDanglingPos + 1).trim();
+    if (after.length === 0) {
+      // Trailing stray `$` — drop it.
+      return {
+        text: (
+          text.slice(0, lastDanglingPos) + text.slice(lastDanglingPos + 1)
+        ).trimEnd(),
+        needsReview: false,
+      };
+    }
+    // Content follows the opener but was never closed — close it at line end.
+    return { text: `${text}$`, needsReview: false };
+  }
+  // Dangling `$$` or several danglers: don't guess — surface for review.
+  return { text, needsReview: true };
+}
+
+/**
+ * Final content-validation pass, run ONCE over the exact `slides` array that the
+ * renderer below iterates (not a copy), before any slide is drawn. Two
+ * guarantees, both matching the pipeline-wide "detect and surface, never
+ * silently ship broken content" rule:
+ *
+ *   1. Empty / whitespace-only entries in bullets, example.steps and
+ *      question.options are stripped in place, so the builder can never render a
+ *      blank bullet line even if an upstream strip was skipped or a later edit
+ *      reintroduced one. This is the same floor the batch route applies at
+ *      generation time; applying it here makes the builder self-defending.
+ *   2. Every text-bearing field is checked for an unclosed inline-`$` span,
+ *      which is auto-fixed when unambiguous and otherwise flags the slide
+ *      (`_needsReview`) so the on-slide banner tells the author to regenerate.
+ */
+function sanitizeAndValidateSlides(slides: SlideContent[]): void {
+  const stripEmpty = (arr: string[] | undefined): string[] | undefined =>
+    Array.isArray(arr)
+      ? arr.filter((s) => typeof s === "string" && s.trim().length > 0)
+      : arr;
+
+  for (const slide of slides) {
+    if (!slide || typeof slide !== "object") continue;
+
+    slide.bullets = stripEmpty(slide.bullets);
+    slide.steps = stripEmpty(slide.steps);
+    if (slide.example) slide.example.steps = stripEmpty(slide.example.steps) ?? [];
+    if (slide.question) slide.question.options = stripEmpty(slide.question.options);
+
+    // Unclosed-math check across every field that reaches the rasteriser.
+    let flagged = false;
+    const fixString = (v: string | undefined): string | undefined => {
+      if (typeof v !== "string" || !v.includes("$")) return v;
+      const r = fixInlineMathDelimiters(v);
+      if (r.needsReview) flagged = true;
+      return r.text;
+    };
+    const fixArray = (arr: string[] | undefined): string[] | undefined =>
+      Array.isArray(arr) ? arr.map((s) => fixString(s) as string) : arr;
+
+    slide.bullets = fixArray(slide.bullets);
+    slide.steps = fixArray(slide.steps);
+    slide.diagramCaption = fixString(slide.diagramCaption);
+    slide.note = fixString(slide.note);
+    if (slide.example) {
+      slide.example.problem = fixString(slide.example.problem) ?? slide.example.problem;
+      slide.example.steps = fixArray(slide.example.steps) ?? slide.example.steps;
+      slide.example.answer = fixString(slide.example.answer) ?? slide.example.answer;
+    }
+    if (slide.question) {
+      slide.question.text = fixString(slide.question.text) ?? slide.question.text;
+      slide.question.options = fixArray(slide.question.options);
+      slide.question.answer = fixString(slide.question.answer) ?? slide.question.answer;
+      slide.question.explanation =
+        fixString(slide.question.explanation) ?? slide.question.explanation;
+    }
+
+    if (flagged) {
+      slide._needsReview = true;
+      console.warn(
+        `[ppt/validate][unclosed-math] "${String(slide.title ?? "").slice(0, 50)}" ` +
+          `has an ambiguous unclosed "$" span — flagged for review.`
+      );
+    }
+  }
+}
+
+/**
+ * Draw the on-slide "regenerate" banner in the top-right corner. Called after a
+ * slide's content is laid out so it always sits on top. Used for both an
+ * unclosed-math flag (`_needsReview`) and the diagram caption-only fallback, so
+ * a degraded slide is surfaced exactly like a failed text batch rather than
+ * shipping silently.
+ */
+function addReviewBanner(slide: PptxGenJS.Slide): void {
+  slide.addText("⚠ Regenerate — Refine page", {
+    x: SLIDE_W - 3.05,
+    y: 0.06,
+    w: 3.0,
+    h: 0.3,
+    fontSize: 9,
+    bold: true,
+    color: C.white,
+    fill: { color: C.danger },
+    align: "center",
+    valign: "middle",
+    fontFace: "Calibri",
+    rectRadius: 0.04,
+  });
+}
+
 /** Collapse newlines/spaces in a single bullet line for PPTX; drop tiny fragments. */
 function cleanBulletLineForPpt(rawBullet: string): string | null {
   const cleanText = rawBullet
@@ -1380,6 +1599,11 @@ export async function generatePPTXBuffer(
   // Add this to accumulate costs — caller passes AI costs in via data
   // We track imagen cost here per-image
 
+  // Final content-validation pass over the REAL slide array this loop renders:
+  // strip any empty bullets/steps/options and repair-or-flag unclosed `$` spans
+  // before a single slide is drawn.
+  sanitizeAndValidateSlides(data.slides);
+
   // Estimate total slides (concept slides may fan out)
   let estimatedTotal = 0;
   for (const s of data.slides) {
@@ -1477,6 +1701,7 @@ export async function generatePPTXBuffer(
           }
         }
 
+        if (slideData._needsReview) addReviewBanner(slide);
         addPageNumber(slide, slideNum, totalSlides);
         slideNum += 1;
         break;
@@ -1553,6 +1778,7 @@ export async function generatePPTXBuffer(
           }
         }
 
+        if (slideData._needsReview) addReviewBanner(slide);
         addPageNumber(slide, slideNum, totalSlides);
         slideNum += 1;
         break;
@@ -1711,6 +1937,7 @@ export async function generatePPTXBuffer(
             }
           }
 
+          if (slideData._needsReview) addReviewBanner(slide);
           addPageNumber(slide, slideNum, totalSlides);
           slideNum += 1;
         }
@@ -1825,7 +2052,11 @@ export async function generatePPTXBuffer(
               throw new Error("mermaid.ink failed");
             }
           } catch {
-            // Fallback to caption-only
+            // Fallback to caption-only — mermaid.ink render failed, so this slide
+            // ships without its diagram. Same degraded state as PRIORITY 4: flag
+            // it so the author regenerates rather than silently shipping a
+            // caption-only slide.
+            slideData._needsReview = true;
             slide.addShape("rect", {
               x: ZONE.body.x,
               y: ZONE.body.y,
@@ -1852,8 +2083,14 @@ export async function generatePPTXBuffer(
             );
           }
         }
-        // PRIORITY 4: No visual — show caption or placeholder
+        // PRIORITY 4: No visual — show caption or placeholder. This is the
+        // illustration/imagen fallback shape (failed parse+retry leaves no
+        // imageBase64/svgCode/mermaidCode), where the caption often degrades to
+        // the slide title — a low-content placeholder. Flag it for review so it
+        // gets the same explicit "regenerate" treatment as a failed text batch
+        // instead of shipping silently.
         else {
+          slideData._needsReview = true;
           slide.addShape("rect", {
             x: ZONE.body.x,
             y: ZONE.body.y,
@@ -1907,6 +2144,7 @@ export async function generatePPTXBuffer(
           });
         }
 
+        if (slideData._needsReview) addReviewBanner(slide);
         addPageNumber(slide, slideNum, totalSlides);
         slideNum += 1;
         break;
@@ -2058,6 +2296,7 @@ export async function generatePPTXBuffer(
           });
         }
 
+        if (slideData._needsReview) addReviewBanner(slide);
         addPageNumber(slide, slideNum, totalSlides);
         slideNum += 1;
         break;
@@ -2205,6 +2444,7 @@ export async function generatePPTXBuffer(
           }
         }
 
+        if (slideData._needsReview) addReviewBanner(slide);
         addPageNumber(slide, slideNum, totalSlides);
         slideNum += 1;
         break;
@@ -2354,6 +2594,7 @@ export async function generatePPTXBuffer(
           }
         }
 
+        if (slideData._needsReview) addReviewBanner(slide);
         addPageNumber(slide, slideNum, totalSlides);
         slideNum += 1;
         break;
@@ -2457,6 +2698,7 @@ export async function generatePPTXBuffer(
           align: "center",
         });
 
+        if (slideData._needsReview) addReviewBanner(slide);
         addPageNumber(slide, slideNum, totalSlides);
         slideNum += 1;
         break;

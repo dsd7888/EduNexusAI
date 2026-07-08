@@ -4,6 +4,7 @@ import { useState, useCallback, useEffect } from "react";
 import { Loader2, Image as ImageIcon } from "lucide-react";
 import { SVGDiagram } from "@/components/chat/SVGDiagram";
 import MermaidDiagram from "@/components/chat/MermaidDiagram";
+import { RichQuestionText } from "@/components/RichQuestionText";
 import { cn } from "@/lib/utils";
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
@@ -255,9 +256,13 @@ function TitleSlide({ slide }: { slide: SlidePreviewSlide }) {
       <p className="mb-4 text-xs font-medium uppercase tracking-widest opacity-60">
         EduNexus AI
       </p>
-      <h1 className="mb-4 text-2xl font-bold leading-tight">{slide.title}</h1>
+      <h1 className="mb-4 text-2xl font-bold leading-tight">
+        <RichQuestionText text={slide.title} />
+      </h1>
       {slide.subtitle ? (
-        <p className="text-sm opacity-75">{slide.subtitle}</p>
+        <p className="text-sm opacity-75">
+          <RichQuestionText text={slide.subtitle} />
+        </p>
       ) : null}
     </div>
   );
@@ -287,7 +292,7 @@ function SlideHeader({
         Slide {slideNumber}
       </p>
       <h2 className="line-clamp-2 text-base font-bold leading-tight">
-        {slide.title}
+        <RichQuestionText text={slide.title} />
       </h2>
     </div>
   );
@@ -325,7 +330,9 @@ function OverviewSlide({
                   className="flex items-start gap-2 text-xs leading-snug"
                 >
                   <span className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-slate-700" />
-                  <span className="text-slate-700">{b}</span>
+                  <span className="text-slate-700">
+                    <RichQuestionText text={b} />
+                  </span>
                 </li>
               ))}
             </ul>
@@ -337,7 +344,9 @@ function OverviewSlide({
                     className="flex items-start gap-2 text-xs leading-snug"
                   >
                     <span className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-slate-700" />
-                    <span className="text-slate-700">{b}</span>
+                    <span className="text-slate-700">
+                      <RichQuestionText text={b} />
+                    </span>
                   </li>
                 ))}
               </ul>
@@ -350,7 +359,7 @@ function OverviewSlide({
         {slide.note ? (
           <div className="mt-auto border-t border-slate-100 pt-3">
             <p className="text-[10px] leading-snug text-slate-500">
-              {slide.note}
+              <RichQuestionText text={slide.note} />
             </p>
           </div>
         ) : null}
@@ -386,7 +395,9 @@ function ConceptSlide({
                 className="flex items-start gap-2 text-xs leading-snug"
               >
                 <span className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-slate-700" />
-                <span className="text-slate-700">{b}</span>
+                <span className="text-slate-700">
+                  <RichQuestionText text={b} />
+                </span>
               </li>
             ))}
           </ul>
@@ -397,7 +408,7 @@ function ConceptSlide({
         {slide.note ? (
           <div className="mt-auto border-t border-slate-100 pt-3">
             <p className="text-[10px] leading-snug text-slate-500">
-              {slide.note}
+              <RichQuestionText text={slide.note} />
             </p>
           </div>
         ) : null}
@@ -423,7 +434,7 @@ function ExampleSlide({
         {s.exampleProblem ? (
           <div className="rounded border border-emerald-200 bg-emerald-50 px-3 py-2">
             <p className="text-[11px] font-semibold text-emerald-800">
-              Problem: {s.exampleProblem}
+              Problem: <RichQuestionText text={s.exampleProblem} />
             </p>
           </div>
         ) : null}
@@ -435,7 +446,9 @@ function ExampleSlide({
                 <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-emerald-100 text-[10px] font-bold text-emerald-700">
                   {i + 1}
                 </span>
-                <span className="leading-snug text-slate-700">{step}</span>
+                <span className="leading-snug text-slate-700">
+                  <RichQuestionText text={step} />
+                </span>
               </li>
             ))}
           </ol>
@@ -446,7 +459,7 @@ function ExampleSlide({
         {s.exampleAnswer ? (
           <div className="mt-auto border-t border-emerald-100 pt-2">
             <p className="text-[11px] font-medium text-emerald-700">
-              ✓ {s.exampleAnswer}
+              ✓ <RichQuestionText text={s.exampleAnswer} />
             </p>
           </div>
         ) : null}
@@ -454,7 +467,7 @@ function ExampleSlide({
         {s.note ? (
           <div className="mt-auto border-t border-slate-100 pt-3">
             <p className="text-[10px] leading-snug text-slate-500">
-              {s.note}
+              <RichQuestionText text={s.note} />
             </p>
           </div>
         ) : null}
@@ -597,7 +610,9 @@ function DiagramSlide({
       ) : null}
       {slide.note ? (
         <div className="shrink-0 border-t bg-white px-6 py-2">
-          <p className="text-[10px] text-slate-500">{slide.note}</p>
+          <p className="text-[10px] text-slate-500">
+            <RichQuestionText text={slide.note} />
+          </p>
         </div>
       ) : null}
     </>
@@ -621,7 +636,7 @@ function PracticeSlide({
       <div className="flex flex-1 flex-col gap-3 px-6 py-4">
         {question ? (
           <p className="text-xs font-medium leading-snug text-slate-800">
-            {question}
+            <RichQuestionText text={question} />
           </p>
         ) : null}
 
@@ -645,7 +660,9 @@ function PracticeSlide({
                   <span className="shrink-0 font-medium text-slate-500">
                     {OPTION_LABELS[i] ?? `${i + 1}`}.
                   </span>
-                  <span>{opt}</span>
+                  <span>
+                    <RichQuestionText text={opt} />
+                  </span>
                 </div>
               );
             })}
@@ -654,7 +671,7 @@ function PracticeSlide({
 
         {slide.explanation ? (
           <p className="mt-1 text-[10px] leading-snug text-slate-500">
-            💡 {slide.explanation}
+            💡 <RichQuestionText text={slide.explanation} />
           </p>
         ) : null}
       </div>

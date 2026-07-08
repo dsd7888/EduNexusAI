@@ -38,11 +38,12 @@ import type { BankQuestion, QuestionType } from "@/lib/qbank/types";
 import {
   QUESTION_TYPES,
   TYPE_LABELS,
+  deleteQuestion,
   patchQuestion,
   type ModuleRef,
 } from "./shared";
 
-type QuestionStatus = "pending" | "approved" | "skipped";
+type QuestionStatus = "pending" | "approved" | "skipped" | "rejected";
 
 interface TagDraft {
   question_type: QuestionType;
@@ -76,12 +77,14 @@ export function ReviewFlowDialog({
   onClose,
   onQuestionUpdated,
   onQuestionApproved,
+  onQuestionRejected,
 }: {
   questions: BankQuestion[];
   modules: ModuleRef[];
   onClose: (completed?: boolean) => void;
   onQuestionUpdated: (q: BankQuestion) => void;
   onQuestionApproved: (id: string) => void;
+  onQuestionRejected: (id: string) => void;
 }) {
   const total = questions.length;
   const [statuses, setStatuses] = useState<Map<string, QuestionStatus>>(() =>
@@ -100,7 +103,11 @@ export function ReviewFlowDialog({
     () => [...statuses.values()].filter((s) => s === "skipped").length,
     [statuses]
   );
-  const handledCount = approvedCount + skippedCount;
+  const rejectedCount = useMemo(
+    () => [...statuses.values()].filter((s) => s === "rejected").length,
+    [statuses]
+  );
+  const handledCount = approvedCount + skippedCount + rejectedCount;
 
   // Approved/skipped questions drop out of this list entirely, so the
   // counter and prev/next nav only ever see what's still left to review —
@@ -127,6 +134,24 @@ export function ReviewFlowDialog({
   const handleSkip = () => {
     if (!current) return;
     setStatuses((prev) => new Map(prev).set(current.id, "skipped"));
+  };
+
+  const handleReject = async () => {
+    if (!current) return;
+    setSaving(true);
+    try {
+      // A logged review decision, not a silent delete: records a qbank_reject
+      // usage event before removing the row (see /api/qbank/[id] DELETE).
+      await deleteQuestion(current.id, { reason: "rejected" });
+      onQuestionRejected(current.id);
+      setStatuses((prev) => new Map(prev).set(current.id, "rejected"));
+      toast.success("Rejected & removed");
+    } catch (err) {
+      console.error(err);
+      toast.error("Failed to reject question");
+    } finally {
+      setSaving(false);
+    }
   };
 
   const handleApproveAsIs = async () => {
@@ -211,6 +236,14 @@ export function ReviewFlowDialog({
               <span className="text-emerald-500 font-medium">
                 {approvedCount} approved
               </span>
+              {rejectedCount > 0 && (
+                <>
+                  ,{" "}
+                  <span className="text-destructive">
+                    {rejectedCount} rejected
+                  </span>
+                </>
+              )}
               {skippedCount > 0 && (
                 <>
                   ,{" "}
@@ -489,6 +522,17 @@ export function ReviewFlowDialog({
                     onClick={handleSkip}
                   >
                     Skip
+                  </Button>
+                  <Button
+                    variant="outline"
+                    className="w-full sm:w-auto text-destructive hover:text-destructive"
+                    disabled={saving}
+                    onClick={handleReject}
+                  >
+                    {saving ? (
+                      <Loader2 className="size-4 mr-1 animate-spin" />
+                    ) : null}
+                    Reject
                   </Button>
                   <Button
                     variant="secondary"

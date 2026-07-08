@@ -10,6 +10,7 @@
 
 import { routeAI } from "@/lib/ai/router";
 import { BLOOMS_LEGEND } from "./templates";
+import { validateCoOrNull } from "./sectionGen";
 import type {
   CourseOutcomeRow,
   GeneratedSection,
@@ -113,17 +114,26 @@ export interface ResolvedTag {
 export function resolveTagValidation(
   claimedCO: string | null,
   claimedBTL: number | null,
-  validation: TagValidation
+  validation: TagValidation,
+  validCoCodes: string[] = []
 ): ResolvedTag {
   if (validation.matches) {
     return { co: claimedCO, btl: claimedBTL };
   }
   const confidence = validation.confidence ?? 50;
+  // The judge's suggested CO is AI output and can itself be hallucinated — only
+  // trust it for a silent high-confidence auto-apply when it passes the shared
+  // CO gate. An unrecognised suggestion is never applied; it falls through to
+  // the flagged-for-manual-review path so a bad code can't reach the paper.
+  const validSuggestedCo = validateCoOrNull(
+    validation.suggestedCO ?? null,
+    validCoCodes
+  );
   const hasSuggestion =
-    validation.suggestedCO != null || validation.suggestedBTL != null;
+    validSuggestedCo != null || validation.suggestedBTL != null;
   if (confidence >= 90 && hasSuggestion) {
     return {
-      co: validation.suggestedCO != null ? validation.suggestedCO : claimedCO,
+      co: validSuggestedCo != null ? validSuggestedCo : claimedCO,
       btl: validation.suggestedBTL != null ? validation.suggestedBTL : claimedBTL,
     };
   }
@@ -324,7 +334,8 @@ export async function attachTagValidations(
         const resolved = resolveTagValidation(
           unit.co ?? null,
           unit.btl ?? null,
-          validation
+          validation,
+          outcomes.map((o) => o.co_code)
         );
         unit.co = resolved.co;
         unit.btl = resolved.btl;

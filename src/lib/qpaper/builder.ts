@@ -308,6 +308,12 @@ function ensureSpace(ctx: Ctx, needed: number): Ctx {
   return ctx;
 }
 
+/**
+ * Centred header line. Wraps onto multiple centred lines when the text (e.g.
+ * a long faculty-entered course/university name) would otherwise run off the
+ * page edge — previously this measured the whole string once and never
+ * wrapped, so an unusually long name silently overflowed past the margins.
+ */
 function drawCentered(
   ctx: Ctx,
   text: string,
@@ -317,15 +323,22 @@ function drawCentered(
 ) {
   const safe = sanitize(text);
   if (!safe) return;
-  const w = font.widthOfTextAtSize(safe, size);
-  ctx.page.drawText(safe, {
-    x: (PAGE_WIDTH - w) / 2,
-    y: ctx.y,
-    size,
-    font,
-    color,
-  });
-  ctx.y -= size + 4;
+  const maxWidth = CONTENT_RIGHT - MARGIN_LEFT;
+  const lines =
+    font.widthOfTextAtSize(safe, size) > maxWidth
+      ? wrapWords(safe, font, size, maxWidth)
+      : [safe];
+  for (const ln of lines) {
+    const w = font.widthOfTextAtSize(ln, size);
+    ctx.page.drawText(ln, {
+      x: (PAGE_WIDTH - w) / 2,
+      y: ctx.y,
+      size,
+      font,
+      color,
+    });
+    ctx.y -= size + 4;
+  }
 }
 
 function drawLine(ctx: Ctx, gapAfter = 6) {
@@ -469,8 +482,16 @@ function drawColumnHeader(
   ctx.y -= 12;
 }
 
+/**
+ * Draws onto the given `page` explicitly (not `ctx.page`) because callers that
+ * pair this with a wrapped question body (see {@link drawQuestionText}) must
+ * target the page the row's label/startY actually belongs to — by the time
+ * the body has finished wrapping, `ctx.page` may have moved on to a later
+ * page if the body itself crossed a page break.
+ */
 function drawRightCols(
   ctx: Ctx,
+  page: PDFPage,
   y: number,
   marks: number | null,
   co: string | null | undefined,
@@ -482,7 +503,7 @@ function drawRightCols(
   if (marks != null) {
     const m = sanitize(`[${String(marks).padStart(2, "0")}]`);
     const mw = regular.widthOfTextAtSize(m, 9.5);
-    ctx.page.drawText(m, {
+    page.drawText(m, {
       x: COL_MARKS_X - mw / 2,
       y,
       size: 9.5,
@@ -495,7 +516,7 @@ function drawRightCols(
     if (val == null || val === "") return;
     const s = sanitize(String(val));
     const w = regular.widthOfTextAtSize(s, 9.5);
-    ctx.page.drawText(s, {
+    page.drawText(s, {
       x: x - w / 2,
       y,
       size: 9.5,
@@ -1070,8 +1091,9 @@ function drawQuestionText(
   text: string,
   indentX: number,
   size = 10
-): { startY: number } {
+): { startY: number; startPage: PDFPage } {
   const startY = ctx.y;
+  const startPage = ctx.page;
   const segments = parseMarkdownLite(text ?? "");
   // Common case (no embedded table/list): render as text, math-aware. When the
   // text also has no math, drawMathText delegates to drawTextLines unchanged.
@@ -1096,7 +1118,7 @@ function drawQuestionText(
   // when the body is empty" principle as BUG 1, for the empty-body case that
   // fix didn't reach.
   if (ctx.y === startY) ctx.y -= LINE_H;
-  return { startY };
+  return { startY, startPage };
 }
 
 /**
@@ -1132,7 +1154,7 @@ function drawTaggedSubRow(ctx: Ctx, sub: SubQuestion, hasCoPo: boolean): Ctx {
   ctx = ensureSpace(ctx, LINE_H * 4);
   const subText = sanitize(`${sub.label} ${sub.question}`);
   const r = drawQuestionText(ctx, subText, MARGIN_LEFT + 16, 10);
-  drawRightCols(ctx, r.startY, null, sub.co, sub.btl, sub.po, hasCoPo);
+  drawRightCols(ctx, r.startPage, r.startY, null, sub.co, sub.btl, sub.po, hasCoPo);
   ctx = drawUnitImage(ctx, sub, MARGIN_LEFT + 16);
 
   if (sub.options) {
@@ -1191,7 +1213,7 @@ function drawTaggedOptionRow(
     color: rgb(0, 0, 0),
   });
   const r = drawQuestionText(ctx, part.question, MARGIN_LEFT + 50, 10);
-  drawRightCols(ctx, r.startY, null, part.co, part.btl, part.po, hasCoPo);
+  drawRightCols(ctx, r.startPage, r.startY, null, part.co, part.btl, part.po, hasCoPo);
   ctx = drawUnitImage(ctx, part, MARGIN_LEFT + 50);
   ctx.y -= 4;
   return ctx;
@@ -1214,6 +1236,7 @@ function drawMCQRow(ctx: Ctx, q: GeneratedQuestion, hasCoPo: boolean): Ctx {
   });
 
   // Instruction text inline
+  const instructionMaxWidth = COL_MARKS_X - (MARGIN_LEFT + 50) - 12;
   if (instruction) {
     ctx.page.drawText(instruction, {
       x: MARGIN_LEFT + 50,
@@ -1221,13 +1244,14 @@ function drawMCQRow(ctx: Ctx, q: GeneratedQuestion, hasCoPo: boolean): Ctx {
       size: 10,
       font: regular,
       color: rgb(0, 0, 0),
-      maxWidth: COL_MARKS_X - (MARGIN_LEFT + 50) - 12,
+      maxWidth: instructionMaxWidth,
     });
   }
 
   // Top-right column headers + total marks
   drawRightCols(
     ctx,
+    ctx.page,
     ctx.y,
     q.total_marks,
     null,
@@ -1235,6 +1259,14 @@ function drawMCQRow(ctx: Ctx, q: GeneratedQuestion, hasCoPo: boolean): Ctx {
     null,
     false
   );
+  // Advance past the label/instruction row using its real wrapped-line count
+  // (pdf-lib's maxWidth above auto-wraps but never reports how many lines it
+  // used) — same fix as drawPool/drawAttemptAnyOne, otherwise the first
+  // sub-part draws on top of this row.
+  const instructionLines = instruction
+    ? wrapWords(instruction, regular, 10, instructionMaxWidth)
+    : [];
+  ctx.y -= LINE_H * Math.max(instructionLines.length, 1);
   drawColumnHeader(ctx, hasCoPo, { showMarks: false });
 
   for (const sub of q.sub_parts ?? []) {
@@ -1263,7 +1295,7 @@ function drawSinglePart(
   });
 
   const r = drawQuestionText(ctx, part.question, MARGIN_LEFT + 50, 10);
-  drawRightCols(ctx, r.startY, part.marks, part.co, part.btl, part.po, hasCoPo);
+  drawRightCols(ctx, r.startPage, r.startY, part.marks, part.co, part.btl, part.po, hasCoPo);
   ctx = drawUnitImage(ctx, part, MARGIN_LEFT + 50);
   ctx.y -= 4;
   return ctx;
@@ -1388,7 +1420,7 @@ function drawAttemptAnyOne(
     color: rgb(0, 0, 0),
     maxWidth: instructionMaxWidth,
   });
-  drawRightCols(ctx, ctx.y, q.total_marks, null, null, null, false);
+  drawRightCols(ctx, ctx.page, ctx.y, q.total_marks, null, null, null, false);
   const instructionLines = wrapWords(instruction, regular, 10, instructionMaxWidth);
   ctx.y -= LINE_H * Math.max(instructionLines.length, 1);
 
@@ -1426,7 +1458,7 @@ function drawPool(ctx: Ctx, q: GeneratedQuestion, hasCoPo: boolean): Ctx {
     color: rgb(0, 0, 0),
     maxWidth: instructionMaxWidth,
   });
-  drawRightCols(ctx, ctx.y, q.total_marks, null, null, null, false);
+  drawRightCols(ctx, ctx.page, ctx.y, q.total_marks, null, null, null, false);
   const instructionLines = wrapWords(instruction, regular, 10, instructionMaxWidth);
   ctx.y -= LINE_H * Math.max(instructionLines.length, 1);
 
@@ -1447,27 +1479,40 @@ function drawPool(ctx: Ctx, q: GeneratedQuestion, hasCoPo: boolean): Ctx {
   return ctx;
 }
 
+/**
+ * Centred, underlined section title. Wraps onto multiple centred+underlined
+ * lines when the (faculty-entered) section name would otherwise run off the
+ * page edge — previously this measured the whole string once and never
+ * wrapped.
+ */
 function drawSectionHeader(ctx: Ctx, name: string) {
   const { bold } = ctx.fonts;
-  ctx = ensureSpace(ctx, LINE_H * 3);
   const text = sanitize(name.toUpperCase().replace(/SECTION\s*/i, "SECTION - "));
-  const w = bold.widthOfTextAtSize(text, 12);
-  const x = (PAGE_WIDTH - w) / 2;
-  ctx.page.drawText(text, {
-    x,
-    y: ctx.y,
-    size: 12,
-    font: bold,
-    color: rgb(0, 0, 0),
-  });
-  // Underline
-  ctx.page.drawLine({
-    start: { x, y: ctx.y - 2 },
-    end: { x: x + w, y: ctx.y - 2 },
-    thickness: 0.6,
-    color: rgb(0, 0, 0),
-  });
-  ctx.y -= 18;
+  const maxWidth = CONTENT_RIGHT - MARGIN_LEFT;
+  const lines =
+    bold.widthOfTextAtSize(text, 12) > maxWidth
+      ? wrapWords(text, bold, 12, maxWidth)
+      : [text];
+  ctx = ensureSpace(ctx, LINE_H + lines.length * 18);
+  for (const ln of lines) {
+    const w = bold.widthOfTextAtSize(ln, 12);
+    const x = (PAGE_WIDTH - w) / 2;
+    ctx.page.drawText(ln, {
+      x,
+      y: ctx.y,
+      size: 12,
+      font: bold,
+      color: rgb(0, 0, 0),
+    });
+    // Underline
+    ctx.page.drawLine({
+      start: { x, y: ctx.y - 2 },
+      end: { x: x + w, y: ctx.y - 2 },
+      thickness: 0.6,
+      color: rgb(0, 0, 0),
+    });
+    ctx.y -= 18;
+  }
 }
 
 function drawFooter(ctx: Ctx, paper: AssembledPaper) {

@@ -49,13 +49,89 @@ const DIAGRAM_BATCH_SCHEMA = {
       },
       title: { type: "string" },
       bullets: { type: "array", items: { type: "string" } },
-      svgCode: { type: "string" },
+      // Diagram batches legitimately need svgCode, but a free-form string under
+      // constrained decoding has no natural stopping pressure — the same runaway
+      // that made svgCode catastrophic in the content schema (see CONTENT_BATCH_
+      // SCHEMA note). Bound it at generation time: a real, labelled technical SVG
+      // at viewBox 800×400 runs ~2–6k chars, so 12000 is generous headroom while
+      // still capping the model well below the 8192-token diagram budget (~32k
+      // chars) so it can never pour the whole budget into one runaway SVG. This
+      // is an enforced pre-generation constraint, NOT the post-hoc maxSvgElements
+      // metadata computed after the fact for telemetry.
+      svgCode: { type: "string", maxLength: 12000 },
       mermaidCode: { type: "string" },
       imagenPrompt: { type: "string" },
       diagramCaption: { type: "string" },
       diagramRenderType: {
         type: "string",
         enum: ["svg", "mermaid", "imagen", "illustration", "dual"],
+      },
+    },
+    required: ["type", "title"],
+  },
+} as const;
+
+// responseSchema for CONTENT (text) batches — the Flash path. Content batches
+// carry dense LaTeX in bullets/example/question ($\frac{a}{b}$, $\int$, \ce{…}),
+// and the model, generating free-form JSON text, routinely emits those backslashes
+// UNESCAPED ("$e^{i\omega x}$" → invalid JSON escape \o). That broke JSON.parse
+// on ~75% of dense-math batches — a failure NONE of parseBatchContent's four
+// recovery passes could repair (they handle trailing commas, truncation, and the
+// svg field, not stray backslashes in text). Constraining the call with a schema
+// makes Gemini serialize the JSON itself, so every backslash is correctly escaped
+// and the batch parses on the first try. Mirrors the outline / refine / diagram
+// migrations. Only `type` and `title` are required; every text-type field is
+// optional and filled per slide type.
+//
+// TEXT-ONLY BY CONSTRUCTION — no visual fields, no diagram/dual_visual types.
+// This schema was ORIGINALLY a superset that also carried svgCode / mermaidCode /
+// imagenPrompt / diagramCaption / diagramRenderType "as a safety net". That safety
+// net was catastrophic: under constrained decoding a free-form `svgCode` string has
+// no natural stopping pressure, so on visual-leaning TEXT decks (e.g. an algorithms
+// deck, where every concept invites a diagram) Flash poured the whole 32768-token
+// budget into a runaway SVG on a text slide — measured 3/3 at ~127s / ₹1.71 / output
+// pegged at 32768, and it lost 2 of 5 slides to truncation. Dropping the five visual
+// fields (and the diagram/dual_visual enum values) removes that runaway path
+// entirely: the SAME deck came back 3/3 at ~7s / ₹0.14 / ~1200 output tokens / 5-of-5
+// parsed, and dense-math (Fourier) batches still parse 5/5 with LaTeX intact. The
+// frontend partitions visual slides into diagram batches (DIAGRAM_BATCH_SCHEMA), so
+// a content batch never legitimately needs to emit a visual field.
+const CONTENT_BATCH_SCHEMA = {
+  type: "array",
+  items: {
+    type: "object",
+    properties: {
+      index: { type: "number" },
+      type: {
+        type: "string",
+        enum: [
+          "title",
+          "overview",
+          "concept",
+          "example",
+          "practice",
+          "summary",
+        ],
+      },
+      title: { type: "string" },
+      bullets: { type: "array", items: { type: "string" } },
+      note: { type: "string" },
+      example: {
+        type: "object",
+        properties: {
+          problem: { type: "string" },
+          steps: { type: "array", items: { type: "string" } },
+          answer: { type: "string" },
+        },
+      },
+      question: {
+        type: "object",
+        properties: {
+          text: { type: "string" },
+          options: { type: "array", items: { type: "string" } },
+          answer: { type: "string" },
+          explanation: { type: "string" },
+        },
       },
     },
     required: ["type", "title"],
@@ -220,7 +296,7 @@ export async function POST(request: NextRequest) {
 
     const { data: subject, error: subjectError } = await adminClient
       .from("subjects")
-      .select("id, name")
+      .select("id, name, code")
       .eq("id", subjectId)
       .single();
 
@@ -229,6 +305,7 @@ export async function POST(request: NextRequest) {
     }
 
     const subjectName = (subject as { name?: string }).name ?? "";
+    const subjectCode = (subject as { code?: string }).code ?? "";
     const row = contentRow as { content?: string; reference_books?: string };
     const fullSyllabus = String(row.content ?? "");
     const referenceBooks = String(row.reference_books ?? "");
@@ -253,6 +330,7 @@ export async function POST(request: NextRequest) {
 
     const batchPrompt = buildBatchContentPrompt({
       subjectName,
+      subjectCode,
       fullSyllabus,
       depth,
       slides,
@@ -356,9 +434,14 @@ export async function POST(request: NextRequest) {
             messages: [{ role: "user", content: prompt }],
             maxTokens,
             model, // explicit per-attempt model override (router honours it)
-            // Schema-constrain diagram batches only; content batches keep their
-            // existing free-form parsing (parseBatchContent).
-            ...(isDiagramBatch ? { responseSchema: DIAGRAM_BATCH_SCHEMA } : {}),
+            // Schema-constrain BOTH batch kinds now. Diagram batches use the
+            // diagram schema; content batches use CONTENT_BATCH_SCHEMA to stop the
+            // unescaped-LaTeX-backslash JSON breakage (see schema comment). Gemini
+            // serializes conformant JSON either way, so parseBatchContent's direct
+            // JSON.parse succeeds on the first attempt.
+            responseSchema: isDiagramBatch
+              ? DIAGRAM_BATCH_SCHEMA
+              : CONTENT_BATCH_SCHEMA,
           });
           costInr += ai.costInr;
 
@@ -662,6 +745,21 @@ export async function POST(request: NextRequest) {
     // Same philosophy as the diagram escalation-retry: try once more before
     // accepting an empty slide; never degrade to a placeholder.
     if (!isDiagramBatch) {
+      // FLOOR CHECK: a bullet that resolves to empty/whitespace is NOT valid
+      // content — the JSON parsed, but the slide would render blank lines. Strip
+      // blank/whitespace-only entries in place first (so a partially-blank array
+      // never ships blank bullets), which also collapses an all-blank array to
+      // length 0 so the emptiness predicate below treats it exactly like bullets:[]
+      // and routes it through the SAME per-slide regenerate path as a full failure.
+      for (const slide of annotated) {
+        if (Array.isArray(slide.bullets)) {
+          slide.bullets = slide.bullets.filter(
+            (b) => typeof b === "string" && b.trim().length > 0
+          );
+        }
+      }
+      const hasText = (v: unknown): boolean =>
+        typeof v === "string" && v.trim().length > 0;
       const emptyContentSlides = annotated
         .map((slide, arrIdx) => ({ slide, arrIdx }))
         .filter(({ slide, arrIdx }) => {
@@ -678,8 +776,8 @@ export async function POST(request: NextRequest) {
             (!Array.isArray(slide.bullets) || slide.bullets.length === 0)
           )
             return true;
-          if (needsExample && !slide.example?.problem) return true;
-          if (needsQuestion && !slide.question?.text) return true;
+          if (needsExample && !hasText(slide.example?.problem)) return true;
+          if (needsQuestion && !hasText(slide.question?.text)) return true;
           return false;
         });
 
@@ -692,6 +790,7 @@ export async function POST(request: NextRequest) {
           if (!inp) continue;
           const retryPrompt = buildBatchContentPrompt({
             subjectName,
+            subjectCode,
             fullSyllabus,
             depth,
             slides: [inp],
@@ -704,14 +803,21 @@ export async function POST(request: NextRequest) {
           batchCostInr += retryResult.costInr;
           if (retryResult.kind === "ok" && retryResult.slides.length > 0) {
             const recovered = retryResult.slides[0];
+            // Apply the SAME blank-bullet floor to the retry output, so a retry
+            // that comes back with whitespace-only bullets isn't accepted as a fix.
+            if (Array.isArray(recovered.bullets)) {
+              recovered.bullets = recovered.bullets.filter(
+                (b) => typeof b === "string" && b.trim().length > 0
+              );
+            }
             const needsBullets = ["concept", "overview", "summary"].includes(
               slide.type ?? ""
             );
             const hasContent = needsBullets
               ? Array.isArray(recovered.bullets) && recovered.bullets.length > 0
               : slide.type === "example"
-              ? !!recovered.example?.problem
-              : !!recovered.question?.text;
+              ? hasText(recovered.example?.problem)
+              : hasText(recovered.question?.text);
             if (hasContent) {
               annotated[arrIdx] = {
                 ...recovered,

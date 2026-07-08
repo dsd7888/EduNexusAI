@@ -1,6 +1,6 @@
 import { requireRole, apiError } from "@/lib/api/helpers";
 import { routeAI } from "@/lib/ai/router";
-import { normaliseQuestion } from "@/lib/qpaper/sectionGen";
+import { normaliseQuestion, sanitizeQuestionCoCodes } from "@/lib/qpaper/sectionGen";
 import type { TemplateQuestion } from "@/lib/qpaper/templates";
 import type { NextRequest } from "next/server";
 
@@ -120,7 +120,25 @@ Output a SINGLE JSON object (not an array) with the same structure as the templa
     }
 
     const normalised = normaliseQuestion(parsed, templateQuestion);
-    return Response.json({ success: true, question: normalised });
+    // The section pipeline gates CO tags via sanitizeCoCodes, but this
+    // single-question route bypasses it — so a hallucinated CO (e.g. a full
+    // sentence instead of a code) would otherwise reach the rendered paper.
+    // Route every CO through the same shared validateCoOrNull gate: valid codes
+    // are kept/canonicalised, anything unresolvable is blanked (absent tag) with
+    // a "please assign manually" warning surfaced to faculty. No fallback
+    // coercion — the retag target already steers the prompt above (targetBlock).
+    const validCoCodes = (coPoData?.courseOutcomes ?? []).map((c) => c.co_code);
+    const coWarnings = sanitizeQuestionCoCodes(normalised, validCoCodes);
+    if (coWarnings.length > 0) {
+      console.warn(
+        "[regenerate-question] unresolved COs:\n  " + coWarnings.join("\n  ")
+      );
+    }
+    return Response.json({
+      success: true,
+      question: normalised,
+      warnings: coWarnings,
+    });
   } catch (err) {
     console.error("[regenerate-question] error:", err);
     return apiError(

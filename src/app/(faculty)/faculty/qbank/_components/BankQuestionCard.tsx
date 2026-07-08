@@ -17,6 +17,7 @@ import {
   Loader2,
   Pencil,
   Save,
+  ShieldCheck,
   Trash2,
   X,
 } from "lucide-react";
@@ -117,6 +118,7 @@ export function BankQuestionCard({
   const [draft, setDraft] = useState<Draft | null>(null);
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [approving, setApproving] = useState(false);
   const [expanded, setExpanded] = useState(false);
 
   const beginEdit = () => {
@@ -163,6 +165,20 @@ export function BankQuestionCard({
       toast.error("Failed to save question");
     } finally {
       setSaving(false);
+    }
+  };
+
+  const quickApprove = async () => {
+    setApproving(true);
+    try {
+      const updated = await patchQuestion(q.id, { is_verified: true });
+      onUpdated(updated);
+      toast.success("Approved");
+    } catch (err) {
+      console.error(err);
+      toast.error("Failed to approve question");
+    } finally {
+      setApproving(false);
     }
   };
 
@@ -449,6 +465,22 @@ export function BankQuestionCard({
       )}
 
       <div className="flex items-center justify-end gap-1 pt-1">
+        {!q.is_verified && (
+          <Button
+            size="sm"
+            variant="ghost"
+            className="h-7 text-xs text-emerald-500 hover:text-emerald-500"
+            onClick={quickApprove}
+            disabled={approving}
+          >
+            {approving ? (
+              <Loader2 className="size-3 mr-1 animate-spin" />
+            ) : (
+              <ShieldCheck className="size-3 mr-1" />
+            )}
+            Approve
+          </Button>
+        )}
         <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={beginEdit}>
           <Pencil className="size-3 mr-1" />
           Edit

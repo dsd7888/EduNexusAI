@@ -218,8 +218,12 @@ export async function patchQuestion(
   return data.question;
 }
 
-export async function deleteQuestion(id: string): Promise<void> {
-  const res = await fetch(`/api/qbank/${id}`, { method: "DELETE" });
+export async function deleteQuestion(
+  id: string,
+  opts?: { reason?: "rejected" }
+): Promise<void> {
+  const qs = opts?.reason ? `?reason=${opts.reason}` : "";
+  const res = await fetch(`/api/qbank/${id}${qs}`, { method: "DELETE" });
   if (!res.ok) throw new Error(await res.text());
 }
 

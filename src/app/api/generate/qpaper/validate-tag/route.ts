@@ -54,7 +54,12 @@ export async function POST(request: NextRequest) {
       moduleContent
     );
 
-    const resolved = resolveTagValidation(claimedCO, claimedBTL, validation);
+    const resolved = resolveTagValidation(
+      claimedCO,
+      claimedBTL,
+      validation,
+      courseOutcomes.map((c) => c.co_code)
+    );
     return Response.json({
       co: resolved.co,
       btl: resolved.btl,

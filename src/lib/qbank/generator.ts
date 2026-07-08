@@ -9,6 +9,7 @@
 
 import { routeAI } from "@/lib/ai/router";
 import { estimateMaxOutputTokens } from "@/lib/ai/tokenBudget";
+import { hasUnsupportedNotation } from "@/lib/text/latexSegments";
 import {
   archetypeHintForSubject,
   classifySubjectFamily,
@@ -247,7 +248,7 @@ async function generateSlot(
       );
       return [];
     }
-    return arr
+    const questions = arr
       .filter((r) => r && typeof r.question_text === "string" && r.question_text.trim())
       .map((r) => ({
         question_text: String(r.question_text).trim(),
@@ -268,6 +269,23 @@ async function generateSlot(
         marks: slot.marks,
         module_id: slot.module_id ?? null,
       }));
+
+    // Unsupported/malformed math or chemistry notation forces needs-review,
+    // same detection used at CSV import and manual/image entry — flagged here
+    // before persistence rather than surfacing later as literal `$…$` source
+    // or a render error in a generated paper. AI-generated bank questions
+    // already persist with is_verified=false regardless (see generate/route.ts),
+    // so this is a visibility flag for faculty review, not a new gate.
+    for (const q of questions) {
+      const optionTexts = q.options?.map((o) => o.text) ?? [];
+      if (hasUnsupportedNotation(q.question_text, q.model_answer, ...optionTexts)) {
+        console.warn(
+          `[qbank generate] unsupported notation flagged (needs review) — slot type=${slot.question_type} marks=${slot.marks}: "${q.question_text.slice(0, 80)}"`
+        );
+      }
+    }
+
+    return questions;
   } catch (err) {
     const message = err instanceof Error ? err.message : "unknown error";
     console.warn(`[qbank generate] slot call failed: ${message}`);

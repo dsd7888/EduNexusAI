@@ -609,6 +609,7 @@ export function MyBankTab({
           onClose={(completed) => handleReviewClose(completed)}
           onQuestionUpdated={handleUpdated}
           onQuestionApproved={handleQuestionApproved}
+          onQuestionRejected={handleDeleted}
         />
       )}
     </div>
