@@ -7,6 +7,14 @@ export const NO_CHANGE_SUMMARY = 'No changes needed.';
 export const BATCH_FAILURE_SUMMARY = 'Refinement failed — original content preserved.';
 export const REVERT_SUMMARY = 'Refined content did not fit the slide — original kept.';
 
+// change_summary for a slide the faculty member deliberately DID NOT select for
+// refinement. It never reaches the AI (no call, no cost) and its source file is
+// left byte-identical. It belongs in the same "unchanged" bucket as the no-op /
+// revert / batch-failure summaries on the results view, but is worded as an
+// explicit human choice ("not selected") rather than an AI outcome ("nothing to
+// improve") so the per-slide detail panel reads distinctly for the two cases.
+export const NOT_SELECTED_SUMMARY = 'Slide not selected for refinement — left unchanged.';
+
 // change_summary overrides for a PARTIAL revert: the slide's file DID change
 // (so it still counts as "Enhanced"), but one of title/body specifically was
 // dropped back to the original because it couldn't be made to fit, while the

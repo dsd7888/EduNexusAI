@@ -1,7 +1,7 @@
 import { routeAI } from '@/lib/ai/router';
 import { generateImagenImage, buildImagenPrompt } from '@/lib/ai/imagen';
 import { hasLatex, findUnsupportedNotation } from '@/lib/text/latexSegments';
-import { NO_CHANGE_SUMMARY, BATCH_FAILURE_SUMMARY } from './types';
+import { NO_CHANGE_SUMMARY, BATCH_FAILURE_SUMMARY, NOT_SELECTED_SUMMARY } from './types';
 import type {
   ExtractedDeck,
   ExtractedSlide,
@@ -775,10 +775,19 @@ function makeBaseSlide(s: ExtractedSlide): RefinedSlide {
 function assembleRefinedDeck(
   originalSlides: ExtractedSlide[],
   batchResults: BatchResponse[],
-  summarySlide: RefinedSlide | null
+  summarySlide: RefinedSlide | null,
+  selectedSet: Set<number> | null
 ): RefinedSlide[] {
-  // Base layer: one RefinedSlide per original slide
-  const base: RefinedSlide[] = originalSlides.map(makeBaseSlide);
+  // Base layer: one RefinedSlide per original slide. A slide the faculty member
+  // did NOT select never entered a batch, so it will never be overwritten by a
+  // batch result below — stamp it up front as a deliberate skip (refined ===
+  // original from makeBaseSlide, but with the NOT_SELECTED_SUMMARY reason) so it
+  // is counted as unchanged and, in the assembler, left byte-identical.
+  const base: RefinedSlide[] = originalSlides.map((s) => {
+    const bs = makeBaseSlide(s);
+    if (selectedSet && !selectedSet.has(s.index)) bs.change_summary = NOT_SELECTED_SUMMARY;
+    return bs;
+  });
 
   // Collect new slides grouped by where they insert
   const insertionMap = new Map<number, RefinedSlide[]>();
@@ -847,10 +856,20 @@ function assembleRefinedDeck(
 export async function refineDeck(
   deck: ExtractedDeck,
   options: RefinementOptions,
-  subjectContext?: SubjectContext
+  subjectContext?: SubjectContext,
+  // Which original slide indices to send to the AI. `undefined` = refine the
+  // whole deck (the default, behaviourally identical to before this feature). An
+  // explicit list refines ONLY those slides; every other slide is stamped
+  // NOT_SELECTED_SUMMARY, never batched (no AI call, no cost) and left untouched.
+  selectedIndices?: number[]
 ): Promise<RefinedDeck> {
+  // null → "all selected"; a Set → refine only these indices. Kept as null (not
+  // a full Set) for the default so the whole path stays identical to before.
+  const selectedSet = selectedIndices ? new Set(selectedIndices) : null;
+
   console.log(
     `[ppt-refine/refiner] Starting refinement: ${deck.slide_count} slides, ` +
+      `${selectedSet ? `${selectedSet.size} selected, ` : ''}` +
       `topic="${deck.detected_topic}", level=${deck.detected_level}`
   );
 
@@ -863,10 +882,17 @@ export async function refineDeck(
     };
   }
 
+  // Only the SELECTED slides are batched and sent to the AI. Non-selected slides
+  // are skipped entirely here (stamped later in assembleRefinedDeck) — this is
+  // where the real cost/time saving comes from: fewer batches actually sent.
+  const slidesToRefine = selectedSet
+    ? deck.slides.filter((s) => selectedSet.has(s.index))
+    : deck.slides;
+
   // Split into batches of BATCH_SIZE
   const batches: ExtractedSlide[][] = [];
-  for (let i = 0; i < deck.slides.length; i += BATCH_SIZE) {
-    batches.push(deck.slides.slice(i, i + BATCH_SIZE));
+  for (let i = 0; i < slidesToRefine.length; i += BATCH_SIZE) {
+    batches.push(slidesToRefine.slice(i, i + BATCH_SIZE));
   }
 
   console.log(`[ppt-refine/refiner] Processing ${batches.length} batch(es) in parallel`);
@@ -885,8 +911,10 @@ export async function refineDeck(
     )
   );
 
-  // Assemble intermediate refined slides (before imagen pass)
-  const intermediateSlides = assembleRefinedDeck(deck.slides, batchResults, null);
+  // Assemble intermediate refined slides (before imagen pass). Pass the full
+  // deck.slides (all originals, in order) plus the selected set so non-selected
+  // slides are stamped NOT_SELECTED_SUMMARY rather than the AI no-op summary.
+  const intermediateSlides = assembleRefinedDeck(deck.slides, batchResults, null, selectedSet);
 
   // Imagen pass — separate Pro-tier generation for slides that need real images
   if (options.add_visuals) {

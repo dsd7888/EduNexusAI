@@ -5,6 +5,7 @@ import { RichQuestionText } from "@/components/RichQuestionText";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
 import { Progress } from "@/components/ui/progress";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -15,7 +16,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { useFacultySubjects } from "@/hooks/useSupabaseData";
 import { RefinementType, REFINEMENT_LABELS } from "@/lib/refine/generator";
-import { NO_CHANGE_SUMMARY, BATCH_FAILURE_SUMMARY, REVERT_SUMMARY } from "@/lib/ppt-refine/types";
+import { NO_CHANGE_SUMMARY, BATCH_FAILURE_SUMMARY, REVERT_SUMMARY, NOT_SELECTED_SUMMARY } from "@/lib/ppt-refine/types";
 import type { ExtractedDeck, ExtractedSlide, RefinedDeck, RefinedSlide, RefinementOptions, SlideType, SlideVisual } from "@/lib/ppt-refine/types";
 import { cn } from "@/lib/utils";
 import {
@@ -38,6 +39,10 @@ const NO_CHANGE_SUMMARIES = new Set<string>([
   NO_CHANGE_SUMMARY,
   BATCH_FAILURE_SUMMARY,
   REVERT_SUMMARY,
+  // A deliberately-skipped (not-selected) slide is unchanged too — same bucket as
+  // the no-op / revert / batch-failure reasons. It reads distinctly in the
+  // per-slide detail panel (see the results view), but counts as "unchanged".
+  NOT_SELECTED_SUMMARY,
 ]);
 
 const isUnchangedSlide = (s: { change_summary: string; is_new: boolean }) =>
@@ -221,6 +226,10 @@ function PptRefinementTab() {
 
   // Configure stage
   const [options, setOptions] = useState<RefinementOptions>(DEFAULT_OPTIONS);
+  // Which original slide indices are selected for refinement. Defaults to ALL
+  // slides (set when an extraction lands) so the default behaviour is identical
+  // to refining the whole deck.
+  const [selectedSlideIndices, setSelectedSlideIndices] = useState<Set<number>>(new Set());
 
   // Processing stage
   const [processStageIdx, setProcessStageIdx] = useState(0);
@@ -300,6 +309,35 @@ function PptRefinementTab() {
   const thinCount = deck?.slides.filter((s: ExtractedSlide) => s.is_thin).length ?? 0;
   const visualCount = deck?.slides.filter((s: ExtractedSlide) => s.has_image || s.has_diagram).length ?? 0;
 
+  // When a new deck lands, default to ALL slides selected (identical to the
+  // pre-selection whole-deck behaviour). Keyed on extraction_id so it re-runs for
+  // a genuinely new upload, not on every render.
+  const extractionId = extraction?.extraction_id;
+  useEffect(() => {
+    if (deck) setSelectedSlideIndices(new Set(deck.slides.map((s) => s.index)));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [extractionId]);
+
+  const selectedCount = selectedSlideIndices.size;
+  const totalSlides = deck?.slides.length ?? 0;
+  const allSelected = totalSlides > 0 && selectedCount === totalSlides;
+  const noneSelected = selectedCount === 0;
+
+  const toggleSlideSelected = (index: number) => {
+    setSelectedSlideIndices((prev) => {
+      const next = new Set(prev);
+      if (next.has(index)) next.delete(index);
+      else next.add(index);
+      return next;
+    });
+  };
+
+  const selectAllSlides = () => {
+    if (!deck) return;
+    // "Select All" when everything's already on acts as "Deselect All".
+    setSelectedSlideIndices(allSelected ? new Set() : new Set(deck.slides.map((s) => s.index)));
+  };
+
   const activeOptionsCount = [
     options.improve_readability, options.expand_thin_sections, options.add_real_world_examples,
     options.add_visuals, options.add_practice_problems, options.simplify_content,
@@ -317,8 +355,9 @@ function PptRefinementTab() {
     setProgressPct(0);
     setProcessError(null);
 
-    // Estimated time: ~5s per slide batch of 5 + 30s overhead
-    const estSeconds = Math.max(60, Math.ceil(deck.slide_count / 5) * 12 + 30);
+    // Estimated time: sized to the SELECTED slides (only those are sent to the
+    // AI), not the whole deck — a 3-of-65 selection gets a short estimate.
+    const estSeconds = Math.max(60, Math.ceil(selectedCount / 5) * 12 + 30);
 
     // Animate progress over estimated time
     const startTime = Date.now();
@@ -341,6 +380,12 @@ function PptRefinementTab() {
       const body: Record<string, unknown> = {
         extraction_id: extraction.extraction_id,
         options: { ...options, subject_id: selectedSubjectId || null },
+        // Only send the slides the faculty member picked. Omit the field entirely
+        // when everything is selected so the request is identical to the legacy
+        // whole-deck call (the server treats "absent" as "refine all").
+        ...(allSelected
+          ? {}
+          : { selected_indices: deck.slides.filter((s) => selectedSlideIndices.has(s.index)).map((s) => s.index) }),
       };
       if (extraction.original_pptx_path) {
         body.original_pptx_path = extraction.original_pptx_path;
@@ -392,7 +437,7 @@ function PptRefinementTab() {
       setProcessError("Refinement failed — please try again");
       setStage("configure");
     }
-  }, [extraction, deck, options, selectedSubjectId]);
+  }, [extraction, deck, options, selectedSubjectId, selectedSlideIndices, selectedCount, allSelected]);
 
   // ── Download ──
 
@@ -417,6 +462,7 @@ function PptRefinementTab() {
     setRefineResult(null);
     setProcessError(null);
     setOptions(DEFAULT_OPTIONS);
+    setSelectedSlideIndices(new Set());
   };
 
   // ── Results filter ──
@@ -623,28 +669,50 @@ function PptRefinementTab() {
             {/* Slide list */}
             <Card>
               <CardHeader className="pb-2">
-                <CardTitle className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Slide Overview</CardTitle>
+                <div className="flex items-center justify-between gap-2">
+                  <CardTitle className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Slide Overview</CardTitle>
+                  <button
+                    type="button"
+                    onClick={selectAllSlides}
+                    className="text-[11px] font-medium text-indigo-400 hover:text-indigo-300 underline shrink-0"
+                  >
+                    {allSelected ? "Deselect All" : "Select All"}
+                  </button>
+                </div>
+                <p className={cn("text-[11px]", noneSelected ? "text-amber-400" : "text-muted-foreground")}>
+                  {selectedCount} of {totalSlides} slide{totalSlides !== 1 ? "s" : ""} selected
+                </p>
               </CardHeader>
               <CardContent className="p-0">
                 <ScrollArea className="h-[340px]">
                   <div className="px-4 pb-4 space-y-1">
-                    {deck.slides.map((s: ExtractedSlide) => (
-                      <div
-                        key={s.index}
-                        className={cn(
-                          "flex items-center gap-2 rounded-md px-2 py-1.5 border-l-2 transition-colors",
-                          s.is_thin ? "border-amber-500/60 bg-amber-500/5" : "border-transparent hover:bg-muted/30"
-                        )}
-                      >
-                        <span className="text-[10px] text-muted-foreground w-5 shrink-0 text-right">{s.index + 1}</span>
-                        <SlideTypeBadge type={s.type} />
-                        <span className="text-xs text-foreground truncate flex-1">{s.title}</span>
-                        <div className="flex items-center gap-1 shrink-0">
-                          {s.is_thin && <span className="text-[9px] px-1 py-0.5 rounded bg-amber-500/20 text-amber-400 font-medium">Thin</span>}
-                          <span className="text-[10px] text-muted-foreground">{s.word_count}w</span>
-                        </div>
-                      </div>
-                    ))}
+                    {deck.slides.map((s: ExtractedSlide) => {
+                      const checked = selectedSlideIndices.has(s.index);
+                      return (
+                        <label
+                          key={s.index}
+                          className={cn(
+                            "flex items-center gap-2 rounded-md px-2 py-1.5 border-l-2 transition-colors cursor-pointer",
+                            s.is_thin ? "border-amber-500/60 bg-amber-500/5" : "border-transparent hover:bg-muted/30",
+                            !checked && "opacity-55"
+                          )}
+                        >
+                          <Checkbox
+                            checked={checked}
+                            onCheckedChange={() => toggleSlideSelected(s.index)}
+                            className="shrink-0"
+                            aria-label={`Select slide ${s.index + 1}`}
+                          />
+                          <span className="text-[10px] text-muted-foreground w-5 shrink-0 text-right">{s.index + 1}</span>
+                          <SlideTypeBadge type={s.type} />
+                          <span className="text-xs text-foreground truncate flex-1">{s.title}</span>
+                          <div className="flex items-center gap-1 shrink-0">
+                            {s.is_thin && <span className="text-[9px] px-1 py-0.5 rounded bg-amber-500/20 text-amber-400 font-medium">Thin</span>}
+                            <span className="text-[10px] text-muted-foreground">{s.word_count}w</span>
+                          </div>
+                        </label>
+                      );
+                    })}
                   </div>
                 </ScrollArea>
               </CardContent>
@@ -712,10 +780,12 @@ function PptRefinementTab() {
 
         {/* Sticky bottom bar */}
         <div className="fixed bottom-0 left-64 right-0 z-10 border-t bg-background/95 backdrop-blur px-6 py-3 flex items-center justify-between gap-4">
-          <p className="text-sm text-muted-foreground">
-            {activeOptionsCount === 0
+          <p className={cn("text-sm", noneSelected ? "text-amber-400" : "text-muted-foreground")}>
+            {noneSelected
+              ? "Select at least one slide to refine"
+              : activeOptionsCount === 0
               ? "Select at least one option to refine"
-              : `${activeOptionsCount} option${activeOptionsCount !== 1 ? "s" : ""} selected`}
+              : `${activeOptionsCount} option${activeOptionsCount !== 1 ? "s" : ""} · ${selectedCount} of ${totalSlides} slide${totalSlides !== 1 ? "s" : ""}`}
           </p>
           <div className="flex items-center gap-2">
             <Button variant="outline" size="sm" onClick={resetToUpload}>
@@ -723,7 +793,7 @@ function PptRefinementTab() {
             </Button>
             <Button
               size="sm"
-              disabled={activeOptionsCount === 0}
+              disabled={activeOptionsCount === 0 || noneSelected}
               onClick={handleRefine}
               className="bg-indigo-600 hover:bg-indigo-700 text-white min-w-[180px]"
             >
@@ -742,7 +812,9 @@ function PptRefinementTab() {
   // ════════════════════════════════════════════════════════
 
   if (stage === "processing") {
-    const estMin = Math.max(1, Math.ceil((deck?.slide_count ?? 10) / 10));
+    // Estimate reflects only the slides actually being refined, not the whole deck.
+    const refineCount = selectedCount || (deck?.slide_count ?? 10);
+    const estMin = Math.max(1, Math.ceil(refineCount / 10));
     const currentStageLabel = PROCESS_STAGES[processStageIdx]?.label ?? "Processing";
 
     return (
@@ -763,7 +835,7 @@ function PptRefinementTab() {
             <Progress value={progressPct} className="h-2 bg-muted" />
             <div className="flex justify-between text-xs text-muted-foreground">
               <span>{currentStageLabel}</span>
-              <span>~{estMin} min for {deck?.slide_count ?? "?"} slides</span>
+              <span>~{estMin} min for {refineCount} slide{refineCount !== 1 ? "s" : ""}</span>
             </div>
           </div>
 
@@ -789,7 +861,7 @@ function PptRefinementTab() {
                     {s.label}
                     {isActive && s.key === "refining" && deck && (
                       <span className="text-xs text-muted-foreground ml-2">
-                        ({Math.ceil(deck.slide_count / 5)} batch{Math.ceil(deck.slide_count / 5) !== 1 ? "es" : ""})
+                        ({Math.ceil(refineCount / 5)} batch{Math.ceil(refineCount / 5) !== 1 ? "es" : ""})
                       </span>
                     )}
                   </span>
@@ -951,12 +1023,24 @@ function PptRefinementTab() {
                       </div>
                     )}
 
-                    {/* Change summary */}
-                    {selectedSlide.change_summary && selectedSlide.change_summary !== NO_CHANGE_SUMMARY && (
-                      <div className="rounded-lg bg-amber-500/10 border border-amber-500/30 p-3">
-                        <p className="text-xs font-medium text-amber-400 mb-0.5">What changed</p>
-                        <p className="text-xs text-foreground/80">{selectedSlide.change_summary}</p>
+                    {/* Deliberately-skipped slide: a neutral, muted note that reads
+                        distinctly from the amber "what the AI changed" callout —
+                        this slide was left exactly as the original by choice. */}
+                    {selectedSlide.change_summary === NOT_SELECTED_SUMMARY ? (
+                      <div className="rounded-lg bg-muted/40 border border-border p-3">
+                        <p className="text-xs font-medium text-muted-foreground mb-0.5">Not selected</p>
+                        <p className="text-xs text-foreground/70">
+                          You didn&apos;t select this slide for refinement — it was left exactly as in the original.
+                        </p>
                       </div>
+                    ) : (
+                      /* Change summary */
+                      selectedSlide.change_summary && selectedSlide.change_summary !== NO_CHANGE_SUMMARY && (
+                        <div className="rounded-lg bg-amber-500/10 border border-amber-500/30 p-3">
+                          <p className="text-xs font-medium text-amber-400 mb-0.5">What changed</p>
+                          <p className="text-xs text-foreground/80">{selectedSlide.change_summary}</p>
+                        </div>
+                      )
                     )}
                   </CardContent>
                 </Card>
@@ -974,7 +1058,12 @@ function PptRefinementTab() {
           <Button
             variant="outline"
             size="sm"
-            onClick={() => setStage("configure")}
+            onClick={() => {
+              // Reset per-slide selection to the all-selected default rather than
+              // carrying over the previous run's partial selection.
+              if (deck) setSelectedSlideIndices(new Set(deck.slides.map((s) => s.index)));
+              setStage("configure");
+            }}
           >
             <ChevronLeft className="size-4" />
             Refine Again with Different Options

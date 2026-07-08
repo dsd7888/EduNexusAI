@@ -33,6 +33,7 @@ export async function POST(request: NextRequest) {
     const bodyOriginalPath =
       typeof body.original_pptx_path === 'string' ? body.original_pptx_path.trim() : null;
     const optionsRaw = body.options as Partial<RefinementOptions> | undefined;
+    const selectedIndicesRaw = body.selected_indices;
 
     if (!extractionId) {
       return apiError('extraction_id is required', 400);
@@ -176,10 +177,35 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // ─── Refine ──────────────────────────────────────────────────────────────
-    console.log(`[ppt-refine/refine] Refining ${deck.slide_count} slides for user ${user.id}`);
+    // ─── Per-slide selection ─────────────────────────────────────────────────
+    // `selected_indices` is optional. Absent → refine the whole deck (unchanged
+    // legacy behaviour). Present → refine ONLY those original slide indices; the
+    // rest are skipped (no AI call, no cost) and left untouched. Validate against
+    // the actual slide count and drop anything out of range / non-integer.
+    let selectedIndices: number[] | undefined;
+    if (selectedIndicesRaw !== undefined) {
+      if (!Array.isArray(selectedIndicesRaw)) {
+        return apiError('selected_indices must be an array of slide indices', 400);
+      }
+      const slideCount = deck.slides.length;
+      selectedIndices = [
+        ...new Set(
+          selectedIndicesRaw.filter(
+            (n): n is number => typeof n === 'number' && Number.isInteger(n) && n >= 0 && n < slideCount
+          )
+        ),
+      ];
+      if (selectedIndices.length === 0) {
+        return apiError('Select at least one slide to refine', 400);
+      }
+    }
 
-    const refinedDeck = await refineDeck(deck as ExtractedDeck, options, subjectContext);
+    // ─── Refine ──────────────────────────────────────────────────────────────
+    console.log(
+      `[ppt-refine/refine] Refining ${selectedIndices?.length ?? deck.slide_count}/${deck.slide_count} slides for user ${user.id}`
+    );
+
+    const refinedDeck = await refineDeck(deck as ExtractedDeck, options, subjectContext, selectedIndices);
 
     // ─── Assemble PPTX (patch the original in place) ─────────────────────────
     console.log('[ppt-refine/refine] Assembling PPTX...');
@@ -238,6 +264,7 @@ export async function POST(request: NextRequest) {
           extraction_id: extractionId,
           original_file: deck.file_name,
           original_slides: deck.slide_count,
+          selected_slides: selectedIndices?.length ?? deck.slide_count,
           refined_slides: refinedDeck.refined_slide_count,
           new_slides_added: refinedDeck.slides.filter((s) => s.is_new).length,
           options_used: options,

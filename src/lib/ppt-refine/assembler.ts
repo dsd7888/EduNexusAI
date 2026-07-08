@@ -6,6 +6,7 @@ import {
   REVERT_SUMMARY,
   PARTIAL_REVERT_TITLE_SUMMARY,
   PARTIAL_REVERT_BODY_SUMMARY,
+  NOT_SELECTED_SUMMARY,
 } from './types';
 import type { RefinedDeck, RefinedSlide } from './types';
 
@@ -1083,6 +1084,12 @@ export async function assemblePptx(
     augmented.push(s);
     const file = sortedSlideFiles[origPos++];
     if (!file) continue;
+    // A slide the faculty member did not select for refinement is left exactly
+    // as it was: we advance the source-file cursor (origPos already incremented,
+    // keeping the position-based file mapping in sync) but never read or rewrite
+    // its file, so it stays byte-identical to the original. It also never reaches
+    // the fit-check, so it can never spawn a continuation slide.
+    if (s.change_summary === NOT_SELECTED_SUMMARY) continue;
     try {
       const xml = zip.readAsText(file.name);
       const { xml: next, continuation, reverted, titleReverted, bodyReverted } = patchSlideXml(xml, s, {
