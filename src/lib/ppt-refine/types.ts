@@ -7,6 +7,17 @@ export const NO_CHANGE_SUMMARY = 'No changes needed.';
 export const BATCH_FAILURE_SUMMARY = 'Refinement failed — original content preserved.';
 export const REVERT_SUMMARY = 'Refined content did not fit the slide — original kept.';
 
+// change_summary overrides for a PARTIAL revert: the slide's file DID change
+// (so it still counts as "Enhanced"), but one of title/body specifically was
+// dropped back to the original because it couldn't be made to fit, while the
+// other part landed as refined. The AI's original change_summary describes
+// both parts changing, which would be misleading once one part reverts —
+// these replace it with an accurate, part-specific message.
+export const PARTIAL_REVERT_TITLE_SUMMARY =
+  'Refined title did not fit the slide — original title kept; body was updated.';
+export const PARTIAL_REVERT_BODY_SUMMARY =
+  'Refined body did not fit the slide — original body kept; title was updated.';
+
 export type SlideType =
   | 'title'
   | 'overview'

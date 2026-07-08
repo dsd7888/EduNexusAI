@@ -1,6 +1,12 @@
 import AdmZip from 'adm-zip';
 import { parseSlideSize, type SlideCanvas } from './slide-size';
-import { NO_CHANGE_SUMMARY, BATCH_FAILURE_SUMMARY, REVERT_SUMMARY } from './types';
+import {
+  NO_CHANGE_SUMMARY,
+  BATCH_FAILURE_SUMMARY,
+  REVERT_SUMMARY,
+  PARTIAL_REVERT_TITLE_SUMMARY,
+  PARTIAL_REVERT_BODY_SUMMARY,
+} from './types';
 import type { RefinedDeck, RefinedSlide } from './types';
 
 /**
@@ -489,8 +495,18 @@ export interface PatchResult {
   xml: string;
   /** Set when body overflow was split off onto a continuation slide. */
   continuation?: ContinuationSpec;
-  /** True when a refinement was dropped (kept original) because it didn't fit. */
+  /** True when EITHER the title or body was dropped (kept original) because it
+   *  didn't fit — i.e. titleReverted || bodyReverted. Kept for callers that only
+   *  need to know "did anything get reverted", not which part. */
   reverted?: boolean;
+  /** True when the refined TITLE specifically was dropped back to the original
+   *  because it overflowed even at the readable font floor. Independent of
+   *  bodyReverted — a slide can have its title reverted while its body still
+   *  patched successfully, or vice versa. */
+  titleReverted?: boolean;
+  /** True when the refined BODY specifically was dropped back to the original
+   *  (no continuation split was possible either). Independent of titleReverted. */
+  bodyReverted?: boolean;
 }
 
 /**
@@ -502,8 +518,12 @@ export interface PatchResult {
  * allowed (opts.allowNewSlides + opts.canvas supplied), the refined bullets are
  * split: the largest whole-bullet prefix that fits stays on this slide and the
  * remainder is returned as `continuation` for the caller to append as one
- * continuation slide. When new slides are NOT allowed (or a continuation can't be
- * made to fit), the original text is kept unchanged (with `reverted` flagged).
+ * continuation slide (this does NOT flag bodyReverted — the refined content did
+ * land, just across two slides). When new slides are NOT allowed (or a
+ * continuation can't be made to fit), the original text is kept unchanged and
+ * `bodyReverted` is flagged; the title is reverted/flagged independently via
+ * `titleReverted` if the refined title alone overflows. Either part can revert
+ * while the other patches successfully.
  */
 export function patchSlideXml(
   originalXml: string,
@@ -511,7 +531,8 @@ export function patchSlideXml(
   opts: { allowNewSlides?: boolean; canvas?: SlideCanvas } = {}
 ): PatchResult {
   let continuation: ContinuationSpec | undefined;
-  let reverted = false;
+  let titleReverted = false;
+  let bodyReverted = false;
   try {
     const spTree = getInnerRange(originalXml, 'p:spTree');
     if (!spTree) return { xml: originalXml };
@@ -566,7 +587,7 @@ export function patchSlideXml(
         DEFAULT_TITLE_FONT_PT
       );
       if (fit.kind === 'overflow') {
-        reverted = true;
+        titleReverted = true;
         console.warn(
           `[ppt-refine/assembler] slide ${slide.index}: refined title too long for its box ` +
             `even at ${Math.round(MIN_AUTOFIT_SCALE * 100)}% font — keeping original title`
@@ -685,7 +706,7 @@ export function patchSlideXml(
         }
 
         if (!handled) {
-          reverted = true;
+          bodyReverted = true;
           console.warn(
             `[ppt-refine/assembler] slide ${slide.index}: refined body too long for its box ` +
               `even at ${Math.round(MIN_AUTOFIT_SCALE * 100)}% font — keeping original body`
@@ -694,12 +715,14 @@ export function patchSlideXml(
       }
     }
 
-    if (edits.length === 0) return { xml: originalXml, reverted };
+    if (edits.length === 0) {
+      return { xml: originalXml, reverted: titleReverted || bodyReverted, titleReverted, bodyReverted };
+    }
 
     edits.sort((a, b) => b.start - a.start);
     let out = originalXml;
     for (const e of edits) out = out.slice(0, e.start) + e.text + out.slice(e.end);
-    return { xml: out, continuation, reverted };
+    return { xml: out, continuation, reverted: titleReverted || bodyReverted, titleReverted, bodyReverted };
   } catch (err) {
     console.warn('[ppt-refine/assembler] patchSlideXml failed, keeping original:', err);
     return { xml: originalXml };
@@ -1062,13 +1085,25 @@ export async function assemblePptx(
     if (!file) continue;
     try {
       const xml = zip.readAsText(file.name);
-      const { xml: next, continuation, reverted } = patchSlideXml(xml, s, {
+      const { xml: next, continuation, reverted, titleReverted, bodyReverted } = patchSlideXml(xml, s, {
         allowNewSlides,
         canvas,
       });
       if (next !== xml) {
         zip.updateFile(file.name, Buffer.from(next, 'utf-8'));
         patched++;
+        // Partial revert: the file DID change (so this still counts as
+        // "Enhanced"), but title or body specifically was dropped back to the
+        // original. Both can't be true here — if they were, edits.length would
+        // be 0 and next === xml, landing in the byte-identical branch below
+        // instead. The AI's change_summary generically describes both parts
+        // changing, which is now inaccurate for the part that reverted —
+        // replace it with a specific, accurate note.
+        if (titleReverted) {
+          s.change_summary = PARTIAL_REVERT_TITLE_SUMMARY;
+        } else if (bodyReverted) {
+          s.change_summary = PARTIAL_REVERT_BODY_SUMMARY;
+        }
       } else if (
         s.change_summary !== NO_CHANGE_SUMMARY &&
         s.change_summary !== BATCH_FAILURE_SUMMARY
