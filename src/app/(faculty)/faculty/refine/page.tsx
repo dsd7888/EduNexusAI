@@ -16,12 +16,12 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { useFacultySubjects } from "@/hooks/useSupabaseData";
 import { RefinementType, REFINEMENT_LABELS } from "@/lib/refine/generator";
-import { NO_CHANGE_SUMMARY, BATCH_FAILURE_SUMMARY, REVERT_SUMMARY, NOT_SELECTED_SUMMARY } from "@/lib/ppt-refine/types";
+import { NO_CHANGE_SUMMARY, BATCH_FAILURE_SUMMARY, REVERT_SUMMARY, NOT_SELECTED_SUMMARY, CHAT_EDITED_SUMMARY } from "@/lib/ppt-refine/types";
 import type { ExtractedDeck, ExtractedSlide, RefinedDeck, RefinedSlide, RefinementOptions, SlideType, SlideVisual } from "@/lib/ppt-refine/types";
 import { cn } from "@/lib/utils";
 import {
   ArrowLeft, ArrowRight, CheckCircle, ChevronLeft, Copy,
-  Download, FileUp, Loader2, Presentation, RotateCcw, Sparkles,
+  Download, FileUp, Loader2, MessageSquare, Presentation, RotateCcw, Send, Sparkles,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
@@ -95,6 +95,74 @@ const PROCESS_STAGES = [
   { key: "building",  label: "Building your presentation" },
   { key: "uploading", label: "Uploading" },
 ] as const;
+
+// Suggestion chips for the single-slide chat, PORTED verbatim from the post-gen
+// refine flow's SUGGESTIONS_BY_TYPE (faculty/generate/refine/[contentId]) so the
+// two chat surfaces stay consistent. Extended with entries for the ppt-refine
+// SlideTypes the native flow doesn't model (overview/summary/unknown), and a
+// DEFAULT set so a title-type or otherwise unmapped slide never shows an empty
+// or irrelevant chip set.
+const CHAT_SUGGESTIONS_BY_TYPE: Partial<Record<SlideType, string[]>> = {
+  concept: [
+    "Simplify the bullets",
+    "Add a real-world example",
+    "Reduce to 4 bullets",
+    "Add a key exam insight",
+  ],
+  diagram: [
+    "Add a diagram here",
+    "Make it a flowchart instead",
+    "Add labels to all elements",
+  ],
+  example: [
+    "Add one more worked step",
+    "Make the numbers easier",
+    "Add units to all values",
+  ],
+  practice: [
+    "Make it a harder problem",
+    "Add a hint",
+    "Improve the solution steps",
+  ],
+  overview: [
+    "Tighten the outline",
+    "Reorder for better flow",
+    "Add a missing topic",
+  ],
+  summary: [
+    "Condense to key points",
+    "Add an exam takeaway",
+    "Reduce to 6 bullets",
+  ],
+  title: ["Make the title more specific", "Shorten the title"],
+};
+
+const DEFAULT_CHAT_SUGGESTIONS = [
+  "Improve the wording",
+  "Make it more concise",
+  "Add a real-world example",
+];
+
+function suggestionsForType(t: SlideType): string[] {
+  return CHAT_SUGGESTIONS_BY_TYPE[t] ?? DEFAULT_CHAT_SUGGESTIONS;
+}
+
+// A slide edited via the single-slide chat this session. Only title/body_text
+// flow back into the bulk pass (the export-embedding gap for `visual` is
+// Increment 6's job); `visual` here drives the live preview only.
+interface ChatEditedSlide {
+  title: string;
+  body_text: string[];
+  visual?: SlideVisual;
+  type: SlideType;
+  change_summary: string;
+}
+
+interface ChatMessage {
+  role: "user" | "assistant";
+  content: string;
+  isError?: boolean;
+}
 
 const DEFAULT_OPTIONS: RefinementOptions = {
   improve_readability:     true,
@@ -208,6 +276,168 @@ function SlideVisualPreview({ visual }: { visual: SlideVisual }) {
   );
 }
 
+// ─── SINGLE-SLIDE CHAT PANEL ──────────────────────────────────────────────────
+// Shown in place of the bulk option-toggles when EXACTLY one slide is selected.
+// Borrows the post-gen refine flow's interaction pattern: suggestion chips +
+// free-text instruction that patches just this slide immediately (no batch wait).
+
+function SlideChatPanel({
+  slide,
+  slideNumber,
+  isEdited,
+  input,
+  setInput,
+  onSend,
+  isRefining,
+  messages,
+}: {
+  slide: { title: string; type: SlideType; body_text: string[]; visual?: SlideVisual };
+  slideNumber: number;
+  isEdited: boolean;
+  input: string;
+  setInput: (v: string) => void;
+  onSend: (text: string) => void;
+  isRefining: boolean;
+  messages: ChatMessage[];
+}) {
+  const suggestions = suggestionsForType(slide.type);
+  const canSend = !!input.trim() && !isRefining;
+
+  const send = () => {
+    if (!input.trim() || isRefining) return; // empty guard + in-flight lock
+    onSend(input);
+  };
+
+  return (
+    <div className="flex flex-col gap-4">
+      <div className="flex items-center gap-2">
+        <MessageSquare className="size-4 text-indigo-400" />
+        <h3 className="text-sm font-semibold">Chat refine · Slide {slideNumber}</h3>
+        {isEdited && (
+          <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 font-medium">
+            edited
+          </span>
+        )}
+        <SlideTypeBadge type={slide.type} />
+      </div>
+      <p className="text-xs text-muted-foreground -mt-2">
+        This slide is patched instantly — no need to run &ldquo;Refine Presentation.&rdquo;
+      </p>
+
+      {/* Live preview of the (possibly edited) slide */}
+      <Card className="overflow-hidden">
+        <CardHeader className="pb-2 bg-indigo-500/5 border-b border-border">
+          <CardTitle className="text-sm font-semibold">
+            <RichQuestionText text={slide.title} />
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="pt-3 space-y-3">
+          {slide.body_text.length > 0 && (
+            <ul className="space-y-1.5">
+              {slide.body_text.map((bullet, i) => {
+                if (/^key insight:/i.test(bullet.trim())) return null;
+                return (
+                  <li key={i} className="flex items-start gap-2 text-sm">
+                    <span className="mt-1.5 size-1.5 rounded-full bg-indigo-400/60 shrink-0" />
+                    <span className="text-foreground/90"><RichQuestionText text={bullet} /></span>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+          {slide.body_text.some(b => /^key insight:/i.test(b.trim())) && (
+            <div className="rounded-lg bg-indigo-500/10 border border-indigo-500/30 p-3">
+              <p className="text-xs font-bold text-indigo-300 uppercase tracking-wide mb-1">💡 Key Insight</p>
+              <p className="text-sm text-foreground/90">
+                <RichQuestionText text={slide.body_text.find(b => /^key insight:/i.test(b.trim()))?.replace(/^key insight:\s*/i, "") ?? ""} />
+              </p>
+            </div>
+          )}
+          {slide.visual && (
+            <div className="space-y-1">
+              <p className="text-xs text-muted-foreground font-medium uppercase tracking-wide">Visual (preview only)</p>
+              <SlideVisualPreview visual={slide.visual} />
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Message log */}
+      {messages.length > 0 && (
+        <div className="space-y-1.5 max-h-40 overflow-y-auto rounded-lg border border-border bg-muted/20 p-2">
+          {messages.map((m, i) => (
+            <div
+              key={i}
+              className={cn(
+                "text-xs rounded-md px-2 py-1.5",
+                m.role === "user"
+                  ? "bg-indigo-500/15 text-foreground/90 ml-6"
+                  : m.isError
+                  ? "bg-red-500/10 text-red-400 mr-6"
+                  : "bg-muted/50 text-muted-foreground mr-6"
+              )}
+            >
+              {m.content}
+            </div>
+          ))}
+          {isRefining && (
+            <div className="text-xs rounded-md px-2 py-1.5 bg-muted/50 text-muted-foreground mr-6 flex items-center gap-2">
+              <Loader2 className="size-3 animate-spin" /> Applying your change…
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Suggestion chips */}
+      <div className="flex flex-wrap gap-1.5">
+        {suggestions.map((s) => (
+          <button
+            key={s}
+            type="button"
+            disabled={isRefining}
+            onClick={() => onSend(s)}
+            className={cn(
+              "text-[11px] px-2.5 py-1 rounded-full border transition-colors",
+              isRefining
+                ? "border-border text-muted-foreground/50 cursor-not-allowed"
+                : "border-indigo-500/30 text-indigo-300 hover:bg-indigo-500/10"
+            )}
+          >
+            {s}
+          </button>
+        ))}
+      </div>
+
+      {/* Free-text input */}
+      <div className="flex items-end gap-2">
+        <Textarea
+          rows={2}
+          value={input}
+          disabled={isRefining}
+          onChange={(e) => setInput(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && !e.shiftKey) {
+              e.preventDefault();
+              send();
+            }
+          }}
+          placeholder='Describe a change — e.g. "Add a real-world example"'
+          className="resize-none text-sm"
+        />
+        <Button
+          size="icon"
+          onClick={send}
+          disabled={!canSend}
+          className="bg-indigo-600 hover:bg-indigo-700 text-white shrink-0"
+          aria-label="Send instruction"
+        >
+          {isRefining ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />}
+        </Button>
+      </div>
+    </div>
+  );
+}
+
 // ─── PPT REFINEMENT TAB ───────────────────────────────────────────────────────
 
 function PptRefinementTab() {
@@ -230,6 +460,14 @@ function PptRefinementTab() {
   // slides (set when an extraction lands) so the default behaviour is identical
   // to refining the whole deck.
   const [selectedSlideIndices, setSelectedSlideIndices] = useState<Set<number>>(new Set());
+
+  // Single-slide chat state — DISTINCT from the selection checkboxes above.
+  // `chatEdits` keyed by ORIGINAL slide index; survives across selection changes
+  // so a chat-edited slide is never silently lost when deselected/reselected.
+  const [chatEdits, setChatEdits] = useState<Record<number, ChatEditedSlide>>({});
+  const [chatMessages, setChatMessages] = useState<Record<number, ChatMessage[]>>({});
+  const [chatInput, setChatInput] = useState("");
+  const [isSlideRefining, setIsSlideRefining] = useState(false);
 
   // Processing stage
   const [processStageIdx, setProcessStageIdx] = useState(0);
@@ -315,6 +553,10 @@ function PptRefinementTab() {
   const extractionId = extraction?.extraction_id;
   useEffect(() => {
     if (deck) setSelectedSlideIndices(new Set(deck.slides.map((s) => s.index)));
+    // A genuinely new upload starts with a clean chat slate.
+    setChatEdits({});
+    setChatMessages({});
+    setChatInput("");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [extractionId]);
 
@@ -343,6 +585,147 @@ function PptRefinementTab() {
     options.add_visuals, options.add_practice_problems, options.simplify_content,
     options.add_summary_slide, options.add_key_insights,
   ].filter(Boolean).length;
+
+  const chatEditedCount = Object.keys(chatEdits).length;
+
+  // Chat mode activates when EXACTLY one slide is selected. The right column then
+  // shows the single-slide chat instead of the bulk option-toggles.
+  const singleSelectedIndex =
+    selectedCount === 1 ? [...selectedSlideIndices][0] : null;
+
+  // The current content for a slide, with any chat edit layered on top of the
+  // original extraction. Used both for the chat preview and to bake edited
+  // title/body into the bulk request so an edit is never reverted to the upload.
+  const currentSlideContent = useCallback(
+    (index: number) => {
+      const original = deck?.slides.find((s) => s.index === index);
+      const edit = chatEdits[index];
+      return {
+        title: edit?.title ?? original?.title ?? "",
+        type: edit?.type ?? original?.type ?? ("concept" as SlideType),
+        body_text: edit?.body_text ?? original?.body_text ?? [],
+        visual: edit?.visual,
+      };
+    },
+    [deck, chatEdits]
+  );
+
+  // Reset the free-text box when the active chat slide changes (per-slide message
+  // history is preserved separately in chatMessages).
+  useEffect(() => {
+    setChatInput("");
+  }, [singleSelectedIndex]);
+
+  // ── Single-slide chat send ──
+  const sendSlideChat = useCallback(
+    async (rawInstruction: string) => {
+      const instruction = rawInstruction.trim();
+      if (!instruction) return;                // empty/whitespace guard
+      if (isSlideRefining) return;             // in-flight lock (rapid repeat sends)
+      if (singleSelectedIndex === null || !deck) return;
+
+      const index = singleSelectedIndex;
+      const current = currentSlideContent(index);
+
+      setChatMessages((prev) => ({
+        ...prev,
+        [index]: [...(prev[index] ?? []), { role: "user", content: instruction }],
+      }));
+      setChatInput("");
+      setIsSlideRefining(true);
+
+      // Up to 2 neighbouring titles either side, for grounding (edited titles win).
+      const neighboringTitles = [index - 2, index - 1, index + 1, index + 2]
+        .map((i) => {
+          if (i < 0 || i >= (deck.slides.length ?? 0)) return null;
+          return currentSlideContent(i).title;
+        })
+        .filter((t): t is string => Boolean(t && t.trim()));
+
+      try {
+        const res = await fetch("/api/ppt-refine/refine-slide", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            slide_index: index,
+            slide: {
+              title: current.title,
+              type: current.type,
+              body_text: current.body_text,
+            },
+            instruction,
+            subject_name:
+              subjects.find((s) => s.id === selectedSubjectId)?.name ?? deck.detected_topic,
+            topic: deck.detected_topic,
+            level: deck.detected_level,
+            neighboring_titles: neighboringTitles,
+          }),
+        });
+
+        const data = await res.json().catch(() => ({}));
+
+        if (!res.ok) {
+          const msg = typeof data?.error === "string" ? data.error : "";
+          setChatMessages((prev) => ({
+            ...prev,
+            [index]: [
+              ...(prev[index] ?? []),
+              {
+                role: "assistant",
+                content: msg || "Couldn't apply that change. Try rephrasing.",
+                isError: true,
+              },
+            ],
+          }));
+          return;
+        }
+
+        const refined = data.refined_slide as {
+          refined_title: string;
+          refined_body: string[];
+          visual?: SlideVisual;
+          type?: SlideType;
+          change_summary: string;
+        };
+
+        setChatEdits((prev) => ({
+          ...prev,
+          [index]: {
+            title: refined.refined_title,
+            body_text: refined.refined_body,
+            visual: refined.visual,
+            type: refined.type ?? current.type,
+            change_summary: refined.change_summary,
+          },
+        }));
+        setChatMessages((prev) => ({
+          ...prev,
+          [index]: [
+            ...(prev[index] ?? []),
+            {
+              role: "assistant",
+              content: refined.change_summary || `Slide ${index + 1} updated.`,
+            },
+          ],
+        }));
+      } catch {
+        setChatMessages((prev) => ({
+          ...prev,
+          [index]: [
+            ...(prev[index] ?? []),
+            {
+              role: "assistant",
+              content: "Network error — check your connection and try again.",
+              isError: true,
+            },
+          ],
+        }));
+      } finally {
+        setIsSlideRefining(false);
+      }
+    },
+    [singleSelectedIndex, deck, isSlideRefining, currentSlideContent, subjects, selectedSubjectId]
+  );
 
   // ── Refine call ──
 
@@ -377,6 +760,9 @@ function PptRefinementTab() {
     }, 4000);
 
     try {
+      const chatEditedIndices = Object.keys(chatEdits).map(Number);
+      const hasChatEdits = chatEditedIndices.length > 0;
+
       const body: Record<string, unknown> = {
         extraction_id: extraction.extraction_id,
         options: { ...options, subject_id: selectedSubjectId || null },
@@ -386,11 +772,28 @@ function PptRefinementTab() {
         ...(allSelected
           ? {}
           : { selected_indices: deck.slides.filter((s) => selectedSlideIndices.has(s.index)).map((s) => s.index) }),
+        // Tell the server which slides were chat-edited so those NOT re-selected
+        // for bulk are excluded from the AI batch but still patched with their
+        // edited text (stamped CHAT_EDITED_SUMMARY, not NOT_SELECTED).
+        ...(hasChatEdits ? { chat_edited_indices: chatEditedIndices } : {}),
       };
       if (extraction.original_pptx_path) {
         body.original_pptx_path = extraction.original_pptx_path;
       }
-      if (extraction.storage_path) {
+      // When there are chat edits we must send the deck INLINE with the edited
+      // title/body baked in — storage_path points at the ORIGINAL extraction and
+      // would silently revert every chat edit. Without chat edits, keep the
+      // lighter storage_path path (behaviour identical to before this feature).
+      if (hasChatEdits) {
+        const editedDeck = {
+          ...extraction.extracted_deck,
+          slides: (extraction.extracted_deck as ExtractedDeck).slides.map((s) => {
+            const edit = chatEdits[s.index];
+            return edit ? { ...s, title: edit.title, body_text: edit.body_text } : s;
+          }),
+        };
+        body.extracted_deck = editedDeck;
+      } else if (extraction.storage_path) {
         body.storage_path = extraction.storage_path;
       } else {
         body.extracted_deck = extraction.extracted_deck;
@@ -437,7 +840,7 @@ function PptRefinementTab() {
       setProcessError("Refinement failed — please try again");
       setStage("configure");
     }
-  }, [extraction, deck, options, selectedSubjectId, selectedSlideIndices, selectedCount, allSelected]);
+  }, [extraction, deck, options, selectedSubjectId, selectedSlideIndices, selectedCount, allSelected, chatEdits]);
 
   // ── Download ──
 
@@ -463,6 +866,9 @@ function PptRefinementTab() {
     setProcessError(null);
     setOptions(DEFAULT_OPTIONS);
     setSelectedSlideIndices(new Set());
+    setChatEdits({});
+    setChatMessages({});
+    setChatInput("");
   };
 
   // ── Results filter ──
@@ -719,9 +1125,21 @@ function PptRefinementTab() {
             </Card>
           </div>
 
-          {/* ── Right: Options ── */}
+          {/* ── Right: single-slide chat (exactly 1 selected) OR bulk options ── */}
           <div className="space-y-5">
-
+            {singleSelectedIndex !== null ? (
+              <SlideChatPanel
+                slide={currentSlideContent(singleSelectedIndex)}
+                slideNumber={singleSelectedIndex + 1}
+                isEdited={chatEdits[singleSelectedIndex] !== undefined}
+                input={chatInput}
+                setInput={setChatInput}
+                onSend={sendSlideChat}
+                isRefining={isSlideRefining}
+                messages={chatMessages[singleSelectedIndex] ?? []}
+              />
+            ) : (
+            <>
             {/* Content Quality */}
             <div className="space-y-2">
               <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wide px-1">Content Quality</h3>
@@ -775,6 +1193,8 @@ function PptRefinementTab() {
                 </OptionRow>
               </div>
             </div>
+            </>
+            )}
           </div>
         </div>
 
@@ -783,9 +1203,13 @@ function PptRefinementTab() {
           <p className={cn("text-sm", noneSelected ? "text-amber-400" : "text-muted-foreground")}>
             {noneSelected
               ? "Select at least one slide to refine"
+              : singleSelectedIndex !== null
+              ? chatEditedCount > 0
+                ? `Chat mode · ${chatEditedCount} slide${chatEditedCount !== 1 ? "s" : ""} edited this session`
+                : "Chat mode — refine this slide instantly below"
               : activeOptionsCount === 0
               ? "Select at least one option to refine"
-              : `${activeOptionsCount} option${activeOptionsCount !== 1 ? "s" : ""} · ${selectedCount} of ${totalSlides} slide${totalSlides !== 1 ? "s" : ""}`}
+              : `${activeOptionsCount} option${activeOptionsCount !== 1 ? "s" : ""} · ${selectedCount} of ${totalSlides} slide${totalSlides !== 1 ? "s" : ""}${chatEditedCount > 0 ? ` · ${chatEditedCount} chat-edited` : ""}`}
           </p>
           <div className="flex items-center gap-2">
             <Button variant="outline" size="sm" onClick={resetToUpload}>
@@ -1031,6 +1455,15 @@ function PptRefinementTab() {
                         <p className="text-xs font-medium text-muted-foreground mb-0.5">Not selected</p>
                         <p className="text-xs text-foreground/70">
                           You didn&apos;t select this slide for refinement — it was left exactly as in the original.
+                        </p>
+                      </div>
+                    ) : selectedSlide.change_summary === CHAT_EDITED_SUMMARY ? (
+                      <div className="rounded-lg bg-indigo-500/10 border border-indigo-500/30 p-3">
+                        <p className="text-xs font-medium text-indigo-300 mb-0.5 flex items-center gap-1.5">
+                          <MessageSquare className="size-3" /> Edited via chat
+                        </p>
+                        <p className="text-xs text-foreground/80">
+                          You refined this slide interactively — your changes were carried into the final file, and it was skipped from the bulk pass.
                         </p>
                       </div>
                     ) : (

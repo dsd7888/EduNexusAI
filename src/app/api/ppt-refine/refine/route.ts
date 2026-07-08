@@ -34,6 +34,7 @@ export async function POST(request: NextRequest) {
       typeof body.original_pptx_path === 'string' ? body.original_pptx_path.trim() : null;
     const optionsRaw = body.options as Partial<RefinementOptions> | undefined;
     const selectedIndicesRaw = body.selected_indices;
+    const chatEditedIndicesRaw = body.chat_edited_indices;
 
     if (!extractionId) {
       return apiError('extraction_id is required', 400);
@@ -200,12 +201,33 @@ export async function POST(request: NextRequest) {
       }
     }
 
+    // ─── Chat-edited slides ──────────────────────────────────────────────────
+    // Optional. Indices edited via the single-slide chat this session. Those NOT
+    // also in `selected_indices` are excluded from the AI batch (no re-refine)
+    // but stamped CHAT_EDITED_SUMMARY so the assembler still patches their edited
+    // title/body (carried on `extracted_deck.slides`). Validated the same way as
+    // selected_indices; anything out of range / non-integer is dropped.
+    let chatEditedIndices: number[] | undefined;
+    if (chatEditedIndicesRaw !== undefined) {
+      if (!Array.isArray(chatEditedIndicesRaw)) {
+        return apiError('chat_edited_indices must be an array of slide indices', 400);
+      }
+      const slideCount = deck.slides.length;
+      chatEditedIndices = [
+        ...new Set(
+          chatEditedIndicesRaw.filter(
+            (n): n is number => typeof n === 'number' && Number.isInteger(n) && n >= 0 && n < slideCount
+          )
+        ),
+      ];
+    }
+
     // ─── Refine ──────────────────────────────────────────────────────────────
     console.log(
       `[ppt-refine/refine] Refining ${selectedIndices?.length ?? deck.slide_count}/${deck.slide_count} slides for user ${user.id}`
     );
 
-    const refinedDeck = await refineDeck(deck as ExtractedDeck, options, subjectContext, selectedIndices);
+    const refinedDeck = await refineDeck(deck as ExtractedDeck, options, subjectContext, selectedIndices, chatEditedIndices);
 
     // ─── Assemble PPTX (patch the original in place) ─────────────────────────
     console.log('[ppt-refine/refine] Assembling PPTX...');

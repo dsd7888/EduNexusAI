@@ -15,6 +15,16 @@ export const REVERT_SUMMARY = 'Refined content did not fit the slide — origina
 // improve") so the per-slide detail panel reads distinctly for the two cases.
 export const NOT_SELECTED_SUMMARY = 'Slide not selected for refinement — left unchanged.';
 
+// change_summary for a slide the faculty member refined interactively via the
+// single-slide chat (POST /api/ppt-refine/refine-slide) rather than the bulk
+// batch. Its file DID change (edited title/body were patched in), so it counts
+// as "Enhanced" — NOT in the unchanged bucket with NOT_SELECTED / NO_CHANGE.
+// It is deliberately DISTINCT from NOT_SELECTED_SUMMARY: a chat-edited slide is
+// skipped from the AI batch (no re-refine, no cost) BUT still flows through
+// patchSlideXml with its edited text, whereas a not-selected slide is left
+// byte-identical and never patched. The two must never collide.
+export const CHAT_EDITED_SUMMARY = 'Slide edited via chat — your changes applied.';
+
 // change_summary overrides for a PARTIAL revert: the slide's file DID change
 // (so it still counts as "Enhanced"), but one of title/body specifically was
 // dropped back to the original because it couldn't be made to fit, while the

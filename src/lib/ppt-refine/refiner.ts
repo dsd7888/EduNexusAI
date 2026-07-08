@@ -1,7 +1,7 @@
 import { routeAI } from '@/lib/ai/router';
 import { generateImagenImage, buildImagenPrompt } from '@/lib/ai/imagen';
 import { hasLatex, findUnsupportedNotation } from '@/lib/text/latexSegments';
-import { NO_CHANGE_SUMMARY, BATCH_FAILURE_SUMMARY, NOT_SELECTED_SUMMARY } from './types';
+import { NO_CHANGE_SUMMARY, BATCH_FAILURE_SUMMARY, NOT_SELECTED_SUMMARY, CHAT_EDITED_SUMMARY } from './types';
 import type {
   ExtractedDeck,
   ExtractedSlide,
@@ -776,16 +776,24 @@ function assembleRefinedDeck(
   originalSlides: ExtractedSlide[],
   batchResults: BatchResponse[],
   summarySlide: RefinedSlide | null,
-  selectedSet: Set<number> | null
+  selectedSet: Set<number> | null,
+  chatEditedSet: Set<number> | null
 ): RefinedSlide[] {
   // Base layer: one RefinedSlide per original slide. A slide the faculty member
   // did NOT select never entered a batch, so it will never be overwritten by a
-  // batch result below — stamp it up front as a deliberate skip (refined ===
-  // original from makeBaseSlide, but with the NOT_SELECTED_SUMMARY reason) so it
-  // is counted as unchanged and, in the assembler, left byte-identical.
+  // batch result below — stamp it up front with a distinct "unchanged"/"edited"
+  // reason (refined === the deck's current title/body from makeBaseSlide):
+  //   - chat-edited (this session, not re-selected for bulk) → CHAT_EDITED_SUMMARY.
+  //     The deck's slide already carries the edited title/body_text, so the
+  //     assembler patches those in via patchSlideXml (NOT a byte-identical skip).
+  //   - otherwise → NOT_SELECTED_SUMMARY, left byte-identical by the assembler.
   const base: RefinedSlide[] = originalSlides.map((s) => {
     const bs = makeBaseSlide(s);
-    if (selectedSet && !selectedSet.has(s.index)) bs.change_summary = NOT_SELECTED_SUMMARY;
+    if (selectedSet && !selectedSet.has(s.index)) {
+      bs.change_summary = chatEditedSet?.has(s.index)
+        ? CHAT_EDITED_SUMMARY
+        : NOT_SELECTED_SUMMARY;
+    }
     return bs;
   });
 
@@ -861,11 +869,18 @@ export async function refineDeck(
   // whole deck (the default, behaviourally identical to before this feature). An
   // explicit list refines ONLY those slides; every other slide is stamped
   // NOT_SELECTED_SUMMARY, never batched (no AI call, no cost) and left untouched.
-  selectedIndices?: number[]
+  selectedIndices?: number[],
+  // Slide indices that were edited interactively via the single-slide chat this
+  // session. Those NOT also in `selectedIndices` are excluded from the AI batch
+  // (no re-refine, no cost) but stamped CHAT_EDITED_SUMMARY instead of
+  // NOT_SELECTED_SUMMARY, so the assembler patches their edited title/body
+  // (already present on the incoming deck.slides) rather than skipping them.
+  chatEditedIndices?: number[]
 ): Promise<RefinedDeck> {
   // null → "all selected"; a Set → refine only these indices. Kept as null (not
   // a full Set) for the default so the whole path stays identical to before.
   const selectedSet = selectedIndices ? new Set(selectedIndices) : null;
+  const chatEditedSet = chatEditedIndices ? new Set(chatEditedIndices) : null;
 
   console.log(
     `[ppt-refine/refiner] Starting refinement: ${deck.slide_count} slides, ` +
@@ -914,7 +929,7 @@ export async function refineDeck(
   // Assemble intermediate refined slides (before imagen pass). Pass the full
   // deck.slides (all originals, in order) plus the selected set so non-selected
   // slides are stamped NOT_SELECTED_SUMMARY rather than the AI no-op summary.
-  const intermediateSlides = assembleRefinedDeck(deck.slides, batchResults, null, selectedSet);
+  const intermediateSlides = assembleRefinedDeck(deck.slides, batchResults, null, selectedSet, chatEditedSet);
 
   // Imagen pass — separate Pro-tier generation for slides that need real images
   if (options.add_visuals) {
@@ -963,5 +978,320 @@ export async function refineDeck(
     refined_slide_count: finalSlides.length,
     slides: finalSlides,
     changes_summary: changesSummary.length > 0 ? changesSummary : ['No significant changes needed.'],
+  };
+}
+
+// ─── Single-slide chat refinement ─────────────────────────────────────────────
+//
+// Ports the post-gen refine flow's patch-branch prompt design (system prompt,
+// preservation rules, instruction-priority tree — see
+// src/app/api/generate/ppt/refine/route.ts) into the ppt-refine field model.
+// The native flow emits flat { title, bullets, renderHint, svg/mermaid/imagenPrompt };
+// here the SlideContent equivalents map onto RefinedSlide's fields instead:
+//   title   → refined_title
+//   bullets → refined_body
+//   renderHint + svg/mermaid/imagenPrompt → visual: { type, content, caption }
+// This is ONE Flash call via the same ppt_refine routing the batch path uses,
+// with the SAME schema-capped fields (MAX_TITLE_CHARS / MAX_BULLETS /
+// MAX_INSIGHT_CHARS / 12000-char visual) and the SAME 4096/8192 maxTokens split
+// (8192 only when the instruction implies a diagram/visual).
+
+/** The subset of a RefinedSlide the single-slide chat produces for one slide. */
+export interface SingleSlideRefinement {
+  refined_title: string;
+  refined_body: string[];
+  visual?: SlideVisual;
+  /** SlideType — may change when an instruction demands a different structure. */
+  type?: SlideType;
+  change_summary: string;
+}
+
+export interface SingleSlideContext {
+  /** Broad subject area (e.g. "Operating Systems"). */
+  subjectName: string;
+  /** The deck's specific detected topic — distinct from the broad subject. */
+  topic: string;
+  level: string;
+  /** Up to 4 neighbouring slide titles, for grounding a vague instruction. */
+  neighboringTitles: string[];
+  /** 0-based index of the slide within the deck (rendered 1-based in the prompt). */
+  slideIndex: number;
+}
+
+// Single-object mirror of one BATCH_RESPONSE_SCHEMA slide item (same caps), so
+// one Flash call returns a schema-conformant, length-bounded patched slide.
+const SINGLE_SLIDE_SCHEMA = {
+  type: 'object',
+  properties: {
+    refined_title: { type: 'string', maxLength: MAX_TITLE_CHARS },
+    refined_body: {
+      type: 'array',
+      maxItems: MAX_BULLETS,
+      items: { type: 'string', maxLength: MAX_INSIGHT_CHARS },
+    },
+    visual: {
+      type: 'object',
+      nullable: true,
+      properties: {
+        type: { type: 'string' },
+        content: { type: 'string', maxLength: 12000 },
+        caption: { type: 'string' },
+      },
+    },
+    type: { type: 'string' },
+    change_summary: { type: 'string' },
+  },
+  required: ['refined_title', 'refined_body', 'change_summary'],
+};
+
+const SINGLE_SLIDE_SYSTEM_PROMPT =
+  `You are a senior educational content designer specializing in technical ` +
+  `accuracy and visual clarity for university-level presentations. You refine ` +
+  `ONE individual slide at a time according to the faculty instruction, without ` +
+  `altering scientific facts or data relationships, and strictly preserving the ` +
+  `faculty's teaching intent, structure and voice. You never remove correct ` +
+  `content — you only add, clarify and enhance. Output must be production-ready.`;
+
+function buildSingleSlidePrompt(
+  slide: ExtractedSlide,
+  instruction: string,
+  ctx: SingleSlideContext
+): string {
+  const currentBody = slide.body_text.length
+    ? slide.body_text.map((b) => `- ${b}`).join('\n')
+    : '(no text content)';
+  const topicLine = ctx.topic || '(not specified — infer from neighboring slides)';
+  const neighborBlock =
+    ctx.neighboringTitles.length > 0
+      ? ctx.neighboringTitles.map((t) => `- ${t}`).join('\n')
+      : '(none provided)';
+
+  return `<persona>
+Senior educational content designer with deep domain expertise in ${ctx.subjectName}.
+You prioritize scientific accuracy above all else.
+</persona>
+
+<domain_context>
+Subject: ${ctx.subjectName}
+Slide title: ${slide.title}
+Level: ${ctx.level}
+
+Identify the content domain from the above and apply domain-appropriate standards:
+- Engineering/Physics: SI units, standard notation, textbook conventions
+- Chemistry: IUPAC notation, correct bond angles, standard structural formulas
+- Computer Science: standard algorithm notation, correct complexity classes
+- Mathematics: precise notation, precise curve shapes
+- Any other domain: apply the authoritative standards of that field
+
+State-of-the-art means: what would appear in the best textbook for this domain.
+</domain_context>
+
+<task>
+Modify this ONE presentation slide according to the faculty instruction. Return
+the modified slide as a single JSON object.
+
+The current slide type is ${slide.type}. Change it (the "type" field) only if the
+instruction requires a different structure — for example, an instruction to add a
+diagram/visual should populate the "visual" object with the appropriate type and
+content. Only keep the original type if the instruction doesn't require a
+structural change.
+</task>
+
+<context>
+<subject>${ctx.subjectName}</subject>
+<deck_topic>${topicLine}</deck_topic>
+<slide_number>${ctx.slideIndex + 1}</slide_number>
+<faculty_instruction>${instruction}</faculty_instruction>
+
+<neighboring_slides>
+${neighborBlock}
+</neighboring_slides>
+<grounding>
+Ground your output in the SPECIFIC topic and neighboring slides above, not the
+general subject area. If the instruction is vague, infer the most natural
+sub-topic from the neighboring slide titles — never an unrelated topic.
+</grounding>
+
+<current_slide>
+Title: ${slide.title}
+Bullets:
+${currentBody}
+</current_slide>
+
+<preservation_rules>
+NEVER change these regardless of instruction:
+- Scientific relationships, mathematical values, formulas, constants
+- Physical laws and their direction/sense
+- Every DISTINCT concept, definition and example already present
+- Causal relationships between concepts
+Trimming wordiness while keeping the concept is REQUIRED, not a violation.
+
+ONLY change what the instruction asks for:
+- Descriptive text quality and clarity, label clarity
+- Added annotations, examples, or a requested visual
+</preservation_rules>
+
+<instruction_priority>
+The faculty instruction overrides stylistic defaults but never overrides
+scientific facts. Apply this decision tree:
+- IF the instruction asks to ADD elements (an example, a bullet, a diagram):
+  → Add them. They don't conflict with existing content.
+- IF it asks to CHANGE data/relationships explicitly (e.g. "change threshold to
+  40%", "make this the harder case"): → Honor it exactly. Faculty has authority.
+- IF it asks for quality improvement with no specific data change (e.g. "make it
+  clearer", "improve this", "fix it"): → Improve ONLY clarity/quality. Never
+  infer data changes from quality words.
+- IF the instruction is highly detailed and specific: → Follow every detail
+  precisely. Do not simplify or second-guess specific values or layouts.
+- IF the instruction is vague (one or two words): → Apply conservative
+  improvements. Infer nothing about data.
+</instruction_priority>
+
+<visual_rules>
+Populate "visual" ONLY if the instruction asks for a diagram/visual, or the slide
+already conveys one. Choose the type:
+- "mermaid" → flowcharts, sequences, state machines (no () in edge labels, max 8 nodes)
+- "svg"     → comparison diagrams, labelled structures (viewBox="0 0 800 400",
+              first element a background rect, every element labelled)
+- "imagen"  → real-world illustrations (write a detailed narrative text prompt)
+Set visual to null when no visual is needed.
+When a visual regeneration is requested ("make the diagram accurate/clearer"),
+preserve every scientific relationship in the current slide and improve ONLY
+visual quality — label positions, spacing, colours, clarity.
+</visual_rules>
+
+<output_rules>
+- refined_title: <= ${MAX_TITLE_CHARS} chars.
+- refined_body: scannable phrases, each <= ${MAX_BULLET_CHARS} chars (a
+  "KEY INSIGHT:" bullet may reach ${MAX_INSIGHT_CHARS}); max ${MAX_BULLETS} bullets.
+- If the slide is already excellent for this instruction, return the title/body
+  unchanged and set change_summary to "No changes needed."
+- Any pseudocode/algorithm line in the current bullets must be copied
+  byte-for-byte — never reword or reformat it.
+- change_summary: one sentence describing what you changed.
+</output_rules>
+
+OUTPUT: Return ONLY a valid JSON object — no markdown fences, no prose. Schema:
+{
+  "refined_title": "<string, <=${MAX_TITLE_CHARS} chars>",
+  "refined_body": ["<scannable phrase>", ...max ${MAX_BULLETS}],
+  "visual": { "type": "svg"|"mermaid"|"imagen", "content": "<markup|code|prompt>", "caption": "<string>" } | null,
+  "type": "<SlideType — only change if the instruction demands it>",
+  "change_summary": "<one sentence>"
+}`;
+}
+
+/** Parse + sanitize a single-slide JSON response (schema-conformant expected). */
+function parseSingleSlideResponse(raw: string): {
+  refined_title?: unknown;
+  refined_body?: unknown;
+  visual?: unknown;
+  type?: unknown;
+  change_summary?: unknown;
+} | null {
+  const text = raw.replace(/```json\s*/gi, '').replace(/```\s*/gi, '').trim();
+  const attempt = (str: string) => {
+    try {
+      return JSON.parse(str) as Record<string, unknown>;
+    } catch {
+      return null;
+    }
+  };
+  let obj = attempt(text);
+  if (!obj) {
+    const start = text.indexOf('{');
+    const end = text.lastIndexOf('}');
+    if (start !== -1 && end > start) obj = attempt(text.slice(start, end + 1));
+  }
+  return obj;
+}
+
+/**
+ * Refine ONE slide from a free-text faculty instruction — the single-slide chat
+ * path. Reuses the batch path's sanitize (stripHtml), per-field length trim, and
+ * pseudocode-preservation backstops so the output honours the same invariants a
+ * batched slide would. Returns the original title/body on any parse failure so a
+ * bad AI response never destroys the slide.
+ */
+export async function refineSingleSlide(
+  slide: ExtractedSlide,
+  instruction: string,
+  ctx: SingleSlideContext
+): Promise<SingleSlideRefinement> {
+  const trimmedInstruction = instruction.trim();
+  const prompt = buildSingleSlidePrompt(slide, trimmedInstruction, ctx);
+
+  // Same 4096/8192 split as the batch call: only widen the budget when the
+  // instruction implies a diagram/visual (which can legitimately emit a large
+  // inline SVG/mermaid block), so runaway generation fails fast and cheap.
+  const needsVisual = /diagram|visual|svg|chart|flow|draw|graph|illustrat/i.test(
+    trimmedInstruction
+  );
+
+  const ai = await routeAI('ppt_refine', {
+    systemPrompt: SINGLE_SLIDE_SYSTEM_PROMPT,
+    messages: [{ role: 'user', content: prompt }],
+    maxTokens: needsVisual ? 8192 : 4096,
+    responseSchema: SINGLE_SLIDE_SCHEMA,
+  });
+
+  const parsed = parseSingleSlideResponse(String(ai.content ?? ''));
+
+  // Fallback: keep the slide as-is if the model returned nothing usable.
+  if (!parsed || typeof parsed.refined_title !== 'string' || !Array.isArray(parsed.refined_body)) {
+    return {
+      refined_title: slide.title,
+      refined_body: slide.body_text,
+      change_summary: NO_CHANGE_SUMMARY,
+    };
+  }
+
+  const refinedTitle = stripHtml(parsed.refined_title);
+  let refinedBody = parsed.refined_body
+    .filter((b): b is string => typeof b === 'string')
+    .map((b) => stripHtml(b));
+
+  // Same deterministic backstops as trimBatchResponse: never let a
+  // pseudocode line be truncated, apply the per-type char cap to everything else.
+  refinedBody = refinedBody.map((b) => {
+    if (isPseudocodeLine(b)) return b;
+    const cap = isKeyInsight(b) ? MAX_INSIGHT_CHARS : MAX_BULLET_CHARS;
+    return trimToCap(b, cap).text;
+  });
+  // Preserve any pseudocode lines from the original body byte-identically.
+  refinedBody = restorePseudocodeLines(slide.body_text, refinedBody);
+
+  const titleFit = trimToCap(refinedTitle, MAX_TITLE_CHARS);
+
+  // Normalise the visual object (null / malformed → undefined).
+  let visual: SlideVisual | undefined;
+  const v = parsed.visual as Record<string, unknown> | null | undefined;
+  if (
+    v &&
+    typeof v === 'object' &&
+    typeof v.type === 'string' &&
+    typeof v.content === 'string' &&
+    (v.type === 'svg' || v.type === 'mermaid' || v.type === 'imagen') &&
+    v.content.trim()
+  ) {
+    visual = {
+      type: v.type,
+      content: v.content,
+      caption: typeof v.caption === 'string' ? v.caption : '',
+    };
+  }
+
+  const type =
+    typeof parsed.type === 'string' ? (parsed.type as SlideType) : undefined;
+
+  return {
+    refined_title: titleFit.text || slide.title,
+    refined_body: refinedBody,
+    visual,
+    type,
+    change_summary:
+      typeof parsed.change_summary === 'string' && parsed.change_summary.trim()
+        ? stripHtml(parsed.change_summary)
+        : 'Slide updated.',
   };
 }
