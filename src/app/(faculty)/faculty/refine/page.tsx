@@ -29,6 +29,21 @@ import { toast } from "sonner";
 type PptStage = "upload" | "configure" | "processing" | "results";
 type ResultsFilter = "all" | "enhanced" | "new" | "unchanged";
 
+// change_summary values that mean the slide was NOT actually enhanced — either it
+// was already fine, its batch failed, or its refinement was reverted because it
+// didn't fit (kept in sync with REVERT_SUMMARY / fallback messages in
+// src/lib/ppt-refine/{assembler,refiner}.ts). Such slides count as "unchanged".
+const NO_CHANGE_SUMMARIES = new Set<string>([
+  "No changes needed.",
+  "Refinement failed — original content preserved.",
+  "Refined content did not fit the slide — original kept.",
+]);
+
+const isUnchangedSlide = (s: { change_summary: string; is_new: boolean }) =>
+  !s.is_new && NO_CHANGE_SUMMARIES.has(s.change_summary);
+const isEnhancedSlide = (s: { change_summary: string; is_new: boolean }) =>
+  !s.is_new && !NO_CHANGE_SUMMARIES.has(s.change_summary);
+
 interface ExtractionResult {
   extraction_id: string;
   extracted_deck: ExtractedDeck & { subject_context?: unknown };
@@ -409,9 +424,9 @@ function PptRefinementTab() {
     if (!refineResult) return [];
     const slides = refineResult.refined_deck.slides;
     switch (resultsFilter) {
-      case "enhanced": return slides.filter(s => s.change_summary !== "No changes needed." && !s.is_new);
+      case "enhanced": return slides.filter(isEnhancedSlide);
       case "new":      return slides.filter(s => s.is_new);
-      case "unchanged":return slides.filter(s => s.change_summary === "No changes needed." && !s.is_new);
+      case "unchanged":return slides.filter(isUnchangedSlide);
       default:         return slides;
     }
   }, [refineResult, resultsFilter]);
@@ -795,9 +810,9 @@ function PptRefinementTab() {
 
     const filterCounts = {
       all:       refined_deck.slides.length,
-      enhanced:  refined_deck.slides.filter(s => s.change_summary !== "No changes needed." && !s.is_new).length,
+      enhanced:  refined_deck.slides.filter(isEnhancedSlide).length,
       new:       refined_deck.slides.filter(s => s.is_new).length,
-      unchanged: refined_deck.slides.filter(s => s.change_summary === "No changes needed." && !s.is_new).length,
+      unchanged: refined_deck.slides.filter(isUnchangedSlide).length,
     };
 
     const estSizeKb = Math.round(stats.refined_slides * 55);

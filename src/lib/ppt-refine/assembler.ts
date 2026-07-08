@@ -310,6 +310,18 @@ const MIN_AUTOFIT_SCALE = 0.6;
  *  neither wildly over- nor under-triggers. */
 const DEFAULT_TITLE_FONT_PT = 24;
 const DEFAULT_BODY_FONT_PT = 18;
+/** Body font (pt) of an appended new/continuation slide — matches the sz="1600"
+ *  runs emitted by buildNewSlideBody. Used to fit-check continuation overflow. */
+const DEFAULT_NEW_BODY_PT = 16;
+
+/**
+ * change_summary stamped on a slide whose refinement was reverted to the original
+ * because the refined text could not be made to fit (and no continuation slide was
+ * produced). The results view treats this as "unchanged, not enhanced" — keep it in
+ * sync with the recognised no-change summaries in the refine page
+ * (src/app/(faculty)/faculty/refine/page.tsx).
+ */
+export const REVERT_SUMMARY = 'Refined content did not fit the slide — original kept.';
 
 type FitResult =
   | { kind: 'fits' } // fits at 100%, OR geometry/size unknown → leave as-is
@@ -333,29 +345,25 @@ function estimateLines(paras: string[], widthPt: number, fontSizePt: number): nu
 }
 
 /**
- * Assess whether `paras` fit `cyEmu` of vertical space in the shape's box, and if
- * not, the largest fontScale that would. `cyEmu` is passed in (not read from the
- * shape) because the caller may have already shrunk the box for an overlapping
- * image (Bug 4) — we must estimate against the box the text will actually get.
+ * Core fit estimator against an explicit box (EMU) and font size (pt): does
+ * `paras` fit at 100%, at some readable shrink, or not at all? Pure — takes raw
+ * geometry so it can be reused both for existing shapes (via assessTextFit) and
+ * for a prospective appended continuation slide's body box (which has no shape
+ * XML yet). Unknown/degenerate geometry → 'fits' (leave as-is, never block).
  */
-function assessTextFit(
-  spXml: string,
-  paras: string[],
-  cyEmu: number,
-  defaultFontPt: number
-): FitResult {
-  const xf = getShapeXfrm(spXml);
-  const cx = xf?.cx ?? NaN;
-  // No explicit geometry (placeholder inheriting from the layout) → we can't
-  // estimate, so preserve prior behaviour (plain autofit, no skip).
-  if (!Number.isFinite(cx) || !Number.isFinite(cyEmu) || cx <= 0 || cyEmu <= 0) {
+function fitScaleForBox(paras: string[], cxEmu: number, cyEmu: number, fontPt: number): FitResult {
+  if (
+    !Number.isFinite(cxEmu) ||
+    !Number.isFinite(cyEmu) ||
+    cxEmu <= 0 ||
+    cyEmu <= 0 ||
+    !Number.isFinite(fontPt) ||
+    fontPt <= 0
+  ) {
     return { kind: 'fits' };
   }
 
-  let fontPt = firstFontSizePt(spXml);
-  if (!Number.isFinite(fontPt) || fontPt <= 0) fontPt = defaultFontPt;
-
-  const widthPt = cx / EMU_PER_POINT;
+  const widthPt = cxEmu / EMU_PER_POINT;
   const heightPt = cyEmu / EMU_PER_POINT;
 
   const fitsAt = (scale: number): boolean => {
@@ -372,6 +380,25 @@ function assessTextFit(
     if (fitsAt(scale)) return { kind: 'shrink', scale };
   }
   return { kind: 'overflow' };
+}
+
+/**
+ * Assess whether `paras` fit `cyEmu` of vertical space in the shape's box, and if
+ * not, the largest fontScale that would. `cyEmu` is passed in (not read from the
+ * shape) because the caller may have already shrunk the box for an overlapping
+ * image (Bug 4) — we must estimate against the box the text will actually get.
+ */
+function assessTextFit(
+  spXml: string,
+  paras: string[],
+  cyEmu: number,
+  defaultFontPt: number
+): FitResult {
+  const xf = getShapeXfrm(spXml);
+  const cx = xf?.cx ?? NaN;
+  let fontPt = firstFontSizePt(spXml);
+  if (!Number.isFinite(fontPt) || fontPt <= 0) fontPt = defaultFontPt;
+  return fitScaleForBox(paras, cx, cyEmu, fontPt);
 }
 
 /**
@@ -459,15 +486,43 @@ function patchBodyShape(spXml: string, bullets: string[]): string {
   return out;
 }
 
+/** Overflow bullets that must spill onto an appended continuation slide. */
+export interface ContinuationSpec {
+  bullets: string[];
+  /** fontScale (0–1) to bake into the continuation body when it needs a shrink. */
+  bodyFontScale?: number;
+}
+
+export interface PatchResult {
+  xml: string;
+  /** Set when body overflow was split off onto a continuation slide. */
+  continuation?: ContinuationSpec;
+  /** True when a refinement was dropped (kept original) because it didn't fit. */
+  reverted?: boolean;
+}
+
 /**
  * Patch a single existing slide's title + body text. Never touches <p:pic>,
  * <p:graphicFrame>, <p:grpSp>, formatting or layout. Returns the original XML
  * unchanged on any uncertainty.
+ *
+ * When body text overflows even at the readable font floor AND new slides are
+ * allowed (opts.allowNewSlides + opts.canvas supplied), the refined bullets are
+ * split: the largest whole-bullet prefix that fits stays on this slide and the
+ * remainder is returned as `continuation` for the caller to append as one
+ * continuation slide. When new slides are NOT allowed (or a continuation can't be
+ * made to fit), the original text is kept unchanged (with `reverted` flagged).
  */
-export function patchSlideXml(originalXml: string, slide: RefinedSlide): string {
+export function patchSlideXml(
+  originalXml: string,
+  slide: RefinedSlide,
+  opts: { allowNewSlides?: boolean; canvas?: SlideCanvas } = {}
+): PatchResult {
+  let continuation: ContinuationSpec | undefined;
+  let reverted = false;
   try {
     const spTree = getInnerRange(originalXml, 'p:spTree');
-    if (!spTree) return originalXml;
+    if (!spTree) return { xml: originalXml };
 
     const children = topChildren(originalXml, spTree.innerStart, spTree.innerEnd);
     const shapes = children
@@ -484,7 +539,7 @@ export function patchSlideXml(originalXml: string, slide: RefinedSlide): string 
       })
       .filter((s) => s.hasTx);
 
-    if (shapes.length === 0) return originalXml;
+    if (shapes.length === 0) return { xml: originalXml };
 
     const isTitle = (ph: Placeholder | null) =>
       !!ph && (ph.type === 'title' || ph.type === 'ctrTitle' || ph.idx === '0');
@@ -519,6 +574,7 @@ export function patchSlideXml(originalXml: string, slide: RefinedSlide): string 
         DEFAULT_TITLE_FONT_PT
       );
       if (fit.kind === 'overflow') {
+        reverted = true;
         console.warn(
           `[ppt-refine/assembler] slide ${slide.index}: refined title too long for its box ` +
             `even at ${Math.round(MIN_AUTOFIT_SCALE * 100)}% font — keeping original title`
@@ -562,36 +618,106 @@ export function patchSlideXml(originalXml: string, slide: RefinedSlide): string 
       // reduced) body height. Overflow → shrink via a computed normAutofit
       // fontScale; hopeless overflow → keep the original body text.
       const effectiveCy = Number.isFinite(shrunkCy) ? shrunkCy : bodyXf?.cy ?? NaN;
-      const bulletsForFit = newBody.map((b) => cleanText(b)).filter(Boolean);
-      const fit = assessTextFit(bodyShape.spXml, bulletsForFit, effectiveCy, DEFAULT_BODY_FONT_PT);
+      const cxBody = bodyXf?.cx ?? NaN;
+      let bodyFontPt = firstFontSizePt(bodyShape.spXml);
+      if (!Number.isFinite(bodyFontPt) || bodyFontPt <= 0) bodyFontPt = DEFAULT_BODY_FONT_PT;
 
-      if (fit.kind === 'overflow') {
-        console.warn(
-          `[ppt-refine/assembler] slide ${slide.index}: refined body too long for its box ` +
-            `even at ${Math.round(MIN_AUTOFIT_SCALE * 100)}% font — keeping original body`
-        );
-      } else {
-        let bodyXml = patchBodyShape(bodyShape.spXml, newBody);
+      const cleanedBody = newBody.map((b) => cleanText(b)).filter(Boolean);
+      const fit = assessTextFit(bodyShape.spXml, cleanedBody, effectiveCy, DEFAULT_BODY_FONT_PT);
+
+      // Emit the body edit for a given bullet list at a given fit result.
+      const emitBody = (bullets: string[], bodyFit: FitResult) => {
+        let bodyXml = patchBodyShape(bodyShape.spXml, bullets);
         if (Number.isFinite(shrunkCy)) bodyXml = setShapeCy(bodyXml, shrunkCy);
-
         // Bug 5/6: ensure the body box auto-shrinks text that overflows its
         // height (applied AFTER the Bug 4 cy adjustment).
-        bodyXml = ensureNormAutofit(bodyXml, fit.kind === 'shrink' ? fit.scale : undefined);
-
+        bodyXml = ensureNormAutofit(bodyXml, bodyFit.kind === 'shrink' ? bodyFit.scale : undefined);
         edits.push({ start: bodyShape.sp.start, end: bodyShape.sp.end, text: bodyXml });
+      };
+
+      if (fit.kind !== 'overflow') {
+        emitBody(newBody, fit);
+      } else {
+        // Refined body can't fit even at the readable floor. If new slides are
+        // allowed, spill the overflow onto ONE appended continuation slide;
+        // otherwise keep the original body unchanged (pre-3d behaviour).
+        let handled = false;
+        if (
+          opts.allowNewSlides &&
+          opts.canvas &&
+          cleanedBody.length >= 2 &&
+          Number.isFinite(cxBody) &&
+          Number.isFinite(effectiveCy)
+        ) {
+          // Greedy: largest whole-bullet prefix that still fits the (image-
+          // reduced) original box at ≥ the readable floor. Prefix fit is
+          // monotonic, so stop at the first prefix that overflows.
+          let keep = 0;
+          for (let i = 1; i <= cleanedBody.length; i++) {
+            if (fitScaleForBox(cleanedBody.slice(0, i), cxBody, effectiveCy, bodyFontPt).kind !== 'overflow') {
+              keep = i;
+            } else break;
+          }
+
+          // keep === 0 → even one bullet overflows (a single huge bullet); a
+          // continuation would be near-empty on the source, so fall through to
+          // the safe original-text fallback instead.
+          if (keep >= 1 && keep < cleanedBody.length) {
+            const fitsBullets = cleanedBody.slice(0, keep);
+            const overflowBullets = cleanedBody.slice(keep);
+
+            // The overflow must fit ONE continuation slide at the readable floor.
+            // Cap at a single continuation per source slide: if the remainder is
+            // itself too big for a fresh full-body slide, do NOT chain a second —
+            // fall back to keeping the original text.
+            const cont = scaleBox(BODY_REF, ...canvasDims(opts.canvas));
+            const contFit = fitScaleForBox(
+              overflowBullets,
+              cont.cx,
+              cont.cy,
+              DEFAULT_NEW_BODY_PT
+            );
+            if (contFit.kind !== 'overflow') {
+              emitBody(fitsBullets, fitScaleForBox(fitsBullets, cxBody, effectiveCy, bodyFontPt));
+              continuation = {
+                bullets: overflowBullets,
+                bodyFontScale: contFit.kind === 'shrink' ? contFit.scale : undefined,
+              };
+              handled = true;
+              console.log(
+                `[ppt-refine/assembler] slide ${slide.index}: split ${cleanedBody.length} bullets → ` +
+                  `${fitsBullets.length} kept + ${overflowBullets.length} on a continuation slide`
+              );
+            }
+          }
+        }
+
+        if (!handled) {
+          reverted = true;
+          console.warn(
+            `[ppt-refine/assembler] slide ${slide.index}: refined body too long for its box ` +
+              `even at ${Math.round(MIN_AUTOFIT_SCALE * 100)}% font — keeping original body`
+          );
+        }
       }
     }
 
-    if (edits.length === 0) return originalXml;
+    if (edits.length === 0) return { xml: originalXml, reverted };
 
     edits.sort((a, b) => b.start - a.start);
     let out = originalXml;
     for (const e of edits) out = out.slice(0, e.start) + e.text + out.slice(e.end);
-    return out;
+    return { xml: out, continuation, reverted };
   } catch (err) {
     console.warn('[ppt-refine/assembler] patchSlideXml failed, keeping original:', err);
-    return originalXml;
+    return { xml: originalXml };
   }
+}
+
+/** SlideCanvas → the (widthEmu, heightEmu) tuple scaleBox expects, guarded. */
+function canvasDims(canvas: SlideCanvas): [number, number] {
+  const { widthEmu, heightEmu } = safeCanvas(canvas);
+  return [widthEmu, heightEmu];
 }
 
 // ─── New-slide construction ─────────────────────────────────────────────────
@@ -720,13 +846,27 @@ function safeCanvas(canvas: SlideCanvas): SlideCanvas {
   return canvas;
 }
 
-export function buildNewSlideXml(slide: RefinedSlide, canvas: SlideCanvas): string {
+export function buildNewSlideXml(
+  slide: RefinedSlide,
+  canvas: SlideCanvas,
+  opts: { bodyFontScale?: number; isContinuation?: boolean } = {}
+): string {
   let title = cleanText(slide.refined_title || slide.title || 'Slide');
-  if (slide.is_new) {
+  // A continuation slide's title already carries "(cont'd)" — don't also prefix
+  // the "Practice:" / "Real World:" label a fresh AI-proposed slide would get.
+  if (slide.is_new && !opts.isContinuation) {
     // One clean label, no emoji (emojis in titles break some PowerPoint builds).
     if (slide.type === 'practice') title = `Practice: ${title}`;
     else if (slide.type === 'example') title = `Real World: ${title}`;
   }
+
+  // Bake a computed shrink into the body autofit (a bare <a:normAutofit/> renders
+  // at 100% and would bleed — same reasoning as ensureNormAutofit for existing
+  // slides). Only stamped when a shrink is actually needed.
+  const bodyAutofit =
+    opts.bodyFontScale !== undefined && opts.bodyFontScale < 1
+      ? `<a:normAutofit fontScale="${Math.round(opts.bodyFontScale * 100000)}"/>`
+      : `<a:normAutofit/>`;
 
   const source =
     slide.refined_body && slide.refined_body.length ? slide.refined_body : slide.body_text ?? [];
@@ -764,10 +904,38 @@ export function buildNewSlideXml(slide: RefinedSlide, canvas: SlideCanvas): stri
     `<p:cNvSpPr><a:spLocks noGrp="1"/></p:cNvSpPr><p:nvPr/></p:nvSpPr>` +
     `<p:spPr><a:xfrm><a:off x="${b.x}" y="${b.y}"/><a:ext cx="${b.cx}" cy="${b.cy}"/></a:xfrm>` +
     `<a:prstGeom prst="rect"><a:avLst/></a:prstGeom><a:noFill/></p:spPr>` +
-    `<p:txBody><a:bodyPr><a:normAutofit/></a:bodyPr><a:lstStyle/>${body}</p:txBody></p:sp>` +
+    `<p:txBody><a:bodyPr>${bodyAutofit}</a:bodyPr><a:lstStyle/>${body}</p:txBody></p:sp>` +
     `</p:spTree></p:cSld>` +
     `<p:clrMapOvr><a:masterClrMapping/></p:clrMapOvr></p:sld>`
   );
+}
+
+/**
+ * Build a continuation slide (is_new) that carries the overflow bullets split off
+ * an existing source slide by patchSlideXml. Inherits the source's type so
+ * practice/example body formatting is preserved, but its title is the source
+ * title suffixed with "(cont'd)" and it is flagged isContinuation so no
+ * "Practice:" / "Real World:" prefix is added on top.
+ */
+function makeContinuationSlide(source: RefinedSlide, bullets: string[]): RefinedSlide {
+  const baseTitle = cleanText(source.refined_title || source.title || 'Slide');
+  const contTitle = `${baseTitle} (cont'd)`;
+  return {
+    ...source,
+    index: -1, // positional; the assembler never maps continuation slides by index
+    title: contTitle,
+    refined_title: contTitle,
+    body_text: bullets,
+    refined_body: bullets,
+    visual: undefined,
+    is_new: true,
+    is_thin: false,
+    has_image: false,
+    has_diagram: false,
+    speaker_notes: '',
+    word_count: bullets.join(' ').split(/\s+/).filter((w) => w).length,
+    change_summary: `Continuation of "${baseTitle}" — overflow content moved here.`,
+  };
 }
 
 function buildSlideRels(layoutTarget: string): string {
@@ -863,12 +1031,17 @@ const SLIDE_REL_TYPE = 'http://schemas.openxmlformats.org/officeDocument/2006/re
 
 export async function assemblePptx(
   deck: RefinedDeck,
-  originalBuffer: Buffer
+  originalBuffer: Buffer,
+  options?: { allow_new_slides?: boolean }
 ): Promise<Buffer> {
+  const allowNewSlides = options?.allow_new_slides ?? false;
   const zip = new AdmZip(originalBuffer);
 
-  // Slide files in the same suffix-sorted order the extractor used, so that a
-  // refined slide's `index` maps back to the correct original file.
+  // Slide files in suffix-sorted order (the same order the extractor used). The
+  // k-th ORIGINAL (non-new) slide in deck order maps to sortedSlideFiles[k] —
+  // we index by deck-order position, NOT by slide.index, because slide.index was
+  // renumbered deck-wide during assembly and no longer tracks the source file
+  // once new slides are interleaved.
   const sortedSlideFiles = zip
     .getEntries()
     .map((e) => e.entryName)
@@ -876,37 +1049,61 @@ export async function assemblePptx(
     .sort((a, b) => slideFileNum(a) - slideFileNum(b))
     .map((name) => ({ name, num: slideFileNum(name) }));
 
-  // ─── Patch existing slides in place ──────────────────────────────────────
+  // The ACTUAL canvas of the uploaded deck — the single source of truth for
+  // scaling new-slide geometry (same parser + fallback as the extractor).
+  const canvas = parseSlideSize(zip.readAsText('ppt/presentation.xml'));
+
+  // ─── Patch existing slides in place; collect continuation overflow ────────
+  // `augmented` is deck order with any continuation slide interleaved directly
+  // after its source, so the append pass below anchors everything correctly.
+  const augmented: RefinedSlide[] = [];
+  const contScale = new Map<RefinedSlide, number | undefined>();
   let patched = 0;
+  let origPos = 0;
   for (const s of deck.slides) {
-    if (s.is_new) continue;
-    const file = sortedSlideFiles[s.index];
+    if (s.is_new) {
+      augmented.push(s);
+      continue;
+    }
+    augmented.push(s);
+    const file = sortedSlideFiles[origPos++];
     if (!file) continue;
     try {
       const xml = zip.readAsText(file.name);
-      const next = patchSlideXml(xml, s);
+      const { xml: next, continuation, reverted } = patchSlideXml(xml, s, {
+        allowNewSlides,
+        canvas,
+      });
       if (next !== xml) {
         zip.updateFile(file.name, Buffer.from(next, 'utf-8'));
         patched++;
+      } else if (s.change_summary !== 'No changes needed.') {
+        // The slide is byte-identical to the original: either the AI made no real
+        // change, or a refinement was reverted because it didn't fit. Reflect
+        // that in the deck object (returned to the results view) so it is counted
+        // as unchanged, not enhanced.
+        s.change_summary = reverted ? REVERT_SUMMARY : 'No changes needed.';
+        s.refined_title = s.title;
+        s.refined_body = s.body_text;
+      }
+      if (continuation && continuation.bullets.length > 0) {
+        const cont = makeContinuationSlide(s, continuation.bullets);
+        contScale.set(cont, continuation.bodyFontScale);
+        augmented.push(cont);
       }
     } catch (err) {
       console.warn(`[ppt-refine/assembler] failed to patch ${file.name}:`, err);
     }
   }
 
-  // ─── Append new slides ───────────────────────────────────────────────────
-  const newSlides = deck.slides.filter((s) => s.is_new);
+  // ─── Append new + continuation slides ────────────────────────────────────
   let appended = 0;
 
-  if (newSlides.length > 0) {
+  if (augmented.some((s) => s.is_new)) {
     let presXml = zip.readAsText('ppt/presentation.xml');
     let relsXml = zip.readAsText('ppt/_rels/presentation.xml.rels');
     const ctName = '[Content_Types].xml';
     let ctXml = zip.readAsText(ctName);
-
-    // The ACTUAL canvas of the uploaded deck — the single source of truth for
-    // scaling new-slide geometry (same parser + fallback as the extractor).
-    const canvas = parseSlideSize(presXml);
 
     const ridToTarget = parseRels(relsXml);
     const fileNumToRid = new Map<number, string>();
@@ -923,12 +1120,14 @@ export async function assemblePptx(
     const relAdds: string[] = [];
     const ctAdds: string[] = [];
 
-    // Walk deck order so each new slide is anchored after its preceding slide.
+    // Walk augmented order so each new/continuation slide is anchored after its
+    // preceding slide. Non-new slides advance the source-file cursor.
     let anchorRid: string | null = null;
+    let appendPos = 0;
 
-    for (const s of deck.slides) {
+    for (const s of augmented) {
       if (!s.is_new) {
-        const f = sortedSlideFiles[s.index];
+        const f = sortedSlideFiles[appendPos++];
         if (f) anchorRid = fileNumToRid.get(f.num) ?? anchorRid;
         continue;
       }
@@ -945,10 +1144,16 @@ export async function assemblePptx(
         if (anchorNum > 0) layoutTarget = layoutForSlide(zip, anchorNum, defaultLayout);
       }
 
-      zip.addFile(
-        `ppt/slides/slide${fileNum}.xml`,
-        Buffer.from(buildNewSlideXml(s, canvas), 'utf-8')
+      // Continuation slides carry a baked body fontScale and skip the practice/
+      // example title relabel; AI-proposed slides use the default build.
+      const isContinuation = contScale.has(s);
+      const xmlBody = buildNewSlideXml(
+        s,
+        canvas,
+        isContinuation ? { bodyFontScale: contScale.get(s), isContinuation: true } : {}
       );
+
+      zip.addFile(`ppt/slides/slide${fileNum}.xml`, Buffer.from(xmlBody, 'utf-8'));
       zip.addFile(
         `ppt/slides/_rels/slide${fileNum}.xml.rels`,
         Buffer.from(buildSlideRels(layoutTarget), 'utf-8')
@@ -974,9 +1179,16 @@ export async function assemblePptx(
     zip.updateFile(ctName, Buffer.from(ctXml, 'utf-8'));
   }
 
+  // Fold any continuation slides back into the deck (returned to the results
+  // view) so stats/counters and the slide list reflect what's in the file.
+  if (contScale.size > 0) {
+    deck.slides = augmented.map((s, i) => ({ ...s, index: i }));
+    deck.refined_slide_count = deck.slides.length;
+  }
+
   console.log(
     `[ppt-refine/assembler] patched=${patched} appended=${appended} ` +
-      `total=${sortedSlideFiles.length + appended}`
+      `continuations=${contScale.size} total=${sortedSlideFiles.length + appended}`
   );
 
   return zip.toBuffer();

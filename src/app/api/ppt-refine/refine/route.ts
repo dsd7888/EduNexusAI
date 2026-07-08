@@ -183,7 +183,7 @@ export async function POST(request: NextRequest) {
 
     // ─── Assemble PPTX (patch the original in place) ─────────────────────────
     console.log('[ppt-refine/refine] Assembling PPTX...');
-    const pptxBuffer = await assemblePptx(refinedDeck, originalBuffer);
+    const pptxBuffer = await assemblePptx(refinedDeck, originalBuffer, options);
 
     // ─── Upload to Storage ───────────────────────────────────────────────────
     const timestamp = Date.now();
