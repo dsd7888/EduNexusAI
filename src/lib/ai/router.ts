@@ -97,7 +97,7 @@ export async function routeAI(
         : task === "ppt_diagram"
           ? 32768
           : task === "ppt_refine"
-            ? 16384
+            ? 8192
             : task === "placement_gen"
             ? 32768
             : task === "quiz_gen"

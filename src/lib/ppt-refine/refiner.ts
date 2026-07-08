@@ -602,7 +602,12 @@ async function processOneBatch(
       const ai = await routeAI('ppt_refine', {
         systemPrompt: SYSTEM_PROMPT,
         messages: [{ role: 'user', content: prompt }],
-        maxTokens: 16384,
+        // Every observed legitimate batch stays under ~2.4k tokens (text-only)
+        // or comfortably under 8k (add_visuals, where up to BATCH_SIZE inline
+        // SVG/mermaid diagrams at ~2-6k chars each can legitimately stack up).
+        // A runaway generation should hit this ceiling and fail fast/cheap —
+        // not balloon to the old 16384 cap before the parse failure is caught.
+        maxTokens: options.add_visuals ? 8192 : 4096,
         responseSchema: BATCH_RESPONSE_SCHEMA,
       });
 
