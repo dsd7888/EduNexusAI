@@ -1,5 +1,6 @@
 import { routeAI } from '@/lib/ai/router';
 import { generateImagenImage, buildImagenPrompt } from '@/lib/ai/imagen';
+import { hasLatex, findUnsupportedNotation } from '@/lib/text/latexSegments';
 import type {
   ExtractedDeck,
   ExtractedSlide,
@@ -49,6 +50,147 @@ const SYSTEM_PROMPT =
 const BATCH_SIZE = 5;
 const MIN_IMAGEN_B64_LEN = 5120; // 5 KB guard — shorter responses are API errors
 
+// ─── Length caps ──────────────────────────────────────────────────────────────
+//
+// Slide bullets must read as scannable phrases, not paragraphs. Two enforcement
+// layers back each other up:
+//   1. The responseSchema below constrains the model at generation time.
+//   2. A deterministic, LaTeX-aware trim pass (trimBatchResponse) is the hard
+//      safety net for the cases where the model overshoots anyway.
+//
+// A plain bullet caps at MAX_BULLET_CHARS. A "KEY INSIGHT:"-prefixed bullet
+// renders as a distinct callout, so it earns the more generous MAX_INSIGHT_CHARS.
+const MAX_BULLET_CHARS = 100; // normal scannable bullet
+const MAX_INSIGHT_CHARS = 140; // "KEY INSIGHT:" callout bullet
+const MAX_TITLE_CHARS = 70; // slide title
+const MAX_BULLETS = 8; // bullets per slide (headroom above the ~6 target for expand passes)
+
+/** True for a bullet that renders as the KEY INSIGHT callout (case-insensitive). */
+function isKeyInsight(bullet: string): boolean {
+  return /^\s*KEY INSIGHT\s*:/i.test(bullet);
+}
+
+// The schema's per-bullet maxLength is a SINGLE uniform value, but bullets have
+// two caps (normal vs. KEY INSIGHT). It is therefore set to the loosest of the
+// two (MAX_INSIGHT_CHARS) so the schema never clips a legitimate KEY INSIGHT
+// bullet; the trim pass applies the precise per-type cap afterwards.
+const BATCH_RESPONSE_SCHEMA = {
+  type: 'object',
+  properties: {
+    slides: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          index: { type: 'integer' },
+          type: { type: 'string' },
+          refined_title: { type: 'string', maxLength: MAX_TITLE_CHARS },
+          refined_body: {
+            type: 'array',
+            maxItems: MAX_BULLETS,
+            items: { type: 'string', maxLength: MAX_INSIGHT_CHARS },
+          },
+          visual: {
+            type: 'object',
+            nullable: true,
+            properties: {
+              type: { type: 'string' },
+              content: { type: 'string' },
+              caption: { type: 'string' },
+            },
+          },
+          is_new: { type: 'boolean' },
+          inserted_after_index: { type: 'integer', nullable: true },
+          change_summary: { type: 'string' },
+        },
+        required: ['index', 'refined_title', 'refined_body', 'is_new', 'change_summary'],
+      },
+    },
+    needs_summary: { type: 'boolean' },
+    batch_changes: { type: 'array', items: { type: 'string' } },
+  },
+  required: ['slides', 'needs_summary', 'batch_changes'],
+};
+
+// ─── Pseudocode / algorithm-notation detection ────────────────────────────────
+
+/**
+ * Heuristic detector for a pseudocode/algorithm-notation bullet (e.g. a line
+ * from a "function C(n, k): if k=0 return 1 …" box extracted as plain text).
+ * This is a judgment call, not a precise rule — extracted body_text carries no
+ * markup telling us a line came from a monospace/code box, so we score on
+ * surface features instead:
+ *  - control-flow keywords (if/else/while/for/return/function/…)
+ *  - a call-like pattern: identifier immediately followed by "(...)"
+ *  - assignment/comparison operators (:=, ==, <=, <-, etc.)
+ *  - brace/semicolon punctuation
+ *  - leading indentation (a code block's line-level indent surviving extraction)
+ * We require >= 2 independent signals so a single stray keyword in an
+ * ordinary sentence ("Return to the diagram above") doesn't trip it.
+ *
+ * Tradeoffs: a prose bullet dense with keywords/parens ("if x = 0, call
+ * setup()") could false-positive and get skipped from readability rewriting —
+ * rare, and the cost is just "one bullet doesn't get polished," not a
+ * correctness problem. A pseudocode line written in full English ("If n
+ * equals zero, return one") can false-negative and get rewritten — the
+ * fallback there is that our post-processing restore step (see
+ * `restorePseudocodeLines`) only substitutes lines this same heuristic
+ * flags, so a false negative here just means it's treated as prose
+ * end-to-end, not that it's corrupted somewhere in between.
+ */
+function isPseudocodeLine(line: string): boolean {
+  const trimmed = line.trim();
+  if (!trimmed) return false;
+
+  const keywordHits = (
+    trimmed.match(
+      /\b(if|else|elseif|while|for|return|function|procedure|repeat|until|then|end|break|continue)\b/gi
+    ) || []
+  ).length;
+  const hasCallPattern = /[A-Za-z_]\w*\s*\([^)]*\)/.test(trimmed);
+  const hasOperator = /(:=|==|!=|<=|>=|<-|\+\+|--|=(?!=))/.test(trimmed);
+  const hasBlockSyntax = /[{};]/.test(trimmed);
+  const looksIndented = /^(\s{2,}|\t)/.test(line);
+
+  let score = Math.min(keywordHits, 2); // cap so keyword spam alone can't dominate
+  if (hasCallPattern) score += 1;
+  if (hasOperator) score += 1;
+  if (hasBlockSyntax) score += 1;
+  if (looksIndented) score += 1;
+
+  return score >= 2;
+}
+
+/**
+ * Deterministic backstop for pseudocode preservation — run on every parsed
+ * batch response regardless of whether the model honored the "[CODE]" prompt
+ * instruction. We don't trust the model to leave code byte-identical, so we
+ * reconstruct it ourselves: strip anything in the model's refined_body that
+ * still looks like code (a mangled rewrite, or an untouched line we're about
+ * to replace anyway) and reassemble as [model's prose bullets] + [original
+ * code lines, unchanged, in their original relative order]. This doesn't
+ * preserve the exact original interleaving of code and prose (a slide that
+ * mixes both gets its prose bullets pulled together, ahead of the code
+ * block), but it guarantees the two invariants that matter: code lines are
+ * byte-identical to the source, and prose still gets refined.
+ */
+function restorePseudocodeLines(originalBody: string[], refinedBody: string[]): string[] {
+  const codeLines = originalBody.filter(isPseudocodeLine);
+  if (codeLines.length === 0) return refinedBody;
+
+  // Already untouched (model left it alone, or this is the fallback path) —
+  // keep the original ordering rather than reshuffling into prose-then-code.
+  if (
+    refinedBody.length === originalBody.length &&
+    refinedBody.every((b, i) => b === originalBody[i])
+  ) {
+    return refinedBody;
+  }
+
+  const proseBullets = refinedBody.filter((b) => !isPseudocodeLine(b));
+  return [...proseBullets, ...codeLines];
+}
+
 // ─── Prompt builder ───────────────────────────────────────────────────────────
 
 function buildBatchPrompt(
@@ -94,7 +236,10 @@ function buildBatchPrompt(
       .filter(Boolean)
       .join(' | ');
     lines.push(`[Slide ${s.index}: "${s.title}" | type: ${s.type} | ${flags}]`);
-    lines.push(`Content: ${s.body_text.join(' | ') || '(no text content)'}`);
+    const taggedBody = s.body_text.map((line) =>
+      isPseudocodeLine(line) ? `[CODE — DO NOT MODIFY] ${line}` : line
+    );
+    lines.push(`Content: ${taggedBody.join(' | ') || '(no text content)'}`);
     lines.push('');
   }
 
@@ -103,19 +248,25 @@ function buildBatchPrompt(
 
   if (options.improve_readability) {
     activeOpts.push(
-      `IMPROVE READABILITY: Improve the clarity of existing content WITHOUT removing or ` +
-        `shortening explanations. Rules:\n` +
+      `IMPROVE READABILITY: Improve the clarity of existing content. Rules:\n` +
         `   - Fix grammatical errors and awkward phrasing\n` +
-        `   - Break run-on sentences into cleaner separate sentences\n` +
+        `   - Break run-on sentences into cleaner, scannable bullets\n` +
         `   - Make passive voice active where natural\n` +
         `   - Standardize bullet formatting (parallel structure)\n` +
-        `   - NEVER reduce a multi-sentence explanation to a single sentence\n` +
-        `   - NEVER remove definitions, examples, or explanatory clauses\n` +
-        `   - NEVER apply a word limit per bullet -- preserve all content\n` +
-        `   - If a bullet is already clear, return it unchanged\n` +
-        `   - Total word count of refined_body must be >= 90% of original\n` +
-        `     body_text word count. If your rewrite falls below this,\n` +
-        `     add back the removed content.`
+        `   - Bullets are scannable phrases, NOT full sentences — aim for\n` +
+        `     6-14 words each so each bullet fits on one line of a slide\n` +
+        `   - Preserve every DISTINCT concept, definition, and example, but\n` +
+        `     NOT the original phrasing or length — condensing wording while\n` +
+        `     keeping the concept is exactly the goal. Split a bullet that\n` +
+        `     packs several concepts into one bullet per concept.\n` +
+        `   - If a bullet is already a clear, short phrase, return it unchanged\n` +
+        `   - EXCEPTION for type: overview slides (Outline/Agenda/Contents): these\n` +
+        `     bullets are topic labels, not prose to expand. Only fix genuine\n` +
+        `     grammar/spelling mistakes — never turn a label into a\n` +
+        `     "label: explanation" sentence, never add explanatory clauses, and\n` +
+        `     never pad a short topic name out to 6-14 words. If a bullet is\n` +
+        `     already a full sentence, leave it that length — don't artificially\n` +
+        `     shorten it either.`
     );
   }
   if (options.expand_thin_sections) {
@@ -191,6 +342,12 @@ function buildBatchPrompt(
   lines.push('');
 
   lines.push('CRITICAL RULES:');
+  lines.push(
+    '- Any content line above prefixed "[CODE — DO NOT MODIFY]" is pseudocode or ' +
+      'algorithm notation. Copy it into refined_body byte-for-byte exactly as given ' +
+      '(minus the prefix) — never reword, reformat, reflow, or "improve" it. This ' +
+      'applies regardless of which options are active above.'
+  );
   lines.push('- NEVER remove existing correct content');
   lines.push('- NEVER change the fundamental meaning of any slide');
   lines.push('- NEVER invent facts not supported by slide content or subject context');
@@ -198,9 +355,9 @@ function buildBatchPrompt(
     '- If a slide is already excellent: set refined_title=original, refined_body=original, change_summary="No changes needed."'
   );
   lines.push(
-    '- refined_body total words must be >= 90% of body_text total words. ' +
-      'If this is not met, you have over-summarized. Add the missing ' +
-      'content back before responding.'
+    '- Preserve every distinct concept from body_text, but keep each bullet a ' +
+      'short scannable phrase. Dropping a CONCEPT is forbidden; trimming ' +
+      'wordiness is required. Never merge two distinct concepts into one bullet.'
   );
   lines.push('');
 
@@ -211,13 +368,12 @@ function buildBatchPrompt(
     {
       "index": <number — same index as input, OR -1 for new slides>,
       "type": "<SlideType — only required for is_new slides>",
-      "refined_title": "<string>",
-      "refined_body": ["<bullet string>", ...],
+      "refined_title": "<string, <=${MAX_TITLE_CHARS} chars>",
+      "refined_body": ["<scannable phrase, <=${MAX_BULLET_CHARS} chars; a KEY INSIGHT bullet may reach ${MAX_INSIGHT_CHARS}>", ...max ${MAX_BULLETS}],
       "visual": { "type": "svg"|"mermaid"|"imagen", "content": "<svg markup|mermaid code|imagen prompt>", "caption": "<string>" } | null,
       "is_new": <boolean>,
       "inserted_after_index": <number — index of parent slide, only when is_new=true> | null,
-      "change_summary": "<one sentence describing what changed>",
-      "content_preserved": <boolean — must be true if refined_body word count >= 90% of original body_text word count>
+      "change_summary": "<one sentence describing what changed>"
     }
   ],
   "needs_summary": <boolean — true only in last batch if no summary slide exists>,
@@ -246,6 +402,96 @@ function sanitizeBatchResponse(obj: BatchResponse): BatchResponse {
     if (typeof s.refined_title === 'string') s.refined_title = stripHtml(s.refined_title);
     if (Array.isArray(s.refined_body)) {
       s.refined_body = s.refined_body.map((b) => (typeof b === 'string' ? stripHtml(b) : b));
+    }
+  }
+  return obj;
+}
+
+// ─── Deterministic length trim (LaTeX/mhchem-aware safety net) ────────────────
+
+/**
+ * Would cutting `candidate` off here land INSIDE a math/chemistry span — i.e.
+ * did the truncation open a `$…$` / `$$…$$` / `\ce{…}` it never closed? We reuse
+ * the shared segmenter (via findUnsupportedNotation) so this shares ONE
+ * definition of a broken span with the rest of the app. A `\begin{…}` environment
+ * warning is ignored: it flags the whole (uncut) text, not damage from our cut.
+ */
+function cutBreaksMathSpan(candidate: string): boolean {
+  const reason = findUnsupportedNotation(candidate);
+  return (
+    reason === 'unclosed $ math delimiter' ||
+    reason === 'unterminated \\ce{…} span'
+  );
+}
+
+/**
+ * Truncate `text` to at most `cap` characters at the nearest whitespace boundary,
+ * never cutting mid-word (safe for Hinglish/mixed-language) and never inside a
+ * math/chemistry span. Returns the original text unchanged when it already fits,
+ * or when no safe cut point exists (e.g. a single math span longer than the cap —
+ * left intact and logged by the caller).
+ */
+function trimToCap(text: string, cap: number): { text: string; truncated: boolean } {
+  if (text.length <= cap) return { text, truncated: false };
+
+  const latex = hasLatex(text);
+
+  // Scan whitespace boundaries at/under the cap, largest first.
+  const upper = Math.min(cap, text.length - 1);
+  for (let i = upper; i > 0; i--) {
+    if (!/\s/.test(text[i])) continue;
+    const candidate = text.slice(0, i).replace(/\s+$/, '');
+    if (!candidate) continue;
+    // Only pay the segmenter cost when the text actually contains math.
+    if (latex && cutBreaksMathSpan(candidate)) continue;
+    return { text: candidate, truncated: true };
+  }
+
+  // No safe boundary ≤ cap (one long word or an oversized math span) — leave it.
+  return { text, truncated: false };
+}
+
+/**
+ * Enforce the per-bullet / per-title length caps on a parsed batch as a
+ * deterministic backstop to the responseSchema. Mutates and returns `obj`.
+ */
+function trimBatchResponse(obj: BatchResponse): BatchResponse {
+  for (const s of obj.slides) {
+    if (typeof s.refined_title === 'string') {
+      const t = trimToCap(s.refined_title, MAX_TITLE_CHARS);
+      if (t.truncated) {
+        console.warn(
+          `[ppt-refine/refiner] Trimmed over-long title on slide ${s.index}: "${s.refined_title}"`
+        );
+        s.refined_title = t.text;
+      } else if (s.refined_title.length > MAX_TITLE_CHARS) {
+        console.warn(
+          `[ppt-refine/refiner] Title on slide ${s.index} exceeds ${MAX_TITLE_CHARS} chars but has no safe cut point — left intact.`
+        );
+      }
+    }
+
+    if (Array.isArray(s.refined_body)) {
+      s.refined_body = s.refined_body.map((b) => {
+        if (typeof b !== 'string') return b;
+        // A pseudocode/algorithm line must stay byte-identical (same invariant
+        // isPseudocodeLine protects in the prompt) — never truncate it.
+        if (isPseudocodeLine(b)) return b;
+        const cap = isKeyInsight(b) ? MAX_INSIGHT_CHARS : MAX_BULLET_CHARS;
+        const r = trimToCap(b, cap);
+        if (r.truncated) {
+          console.warn(
+            `[ppt-refine/refiner] Trimmed over-long bullet on slide ${s.index}: "${b}"`
+          );
+          return r.text;
+        }
+        if (b.length > cap) {
+          console.warn(
+            `[ppt-refine/refiner] Bullet on slide ${s.index} exceeds ${cap} chars but has no safe cut point (likely one long math span) — left intact.`
+          );
+        }
+        return b;
+      });
     }
   }
   return obj;
@@ -336,12 +582,14 @@ async function processOneBatch(
         systemPrompt: SYSTEM_PROMPT,
         messages: [{ role: 'user', content: prompt }],
         maxTokens: 16384,
+        responseSchema: BATCH_RESPONSE_SCHEMA,
       });
 
       const text = String(ai.content ?? '');
       const parsed = parseRefineBatchResponse(text);
 
       if (parsed) {
+        trimBatchResponse(parsed);
         console.log(
           `[ppt-refine/refiner] Batch parsed OK — ${parsed.slides.length} slides, ` +
             `${parsed.slides.filter((s) => s.is_new).length} new`
@@ -544,7 +792,7 @@ function assembleRefinedDeck(
         base[rs.index] = {
           ...base[rs.index],
           refined_title: rs.refined_title,
-          refined_body: rs.refined_body,
+          refined_body: restorePseudocodeLines(base[rs.index].body_text, rs.refined_body),
           visual: rs.visual ?? undefined,
           is_new: false,
           change_summary: rs.change_summary,
