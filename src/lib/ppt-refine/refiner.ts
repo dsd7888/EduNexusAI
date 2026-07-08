@@ -120,13 +120,18 @@ const BATCH_RESPONSE_SCHEMA = {
  * This is a judgment call, not a precise rule — extracted body_text carries no
  * markup telling us a line came from a monospace/code box, so we score on
  * surface features instead:
- *  - control-flow keywords (if/else/while/for/return/function/…)
- *  - a call-like pattern: identifier immediately followed by "(...)"
- *  - assignment/comparison operators (:=, ==, <=, <-, etc.)
- *  - brace/semicolon punctuation
- *  - leading indentation (a code block's line-level indent surviving extraction)
- * We require >= 2 independent signals so a single stray keyword in an
- * ordinary sentence ("Return to the diagram above") doesn't trip it.
+ *  - control-flow keyword (if/else/while/for/return/function/…) — weak, 1pt,
+ *    capped regardless of how many distinct keywords appear
+ *  - a call-like pattern: identifier immediately followed by "(args)" where
+ *    args look code-like (no bare spaces) rather than prose-in-parens like
+ *    "O(n log n)" — weak, 1pt
+ *  - assignment/comparison operators (:=, ==, <=, <-, etc.) — strong, 2pts
+ *  - brace/semicolon punctuation — strong, 2pts
+ *  - leading indentation (a code block's line-level indent surviving
+ *    extraction) — strong, 2pts
+ * Threshold is a score of 2: either one strong signal alone, or both weak
+ * signals together. A single weak signal alone (e.g. just the word "for" in
+ * an ordinary sentence) is never enough.
  *
  * Tradeoffs: a prose bullet dense with keywords/parens ("if x = 0, call
  * setup()") could false-positive and get skipped from readability rewriting —
@@ -142,21 +147,33 @@ function isPseudocodeLine(line: string): boolean {
   const trimmed = line.trim();
   if (!trimmed) return false;
 
-  const keywordHits = (
-    trimmed.match(
-      /\b(if|else|elseif|while|for|return|function|procedure|repeat|until|then|end|break|continue)\b/gi
-    ) || []
-  ).length;
-  const hasCallPattern = /[A-Za-z_]\w*\s*\([^)]*\)/.test(trimmed);
+  // Weak signal: at least one control-flow keyword. Capped at a single point
+  // no matter how many distinct keywords appear — two common English words
+  // like "for" and "return" showing up in one ordinary sentence ("Return to
+  // the diagram above for context") must not be enough on its own.
+  const hasKeyword = /\b(if|else|elseif|while|for|return|function|procedure|repeat|until|then|end|break|continue)\b/i.test(
+    trimmed
+  );
+
+  // Weak signal: identifier immediately followed by "(args)" — but only when
+  // the args themselves look code-like (bare identifiers/numbers, comma-
+  // separated, no internal spaces). This excludes prose-in-parens like
+  // "O(n log n)" or "(see above)", which have space-separated words inside.
+  const callMatch = trimmed.match(/[A-Za-z_]\w*\s*\(([^()]*)\)/);
+  const hasCallPattern = !!callMatch && !/\s/.test(callMatch[1].replace(/,\s*/g, ','));
+
+  // Strong signals: each is rare in ordinary prose bullets, so any one of
+  // them combined with a weak signal (or two of them alone) is decisive.
   const hasOperator = /(:=|==|!=|<=|>=|<-|\+\+|--|=(?!=))/.test(trimmed);
   const hasBlockSyntax = /[{};]/.test(trimmed);
   const looksIndented = /^(\s{2,}|\t)/.test(line);
 
-  let score = Math.min(keywordHits, 2); // cap so keyword spam alone can't dominate
+  let score = 0;
+  if (hasKeyword) score += 1;
   if (hasCallPattern) score += 1;
-  if (hasOperator) score += 1;
-  if (hasBlockSyntax) score += 1;
-  if (looksIndented) score += 1;
+  if (hasOperator) score += 2;
+  if (hasBlockSyntax) score += 2;
+  if (looksIndented) score += 2;
 
   return score >= 2;
 }
