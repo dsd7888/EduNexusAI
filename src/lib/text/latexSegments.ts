@@ -159,20 +159,32 @@ export function extractLatexSegments(text: string): LatexSegment[] {
     }
 
     // Inline math: $ … $
+    //
+    // A single `$` is ambiguous: it opens inline math AND it is the currency
+    // symbol. Uploaded / refined content (where faculty never escaped anything)
+    // routinely contains prose like "$1,400, $3,000, $4,200" — naively pairing
+    // those dollars turns "1,400," and "3,000," into italic math spans and eats
+    // the `$`/commas. So we only accept a `$…$` pair as math when its contents
+    // actually LOOK like math (see {@link isInlineMathContent}); otherwise this
+    // `$` falls through and is emitted as a literal character, and scanning
+    // continues from the next one.
     if (ch === "$") {
       const end = findClosing(text, i + 1, "$");
       if (end !== -1) {
-        flush();
         const latex = text.slice(i + 1, end).trim();
-        segments.push({
-          type: "math",
-          latex,
-          displayMode: false,
-          chem: /\\ce\{/.test(latex),
-          source: "inline",
-        });
-        i = end + 1;
-        continue;
+        if (isInlineMathContent(latex)) {
+          flush();
+          segments.push({
+            type: "math",
+            latex,
+            displayMode: false,
+            chem: /\\ce\{/.test(latex),
+            source: "inline",
+          });
+          i = end + 1;
+          continue;
+        }
+        // Not math (a currency amount / plain prose) — leave this `$` literal.
       }
     }
 
@@ -228,6 +240,46 @@ function findClosing(text: string, from: number, delimiter: "$" | "$$"): number 
     i += 1;
   }
   return -1;
+}
+
+/**
+ * Decide whether the contents of a candidate `$…$` inline span are actually math,
+ * as opposed to a bare currency amount that happens to sit between two dollar
+ * signs ("$1,400, $3,000, …"). Only applies to the ambiguous SINGLE-`$` case —
+ * `$$…$$` block math and bare `\ce{…}` are unambiguous and never routed here.
+ *
+ * `inner` is the already-trimmed text between the two dollars. It counts as math
+ * when it carries at least one genuine math signal:
+ *
+ *   1. A structural LaTeX marker — a backslash command (`\cup`, `\frac`, `\{`),
+ *      a superscript `^`, a subscript `_`, or a brace `{`/`}`. None of these ever
+ *      occur inside a currency amount, so their presence is decisive.
+ *   2. A lone variable / symbol — a short (≤3 char) token with no whitespace that
+ *      contains a letter and isn't purely digits: "x", "n", "ab", "R". This keeps
+ *      minimal real formulae like `$x$` and `$n$` rendering as math.
+ *   3. A simple relation between symbols — an algebraic operator (`= < > + * / |`)
+ *      together with a letter: "a = b", "x > 0", "a+b". The letter requirement is
+ *      what keeps digit-only currency fragments ("5 + ", "1,400,") literal.
+ *
+ * Anything else — spans that are just digits, commas, spaces and prose words —
+ * is rejected, so the dollars stay literal text.
+ */
+function isInlineMathContent(inner: string): boolean {
+  const s = inner.trim();
+  if (!s) return false;
+
+  // 1. Unambiguous structural LaTeX markers.
+  if (/[\\^_{}]/.test(s)) return true;
+
+  // 2. A lone variable / symbol (e.g. "$x$", "$n$").
+  if (!/\s/.test(s) && s.length <= 3 && /[a-zA-Z]/.test(s) && !/^[\d.,]+$/.test(s)) {
+    return true;
+  }
+
+  // 3. A simple relation/operation between symbols (e.g. "$a = b$", "$x > 0$").
+  if (/[=<>+*/|]/.test(s) && /[a-zA-Z]/.test(s)) return true;
+
+  return false;
 }
 
 /** Given the index of an opening `{`, return the index of its matching `}`, or -1. */
