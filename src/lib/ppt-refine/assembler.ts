@@ -195,17 +195,34 @@ function getPlaceholder(spXml: string): Placeholder | null {
 
 /**
  * Ensure a shape's <a:bodyPr> carries <a:normAutofit/> so PowerPoint auto-shrinks
- * text to fit the box. Leaves an existing <a:normAutofit .../> (incl. fontScale)
- * untouched; replaces <a:spAutoFit/> / <a:noAutofit/>; adds one if absent.
+ * text to fit the box. Replaces <a:spAutoFit/> / <a:noAutofit/>; adds one if absent.
+ *
+ * A bare <a:normAutofit/> only makes PowerPoint recompute the shrink when the box
+ * is edited interactively — on open/export the *stored* fontScale is honoured, so
+ * a bare tag renders at 100% and long text still bleeds. When `fontScale` (0–1) is
+ * supplied we bake that scale into the tag so the shrink is applied on render.
+ *
+ * Author-set autofit is respected: an existing <a:normAutofit .../> is kept, and
+ * a computed `fontScale` is only stamped on when the existing tag has none of its
+ * own (never clobber an authored fontScale).
  */
-function ensureNormAutofit(spXml: string): string {
+function ensureNormAutofit(spXml: string, fontScale?: number): string {
+  const scaleAttr =
+    fontScale !== undefined && fontScale < 1
+      ? ` fontScale="${Math.round(fontScale * 100000)}"`
+      : '';
+
   const tx = getInnerRange(spXml, 'p:txBody');
   if (!tx) return spXml;
 
   const bpOpen = /<a:bodyPr\b[^>]*?(\/?)>/.exec(spXml.slice(tx.outerStart, tx.outerEnd));
   if (!bpOpen) {
     // No <a:bodyPr> — insert a minimal one at the very start of <p:txBody>.
-    return spXml.slice(0, tx.innerStart) + '<a:bodyPr><a:normAutofit/></a:bodyPr>' + spXml.slice(tx.innerStart);
+    return (
+      spXml.slice(0, tx.innerStart) +
+      `<a:bodyPr><a:normAutofit${scaleAttr}/></a:bodyPr>` +
+      spXml.slice(tx.innerStart)
+    );
   }
 
   const bpAbsStart = tx.outerStart + bpOpen.index;
@@ -215,14 +232,25 @@ function ensureNormAutofit(spXml: string): string {
     const bpAbsEnd = bpAbsStart + bpOpen[0].length;
     const openTag = bpOpen[0].replace(/\/>$/, '>');
     return (
-      spXml.slice(0, bpAbsStart) + openTag + '<a:normAutofit/></a:bodyPr>' + spXml.slice(bpAbsEnd)
+      spXml.slice(0, bpAbsStart) +
+      openTag +
+      `<a:normAutofit${scaleAttr}/></a:bodyPr>` +
+      spXml.slice(bpAbsEnd)
     );
   }
 
   const bpRange = elementRange(spXml, bpAbsStart, 'a:bodyPr');
   if (!bpRange) return spXml;
   let bpXml = spXml.slice(bpRange[0], bpRange[1]);
-  if (/<a:normAutofit\b/.test(bpXml)) return spXml; // already present — leave as-is
+  if (/<a:normAutofit\b/.test(bpXml)) {
+    // Already present — respect the author's autofit. Only stamp on our computed
+    // fontScale when the existing tag carries none of its own.
+    if (scaleAttr && !/<a:normAutofit\b[^>]*\bfontScale=/.test(bpXml)) {
+      bpXml = bpXml.replace(/<a:normAutofit\b([^>]*?)\/>/, `<a:normAutofit$1${scaleAttr}/>`);
+      return spXml.slice(0, bpRange[0]) + bpXml + spXml.slice(bpRange[1]);
+    }
+    return spXml;
+  }
 
   bpXml = bpXml.replace(/<a:spAutoFit\s*\/>/g, '').replace(/<a:noAutofit\s*\/>/g, '');
 
@@ -231,21 +259,22 @@ function ensureNormAutofit(spXml: string): string {
   let insertPos = openTag.length;
   const warp = /<a:prstTxWarp\b(?:[^>]*\/>|[\s\S]*?<\/a:prstTxWarp>)/.exec(bpXml);
   if (warp) insertPos = warp.index + warp[0].length;
-  bpXml = bpXml.slice(0, insertPos) + '<a:normAutofit/>' + bpXml.slice(insertPos);
+  bpXml = bpXml.slice(0, insertPos) + `<a:normAutofit${scaleAttr}/>` + bpXml.slice(insertPos);
 
   return spXml.slice(0, bpRange[0]) + bpXml + spXml.slice(bpRange[1]);
 }
 
 /** Read a shape's own <a:xfrm> offset/extent (EMU). NaN where unspecified. */
-function getShapeXfrm(spXml: string): { y: number; cy: number } | null {
+function getShapeXfrm(spXml: string): { y: number; cx: number; cy: number } | null {
   const xf = getInnerRange(spXml, 'a:xfrm');
   if (!xf) return null;
   const xfXml = spXml.slice(xf.outerStart, xf.outerEnd);
   const offTag = /<a:off\b[^>]*\/>/.exec(xfXml)?.[0] ?? '';
   const extTag = /<a:ext\b[^>]*\/>/.exec(xfXml)?.[0] ?? '';
   const y = Number(/\by="(-?\d+)"/.exec(offTag)?.[1] ?? NaN);
+  const cx = Number(/\bcx="(\d+)"/.exec(extTag)?.[1] ?? NaN);
   const cy = Number(/\bcy="(\d+)"/.exec(extTag)?.[1] ?? NaN);
-  return { y, cy };
+  return { y, cx, cy };
 }
 
 /** Set the cy (height) on a shape's own <a:xfrm> <a:ext>. */
@@ -257,6 +286,92 @@ function setShapeCy(spXml: string, cy: number): string {
     .slice(xf.innerStart, xf.innerEnd)
     .replace(/(<a:ext\b[^>]*\bcy=")\d+(")/, `$1${cy}$2`);
   return before + inner + spXml.slice(xf.innerEnd);
+}
+
+// ─── Text-fit estimation ────────────────────────────────────────────────────
+// Refined text is frequently longer than the original the box was sized for. A
+// bare <a:normAutofit/> does NOT shrink it on render (see ensureNormAutofit), so
+// without an estimate the surplus text bleeds out of the box (the ADA_GTU
+// overflow). We approximate the line count the new text needs at a given font
+// size and box width, compare it to how many lines the box height can hold, and
+// (if it overflows) find the largest fontScale that makes it fit. This is a
+// deliberately coarse estimate — it only needs to catch gross overflow, not be
+// pixel-perfect, and it is biased to UNDER-trigger so tight-by-design boxes are
+// left alone.
+
+const EMU_PER_POINT = 12700;
+const LINE_HEIGHT_FACTOR = 1.2; // line advance ≈ 1.2× font size
+const AVG_CHAR_WIDTH_FACTOR = 0.5; // avg proportional glyph advance ≈ 0.5em
+/** Below this the text is unreadably small — the box was never meant to hold
+ *  this much, so we keep the original text rather than ship a 40% wall. */
+const MIN_AUTOFIT_SCALE = 0.6;
+/** Fallback font sizes (pt) when a shape declares none explicitly (inherited
+ *  from layout/master, which we don't resolve). Chosen moderate so the estimate
+ *  neither wildly over- nor under-triggers. */
+const DEFAULT_TITLE_FONT_PT = 24;
+const DEFAULT_BODY_FONT_PT = 18;
+
+type FitResult =
+  | { kind: 'fits' } // fits at 100%, OR geometry/size unknown → leave as-is
+  | { kind: 'shrink'; scale: number } // apply this fontScale via normAutofit
+  | { kind: 'overflow' }; // cannot fit even at MIN_AUTOFIT_SCALE → keep original
+
+/** First explicit run/def font size in points, or NaN if the shape declares none. */
+function firstFontSizePt(spXml: string): number {
+  const m = /<a:(?:rPr|defRPr|endParaRPr)\b[^>]*\bsz="(\d+)"/.exec(spXml);
+  return m ? Number(m[1]) / 100 : NaN;
+}
+
+/** Estimate the total wrapped-line count `paras` need at a font size and width. */
+function estimateLines(paras: string[], widthPt: number, fontSizePt: number): number {
+  const charsPerLine = Math.max(1, Math.floor(widthPt / (fontSizePt * AVG_CHAR_WIDTH_FACTOR)));
+  let lines = 0;
+  for (const p of paras) {
+    lines += Math.max(1, Math.ceil(p.length / charsPerLine)); // every bullet is ≥ 1 line
+  }
+  return lines;
+}
+
+/**
+ * Assess whether `paras` fit `cyEmu` of vertical space in the shape's box, and if
+ * not, the largest fontScale that would. `cyEmu` is passed in (not read from the
+ * shape) because the caller may have already shrunk the box for an overlapping
+ * image (Bug 4) — we must estimate against the box the text will actually get.
+ */
+function assessTextFit(
+  spXml: string,
+  paras: string[],
+  cyEmu: number,
+  defaultFontPt: number
+): FitResult {
+  const xf = getShapeXfrm(spXml);
+  const cx = xf?.cx ?? NaN;
+  // No explicit geometry (placeholder inheriting from the layout) → we can't
+  // estimate, so preserve prior behaviour (plain autofit, no skip).
+  if (!Number.isFinite(cx) || !Number.isFinite(cyEmu) || cx <= 0 || cyEmu <= 0) {
+    return { kind: 'fits' };
+  }
+
+  let fontPt = firstFontSizePt(spXml);
+  if (!Number.isFinite(fontPt) || fontPt <= 0) fontPt = defaultFontPt;
+
+  const widthPt = cx / EMU_PER_POINT;
+  const heightPt = cyEmu / EMU_PER_POINT;
+
+  const fitsAt = (scale: number): boolean => {
+    const fs = fontPt * scale;
+    const lines = estimateLines(paras, widthPt, fs);
+    const maxLines = Math.max(1, Math.floor(heightPt / (fs * LINE_HEIGHT_FACTOR)));
+    return lines <= maxLines;
+  };
+
+  if (fitsAt(1)) return { kind: 'fits' };
+
+  // Step down in PowerPoint-like 5% increments to the readable floor.
+  for (let scale = 0.95; scale >= MIN_AUTOFIT_SCALE - 1e-9; scale -= 0.05) {
+    if (fitsAt(scale)) return { kind: 'shrink', scale };
+  }
+  return { kind: 'overflow' };
 }
 
 /**
@@ -393,20 +508,38 @@ export function patchSlideXml(originalXml: string, slide: RefinedSlide): string 
 
     const newTitle = cleanText(slide.refined_title ?? '');
     if (titleShape && newTitle) {
-      // Bug 2: inject text even into originally-empty title placeholders.
-      // Bug 1: ensure the title box auto-shrinks long titles to fit.
-      let titleXml = patchTitleShape(titleShape.spXml, newTitle);
-      titleXml = ensureNormAutofit(titleXml);
-      edits.push({ start: titleShape.sp.start, end: titleShape.sp.end, text: titleXml });
+      // Bug 6: estimate whether the refined title fits the title box. If it
+      // overflows we shrink via a computed normAutofit fontScale; if it can't
+      // reasonably fit even shrunk, we keep the original title rather than bleed.
+      const titleXf = getShapeXfrm(titleShape.spXml);
+      const fit = assessTextFit(
+        titleShape.spXml,
+        [newTitle],
+        titleXf?.cy ?? NaN,
+        DEFAULT_TITLE_FONT_PT
+      );
+      if (fit.kind === 'overflow') {
+        console.warn(
+          `[ppt-refine/assembler] slide ${slide.index}: refined title too long for its box ` +
+            `even at ${Math.round(MIN_AUTOFIT_SCALE * 100)}% font — keeping original title`
+        );
+      } else {
+        // Bug 2: inject text even into originally-empty title placeholders.
+        // Bug 1/6: ensure the title box auto-shrinks long titles to fit.
+        let titleXml = patchTitleShape(titleShape.spXml, newTitle);
+        titleXml = ensureNormAutofit(titleXml, fit.kind === 'shrink' ? fit.scale : undefined);
+        edits.push({ start: titleShape.sp.start, end: titleShape.sp.end, text: titleXml });
+      }
     }
 
     const newBody = (slide.refined_body ?? []).map((b) => b).filter((b) => typeof b === 'string');
     if (bodyShape && bodyShape !== titleShape && newBody.length > 0) {
-      let bodyXml = patchBodyShape(bodyShape.spXml, newBody);
-
       // Bug 4: if an image sits inside the body text box, shrink the body height
-      // so the text stays above it instead of rendering behind it.
+      // so the text stays above it instead of rendering behind it. Compute the
+      // reduced height first — the fit estimate (Bug 6) must run against the box
+      // the text will actually occupy, not the original full-height box.
       const bodyXf = getShapeXfrm(bodyShape.spXml);
+      let shrunkCy = Number.NaN; // the Bug-4 reduced height, if any
       if (bodyXf && Number.isFinite(bodyXf.y) && Number.isFinite(bodyXf.cy)) {
         const bodyTop = bodyXf.y;
         const bodyBottom = bodyXf.y + bodyXf.cy;
@@ -422,16 +555,31 @@ export function patchSlideXml(originalXml: string, slide: RefinedSlide): string 
             if (safe > 0 && safe < minSafe) minSafe = safe;
           }
         }
-        if (minSafe !== Infinity && minSafe < bodyXf.cy) {
-          bodyXml = setShapeCy(bodyXml, minSafe);
-        }
+        if (minSafe !== Infinity && minSafe < bodyXf.cy) shrunkCy = minSafe;
       }
 
-      // Bug 5: ensure the body box auto-shrinks text that overflows its height
-      // (applied AFTER the Bug 4 cy adjustment).
-      bodyXml = ensureNormAutofit(bodyXml);
+      // Bug 6: estimate whether the refined bullets fit the (possibly image-
+      // reduced) body height. Overflow → shrink via a computed normAutofit
+      // fontScale; hopeless overflow → keep the original body text.
+      const effectiveCy = Number.isFinite(shrunkCy) ? shrunkCy : bodyXf?.cy ?? NaN;
+      const bulletsForFit = newBody.map((b) => cleanText(b)).filter(Boolean);
+      const fit = assessTextFit(bodyShape.spXml, bulletsForFit, effectiveCy, DEFAULT_BODY_FONT_PT);
 
-      edits.push({ start: bodyShape.sp.start, end: bodyShape.sp.end, text: bodyXml });
+      if (fit.kind === 'overflow') {
+        console.warn(
+          `[ppt-refine/assembler] slide ${slide.index}: refined body too long for its box ` +
+            `even at ${Math.round(MIN_AUTOFIT_SCALE * 100)}% font — keeping original body`
+        );
+      } else {
+        let bodyXml = patchBodyShape(bodyShape.spXml, newBody);
+        if (Number.isFinite(shrunkCy)) bodyXml = setShapeCy(bodyXml, shrunkCy);
+
+        // Bug 5/6: ensure the body box auto-shrinks text that overflows its
+        // height (applied AFTER the Bug 4 cy adjustment).
+        bodyXml = ensureNormAutofit(bodyXml, fit.kind === 'shrink' ? fit.scale : undefined);
+
+        edits.push({ start: bodyShape.sp.start, end: bodyShape.sp.end, text: bodyXml });
+      }
     }
 
     if (edits.length === 0) return originalXml;
