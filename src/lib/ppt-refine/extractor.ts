@@ -19,19 +19,34 @@ function makeParser() {
 
 // ─── Text helpers ─────────────────────────────────────────────────────────────
 
+// Symbol-font glyphs (Wingdings, Webdings, …) live in the Unicode Private Use
+// Area. They render as decorative bullets/ornaments, carry no readable text,
+// and — because they are not whitespace — survive `.trim()`. Strip them so a
+// decorative shape does not contribute a stray empty/garbage bullet.
+const PUA_RE = /[\uE000-\uF8FF]/g;
+
+function cleanRunText(t: string): string {
+  return t.replace(PUA_RE, '');
+}
+
 function getRunTexts(para: Record<string, unknown>): string[] {
   const texts: string[] = [];
 
   const runs = (para['a:r'] ?? []) as Array<Record<string, unknown>>;
   for (const run of runs) {
     const t = run['a:t'];
-    if (typeof t === 'string' && t.trim()) texts.push(t);
-    else if (typeof t === 'number') texts.push(String(t));
+    if (typeof t === 'string') {
+      const cleaned = cleanRunText(t);
+      if (cleaned.trim()) texts.push(cleaned);
+    } else if (typeof t === 'number') texts.push(String(t));
   }
 
   // a:t directly on the paragraph (rare but valid)
   const direct = para['a:t'];
-  if (typeof direct === 'string' && direct.trim()) texts.push(direct);
+  if (typeof direct === 'string') {
+    const cleaned = cleanRunText(direct);
+    if (cleaned.trim()) texts.push(cleaned);
+  }
 
   return texts;
 }
@@ -41,6 +56,10 @@ function txBodyToLines(txBody: Record<string, unknown>): string[] {
   const paras = (txBody['a:p'] ?? []) as Array<Record<string, unknown>>;
   for (const para of paras) {
     const line = getRunTexts(para).join('').trim();
+    // Drop every empty / whitespace-only paragraph, not just leading ones. We
+    // extract text for AI refinement (not layout), so an intentionally-blank
+    // spacer paragraph carries no content worth preserving; keeping it would
+    // only inject empty bullets that corrupt downstream titles/bodies.
     if (line) lines.push(line);
   }
   return lines;
@@ -51,6 +70,10 @@ function wordCount(parts: string[]): number {
     .join(' ')
     .split(/\s+/)
     .filter((w) => w.length > 0).length;
+}
+
+function countWords(s: string): number {
+  return s.split(/\s+/).filter((w) => w.length > 0).length;
 }
 
 // ─── Slide type inference ─────────────────────────────────────────────────────
@@ -82,6 +105,62 @@ interface ParsedSlideData {
   hasDiagram: boolean;
 }
 
+/** A text-bearing shape reduced to what we need for title/body assignment. */
+interface ShapeText {
+  /** Marked as a title placeholder in the slide layout. */
+  isTitle: boolean;
+  /** Vertical offset (EMU) — used to pick the topmost heading when no placeholder exists. */
+  yOff: number;
+  /** Non-empty text lines (symbol glyphs stripped, blank paragraphs dropped). */
+  lines: string[];
+}
+
+function shapeToText(shape: Record<string, unknown>): ShapeText {
+  const nvPr = (
+    (shape['p:nvSpPr'] as Record<string, unknown>)?.['p:nvPr'] ?? {}
+  ) as Record<string, unknown>;
+  const ph = nvPr['p:ph'] as Record<string, unknown> | undefined;
+
+  const isTitle =
+    ph?.['@_type'] === 'title' ||
+    ph?.['@_idx'] === 0 ||
+    ph?.['@_idx'] === '0';
+
+  const xfrm = (shape['p:spPr'] as Record<string, unknown> | undefined)?.[
+    'a:xfrm'
+  ] as Record<string, unknown> | undefined;
+  const yRaw = (xfrm?.['a:off'] as Record<string, unknown> | undefined)?.[
+    '@_y'
+  ];
+  let yOff: number;
+  if (typeof yRaw === 'number') yOff = yRaw;
+  else if (typeof yRaw === 'string') yOff = parseInt(yRaw, 10);
+  else yOff = Number.MAX_SAFE_INTEGER;
+  if (Number.isNaN(yOff)) yOff = Number.MAX_SAFE_INTEGER;
+
+  const txBody = shape['p:txBody'] as Record<string, unknown> | undefined;
+  const lines = txBody ? txBodyToLines(txBody) : [];
+
+  return { isTitle, yOff, lines };
+}
+
+/**
+ * Collect every text-bearing shape, recursing into grouped shapes (p:grpSp)
+ * to any depth. Shapes nested inside a group are otherwise invisible to a
+ * flat spTree['p:sp'] scan, so their text (and any title placeholder they
+ * carry) would be silently dropped.
+ */
+function collectShapeTexts(
+  node: Record<string, unknown>,
+  acc: ShapeText[]
+): void {
+  const sps = (node['p:sp'] ?? []) as Array<Record<string, unknown>>;
+  for (const shape of sps) acc.push(shapeToText(shape));
+
+  const groups = (node['p:grpSp'] ?? []) as Array<Record<string, unknown>>;
+  for (const group of groups) collectShapeTexts(group, acc);
+}
+
 function parseSlideXml(xml: string): ParsedSlideData {
   const parser = makeParser();
   const doc = parser.parse(xml) as Record<string, unknown>;
@@ -93,30 +172,49 @@ function parseSlideXml(xml: string): ParsedSlideData {
     (sld['p:cSld'] as Record<string, unknown>)?.['p:spTree'] ?? {}
   ) as Record<string, unknown>;
 
-  const shapes = (spTree['p:sp'] ?? []) as Array<Record<string, unknown>>;
+  const allShapes: ShapeText[] = [];
+  collectShapeTexts(spTree, allShapes);
+  // Only shapes that actually carry readable text participate in title/body.
+  const textShapes = allShapes.filter((s) => s.lines.length > 0);
 
   let title = '';
   const bodyLines: string[] = [];
 
-  for (const shape of shapes) {
-    const nvPr = (
-      (shape['p:nvSpPr'] as Record<string, unknown>)?.['p:nvPr'] ?? {}
-    ) as Record<string, unknown>;
-    const ph = nvPr['p:ph'] as Record<string, unknown> | undefined;
+  const titleShapes = textShapes.filter((s) => s.isTitle);
 
-    const isTitle =
-      ph?.['@_type'] === 'title' ||
-      ph?.['@_idx'] === 0 ||
-      ph?.['@_idx'] === '0';
+  if (titleShapes.length > 0) {
+    // Normal case: the layout marks a title placeholder (possibly inside a group).
+    title = titleShapes
+      .map((s) => s.lines.join(' '))
+      .join(' ')
+      .trim();
+    for (const s of textShapes) {
+      if (!s.isTitle) bodyLines.push(...s.lines);
+    }
+  } else {
+    // No title placeholder — the author used plain text boxes (as on the
+    // ADA "Outline" slide). Derive a heading: a "heading" shape is one whose
+    // first line is short (<= 6 words). Pick the topmost such shape; its first
+    // line becomes the title and its remaining lines become body. Other single
+    // short (<= 3 word) boxes are decorative labels (e.g. a rotated "Looping"
+    // band) and are dropped; everything else is body, in document order.
+    const headingCandidates = textShapes.filter(
+      (s) => countWords(s.lines[0]) <= 6
+    );
+    const titleShape = headingCandidates.length
+      ? headingCandidates.reduce((a, b) => (b.yOff < a.yOff ? b : a))
+      : undefined;
 
-    const txBody = shape['p:txBody'] as Record<string, unknown> | undefined;
-    if (!txBody) continue;
+    if (titleShape) title = titleShape.lines[0];
 
-    const lines = txBodyToLines(txBody);
-    if (isTitle) {
-      title = lines.join(' ').trim();
-    } else {
-      bodyLines.push(...lines);
+    for (const s of textShapes) {
+      if (s === titleShape) {
+        bodyLines.push(...s.lines.slice(1));
+      } else if (s.lines.length === 1 && countWords(s.lines[0]) <= 3) {
+        // decorative single-word/short label — skip
+      } else {
+        bodyLines.push(...s.lines);
+      }
     }
   }
 
