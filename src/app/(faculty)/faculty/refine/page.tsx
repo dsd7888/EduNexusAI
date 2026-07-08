@@ -564,9 +564,14 @@ function PptRefinementTab() {
           <div className="space-y-4 min-w-0">
             <Card>
               <CardHeader className="pb-3">
-                <div className="flex items-start justify-between gap-2">
+                <div className="flex items-start justify-between gap-2 min-w-0">
                   <div className="min-w-0">
-                    <CardTitle className="text-sm font-medium truncate">{file?.name ?? deck.file_name}</CardTitle>
+                    <CardTitle
+                      className="text-sm font-medium truncate"
+                      title={file?.name ?? deck.file_name}
+                    >
+                      {file?.name ?? deck.file_name}
+                    </CardTitle>
                     <CardDescription className="text-xs mt-0.5">{deck.detected_topic}</CardDescription>
                   </div>
                   <button
