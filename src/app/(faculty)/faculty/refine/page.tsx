@@ -15,6 +15,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { useFacultySubjects } from "@/hooks/useSupabaseData";
 import { RefinementType, REFINEMENT_LABELS } from "@/lib/refine/generator";
+import { NO_CHANGE_SUMMARY, BATCH_FAILURE_SUMMARY, REVERT_SUMMARY } from "@/lib/ppt-refine/types";
 import type { ExtractedDeck, ExtractedSlide, RefinedDeck, RefinedSlide, RefinementOptions, SlideType, SlideVisual } from "@/lib/ppt-refine/types";
 import { cn } from "@/lib/utils";
 import {
@@ -31,12 +32,12 @@ type ResultsFilter = "all" | "enhanced" | "new" | "unchanged";
 
 // change_summary values that mean the slide was NOT actually enhanced — either it
 // was already fine, its batch failed, or its refinement was reverted because it
-// didn't fit (kept in sync with REVERT_SUMMARY / fallback messages in
-// src/lib/ppt-refine/{assembler,refiner}.ts). Such slides count as "unchanged".
+// didn't fit. Imported from lib/ppt-refine/types so there is one source of truth
+// per string. Such slides count as "unchanged".
 const NO_CHANGE_SUMMARIES = new Set<string>([
-  "No changes needed.",
-  "Refinement failed — original content preserved.",
-  "Refined content did not fit the slide — original kept.",
+  NO_CHANGE_SUMMARY,
+  BATCH_FAILURE_SUMMARY,
+  REVERT_SUMMARY,
 ]);
 
 const isUnchangedSlide = (s: { change_summary: string; is_new: boolean }) =>
@@ -877,7 +878,7 @@ function PptRefinementTab() {
                       <span className="text-xs font-medium truncate flex-1"><RichQuestionText text={s.refined_title} /></span>
                       {s.is_new && <span className="text-[9px] text-emerald-400 shrink-0">✦</span>}
                     </div>
-                    {s.change_summary && s.change_summary !== "No changes needed." && (
+                    {s.change_summary && s.change_summary !== NO_CHANGE_SUMMARY && (
                       <p className="text-[10px] text-muted-foreground mt-0.5 pl-7 line-clamp-1">{s.change_summary}</p>
                     )}
                   </button>
@@ -951,7 +952,7 @@ function PptRefinementTab() {
                     )}
 
                     {/* Change summary */}
-                    {selectedSlide.change_summary && selectedSlide.change_summary !== "No changes needed." && (
+                    {selectedSlide.change_summary && selectedSlide.change_summary !== NO_CHANGE_SUMMARY && (
                       <div className="rounded-lg bg-amber-500/10 border border-amber-500/30 p-3">
                         <p className="text-xs font-medium text-amber-400 mb-0.5">What changed</p>
                         <p className="text-xs text-foreground/80">{selectedSlide.change_summary}</p>

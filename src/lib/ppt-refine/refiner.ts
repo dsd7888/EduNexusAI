@@ -1,6 +1,7 @@
 import { routeAI } from '@/lib/ai/router';
 import { generateImagenImage, buildImagenPrompt } from '@/lib/ai/imagen';
 import { hasLatex, findUnsupportedNotation } from '@/lib/text/latexSegments';
+import { NO_CHANGE_SUMMARY, BATCH_FAILURE_SUMMARY } from './types';
 import type {
   ExtractedDeck,
   ExtractedSlide,
@@ -565,7 +566,7 @@ function fallbackBatchResponse(batch: ExtractedSlide[]): BatchResponse {
       visual: null,
       is_new: false,
       inserted_after_index: null,
-      change_summary: 'Refinement failed — original content preserved.',
+      change_summary: BATCH_FAILURE_SUMMARY,
     })),
     needs_summary: false,
     batch_changes: ['[Batch failed — original content preserved for these slides]'],
@@ -762,7 +763,7 @@ function makeBaseSlide(s: ExtractedSlide): RefinedSlide {
     refined_body: s.body_text,
     visual: undefined,
     is_new: false,
-    change_summary: 'No changes needed.',
+    change_summary: NO_CHANGE_SUMMARY,
   };
 }
 

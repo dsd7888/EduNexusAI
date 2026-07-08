@@ -1,3 +1,12 @@
+// change_summary values that mean "nothing was actually enhanced" but for a
+// specific, distinct reason (a genuine AI no-op, a failed batch, or a fit
+// revert). Kept in this pure-types module (no server-only deps) so both the
+// server-side refiner/assembler and the client results page can share one
+// source of truth for the literal strings instead of duplicating them.
+export const NO_CHANGE_SUMMARY = 'No changes needed.';
+export const BATCH_FAILURE_SUMMARY = 'Refinement failed — original content preserved.';
+export const REVERT_SUMMARY = 'Refined content did not fit the slide — original kept.';
+
 export type SlideType =
   | 'title'
   | 'overview'

@@ -1,5 +1,6 @@
 import AdmZip from 'adm-zip';
 import { parseSlideSize, type SlideCanvas } from './slide-size';
+import { NO_CHANGE_SUMMARY, BATCH_FAILURE_SUMMARY, REVERT_SUMMARY } from './types';
 import type { RefinedDeck, RefinedSlide } from './types';
 
 /**
@@ -313,15 +314,6 @@ const DEFAULT_BODY_FONT_PT = 18;
 /** Body font (pt) of an appended new/continuation slide — matches the sz="1600"
  *  runs emitted by buildNewSlideBody. Used to fit-check continuation overflow. */
 const DEFAULT_NEW_BODY_PT = 16;
-
-/**
- * change_summary stamped on a slide whose refinement was reverted to the original
- * because the refined text could not be made to fit (and no continuation slide was
- * produced). The results view treats this as "unchanged, not enhanced" — keep it in
- * sync with the recognised no-change summaries in the refine page
- * (src/app/(faculty)/faculty/refine/page.tsx).
- */
-export const REVERT_SUMMARY = 'Refined content did not fit the slide — original kept.';
 
 type FitResult =
   | { kind: 'fits' } // fits at 100%, OR geometry/size unknown → leave as-is
@@ -1077,12 +1069,17 @@ export async function assemblePptx(
       if (next !== xml) {
         zip.updateFile(file.name, Buffer.from(next, 'utf-8'));
         patched++;
-      } else if (s.change_summary !== 'No changes needed.') {
+      } else if (
+        s.change_summary !== NO_CHANGE_SUMMARY &&
+        s.change_summary !== BATCH_FAILURE_SUMMARY
+      ) {
         // The slide is byte-identical to the original: either the AI made no real
         // change, or a refinement was reverted because it didn't fit. Reflect
         // that in the deck object (returned to the results view) so it is counted
-        // as unchanged, not enhanced.
-        s.change_summary = reverted ? REVERT_SUMMARY : 'No changes needed.';
+        // as unchanged, not enhanced. If change_summary is already one of the
+        // recognized fallback reasons (e.g. the batch-failure message), it's
+        // already an accurate, specific explanation — don't overwrite it.
+        s.change_summary = reverted ? REVERT_SUMMARY : NO_CHANGE_SUMMARY;
         s.refined_title = s.title;
         s.refined_body = s.body_text;
       }
