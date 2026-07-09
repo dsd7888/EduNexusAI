@@ -284,11 +284,14 @@ function ensureNormAutofit(spXml: string, fontScale?: number): string {
   return spXml.slice(0, bpRange[0]) + bpXml + spXml.slice(bpRange[1]);
 }
 
-/** Read a shape's own <a:xfrm> offset/extent (EMU). NaN where unspecified. */
+/** Read a shape's own <a:xfrm> (shapes/pics) or <p:xfrm> (graphicFrames — tables,
+ *  charts, SmartArt) offset/extent (EMU). NaN where unspecified, null if the
+ *  shape carries neither element at all (e.g. an empty <p:spPr/> inheriting its
+ *  geometry from the slide layout/master). */
 function getShapeXfrm(
   spXml: string
 ): { x: number; y: number; cx: number; cy: number } | null {
-  const xf = getInnerRange(spXml, 'a:xfrm');
+  const xf = getInnerRange(spXml, 'a:xfrm') ?? getInnerRange(spXml, 'p:xfrm');
   if (!xf) return null;
   const xfXml = spXml.slice(xf.outerStart, xf.outerEnd);
   const offTag = /<a:off\b[^>]*\/>/.exec(xfXml)?.[0] ?? '';
@@ -300,7 +303,10 @@ function getShapeXfrm(
   return { x, y, cx, cy };
 }
 
-/** Set the cy (height) on a shape's own <a:xfrm> <a:ext>. */
+/** Set the cy (height) on a shape's own <a:xfrm> <a:ext>. No-op if the shape
+ *  has no <a:xfrm> at all — callers that may be working with a layout/master-
+ *  inherited box (empty <p:spPr/>) should use setShapeXfrm instead, which can
+ *  materialize one. */
 function setShapeCy(spXml: string, cy: number): string {
   const xf = getInnerRange(spXml, 'a:xfrm');
   if (!xf) return spXml;
@@ -309,6 +315,31 @@ function setShapeCy(spXml: string, cy: number): string {
     .slice(xf.innerStart, xf.innerEnd)
     .replace(/(<a:ext\b[^>]*\bcy=")\d+(")/, `$1${cy}$2`);
   return before + inner + spXml.slice(xf.innerEnd);
+}
+
+/**
+ * Write `box` as the shape's own <a:xfrm>, injecting one into <p:spPr> if the
+ * shape has none yet. Needed because a computed Bug-4 shrink (or any other
+ * geometry fix) has to be materialized into the file for PowerPoint to
+ * actually render a smaller box — a layout/master-inherited placeholder
+ * (empty <p:spPr/>) has nothing for setShapeCy to rewrite, so without this the
+ * shrink would be silently dropped even though the fit estimate assumed it.
+ */
+function setShapeXfrm(spXml: string, box: Geometry): string {
+  if (getInnerRange(spXml, 'a:xfrm')) return setShapeCy(spXml, box.cy);
+
+  const xfrmXml = `<a:xfrm><a:off x="${box.x}" y="${box.y}"/><a:ext cx="${box.cx}" cy="${box.cy}"/></a:xfrm>`;
+  const selfClosed = /<p:spPr\s*\/>/.exec(spXml);
+  if (selfClosed) {
+    return (
+      spXml.slice(0, selfClosed.index) +
+      `<p:spPr>${xfrmXml}</p:spPr>` +
+      spXml.slice(selfClosed.index + selfClosed[0].length)
+    );
+  }
+  const spPr = getInnerRange(spXml, 'p:spPr');
+  if (!spPr) return spXml; // no <p:spPr> at all — leave untouched, safe no-op
+  return spXml.slice(0, spPr.innerStart) + xfrmXml + spXml.slice(spPr.innerStart);
 }
 
 // ─── Text-fit estimation ────────────────────────────────────────────────────
@@ -397,23 +428,185 @@ function fitScaleForBox(paras: string[], cxEmu: number, cyEmu: number, fontPt: n
 }
 
 /**
- * Assess whether `paras` fit `cyEmu` of vertical space in the shape's box, and if
- * not, the largest fontScale that would. `cyEmu` is passed in (not read from the
- * shape) because the caller may have already shrunk the box for an overlapping
- * image (Bug 4) — we must estimate against the box the text will actually get.
+ * Assess whether `paras` fit a `cxEmu` × `cyEmu` box, and if not, the largest
+ * fontScale that would. Both dimensions are passed in (not read from the shape)
+ * because the caller may have already resolved a layout/master-inherited box
+ * (empty <p:spPr/>) or shrunk the box for an overlapping image (Bug 4) — we must
+ * estimate against the box the text will actually get.
  */
 function assessTextFit(
   spXml: string,
   paras: string[],
+  cxEmu: number,
   cyEmu: number,
   defaultFontPt: number
 ): FitResult {
-  const xf = getShapeXfrm(spXml);
-  const cx = xf?.cx ?? NaN;
   let fontPt = firstFontSizePt(spXml);
   if (!Number.isFinite(fontPt) || fontPt <= 0) fontPt = defaultFontPt;
-  return fitScaleForBox(paras, cx, cyEmu, fontPt);
+  return fitScaleForBox(paras, cxEmu, cyEmu, fontPt);
 }
+
+// ─── Placeholder-geometry inheritance (layout → master) ────────────────────
+// A title/body <p:sp> with an empty <p:spPr/> (no <a:xfrm>) has NO position or
+// size of its own — PowerPoint resolves it from the matching placeholder
+// (matched by <p:ph type/idx>) in the slide's layout, and if the layout ALSO
+// declares no xfrm for it, from the layout's master. Every fit/overlap check
+// above this point only ever looked at a shape's own <a:xfrm>, so a title or
+// body inheriting its box this way was invisible to all of them. The helpers
+// below resolve that real box so the existing checks can run against it.
+
+/** Same title/body placeholder classification patchSlideXml uses to pick the
+ *  title/body shape on the slide — reused here so a layout/master shape is
+ *  matched by the identical rule, not a second ad-hoc heuristic. */
+function isTitlePh(ph: Placeholder | null): boolean {
+  return !!ph && (ph.type === 'title' || ph.type === 'ctrTitle' || ph.idx === '0');
+}
+function isBodyPh(ph: Placeholder | null): boolean {
+  return !!ph && (ph.idx === '1' || ph.type === 'body' || ph.type === 'subTitle');
+}
+
+/** First top-level <p:sp> in a slide/layout/master's <p:spTree> whose <p:ph>
+ *  satisfies `match`, or null. Returns the shape's own XML (for getShapeXfrm). */
+function findPlaceholderShape(
+  containerXml: string,
+  match: (ph: Placeholder | null) => boolean
+): string | null {
+  const spTree = getInnerRange(containerXml, 'p:spTree');
+  if (!spTree) return null;
+  const children = topChildren(containerXml, spTree.innerStart, spTree.innerEnd).filter(
+    (c) => c.name === 'p:sp'
+  );
+  for (const c of children) {
+    const spXml = containerXml.slice(c.start, c.end);
+    if (match(getPlaceholder(spXml))) return spXml;
+  }
+  return null;
+}
+
+/** Fill any NaN field of `primary` from `fallback`; null only if both are null. */
+function mergeXfrm(primary: Geometry | null, fallback: Geometry | null): Geometry | null {
+  if (!primary && !fallback) return null;
+  const pick = (a?: number, b?: number) =>
+    a !== undefined && Number.isFinite(a) ? a : b !== undefined && Number.isFinite(b) ? b : NaN;
+  return {
+    x: pick(primary?.x, fallback?.x),
+    y: pick(primary?.y, fallback?.y),
+    cx: pick(primary?.cx, fallback?.cx),
+    cy: pick(primary?.cy, fallback?.cy),
+  };
+}
+
+function xfrmComplete(xf: Geometry | null): xf is Geometry {
+  return !!xf && [xf.x, xf.y, xf.cx, xf.cy].every(Number.isFinite);
+}
+
+/**
+ * Build a per-deck resolver: given a slide's file number, returns a function
+ * that looks up the layout- (then master-) declared xfrm for the slide's title
+ * or body placeholder. Layout/master XML is parsed at most once per distinct
+ * layout part and cached, since many slides in a deck typically share one.
+ * Resolution is per-slide (via each slide's own .rels → slideLayout), not
+ * assumed uniform across the deck, so a deck mixing multiple layouts still
+ * resolves each slide against the layout it actually references.
+ */
+function buildGeometryResolver(zip: AdmZip) {
+  const partCache = new Map<string, string | null>();
+  const readPart = (name: string): string | null => {
+    if (partCache.has(name)) return partCache.get(name)!;
+    const xml = zip.getEntry(name) ? zip.readAsText(name) : null;
+    partCache.set(name, xml);
+    return xml;
+  };
+
+  const masterPartForLayout = (layoutPart: string): string | null => {
+    const base = layoutPart.split('/').pop()!.replace(/\.xml$/, '');
+    const relsXml = readPart(`ppt/slideLayouts/_rels/${base}.xml.rels`);
+    if (!relsXml) return null;
+    for (const el of relsXml.match(/<Relationship\b[^>]*\/>/g) ?? []) {
+      if (/slideMaster/.test(el)) {
+        const target = /Target="([^"]+)"/.exec(el)?.[1];
+        if (target) return `ppt/slideMasters/${target.split('/').pop()}`;
+      }
+    }
+    return null;
+  };
+
+  const byLayoutPart = new Map<string, { title: Geometry | null; body: Geometry | null }>();
+
+  const resolveForLayoutPart = (layoutPart: string): { title: Geometry | null; body: Geometry | null } => {
+    const cached = byLayoutPart.get(layoutPart);
+    if (cached) return cached;
+
+    const layoutXml = readPart(layoutPart);
+    const masterPart = layoutXml ? masterPartForLayout(layoutPart) : null;
+    const masterXml = masterPart ? readPart(masterPart) : null;
+
+    const resolveRole = (match: (ph: Placeholder | null) => boolean): Geometry | null => {
+      const layoutShape = layoutXml ? findPlaceholderShape(layoutXml, match) : null;
+      const layoutXfrm = layoutShape ? getShapeXfrm(layoutShape) : null;
+      if (xfrmComplete(layoutXfrm)) return layoutXfrm;
+
+      // Layout has no (complete) xfrm for this placeholder — escalate to the
+      // master, matched by the same type/idx rule, and merge (layout wins per
+      // field where present — a real OOXML partial-override case).
+      const masterShape = masterXml ? findPlaceholderShape(masterXml, match) : null;
+      const masterXfrm = masterShape ? getShapeXfrm(masterShape) : null;
+      return mergeXfrm(layoutXfrm, masterXfrm);
+    };
+
+    const result = { title: resolveRole(isTitlePh), body: resolveRole(isBodyPh) };
+    byLayoutPart.set(layoutPart, result);
+    return result;
+  };
+
+  return function resolverForSlideFile(slideFileNum: number, defaultLayoutTarget: string) {
+    const layoutTarget = layoutForSlide(zip, slideFileNum, defaultLayoutTarget);
+    const layoutPart = `ppt/slideLayouts/${layoutTarget.split('/').pop()}`;
+    const resolved = resolveForLayoutPart(layoutPart);
+    return function resolve(role: 'title' | 'body'): Geometry | null {
+      return role === 'title' ? resolved.title : resolved.body;
+    };
+  };
+}
+
+interface ResolvedGeometry {
+  xfrm: Geometry | null;
+  /** True when the shape's OWN <a:xfrm>/<p:xfrm> was missing or incomplete and
+   *  at least one field had to come from the layout/master fallback. */
+  inherited: boolean;
+}
+
+/**
+ * Resolve a shape's effective box: its own xfrm where present, filled in from
+ * the layout/master resolver for any missing field (empty <p:spPr/>, or a
+ * partial <a:xfrm> that only overrides some attributes). A shape with a fully
+ * explicit own xfrm never touches the resolver — behavior for ordinary
+ * explicit-position slides is unchanged.
+ */
+function resolveShapeGeometry(
+  spXml: string,
+  role: 'title' | 'body',
+  resolveInherited?: (role: 'title' | 'body') => Geometry | null
+): ResolvedGeometry {
+  const own = getShapeXfrm(spXml);
+  if (xfrmComplete(own)) return { xfrm: own, inherited: false };
+
+  const fallback = resolveInherited ? resolveInherited(role) : null;
+  const merged = mergeXfrm(own, fallback);
+  return { xfrm: merged, inherited: merged !== null };
+}
+
+/** True if two EMU boxes' axis-aligned bounding rectangles overlap (shared
+ *  edges alone don't count). Both boxes must already be in the same slide's
+ *  EMU coordinate space (true for every shape on one slide). */
+function rectsOverlap(a: Geometry, b: Geometry): boolean {
+  return a.x < b.x + b.cx && b.x < a.x + a.cx && a.y < b.y + b.cy && b.y < a.y + a.cy;
+}
+
+/** A refined title isn't allowed to grow past this multiple of the original
+ *  title's length when it collides with a fixed-position picture/table —
+ *  chosen loose enough that normal rewording doesn't trip it. */
+const TITLE_GROWTH_CAP_RATIO = 1.15;
 
 /**
  * Patch a title shape's text. Replaces existing run text when present; injects a
@@ -559,6 +752,12 @@ export function patchSlideXml(
      *  fits), patchSlideXml reserves the bottom of the body box and returns the
      *  placement geometry as `visualBox`. */
     visual?: { widthPx: number; heightPx: number };
+    /** Resolves the layout/master-declared xfrm for the slide's title or body
+     *  placeholder, for shapes whose own <p:spPr> doesn't fully specify one.
+     *  Built once per slide file by assemblePptx (needs zip access this pure
+     *  function doesn't have). Absent → inherited geometry is simply unknown,
+     *  same as pre-existing behavior. */
+    resolveInheritedXfrm?: (role: 'title' | 'body') => Geometry | null;
   } = {}
 ): PatchResult {
   let continuation: ContinuationSpec | undefined;
@@ -586,15 +785,10 @@ export function patchSlideXml(
 
     if (shapes.length === 0) return { xml: originalXml };
 
-    const isTitle = (ph: Placeholder | null) =>
-      !!ph && (ph.type === 'title' || ph.type === 'ctrTitle' || ph.idx === '0');
-    const isBody = (ph: Placeholder | null) =>
-      !!ph && (ph.idx === '1' || ph.type === 'body' || ph.type === 'subTitle');
-
-    const titleShape = shapes.find((s) => isTitle(s.ph)) ?? null;
+    const titleShape = shapes.find((s) => isTitlePh(s.ph)) ?? null;
     const bodyCandidates = shapes.filter((s) => s !== titleShape);
     const bodyShape =
-      bodyCandidates.find((s) => isBody(s.ph)) ??
+      bodyCandidates.find((s) => isBodyPh(s.ph)) ??
       bodyCandidates.slice().sort((a, b) => b.paraCount - a.paraCount)[0] ??
       null;
 
@@ -608,51 +802,97 @@ export function patchSlideXml(
 
     const newTitle = cleanText(slide.refined_title ?? '');
     if (titleShape && newTitle) {
-      // Bug 6: estimate whether the refined title fits the title box. If it
-      // overflows we shrink via a computed normAutofit fontScale; if it can't
-      // reasonably fit even shrunk, we keep the original title rather than bleed.
-      const titleXf = getShapeXfrm(titleShape.spXml);
-      const fit = assessTextFit(
+      // Bug 6 / layout-inheritance extension: resolve the title's effective box
+      // — its own <a:xfrm> where present, filled from the layout/master when the
+      // placeholder's <p:spPr/> is empty — so the fit estimate below runs against
+      // the box PowerPoint will actually render, not just an explicit one.
+      const { xfrm: titleXf, inherited: titleGeomInherited } = resolveShapeGeometry(
         titleShape.spXml,
-        [newTitle],
-        titleXf?.cy ?? NaN,
-        DEFAULT_TITLE_FONT_PT
+        'title',
+        opts.resolveInheritedXfrm
       );
-      if (fit.kind === 'overflow') {
+
+      // Layout-inherited-geometry extension: a title that grew meaningfully
+      // longer than the original AND whose real (resolved) box overlaps a
+      // fixed-position picture/table would silently collide with it — no
+      // height-only fit check catches that, since the box itself may have
+      // plenty of vertical room. Scoped to the inherited case: an explicit-
+      // position title's overlap with another shape is an authoring choice
+      // already in the original deck and is left untouched, exactly as before.
+      let collidesWithFixedShape = false;
+      if (titleGeomInherited && xfrmComplete(titleXf)) {
+        const obstructions = topChildren(originalXml, spTree.innerStart, spTree.innerEnd).filter(
+          (c) => c.name === 'p:pic' || c.name === 'p:graphicFrame'
+        );
+        for (const ob of obstructions) {
+          const obXf = getShapeXfrm(originalXml.slice(ob.start, ob.end));
+          if (xfrmComplete(obXf) && rectsOverlap(titleXf, obXf)) {
+            collidesWithFixedShape = true;
+            break;
+          }
+        }
+      }
+      const originalTitleLen = cleanText(slide.title ?? '').length;
+      const titleGrewMeaningfully =
+        originalTitleLen > 0 && newTitle.length > originalTitleLen * TITLE_GROWTH_CAP_RATIO;
+
+      if (collidesWithFixedShape && titleGrewMeaningfully) {
         titleReverted = true;
         console.warn(
-          `[ppt-refine/assembler] slide ${slide.index}: refined title too long for its box ` +
-            `even at ${Math.round(MIN_AUTOFIT_SCALE * 100)}% font — keeping original title`
+          `[ppt-refine/assembler] slide ${slide.index}: refined title grew past its ` +
+            `layout-inherited box into a fixed-position picture/table — keeping original title`
         );
       } else {
-        // Bug 2: inject text even into originally-empty title placeholders.
-        // Bug 1/6: ensure the title box auto-shrinks long titles to fit.
-        let titleXml = patchTitleShape(titleShape.spXml, newTitle);
-        titleXml = ensureNormAutofit(titleXml, fit.kind === 'shrink' ? fit.scale : undefined);
-        edits.push({ start: titleShape.sp.start, end: titleShape.sp.end, text: titleXml });
+        // Bug 6: estimate whether the refined title fits the title box. If it
+        // overflows we shrink via a computed normAutofit fontScale; if it can't
+        // reasonably fit even shrunk, we keep the original title rather than bleed.
+        const fit = assessTextFit(
+          titleShape.spXml,
+          [newTitle],
+          titleXf?.cx ?? NaN,
+          titleXf?.cy ?? NaN,
+          DEFAULT_TITLE_FONT_PT
+        );
+        if (fit.kind === 'overflow') {
+          titleReverted = true;
+          console.warn(
+            `[ppt-refine/assembler] slide ${slide.index}: refined title too long for its box ` +
+              `even at ${Math.round(MIN_AUTOFIT_SCALE * 100)}% font — keeping original title`
+          );
+        } else {
+          // Bug 2: inject text even into originally-empty title placeholders.
+          // Bug 1/6: ensure the title box auto-shrinks long titles to fit.
+          let titleXml = patchTitleShape(titleShape.spXml, newTitle);
+          titleXml = ensureNormAutofit(titleXml, fit.kind === 'shrink' ? fit.scale : undefined);
+          edits.push({ start: titleShape.sp.start, end: titleShape.sp.end, text: titleXml });
+        }
       }
     }
 
     const newBody = (slide.refined_body ?? []).map((b) => b).filter((b) => typeof b === 'string');
     if (bodyShape && bodyShape !== titleShape && newBody.length > 0) {
-      // Bug 4: if an image sits inside the body text box, shrink the body height
-      // so the text stays above it instead of rendering behind it. Compute the
+      // Layout-inheritance extension: resolve the body's effective box the same
+      // way as the title above — own <a:xfrm> where present, filled from the
+      // layout/master when the placeholder's <p:spPr/> is empty.
+      const { xfrm: bodyXf } = resolveShapeGeometry(bodyShape.spXml, 'body', opts.resolveInheritedXfrm);
+
+      // Bug 4 (now also covering tables/charts via <p:graphicFrame>, and a real
+      // 2D overlap test instead of a vertical-band-only one): if a picture or
+      // table overlaps the body text box, shrink the body height so the text
+      // stays above it instead of rendering behind/through it. Compute the
       // reduced height first — the fit estimate (Bug 6) must run against the box
       // the text will actually occupy, not the original full-height box.
-      const bodyXf = getShapeXfrm(bodyShape.spXml);
       let shrunkCy = Number.NaN; // the Bug-4 reduced height, if any
-      if (bodyXf && Number.isFinite(bodyXf.y) && Number.isFinite(bodyXf.cy)) {
-        const bodyTop = bodyXf.y;
-        const bodyBottom = bodyXf.y + bodyXf.cy;
-        const pics = topChildren(originalXml, spTree.innerStart, spTree.innerEnd).filter(
-          (c) => c.name === 'p:pic'
+      if (xfrmComplete(bodyXf)) {
+        const obstructions = topChildren(originalXml, spTree.innerStart, spTree.innerEnd).filter(
+          (c) => c.name === 'p:pic' || c.name === 'p:graphicFrame'
         );
         let minSafe = Infinity;
-        for (const pic of pics) {
-          const xf = getShapeXfrm(originalXml.slice(pic.start, pic.end));
-          if (!xf || !Number.isFinite(xf.y)) continue;
-          if (xf.y > bodyTop && xf.y < bodyBottom) {
-            const safe = xf.y - bodyTop - 91440; // 0.1" margin
+        for (const ob of obstructions) {
+          const obXf = getShapeXfrm(originalXml.slice(ob.start, ob.end));
+          if (!xfrmComplete(obXf) || !rectsOverlap(bodyXf, obXf)) continue;
+          if (obXf.y > bodyXf.y && obXf.y < bodyXf.y + bodyXf.cy) {
+            const safe = obXf.y - bodyXf.y - 91440; // 0.1" margin
             if (safe > 0 && safe < minSafe) minSafe = safe;
           }
         }
@@ -668,7 +908,7 @@ export function patchSlideXml(
       if (!Number.isFinite(bodyFontPt) || bodyFontPt <= 0) bodyFontPt = DEFAULT_BODY_FONT_PT;
 
       const cleanedBody = newBody.map((b) => cleanText(b)).filter(Boolean);
-      let fit = assessTextFit(bodyShape.spXml, cleanedBody, effectiveCy, DEFAULT_BODY_FONT_PT);
+      let fit = assessTextFit(bodyShape.spXml, cleanedBody, cxBody, effectiveCy, DEFAULT_BODY_FONT_PT);
 
       // ── Visual reservation ──────────────────────────────────────────────
       // If a rasterized visual is available for this slide, reserve the bottom
@@ -729,7 +969,13 @@ export function patchSlideXml(
       // Emit the body edit for a given bullet list at a given fit result.
       const emitBody = (bullets: string[], bodyFit: FitResult) => {
         let bodyXml = patchBodyShape(bodyShape.spXml, bullets);
-        if (Number.isFinite(shrunkCy)) bodyXml = setShapeCy(bodyXml, shrunkCy);
+        // shrunkCy is only ever set inside the xfrmComplete(bodyXf) branch above,
+        // so bodyXf is guaranteed complete here. setShapeXfrm (not setShapeCy)
+        // because a layout/master-inherited body has no own <a:xfrm> to rewrite —
+        // it must be injected with the full resolved box, not just a cy patch.
+        if (Number.isFinite(shrunkCy)) {
+          bodyXml = setShapeXfrm(bodyXml, { ...(bodyXf as Geometry), cy: shrunkCy });
+        }
         // Bug 5/6: ensure the body box auto-shrinks text that overflows its
         // height (applied AFTER the Bug 4 cy adjustment).
         bodyXml = ensureNormAutofit(bodyXml, bodyFit.kind === 'shrink' ? bodyFit.scale : undefined);
@@ -1362,6 +1608,13 @@ export async function assemblePptx(
   // scaling new-slide geometry (same parser + fallback as the extractor).
   const canvas = parseSlideSize(zip.readAsText('ppt/presentation.xml'));
 
+  // Default slideLayout target (used both as the append-pass fallback layout
+  // and as the geometry resolver's fallback when a slide's own .rels is
+  // missing/malformed) plus the per-deck layout/master geometry resolver
+  // factory — built once and reused for every slide below.
+  const defaultLayout = findDefaultLayoutTarget(zip);
+  const geometryResolverFactory = buildGeometryResolver(zip);
+
   // Rasterize every embeddable visual up front (guarded, never throws), keyed by
   // slide reference for lookup in the patch/append passes below.
   const visualRasters = await rasterizeDeckVisuals(deck.slides);
@@ -1416,6 +1669,7 @@ export async function assemblePptx(
           allowNewSlides,
           canvas,
           visual: raster ? { widthPx: raster.widthPx, heightPx: raster.heightPx } : undefined,
+          resolveInheritedXfrm: geometryResolverFactory(file.num, defaultLayout),
         });
       // If patchSlideXml reserved room and returned a placement box, embed the
       // rasterized visual: add the media part + slide-level rel, then inject the
@@ -1483,7 +1737,6 @@ export async function assemblePptx(
     let maxFileNum = sortedSlideFiles.reduce((mx, f) => Math.max(mx, f.num), 0);
     let nextRel = maxRelId(relsXml);
     let nextSldId = maxSldId(presXml);
-    const defaultLayout = findDefaultLayoutTarget(zip);
 
     const relAdds: string[] = [];
     const ctAdds: string[] = [];
