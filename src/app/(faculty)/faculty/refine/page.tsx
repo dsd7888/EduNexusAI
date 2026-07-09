@@ -22,7 +22,7 @@ import type { ExtractedDeck, ExtractedSlide, RefinedDeck, RefinedSlide, Refineme
 import { cn } from "@/lib/utils";
 import {
   ArrowLeft, ArrowRight, CheckCircle, ChevronLeft, Copy,
-  Download, FileUp, Loader2, MessageSquare, Presentation, RotateCcw, Sparkles,
+  Download, FileUp, Info, Loader2, MessageSquare, Presentation, RotateCcw, Sparkles,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
@@ -1065,6 +1065,10 @@ function PptRefinementTab() {
                 </div>
                 <p className={cn("text-[11px]", noneSelected ? "text-amber-400" : "text-muted-foreground")}>
                   {selectedCount} of {totalSlides} slide{totalSlides !== 1 ? "s" : ""} selected
+                </p>
+                <p className="flex items-start gap-1.5 text-[11px] text-muted-foreground/80 pt-1">
+                  <Info className="size-3 mt-0.5 shrink-0" />
+                  Select one slide to chat and edit it directly. Select multiple (or all) to apply bulk options across them.
                 </p>
               </CardHeader>
               <CardContent className="p-0">
