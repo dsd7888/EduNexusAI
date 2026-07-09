@@ -9,6 +9,7 @@ import {
   PARTIAL_REVERT_BODY_SUMMARY,
   NOT_SELECTED_SUMMARY,
   UNMAPPED_REFINEMENT_SUMMARY,
+  VISUAL_DROPPED_SUFFIX,
 } from './types';
 import type { RefinedDeck, RefinedSlide } from './types';
 
@@ -1732,6 +1733,15 @@ export async function assemblePptx(
         s.refined_title = s.title;
         s.refined_body = s.body_text;
       }
+      // The AI proposed a visual for this slide (s.visual set) but it never made
+      // it into the exported file — either rasterization/decode failed (no entry
+      // in visualRasters) or patchSlideXml dropped it because the refined text
+      // wouldn't fit alongside it (visualBox undefined despite a raster existing).
+      // change_summary was written by the AI assuming the visual would land, so
+      // amend it rather than leave a claim the export doesn't back up.
+      if (s.visual && !(visualBox && raster)) {
+        s.change_summary = `${s.change_summary}${VISUAL_DROPPED_SUFFIX}`;
+      }
       if (continuation && continuation.bullets.length > 0) {
         const cont = makeContinuationSlide(s, continuation.bullets);
         contScale.set(cont, continuation.bodyFontScale);
@@ -1798,6 +1808,11 @@ export async function assemblePptx(
       if (raster) {
         imageMediaNum = registerMedia(raster);
         embeddedVisuals++;
+      } else if (s.visual) {
+        // The AI proposed a visual for this new slide but it failed to
+        // rasterize/decode (visual-raster.ts) — the slide will ship without it,
+        // so amend the AI's change_summary rather than leave a stale claim.
+        s.change_summary = `${s.change_summary}${VISUAL_DROPPED_SUFFIX}`;
       }
       const xmlBody = buildNewSlideXml(s, canvas, {
         ...(isContinuation ? { bodyFontScale: contScale.get(s), isContinuation: true } : {}),

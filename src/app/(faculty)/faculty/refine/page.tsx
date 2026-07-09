@@ -250,11 +250,24 @@ function SlideVisualPreview({ visual }: { visual: SlideVisual }) {
       </div>
     );
   }
-  if (visual.type === "imagen" && visual.content.length >= 5120) {
+  if (visual.type === "imagen") {
+    if (visual.content.length >= 5120) {
+      return (
+        <div className="rounded border border-border overflow-hidden">
+          <img src={`data:image/png;base64,${visual.content}`} alt={visual.caption || "Generated illustration"} className="max-w-full h-auto" />
+          {visual.caption && <p className="text-xs text-muted-foreground p-2 text-center">{visual.caption}</p>}
+        </div>
+      );
+    }
+    // Imagen failed/returned a stub (<5KB) — the refiner leaves `content` as the
+    // raw text prompt it never got to rasterize (see runImagenPass in refiner.ts).
+    // It will NOT be embedded in the exported .pptx (visual-raster.ts's own 5KB
+    // guard drops it), so show an explicit failure state instead of rendering
+    // that prompt text as if it were the visual.
     return (
-      <div className="rounded border border-border overflow-hidden">
-        <img src={`data:image/png;base64,${visual.content}`} alt={visual.caption || "Generated illustration"} className="max-w-full h-auto" />
-        {visual.caption && <p className="text-xs text-muted-foreground p-2 text-center">{visual.caption}</p>}
+      <div className="rounded border border-dashed border-destructive/50 bg-destructive/5 p-3">
+        <p className="text-xs text-destructive">Visual could not be generated — this slide will export without it.</p>
+        {visual.caption && <p className="text-xs text-muted-foreground mt-1 italic">{visual.caption}</p>}
       </div>
     );
   }

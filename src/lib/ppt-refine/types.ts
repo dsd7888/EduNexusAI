@@ -53,6 +53,14 @@ export const PARTIAL_REVERT_BODY_SUMMARY =
 export const UNMAPPED_REFINEMENT_SUMMARY =
   "Refined content could not be applied to this slide's structure — original kept.";
 
+// Appended (not a replacement) to whatever change_summary a slide already carries
+// when the AI proposed a visual (SlideVisual on RefinedSlide) but it did not end
+// up in the exported .pptx — either it failed to rasterize/decode (visual-raster.ts)
+// or it was dropped because the refined text wouldn't fit alongside it (assembler.ts's
+// visual-reservation logic). Without this, change_summary keeps describing a visual
+// ("Added a flowchart diagram") that the downloaded file doesn't actually contain.
+export const VISUAL_DROPPED_SUFFIX = ' (visual could not be added — see logs)';
+
 export type SlideType =
   | 'title'
   | 'overview'
