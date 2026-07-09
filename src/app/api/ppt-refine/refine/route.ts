@@ -104,12 +104,21 @@ export async function POST(request: NextRequest) {
     };
 
     // ─── Load the ORIGINAL .pptx so we can patch it in place ─────────────────
-    const originalPptxPath = bodyOriginalPath ?? storedOriginalPath ?? null;
+    // storedOriginalPath (from the JSON fetched via storage_path) is server-authored
+    // at extraction time, but when the deck arrives inline via extracted_deck the
+    // whole object — including original_pptx_path — is client-supplied, same as
+    // the top-level original_pptx_path field. Either can be forged to point at
+    // another user's storage prefix, so always verify ownership before downloading.
+    const originalPptxPath = storedOriginalPath ?? bodyOriginalPath ?? null;
     if (!originalPptxPath) {
       return apiError(
         'original_pptx_path is required — re-upload the presentation to enable in-place refinement',
         400
       );
+    }
+    const ownPrefix = `ppt-refine/${user.id}/`;
+    if (!originalPptxPath.startsWith(ownPrefix)) {
+      return apiError('You do not have access to this presentation', 403);
     }
 
     let originalBuffer: Buffer;
