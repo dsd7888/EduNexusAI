@@ -91,7 +91,25 @@ const TYPE_STYLES: Record<SlideType, string> = {
   example:  "bg-amber-500/20 text-amber-300 border-amber-500/30",
   practice: "bg-emerald-500/20 text-emerald-300 border-emerald-500/30",
   summary:  "bg-cyan-500/20 text-cyan-300 border-cyan-500/30",
-  unknown:  "bg-slate-500/20 text-slate-300 border-slate-500/30",
+  // "unknown" is a fallback bucket, not an error state — styled with the same
+  // saturation/weight as the other type badges (not a washed-out gray) so it
+  // doesn't read as "something's broken" when it's just untyped content.
+  unknown:  "bg-fuchsia-500/20 text-fuchsia-300 border-fuchsia-500/30",
+};
+
+// Display label shown on the badge, distinct from the underlying SlideType key
+// (which other code — CHAT_SUGGESTIONS_BY_TYPE, suggestionsForType, etc. —
+// still matches on 'unknown'). "Content" is a neutral description, not an
+// error state.
+const TYPE_LABELS: Record<SlideType, string> = {
+  title:    "title",
+  overview: "overview",
+  concept:  "concept",
+  diagram:  "diagram",
+  example:  "example",
+  practice: "practice",
+  summary:  "summary",
+  unknown:  "content",
 };
 
 const PROCESS_STAGES = [
@@ -190,7 +208,7 @@ const DEFAULT_OPTIONS: RefinementOptions = {
 function SlideTypeBadge({ type }: { type: SlideType }) {
   return (
     <span className={cn("inline-flex items-center rounded border px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide", TYPE_STYLES[type])}>
-      {type}
+      {TYPE_LABELS[type]}
     </span>
   );
 }

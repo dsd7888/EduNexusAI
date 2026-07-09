@@ -116,7 +116,19 @@ function inferSlideType(
   if (index === 0) return 'title';
   const t = title.toLowerCase();
   if (/overview|agenda|outline|contents/.test(t)) return 'overview';
-  if (/introduction|concept|fundamentals|theory|definition/.test(t))
+  // Beyond explicit "concept"/"theory" words, cover the common ways real decks
+  // title a definitional/explanatory slide without using those words — "Types
+  // of X", "X format", "X syntax", "Components of X", "Classification of X",
+  // "Characteristics/Features of X", etc. (e.g. "Assembly language statement
+  // format", "Types of assembly language statements").
+  if (
+    /introduction|concept|fundamentals|theory|definition|basics|principles/.test(
+      t
+    ) ||
+    /\btypes?\s+of\b|\bformat(s|ting)?\b|\bsyntax\b|\bclassification\b|\bcategories\b|\bcharacteristics\b|\bfeatures\s+of\b|\b(components?|elements?)\s+of\b/.test(
+      t
+    )
+  )
     return 'concept';
   if (hasDiagram || /diagram|flow|architecture|structure/.test(t))
     return 'diagram';
