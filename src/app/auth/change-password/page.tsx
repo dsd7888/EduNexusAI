@@ -17,13 +17,27 @@ import { useCallback, useState } from "react";
 
 const MIN_LENGTH = 8;
 
+// form:      entering + confirming the new password
+// finishing: password IS set in Supabase Auth, but clearing the must_change_password
+//            flag failed — retry ONLY that call, never the password (a repeated
+//            identical password could be rejected and strand the user in a loop).
+// done:      flag cleared, gate retired
+type Phase = "form" | "finishing" | "done";
+
 export default function ChangePasswordPage() {
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [done, setDone] = useState(false);
+  const [phase, setPhase] = useState<Phase>("form");
+
+  // Retire the forced-change gate for this user (own row only). Returns true on
+  // success. Standalone so the "finishing" state can retry it without a password.
+  const clearFlag = useCallback(async (): Promise<boolean> => {
+    const res = await fetch("/api/auth/change-password", { method: "POST" });
+    return res.ok;
+  }, []);
 
   const handleSubmit = useCallback(async () => {
     if (password.length < MIN_LENGTH) {
@@ -47,19 +61,26 @@ export default function ChangePasswordPage() {
       return;
     }
 
-    // Retire the forced-change gate for this user (own row only).
-    const res = await fetch("/api/auth/change-password", { method: "POST" });
-    if (!res.ok) {
-      setLoading(false);
-      setError(
-        "Your password was updated, but we couldn't finish setting up your account. Please refresh and try again."
-      );
-      return;
-    }
-
+    // Password is now set in Supabase Auth. From here on we NEVER resubmit it — only
+    // retry the flag-clear, so a failure here can't loop the user back through Auth.
+    const ok = await clearFlag();
     setLoading(false);
-    setDone(true);
-  }, [password, confirm]);
+    setPhase(ok ? "done" : "finishing");
+  }, [password, confirm, clearFlag]);
+
+  const handleFinish = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    const ok = await clearFlag();
+    setLoading(false);
+    if (ok) {
+      setPhase("done");
+    } else {
+      setError(
+        "We still couldn't finish setting up your account. Please try again."
+      );
+    }
+  }, [clearFlag]);
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "Enter") {
@@ -71,7 +92,7 @@ export default function ChangePasswordPage() {
   return (
     <div className="flex min-h-screen w-full items-center justify-center bg-background p-4">
       <Card className="w-full max-w-md shadow-md">
-        {done ? (
+        {phase === "done" ? (
           <>
             <CardHeader className="space-y-2 text-center">
               <div className="flex justify-center">
@@ -88,6 +109,41 @@ export default function ChangePasswordPage() {
               <Button asChild className="w-full">
                 <Link href="/faculty/syllabus">Continue to Syllabus</Link>
               </Button>
+            </CardContent>
+          </>
+        ) : phase === "finishing" ? (
+          <>
+            <CardHeader className="space-y-2 text-center">
+              <CardTitle className="text-2xl font-bold">
+                Almost there
+              </CardTitle>
+              <CardDescription>
+                Your new password is set. We just need to finish setting up your
+                account.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <Button
+                type="button"
+                onClick={handleFinish}
+                disabled={loading}
+                className="w-full"
+              >
+                {loading ? (
+                  <>
+                    <Loader2 className="size-4 animate-spin" />
+                    Finishing...
+                  </>
+                ) : (
+                  "Finish setup"
+                )}
+              </Button>
+
+              {error && (
+                <Alert variant="destructive">
+                  <AlertDescription>{error}</AlertDescription>
+                </Alert>
+              )}
             </CardContent>
           </>
         ) : (
