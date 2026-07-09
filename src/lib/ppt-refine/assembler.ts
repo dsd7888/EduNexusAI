@@ -8,6 +8,7 @@ import {
   PARTIAL_REVERT_TITLE_SUMMARY,
   PARTIAL_REVERT_BODY_SUMMARY,
   NOT_SELECTED_SUMMARY,
+  UNMAPPED_REFINEMENT_SUMMARY,
 } from './types';
 import type { RefinedDeck, RefinedSlide } from './types';
 
@@ -61,6 +62,19 @@ function stripMd(t: string): string {
 
 function cleanText(t: string): string {
   return stripMd(t).replace(/\s+/g, ' ').trim();
+}
+
+/** True when the AI's refined_title/refined_body genuinely differ from the
+ *  slide's original title/body_text — i.e. this was NOT a genuine AI no-op
+ *  (which sets refined_title=title, refined_body=body_text verbatim, per the
+ *  refiner's own prompt contract). Used to tell apart "AI decided nothing
+ *  needed to change" from "AI proposed a real change but patchSlideXml
+ *  couldn't map it onto the slide's structure" when both land as zero edits. */
+function refinementProposedChange(slide: RefinedSlide): boolean {
+  const titleChanged = cleanText(slide.refined_title ?? '') !== cleanText(slide.title ?? '');
+  const origBody = (slide.body_text ?? []).map((b) => cleanText(b)).join('\n');
+  const newBody = (slide.refined_body ?? []).map((b) => cleanText(b)).join('\n');
+  return titleChanged || newBody !== origBody;
 }
 
 function xmlEscape(s: string): string {
@@ -1701,12 +1715,20 @@ export async function assemblePptx(
         s.change_summary !== BATCH_FAILURE_SUMMARY
       ) {
         // The slide is byte-identical to the original: either the AI made no real
-        // change, or a refinement was reverted because it didn't fit. Reflect
-        // that in the deck object (returned to the results view) so it is counted
-        // as unchanged, not enhanced. If change_summary is already one of the
-        // recognized fallback reasons (e.g. the batch-failure message), it's
-        // already an accurate, specific explanation — don't overwrite it.
-        s.change_summary = reverted ? REVERT_SUMMARY : NO_CHANGE_SUMMARY;
+        // change, a refinement was reverted because it didn't fit, or the AI DID
+        // propose a real change but no title/body placeholder shape existed for
+        // patchSlideXml to write it into (a structural limitation, not a fit
+        // revert and not the AI's own no-op judgment). Reflect that in the deck
+        // object (returned to the results view) so it is counted as unchanged,
+        // not enhanced, but with an accurate, distinct reason. If change_summary
+        // is already one of the recognized fallback reasons (e.g. the
+        // batch-failure message), it's already an accurate, specific explanation
+        // — don't overwrite it.
+        s.change_summary = reverted
+          ? REVERT_SUMMARY
+          : refinementProposedChange(s)
+            ? UNMAPPED_REFINEMENT_SUMMARY
+            : NO_CHANGE_SUMMARY;
         s.refined_title = s.title;
         s.refined_body = s.body_text;
       }

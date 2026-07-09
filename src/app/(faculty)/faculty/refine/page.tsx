@@ -17,7 +17,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { useFacultySubjects } from "@/hooks/useSupabaseData";
 import { RefinementType, REFINEMENT_LABELS } from "@/lib/refine/generator";
 import { SlideChatConsole } from "@/components/refine/SlideChatConsole";
-import { NO_CHANGE_SUMMARY, BATCH_FAILURE_SUMMARY, REVERT_SUMMARY, NOT_SELECTED_SUMMARY, CHAT_EDITED_SUMMARY } from "@/lib/ppt-refine/types";
+import { NO_CHANGE_SUMMARY, BATCH_FAILURE_SUMMARY, REVERT_SUMMARY, NOT_SELECTED_SUMMARY, CHAT_EDITED_SUMMARY, UNMAPPED_REFINEMENT_SUMMARY } from "@/lib/ppt-refine/types";
 import type { ExtractedDeck, ExtractedSlide, RefinedDeck, RefinedSlide, RefinementOptions, SlideType, SlideVisual } from "@/lib/ppt-refine/types";
 import { cn } from "@/lib/utils";
 import {
@@ -44,6 +44,11 @@ const NO_CHANGE_SUMMARIES = new Set<string>([
   // the no-op / revert / batch-failure reasons. It reads distinctly in the
   // per-slide detail panel (see the results view), but counts as "unchanged".
   NOT_SELECTED_SUMMARY,
+  // The AI proposed a real change but no title/body placeholder shape existed
+  // for patchSlideXml to write it into (a structural limitation, not a fit
+  // revert and not the AI's own no-op judgment) — file stays byte-identical,
+  // so it belongs in the same "unchanged" bucket, but reads distinctly below.
+  UNMAPPED_REFINEMENT_SUMMARY,
 ]);
 
 const isUnchangedSlide = (s: { change_summary: string; is_new: boolean }) =>

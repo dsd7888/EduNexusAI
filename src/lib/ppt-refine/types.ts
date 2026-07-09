@@ -36,6 +36,23 @@ export const PARTIAL_REVERT_TITLE_SUMMARY =
 export const PARTIAL_REVERT_BODY_SUMMARY =
   'Refined body did not fit the slide — original body kept; title was updated.';
 
+// change_summary for a slide where the AI genuinely proposed a materially
+// different title/body (i.e. this is NOT a no-op — refined text differs from
+// the original), but patchSlideXml produced zero edits for a STRUCTURAL reason
+// unrelated to fit: no matching title/body placeholder shape was found on the
+// slide (e.g. a body shape with no text paragraphs to patch), so there was
+// nothing patchSlideXml could rewrite. This is distinct from both:
+//   - NO_CHANGE_SUMMARY: the AI itself decided nothing needed to change
+//     (refined_title === title && refined_body === body_text).
+//   - REVERT_SUMMARY: a placeholder WAS found and the refined text was
+//     produced, but it was dropped because it didn't fit the box.
+// Belongs in the same "unchanged" bucket for filter/count purposes (the file
+// stays byte-identical), but must read distinctly in the per-slide detail
+// panel — telling the faculty member the rewrite was lost to a structural
+// limitation, not silently reclassified as "nothing to improve".
+export const UNMAPPED_REFINEMENT_SUMMARY =
+  "Refined content could not be applied to this slide's structure — original kept.";
+
 export type SlideType =
   | 'title'
   | 'overview'
