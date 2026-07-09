@@ -12,6 +12,19 @@ function makeParser() {
     ignoreAttributes: false,
     attributeNamePrefix: '@_',
     parseAttributeValue: true,
+    // PowerPoint routinely splits one sentence across multiple <a:r> runs at
+    // a formatting boundary (bold/italic change, spell-check span, etc.) and
+    // puts the separating space INSIDE the run text itself — e.g. "MOVER "
+    // as one run followed by "BREG " as the next, with no space character
+    // anywhere else. fast-xml-parser's default trimValues:true strips that
+    // trailing/leading whitespace from every <a:t> node before we ever see
+    // it, and getRunTexts() below joins sibling runs with '' (required so a
+    // mid-word split like "MOV" + "ER" stays "MOVER"), so a trimmed run
+    // boundary silently fuses two words together ("MOVERBREGX"). Disabling
+    // trimValues preserves the run text exactly as authored; the line-level
+    // .trim() in txBodyToLines() still strips incidental leading/trailing
+    // whitespace from the assembled line.
+    trimValues: false,
     // Always treat these as arrays even when only one element is present
     isArray: (name: string) =>
       ['p:sp', 'p:grpSp', 'a:p', 'a:r'].includes(name),
