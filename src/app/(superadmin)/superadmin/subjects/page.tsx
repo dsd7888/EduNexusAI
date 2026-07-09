@@ -45,6 +45,7 @@ import {
 import { Textarea } from "@/components/ui/textarea";
  import { FileText, Loader2, Trash2 } from "lucide-react";
 import Link from "next/link";
+import { SubjectChangeLog } from "./_components/SubjectChangeLog";
  import { useCallback, useEffect, useMemo, useState } from "react";
  import { toast } from "sonner";
 
@@ -53,7 +54,9 @@ import Link from "next/link";
  
  
 export default function SubjectsPage() {
-  const [tab, setTab] = useState<"subjects" | "modules">("subjects");
+  const [tab, setTab] = useState<"subjects" | "modules" | "changes">(
+    "subjects"
+  );
  
    const { subjects: hookSubjects, isLoading: hookLoadingSubjects } =
      useAllSubjects();
@@ -308,6 +311,7 @@ export default function SubjectsPage() {
         <TabsList>
           <TabsTrigger value="subjects">Subjects</TabsTrigger>
           <TabsTrigger value="modules">Modules</TabsTrigger>
+          <TabsTrigger value="changes">Faculty Changes</TabsTrigger>
         </TabsList>
  
          <TabsContent value="subjects" className="mt-6 space-y-6">
@@ -576,6 +580,21 @@ export default function SubjectsPage() {
              </CardContent>
            </Card>
          </TabsContent>
+
+        <TabsContent value="changes" className="mt-6 space-y-6">
+          <Card>
+            <CardHeader>
+              <CardTitle>Faculty subject changes</CardTitle>
+              <CardDescription>
+                Every subject a faculty member added, joined, or removed — newest
+                first.
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <SubjectChangeLog />
+            </CardContent>
+          </Card>
+        </TabsContent>
        </Tabs>
  
        <AlertDialog open={confirmOpen} onOpenChange={setConfirmOpen}>
