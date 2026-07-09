@@ -49,13 +49,20 @@ function redirectWithCookies(response: NextResponse, url: string): NextResponse 
   return redirectResponse;
 }
 
-async function getProfileRole(userId: string): Promise<UserRole | null> {
+interface ProfileGate {
+  role: UserRole | null;
+  mustChangePassword: boolean;
+}
+
+// Single profile read used for both role gating and the forced-password-change gate —
+// same shape as before, just one extra column, so no second fetch is introduced.
+async function getProfile(userId: string): Promise<ProfileGate | null> {
   try {
     const supabase = createAdminClient();
 
     const { data, error } = await supabase
       .from("profiles")
-      .select("role")
+      .select("role, must_change_password")
       .eq("id", userId)
       .single();
 
@@ -64,17 +71,16 @@ async function getProfileRole(userId: string): Promise<UserRole | null> {
       return null;
     }
 
-    const role = data?.role as UserRole | undefined;
-    if (
-      !role ||
-      !["superadmin", "dept_admin", "faculty", "student", "dean", "hod"].includes(
-        role
+    const rawRole = data?.role as UserRole | undefined;
+    const role =
+      rawRole &&
+      ["superadmin", "dept_admin", "faculty", "student", "dean", "hod"].includes(
+        rawRole
       )
-    ) {
-      return null;
-    }
+        ? rawRole
+        : null;
 
-    return role;
+    return { role, mustChangePassword: Boolean(data?.must_change_password) };
   } catch (err) {
     console.error("[proxy] Profile fetch exception:", err);
     return null;
@@ -123,7 +129,7 @@ export async function proxy(request: NextRequest) {
       if (!user) {
         return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
       }
-      const role = roleOrDefault(await getProfileRole(user.id));
+      const role = roleOrDefault((await getProfile(user.id))?.role ?? null);
 
       if (isFacultyTierApi && role === "student") {
         return NextResponse.json({ error: "Forbidden" }, { status: 403 });
@@ -146,7 +152,7 @@ export async function proxy(request: NextRequest) {
       return response;
     }
     if (path === "/login" || path === "/register") {
-      const role = await getProfileRole(user.id);
+      const role = (await getProfile(user.id))?.role ?? null;
       const dashboard = role ? getDashboardForRole(role) : "/";
       return redirectWithCookies(response, new URL(dashboard, request.url).toString());
     }
@@ -164,7 +170,19 @@ export async function proxy(request: NextRequest) {
       return response;
     }
 
-    const role = roleOrDefault(await getProfileRole(user.id));
+    const profile = await getProfile(user.id);
+    const role = roleOrDefault(profile?.role ?? null);
+
+    // Forced password change: bulk-created faculty must set a real password before
+    // reaching any app page. The change-password page itself is exempt (it's not a
+    // protected path, so it stays reachable). API + sign-out flows are handled in the
+    // /api/ block above and never reach here.
+    if (profile?.mustChangePassword && path !== "/auth/change-password") {
+      return redirectWithCookies(
+        response,
+        new URL("/auth/change-password", request.url).toString()
+      );
+    }
 
     const isSuperadminRoute = path.startsWith("/superadmin");
     const isFacultyRoute = path.startsWith("/faculty");
