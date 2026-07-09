@@ -304,10 +304,12 @@ function buildBatchPrompt(
     activeOpts.push(
       `ADD REAL-WORLD EXAMPLES: Add 1-2 Indian industry/real-world examples. ` +
         `Reference companies like ISRO, Tata, Infosys, L&T, Wipro, DRDO, Reliance where appropriate. ` +
-        `Add as dedicated example bullets or a new example slide (is_new=true). ` +
-        `For a new example slide, set refined_title to JUST the topic name ` +
-        `(e.g. "Sorting in Logistics") — do NOT prefix it with "Real World:" or similar; ` +
-        `the label is added automatically.`
+        (options.allow_new_slides
+          ? `Add as dedicated example bullets or a new example slide (is_new=true). ` +
+            `For a new example slide, set refined_title to JUST the topic name ` +
+            `(e.g. "Sorting in Logistics") — do NOT prefix it with "Real World:" or similar; ` +
+            `the label is added automatically.`
+          : `Add as dedicated example bullets on the existing slide only (new slides not permitted).`)
     );
   }
   if (options.add_visuals) {
@@ -323,10 +325,13 @@ function buildBatchPrompt(
   if (options.add_practice_problems) {
     activeOpts.push(
       `ADD PRACTICE PROBLEMS (after concept or example slides only): ` +
-        `Create 1 practice slide with: problem statement, hint, and solution approach. ` +
-        `Return as is_new=true, type="practice", inserted_after_index=<parent index>. ` +
-        `Set refined_title to JUST the topic name (e.g. "Identifying System Software") — ` +
-        `do NOT prefix it with "Practice Problem:" or "Practice:"; the label is added automatically.`
+        (options.allow_new_slides
+          ? `Create 1 practice slide with: problem statement, hint, and solution approach. ` +
+            `Return as is_new=true, type="practice", inserted_after_index=<parent index>. ` +
+            `Set refined_title to JUST the topic name (e.g. "Identifying System Software") — ` +
+            `do NOT prefix it with "Practice Problem:" or "Practice:"; the label is added automatically.`
+          : `Add 1 practice problem (problem statement, hint, and solution approach) as extra ` +
+            `bullets on the existing slide itself (new slides not permitted).`)
     );
   }
   if (options.simplify_content) {
@@ -342,7 +347,12 @@ function buildBatchPrompt(
   if (options.add_key_insights) {
     activeOpts.push(
       `ADD KEY INSIGHTS (concept slides only): ` +
-        `Append 1 key insight as the last bullet: "KEY INSIGHT: [single most important exam takeaway]"`
+        `Append 1 key insight as the last bullet: "KEY INSIGHT: [single most important exam takeaway]". ` +
+        `The slide's TOTAL bullet count (regular content + this insight) must never exceed ${MAX_BULLETS} — ` +
+        `that is a hard cap. If regular content (including anything added by other active options ` +
+        `above, e.g. expanded sections or examples) would already reach ${MAX_BULLETS}, condense/merge ` +
+        `it down to at most ${MAX_BULLETS - 1} bullets FIRST so the KEY INSIGHT bullet still fits. ` +
+        `Never omit the KEY INSIGHT bullet to avoid exceeding the cap — trimming content is required instead.`
     );
   }
   if (options.add_summary_slide && isLastBatch) {
@@ -381,6 +391,15 @@ function buildBatchPrompt(
       'short scannable phrase. Dropping a CONCEPT is forbidden; trimming ' +
       'wordiness is required. Never merge two distinct concepts into one bullet.'
   );
+  if (options.add_key_insights) {
+    lines.push(
+      `- ADD KEY INSIGHTS is active: on every concept slide, the KEY INSIGHT ` +
+        `bullet is mandatory and must be included even if other active options ` +
+        `(expand, examples, etc.) would otherwise fill the slide to ${MAX_BULLETS} ` +
+        `bullets — condense regular content to ${MAX_BULLETS - 1} bullets rather than ` +
+        `dropping the KEY INSIGHT.`
+    );
+  }
   lines.push('');
 
   lines.push('OUTPUT: Return ONLY a valid JSON object — no markdown fences, no prose.');
@@ -391,7 +410,9 @@ function buildBatchPrompt(
       "index": <number — same index as input, OR -1 for new slides>,
       "type": "<SlideType — only required for is_new slides>",
       "refined_title": "<string, <=${MAX_TITLE_CHARS} chars>",
-      "refined_body": ["<scannable phrase, <=${MAX_BULLET_CHARS} chars; a KEY INSIGHT bullet may reach ${MAX_INSIGHT_CHARS}>", ...max ${MAX_BULLETS}],
+      "refined_body": ["<scannable phrase, <=${MAX_BULLET_CHARS} chars; a KEY INSIGHT bullet may reach ${MAX_INSIGHT_CHARS}>", ...max ${MAX_BULLETS}${
+    options.add_key_insights ? ` — leave room for the mandatory KEY INSIGHT bullet, so at most ${MAX_BULLETS - 1} regular content bullets` : ''
+  }],
       "visual": { "type": "svg"|"mermaid"|"imagen", "content": "<svg markup|mermaid code|imagen prompt>", "caption": "<string>" } | null,
       "is_new": <boolean>,
       "inserted_after_index": <number — index of parent slide, only when is_new=true> | null,
@@ -519,6 +540,36 @@ function trimBatchResponse(obj: BatchResponse): BatchResponse {
   return obj;
 }
 
+/**
+ * ADD KEY INSIGHTS deterministic backstop: the responseSchema's maxItems is a
+ * SINGLE hard cap (MAX_BULLETS) shared with every other option that can fill a
+ * slide's bullets (expand, examples, etc.). The prompt asks the model to
+ * reserve a slot for the mandatory KEY INSIGHT bullet on an already-full
+ * slide, but that's guidance, not a guarantee — a slide at the cap with no
+ * KEY INSIGHT bullet means the model dropped it (or never made room). We
+ * cannot recover a dropped bullet after the fact (we don't know what the
+ * model would have said), so this only makes the failure visible instead of
+ * silent, which is the actual bug this backstop closes.
+ */
+function checkKeyInsightsPresence(response: BatchResponse, batch: ExtractedSlide[]): void {
+  const originalByIndex = new Map(batch.map((s) => [s.index, s]));
+  for (const s of response.slides) {
+    if (s.is_new) continue; // new slides aren't subject to the "concept slides only" rule here
+    const original = originalByIndex.get(s.index);
+    if (!original || original.type !== 'concept') continue;
+    if (!Array.isArray(s.refined_body)) continue;
+
+    const hasInsight = s.refined_body.some((b) => typeof b === 'string' && isKeyInsight(b));
+    if (!hasInsight) {
+      console.warn(
+        `[ppt-refine/refiner] ADD KEY INSIGHTS was ON but slide ${s.index} ("${s.refined_title}") ` +
+          `has no KEY INSIGHT bullet in the response (${s.refined_body.length}/${MAX_BULLETS} bullets used) — ` +
+          `it was likely dropped by the ${MAX_BULLETS}-bullet cap.`
+      );
+    }
+  }
+}
+
 function parseRefineBatchResponse(raw: string): BatchResponse | null {
   let text = raw
     .replace(/```json\s*/gi, '')
@@ -628,6 +679,9 @@ async function processOneBatch(
 
       if (parsed) {
         trimBatchResponse(parsed);
+        if (options.add_key_insights) {
+          checkKeyInsightsPresence(parsed, batch);
+        }
         console.log(
           `[ppt-refine/refiner] Batch parsed OK — ${parsed.slides.length} slides, ` +
             `${parsed.slides.filter((s) => s.is_new).length} new`
@@ -816,7 +870,8 @@ function assembleRefinedDeck(
   batchResults: BatchResponse[],
   summarySlide: RefinedSlide | null,
   selectedSet: Set<number> | null,
-  chatEditedSet: Set<number> | null
+  chatEditedSet: Set<number> | null,
+  allowNewSlides: boolean
 ): RefinedSlide[] {
   // Base layer: one RefinedSlide per original slide. A slide the faculty member
   // did NOT select never entered a batch, so it will never be overwritten by a
@@ -851,6 +906,32 @@ function assembleRefinedDeck(
     for (const rs of batch.slides) {
       if (rs.is_new) {
         const insertAfter = rs.inserted_after_index ?? rs.index;
+
+        // Defense in depth: the toggle is OFF, but the model still proposed a
+        // new slide anyway (the prompt instruction above is not a hard
+        // guarantee). Rather than trust the prompt alone, fold the content
+        // back into its parent slide as extra bullets so it isn't silently
+        // dropped — e.g. a practice question still reaches the deck, just
+        // in-place instead of on its own slide.
+        if (!allowNewSlides) {
+          const parentIdx = Math.max(0, Math.min(insertAfter, base.length - 1));
+          const parent = base[parentIdx];
+          if (parent) {
+            const label =
+              rs.type === 'practice'
+                ? `Practice: ${rs.refined_title}`
+                : rs.type === 'example'
+                  ? `Real-World Example: ${rs.refined_title}`
+                  : rs.refined_title;
+            parent.refined_body = [...parent.refined_body, label, ...rs.refined_body];
+            parent.change_summary =
+              parent.change_summary && parent.change_summary !== NO_CHANGE_SUMMARY
+                ? `${parent.change_summary} ${rs.change_summary}`
+                : rs.change_summary;
+          }
+          continue;
+        }
+
         if (!insertionMap.has(insertAfter)) insertionMap.set(insertAfter, []);
 
         insertionMap.get(insertAfter)!.push({
@@ -978,7 +1059,14 @@ export async function refineDeck(
   // Assemble intermediate refined slides (before imagen pass). Pass the full
   // deck.slides (all originals, in order) plus the selected set so non-selected
   // slides are stamped NOT_SELECTED_SUMMARY rather than the AI no-op summary.
-  const intermediateSlides = assembleRefinedDeck(deck.slides, batchResults, null, selectedSet, chatEditedSet);
+  const intermediateSlides = assembleRefinedDeck(
+    deck.slides,
+    batchResults,
+    null,
+    selectedSet,
+    chatEditedSet,
+    options.allow_new_slides ?? false
+  );
 
   // Imagen pass — separate Pro-tier generation for slides that need real images
   if (options.add_visuals) {
