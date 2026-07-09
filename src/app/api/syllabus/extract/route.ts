@@ -1,11 +1,6 @@
 import type { NextRequest } from "next/server";
-import { routeAI } from "@/lib/ai/router";
 import { apiError, requireRole } from "@/lib/api/helpers";
-import { parseExtractedSyllabus } from "@/lib/syllabus/parser";
-import {
-  SYLLABUS_EXTRACT_SYSTEM_PROMPT,
-  SYLLABUS_EXTRACT_USER_PROMPT,
-} from "@/lib/syllabus/prompts";
+import { extractSyllabusFromPdf } from "@/lib/syllabus/extract";
 
 export async function POST(request: NextRequest) {
   try {
@@ -31,39 +26,22 @@ export async function POST(request: NextRequest) {
       `[syllabus/extract] subject=${subjectId} pdfBytes=${arrayBuffer.byteLength}`
     );
 
-    const jobId = crypto.randomUUID();
-    const ai = await routeAI("syllabus_extract", {
-      systemPrompt: SYLLABUS_EXTRACT_SYSTEM_PROMPT,
-      messages: [{ role: "user", content: SYLLABUS_EXTRACT_USER_PROMPT }],
-      attachments: [{ mediaType: "application/pdf", data: base64Data }],
-      logContext: {
-        userId: user.id,
-        userEmail: user.email ?? null,
-        userRole: profile.role,
-        subjectId,
-        subjectCode: null,
-        jobId,
-        relatedContentId: null,
-        feature: "syllabus",
-      },
+    const { extracted, costInr } = await extractSyllabusFromPdf(base64Data, {
+      userId: user.id,
+      userEmail: user.email ?? null,
+      userRole: profile.role,
+      subjectId,
+      subjectCode: null,
     });
 
-    const raw = String(ai.content ?? "");
-    console.log(`[syllabus/extract] raw length=${raw.length}`);
-    const extracted = parseExtractedSyllabus(raw);
-
     if (!extracted) {
-      console.error(
-        "[syllabus/extract] All parse attempts failed. Preview:",
-        raw.slice(0, 500)
-      );
       return apiError("Failed to parse extracted syllabus", 500);
     }
 
     return Response.json({
       extracted,
       subject_id: subjectId,
-      costInr: ai.costInr,
+      costInr,
     });
   } catch (err) {
     console.error("[syllabus/extract] Error:", err);
