@@ -748,7 +748,12 @@ async function generateSummarySlide(
 
     const text = String(ai.content ?? '');
     const jsonMatch = text.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) return null;
+    if (!jsonMatch) {
+      console.error(
+        `[ppt-refine/refiner] Summary slide generation returned no parseable JSON. Raw head: ${text.slice(0, 200)}`
+      );
+      return null;
+    }
 
     const parsed = JSON.parse(jsonMatch[0]) as {
       refined_title?: string;
@@ -758,8 +763,12 @@ async function generateSummarySlide(
     if (typeof parsed.refined_title === 'string') parsed.refined_title = stripHtml(parsed.refined_title);
     if (Array.isArray(parsed.refined_body)) parsed.refined_body = parsed.refined_body.map((b) => (typeof b === 'string' ? stripHtml(b) : b));
 
-    if (!Array.isArray(parsed.refined_body) || parsed.refined_body.length === 0)
+    if (!Array.isArray(parsed.refined_body) || parsed.refined_body.length === 0) {
+      console.error(
+        '[ppt-refine/refiner] Summary slide generation returned an empty/invalid refined_body — discarding.'
+      );
       return null;
+    }
 
     const body = parsed.refined_body.slice(0, 8);
     const titleStr = parsed.refined_title ?? 'Summary & Key Takeaways';
@@ -781,8 +790,8 @@ async function generateSummarySlide(
       change_summary: 'AI-generated summary slide added.',
     };
   } catch (err) {
-    console.warn(
-      '[ppt-refine/refiner] Summary slide generation failed:',
+    console.error(
+      '[ppt-refine/refiner] Summary slide generation threw — no summary slide will be added:',
       err instanceof Error ? err.message : err
     );
     return null;
@@ -976,16 +985,27 @@ export async function refineDeck(
     await runImagenPass(intermediateSlides, deck, logContext);
   }
 
-  // Summary slide — if any batch flagged needs_summary and option is active
+  // Summary slide — the user's toggle is the sole authority here, not the
+  // model's needs_summary flag. That flag is informational at best: ordinary
+  // model noise can return false for an explicit request, and a last-batch
+  // parse failure falls back to fallbackBatchResponse's hardcoded
+  // needs_summary: false, which would otherwise silently suppress generation
+  // with no log line at all. Generate whenever the option is on and no
+  // existing summary slide was found in the deck (see isSummaryTitle in
+  // extractor.ts for what counts as an existing summary slide).
   let summarySlide: RefinedSlide | null = null;
   const needsSummary =
-    options.add_summary_slide &&
-    batchResults.some((r) => r.needs_summary) &&
-    !intermediateSlides.some((s) => s.type === 'summary');
+    options.add_summary_slide && !intermediateSlides.some((s) => s.type === 'summary');
 
   if (needsSummary) {
     console.log('[ppt-refine/refiner] Generating summary slide...');
     summarySlide = await generateSummarySlide(intermediateSlides, deck, logContext);
+    if (!summarySlide) {
+      console.error(
+        '[ppt-refine/refiner] add_summary_slide was ON and no existing summary slide was ' +
+          'found, but generateSummarySlide failed — export will NOT include a summary slide.'
+      );
+    }
   }
 
   // Final assembly with summary
@@ -998,7 +1018,16 @@ export async function refineDeck(
     .flatMap((r) => r.batch_changes)
     .filter((c) => c && !c.startsWith('[Batch failed'));
 
-  if (summarySlide) changesSummary.push('Summary slide generated and appended.');
+  if (summarySlide) {
+    changesSummary.push('Summary slide generated and appended.');
+  } else if (needsSummary) {
+    // Surface the failure to the faculty member, not just the server log —
+    // "Add/Update Summary Slide" was ON and nothing was added; a silent no-op
+    // here is exactly the class of bug this fix closes.
+    changesSummary.push(
+      '[Summary slide generation failed — no summary slide was added. Try again, or add one manually.]'
+    );
+  }
 
   const imagenCount = finalSlides.filter(
     (s) =>

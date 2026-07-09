@@ -79,6 +79,35 @@ function countWords(s: string): number {
 
 // ─── Slide type inference ─────────────────────────────────────────────────────
 
+/**
+ * Is this title a deck-level wrap-up slide (the kind ppt-refine's
+ * add_summary_slide option should skip generating a duplicate for)?
+ *
+ * "key takeaways" is included because this project's OWN PPT generator titles
+ * its summary slide exactly "Key Takeaways" (see slide.addText("Key
+ * Takeaways", …) in src/lib/ppt/generator.ts) — the plain "summary" keyword
+ * alone misses every deck this product itself produces, which is the deck
+ * type ppt-refine most commonly receives.
+ *
+ * Deliberately excludes bare "review": on its own it is the generic word for
+ * a mid-lecture recap of ONE topic (e.g. "Review of Pass 1" in a two-pass
+ * assembler lecture), not a reliable signal of a deck-ending summary the way
+ * "summary" / "key takeaways" / "conclusion" / "recap" are.
+ *
+ * Also excludes any match qualified by a subtopic/section reference (a
+ * trailing "of X", a part/pass/phase/unit/module/chapter/section/step
+ * reference, or a digit) — "Recap of Loops", "Chapter 3 Summary", "Pass 1
+ * Review" all describe a review of ONE section partway through the deck, not
+ * a deck-level wrap-up slide, even though they contain a matching keyword.
+ */
+function isSummaryTitle(title: string): boolean {
+  const t = title.toLowerCase().trim();
+  if (!/\b(summary|conclusion|recap|key\s+takeaways?)\b/.test(t)) return false;
+  if (/\b(of|for|in|part|pass|phase|unit|module|chapter|section|step)\b/.test(t)) return false;
+  if (/\d/.test(t)) return false;
+  return true;
+}
+
 function inferSlideType(
   title: string,
   index: number,
@@ -93,7 +122,7 @@ function inferSlideType(
     return 'diagram';
   if (/example|case study|application|illustration/.test(t)) return 'example';
   if (/practice|exercise|problem|question/.test(t)) return 'practice';
-  if (/summary|conclusion|recap|review/.test(t)) return 'summary';
+  if (isSummaryTitle(title)) return 'summary';
   return 'unknown';
 }
 
