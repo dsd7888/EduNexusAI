@@ -56,7 +56,7 @@ export async function POST(request: NextRequest) {
     const arrayBuffer = await file.arrayBuffer();
     const buffer = Buffer.from(arrayBuffer);
     const timestamp = Date.now();
-    const extractionId = `${user.id}_${timestamp}`;
+    const extractionId = crypto.randomUUID();
 
     const subjectId = formData.get('subject_id');
     let subjectCode: string | null = null;
