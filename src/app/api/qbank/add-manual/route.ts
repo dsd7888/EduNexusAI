@@ -52,6 +52,24 @@ export async function POST(request: NextRequest) {
     const subjectId = (body.subject_id as string | undefined)?.trim();
     if (!subjectId) return apiError("subject_id is required", 400);
 
+    // ── Ownership check ────────────────────────────────────────────────────
+    // Faculty can only add bank questions for subjects they are assigned to.
+    // Superadmin bypasses this check.
+    if (profile.role === "faculty") {
+      const { data: assignment } = await adminClient
+        .from("faculty_assignments")
+        .select("subject_id")
+        .eq("faculty_id", user.id)
+        .eq("subject_id", subjectId)
+        .maybeSingle();
+      if (!assignment) {
+        return apiError(
+          "Forbidden: subject is not assigned to this faculty",
+          403
+        );
+      }
+    }
+
     const questionText =
       (body.question_text as string | undefined)?.trim() ?? "";
     if (!questionText) {

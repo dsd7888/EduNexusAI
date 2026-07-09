@@ -143,6 +143,25 @@ export async function POST(request: NextRequest) {
 
     const subjectId = String(body.subjectId ?? "").trim();
     if (!subjectId) return apiError("subjectId is required", 400);
+
+    // ── Ownership check ────────────────────────────────────────────────────
+    // Faculty can only generate question papers for subjects they are assigned to.
+    // Superadmin bypasses this check.
+    if (profile.role === "faculty") {
+      const { data: assignment } = await adminClient
+        .from("faculty_assignments")
+        .select("subject_id")
+        .eq("faculty_id", user.id)
+        .eq("subject_id", subjectId)
+        .maybeSingle();
+      if (!assignment) {
+        return apiError(
+          "Forbidden: subject is not assigned to this faculty",
+          403
+        );
+      }
+    }
+
     const jobId = crypto.randomUUID();
     const templateId =
       typeof body.templateId === "string" ? body.templateId.trim() : "";

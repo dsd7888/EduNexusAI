@@ -50,6 +50,24 @@ export async function POST(request: NextRequest) {
     const subjectId = String(form.get("subject_id") ?? "").trim();
     if (!subjectId) return apiError("subject_id is required", 400);
 
+    // ── Ownership check ────────────────────────────────────────────────────
+    // Faculty can only import bank questions for subjects they are assigned to.
+    // Superadmin bypasses this check.
+    if (profile.role === "faculty") {
+      const { data: assignment } = await adminClient
+        .from("faculty_assignments")
+        .select("subject_id")
+        .eq("faculty_id", user.id)
+        .eq("subject_id", subjectId)
+        .maybeSingle();
+      if (!assignment) {
+        return apiError(
+          "Forbidden: subject is not assigned to this faculty",
+          403
+        );
+      }
+    }
+
     const file = form.get("file");
     if (!(file instanceof File)) return apiError("file is required", 400);
     if (file.size === 0) return apiError("file is empty", 400);

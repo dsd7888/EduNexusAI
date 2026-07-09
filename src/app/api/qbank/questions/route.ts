@@ -52,7 +52,7 @@ export async function POST(request: NextRequest) {
   try {
     const authResult = await requireRole(["faculty", "superadmin", "dean", "hod"]);
     if (authResult instanceof Response) return authResult;
-    const { user, adminClient } = authResult;
+    const { user, profile, adminClient } = authResult;
 
     let body: Record<string, unknown>;
     try {
@@ -63,6 +63,24 @@ export async function POST(request: NextRequest) {
 
     const subjectId = String(body.subject_id ?? "").trim();
     if (!subjectId) return apiError("subject_id is required", 400);
+
+    // ── Ownership check ────────────────────────────────────────────────────
+    // Faculty can only save bank questions for subjects they are assigned to.
+    // Superadmin bypasses this check.
+    if (profile.role === "faculty") {
+      const { data: assignment } = await adminClient
+        .from("faculty_assignments")
+        .select("subject_id")
+        .eq("faculty_id", user.id)
+        .eq("subject_id", subjectId)
+        .maybeSingle();
+      if (!assignment) {
+        return apiError(
+          "Forbidden: subject is not assigned to this faculty",
+          403
+        );
+      }
+    }
 
     const questionText = String(body.question_text ?? "").trim();
     if (!questionText) return apiError("question_text is required", 400);
