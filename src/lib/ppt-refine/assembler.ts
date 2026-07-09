@@ -832,15 +832,27 @@ function canvasDims(canvas: SlideCanvas): [number, number] {
 
 // ─── New-slide construction ─────────────────────────────────────────────────
 
+// Bullet character/indent convention matched to this project's own decks: real
+// exported slides consistently use a round "•" buChar with marL="190500"
+// indent="-190500" for top-level bullets (see e.g. slide13.xml in a regenerated
+// export). buildNewSlideXml's shapes are plain positioned <p:sp> (not real
+// <p:ph> placeholders), so they inherit no layout bullet formatting at all and
+// need it stamped on explicitly or PowerPoint renders bare, unbulleted text.
+const BULLET_PPR = `<a:pPr marL="190500" indent="-190500"><a:buFont typeface="Arial"/><a:buChar char="&#8226;"/></a:pPr>`;
+// Sub-bullets (lvl 1): no indented-bullet convention exists anywhere in this
+// project's decks to diverge from, so per the documented fallback we reuse the
+// same bullet character, only pushed further right.
+const SUB_BULLET_PPR = `<a:pPr lvl="1" marL="571500" indent="-190500"><a:buFont typeface="Arial"/><a:buChar char="&#8226;"/></a:pPr>`;
+
 /** Regular 16pt body bullet (top level). */
 function regularBullet(text: string): string {
-  return `<a:p><a:r><a:rPr lang="en-IN" sz="1600" dirty="0"/><a:t>${escT(text)}</a:t></a:r></a:p>`;
+  return `<a:p>${BULLET_PPR}<a:r><a:rPr lang="en-IN" sz="1600" dirty="0"/><a:t>${escT(text)}</a:t></a:r></a:p>`;
 }
 
 /** 14pt sub-bullet (level 1). */
 function subBullet(text: string): string {
   return (
-    `<a:p><a:pPr lvl="1"/><a:r><a:rPr lang="en-IN" sz="1400" dirty="0"/>` +
+    `<a:p>${SUB_BULLET_PPR}<a:r><a:rPr lang="en-IN" sz="1400" dirty="0"/>` +
     `<a:t>${escT(text)}</a:t></a:r></a:p>`
   );
 }
@@ -865,7 +877,7 @@ function buildNewSlideBody(bullets: string[], type: string): string {
     if (/^problem statement:/i.test(b)) {
       const content = b.replace(/^problem statement:\s*/i, '');
       out.push(
-        `<a:p>` +
+        `<a:p>${BULLET_PPR}` +
           `<a:r><a:rPr lang="en-IN" sz="1600" b="1" dirty="0"/><a:t>Problem Statement: </a:t></a:r>` +
           `<a:r><a:rPr lang="en-IN" sz="1600" dirty="0"/><a:t>${escT(content)}</a:t></a:r>` +
           `</a:p>`
@@ -875,7 +887,7 @@ function buildNewSlideBody(bullets: string[], type: string): string {
     }
     if (/^hint:/i.test(b)) {
       out.push(
-        `<a:p><a:pPr lvl="1"/><a:r>` +
+        `<a:p>${SUB_BULLET_PPR}<a:r>` +
           `<a:rPr lang="en-IN" sz="1400" i="1" dirty="0"><a:solidFill><a:srgbClr val="4B5563"/></a:solidFill></a:rPr>` +
           `<a:t>${escT(b)}</a:t></a:r></a:p>`
       );
