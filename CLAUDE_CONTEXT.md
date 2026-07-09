@@ -1,6 +1,6 @@
 # EduNexus AI — Complete Project Context
 
-*Last updated: July 8, 2026 | Solo developer: Dhruv | Stack: Next.js 16 + Supabase + Gemini*
+*Last updated: July 9, 2026 | Solo developer: Dhruv | Stack: Next.js 16 + Supabase + Gemini*
 *This document is the single source of truth for any Claude instance working on EduNexus AI.*
 
 --- 
@@ -247,7 +247,7 @@ edunexus-ai/
 │   │   │   │   └── _components/ReviewFlowDialog.tsx ✅ card-by-card verify review dialog
 │   │   │   ├── syllabus/                           ✅ faculty syllabus viewer with AI CO mapping display + editing
 │   │   │   ├── explainer/                          ⚠️  UNDER DEVELOPMENT (UI shows placeholder)
-│   │   │   ├── refine/                             ✅ PPT + text refinement tabs
+│   │   │   ├── refine/                             ✅ Content Refinement Tab — PPT Refinement + Text Refinement sub-tabs (§10)
 │   │   │   ├── request-change/ + analytics/ + profile/ ✅
 │   │   ├── (student)/student/
 │   │   │   ├── dashboard/ + subjects/ + chat/[subjectId]/ ✅
@@ -277,8 +277,8 @@ edunexus-ai/
 │   │       ├── qbank/draft-image/                  ✅ image→AI draft generation (separate from commit)
 │   │       ├── admin/classify-module-co/           ✅ batch CO classification trigger (superadmin/dept_admin)
 │   │       ├── syllabus/module-co-mapping/         ✅ GET/PATCH for faculty CO mapping edits
-│   │       ├── ppt-refine/extract/ + refine/       ✅
-│   │       ├── refine/                             ✅
+│   │       ├── ppt-refine/extract/ + refine/ + refine-slide/ ✅ refine-slide = single-slide chat
+│   │       ├── refine/                             ✅ Text Refinement tab backend
 │   │       ├── explainer/generate/ + list/ + [id]/ ✅ (routes exist, UI under development)
 │   │       ├── placement/generate/ + submit/ + export/ ✅
 │   │       └── placement/practice/generate/ + submit/ + export/ ✅
@@ -286,6 +286,7 @@ edunexus-ai/
 │   ├── components/layout/FacultyShell.tsx           ✅ collapsible faculty nav shell
 │   ├── components/RichQuestionText.tsx             ✅ renders AI question text (table/list/bold via markdownLite + KaTeX/mhchem math, incl. MCQ options)
 │   ├── components/MathToolbar.tsx + MathTextarea.tsx ✅ cursor-insert worked-example snippets + live KaTeX preview; collapsible
+│   ├── components/refine/SlideChatConsole.tsx      ✅ shared chat UI — both refine surfaces, presentation-only (§10)
 │   ├── hooks/useSupabaseData.ts                    ✅
 │   └── lib/
 │       ├── ai/providers/types.ts + gemini.ts       ✅ (responseSchema + thinkingBudget added to ChatParams)
@@ -295,7 +296,8 @@ edunexus-ai/
 │       ├── db/supabase-browser.ts + server.ts + types.ts ✅
 │       ├── pdf/builder.ts                          ✅
 │       ├── ppt/generator.ts + pptMath.ts           ✅ (pptMath: LaTeX→PNG rasterization for slide text)
-│       ├── ppt-refine/types.ts + extractor.ts + refiner.ts + assembler.ts ✅
+│       ├── ppt-refine/types.ts + extractor.ts + refiner.ts + assembler.ts ✅ (§10)
+│       │   + visual-raster.ts + slide-size.ts                                          ✅
 │       ├── qbank/types.ts + tagger.ts + generator.ts + parser.ts + row.ts ✅
 │       ├── qbank/image-storage.ts                  ✅ uploadQuestionImage, createQuestionImageSignedUrl, downloadQuestionImage
 │       ├── explainer/                              ⚠️ PARTIALLY BUILT — see §15 for status
@@ -319,7 +321,7 @@ edunexus-ai/
 │       ├── syllabus/types.ts + prompts.ts + parser.ts + reconstruct.ts ✅
 │       ├── quiz/generator.ts                       ✅
 │       ├── placement/generator.ts + bankManager.ts + fallbackSyllabus.ts + modules.ts ✅
-│       ├── refine/generator.ts                     ✅
+│       ├── refine/generator.ts                     ✅ Text Refinement tab backend — unrelated to ppt-refine/*
 │       ├── student/subjectGroups.ts                ✅
 │       ├── ui/score.ts                             ✅
 │       ├── utils.ts + utils/rate-limit.ts          ✅
@@ -379,11 +381,27 @@ edunexus-ai/
 - 3-route pipeline (outline → batch → build), activity slides, Indian context, hook slides
 - Per-slide continuous refinement UI
 
-#### PPT Refinement
-- Faculty uploads existing .pptx → AI refines content (Flash batches of 5)
-- XML-patching assembler preserves 100% original appearance
-- New slides appended using original slide master, explicit font sizes (sz="2400" title, sz="1600" body)
-- 4-stage UI: upload → configure → processing → results
+#### Content Refinement Tab (`/faculty/refine`)
+Standalone tool, two independent sub-tabs sharing only page chrome. Full architecture in §10 — summary:
+
+- **PPT Refinement tab:** faculty uploads an existing `.pptx` → extract → refine →
+  assemble pipeline (XML-patched, not regenerated — preserves the original file's
+  appearance byte-for-byte outside the patched text/visuals). Per-slide selection
+  (default all-selected) drives either bulk option-based refinement (8 content toggles +
+  Allow New Slides) across the selected slides, or — when exactly one slide is
+  selected — a single-slide chat mode for targeted edits. AI-proposed visuals
+  (SVG/Mermaid/Imagen) are rasterized and embedded into the exported file as real
+  `<p:pic>` shapes, not preview-only. Text that doesn't fit even after auto-shrinking
+  spills onto an appended continuation slide when Allow New Slides is on.
+- **Text Refinement tab:** unrelated, much simpler pipeline — paste/select text
+  (≤15,000 chars) → one of 5 refinement types → `POST /api/refine` → refined markdown
+  back. No `.pptx` involved. This is the original (Feb 2026) content-refinement
+  feature; functionally unchanged since.
+
+Distinct from the **post-generation refine flow** (`/faculty/generate/refine/[contentId]`),
+which edits a deck this product's own PPT generator just built — a different data model
+(see §10: "regenerate from template" rather than "patch arbitrary bytes"). The two
+surfaces share only the `SlideChatConsole` chat UI component.
 
 #### Q Paper Generation
 **Architecture:** Three-view state machine (form → generating → done), mirroring PPT gen.
@@ -558,10 +576,6 @@ ConceptExplainers component hidden from PPT generation result page (July 2026) �
 - Test one pattern (array_sort) completely before building others
 - Use the 26-pattern taxonomy (array_sort through state_machine) already defined
 
-#### Content Refinement
-- Text refinement (paste text → AI refines)
-- PPT refinement (upload .pptx → AI refines preserving appearance)
-
 ---
 
 ## 8. Content Architecture
@@ -588,7 +602,7 @@ ConceptExplainers component hidden from PPT generation result page (July 2026) �
 
 ---
 
-## 10. PPT Generation Pipeline
+## 10. PPT Generation & Refinement Pipelines
 
 ### Architecture (3-route split for Vercel 60s timeout)
 outline → batch (5 slides/batch, 1 for diagrams) → build
@@ -608,28 +622,180 @@ The `generated_content_updated_at` trigger (defined in `20260207000000_initial_s
 ### Slide types and diagram routing
 Outline schema now includes `dual_visual` slide type (metaphor image + SVG side-by-side) and `diagramComplexity: "standard" | "intricate"` field. These drive the complexity-based model routing described in §3. The outline call uses `responseSchema` to guarantee parseable JSON — the old line-by-line fallback parser is removed (it silently dropped `renderHint`, `diagramComplexity`, and `dual_visual` fields whenever it fired).
 
-### PPT Refinement Pipeline
+### Content Refinement Tab — Two Pipelines, One Shared Component
+
+The Content Refinement Tab (`/faculty/refine`) and the post-generation refine flow
+(`/faculty/generate/refine/[contentId]`) are architecturally distinct pipelines that
+share exactly one UI component (`SlideChatConsole`) and nothing else. Built across
+~30 commits, complete as of July 2026 — this replaces the "explicitly deferred" status
+this section previously carried (see §17 for the roadmap correction).
+
+**Why two pipelines, not one:**
+- **Standalone tool (`src/lib/ppt-refine/*`)** operates on an arbitrary
+  faculty-uploaded `.pptx` whose original design/branding cannot be reproduced. It must
+  preserve the file byte-for-byte outside the specific text/visuals it patches, so it
+  works by **surgical XML string patching** (`assembler.ts`) against
+  `ExtractedSlide`/`RefinedSlide` — a "patch arbitrary bytes" model.
+- **Post-gen flow (`generate/ppt/refine` + `rebuild`)** operates on a deck this
+  product's own generator just built from a `SlideContent[]` JSON model it fully
+  controls. It's safe to **fully regenerate** the file from the edited JSON via the same
+  `generatePPTXBuffer()` used for original generation (`src/lib/ppt/generator.ts`) — a
+  "regenerate from template" model. There is no separate preview/export data structure
+  in this flow, so preview/export drift (see below) cannot occur here by construction.
+
+These data models are deliberately **not unified** — forcing one onto the other would
+either break the standalone tool's byte-preservation guarantee, or block the post-gen
+flow's fully-declarative editing (reorder, insert, delete slides).
+
+**Shared:** `src/components/refine/SlideChatConsole.tsx` — presentation-only chat UI
+(message log, input row, empty-state suggestion chips). Owns no pipeline logic; each
+surface owns its own message storage (a flat array in the post-gen flow, a per-slide
+`Record<index, ChatMessage[]>` map in the standalone tool) and how an instruction is
+actually applied. One behavioral prop, `chipBehavior: "fill" | "send"` — post-gen chips
+fill the textarea (explicit send required), standalone-tool chips send immediately
+(instant-patch is core to that surface's UX).
+
+### PPT Refinement Pipeline (standalone tool, `/faculty/refine` → "PPT Refinement" tab)
+
 ```
 Faculty uploads .pptx
   → POST /api/ppt-refine/extract (maxDuration: 60)
-    → adm-zip unzips, fast-xml-parser reads slides
+    → adm-zip unzips, fast-xml-parser reads slides (extractor.ts)
     → Gemini Flash detects topic + level (ppt_extract task)
-    → Returns ExtractedDeck + stores original .pptx in Supabase Storage
-  → POST /api/ppt-refine/refine (maxDuration: 300)
-    → refineDeck(): Flash batches of 5 slides in parallel (ppt_refine task)
-    → assemblePptx(): XML-patch approach
-      - Existing slides: surgical <a:t> text node replacement ONLY
-      - NEVER touches <p:pic>, <p:graphicFrame>, <p:grpSp>, <a:rPr>
-      - Empty title placeholders: INSERT text instead of replacing
-      - <a:normAutofit/> on all body/title txBody
-      - New slides: explicit font sizes (no inherited sizing)
-    → Upload refined .pptx to Supabase Storage, return signed URL
+    → Returns ExtractedDeck; stores original .pptx + extracted deck in Supabase Storage
+  → Configure stage: per-slide checkboxes (default all-selected). Faculty either
+    (a) selects multiple/all slides and sets the 8 bulk RefinementOptions + Allow New
+        Slides, or
+    (b) selects exactly one slide, which swaps the option panel for a SlideChatConsole
+        in single-slide chat mode (chipBehavior="send")
+  → Bulk path: POST /api/ppt-refine/refine (maxDuration: 300)
+    → refineDeck() (refiner.ts): 5-slide batches in parallel, routeAI('ppt_refine')
+      with a Gemini responseSchema, deterministic length/pseudocode backstops, retry
+      + fallback-to-original on exhausted retries
+    → assemblePptx() (assembler.ts): XML-patches selected slides in place, rasterizes
+      and embeds any AI-proposed visuals, appends AI-proposed/continuation slides
+    → Upload refined .pptx to Storage, return signed URL + per-slide change_summary
+  → Chat path: POST /api/ppt-refine/refine-slide (maxDuration: 120)
+    → refineSingleSlide() (refiner.ts): one routeAI('ppt_refine') call per message,
+      the same deterministic backstops as the batch path; result staged client-side as
+      a "chat-edited" slide and folded into the next bulk /refine call's
+      extracted_deck (not the lighter storage_path reference) so chat edits survive
+      alongside any bulk options run afterward
 ```
 
-**PPT refinement issues resolved:**
-- HTML tags (`<b>`, `<i>`, `<strong>`, `<em>` + generic tags): `stripHtml()` in `refiner.ts` (post-parse, sanitizes every `refined_title`/`refined_body` string) and `assembler.ts` (pre-XML-encode) — fixed
-- Empty title placeholder INSERT: `assemblePptx` injects text into originally-empty title placeholders (Bug 2 comment, line ~395 of assembler.ts) — fixed
-- Body overflow: two-layer fix — Bug 4 shrinks the body shape's `cy` when an image element sits inside the body box (prevents text rendering behind images); Bug 5 adds `<a:normAutofit/>` so text that still overflows auto-shrinks — fixed
+**Assembler approach (same principle as the original ship, much more capability now):**
+surgical string-level XML editing — never parse→mutate→reserialize — "so every other
+byte is identical to the original." Never touches `<p:pic>`, `<p:graphicFrame>`,
+`<p:grpSp>`, or formatting elements other than the text runs and the `<a:xfrm>`/
+`<a:bodyPr>` it explicitly patches. Empty title placeholders get text INSERTed rather
+than replaced. `<a:normAutofit/>` ships with a computed `fontScale` baked in — PowerPoint
+only recomputes autofit on interactive edit, not on file open, so a bare
+`<a:normAutofit/>` alone does nothing on export.
+
+### Real Visual Embedding
+
+AI-proposed visuals (`SlideVisual.type: 'svg' | 'mermaid' | 'imagen'`) are rasterized to
+PNG by `visual-raster.ts` (sharp for SVG @200 DPI, capped at 2000px longest edge —
+deliberately not the LaTeX-tuned `katexRender.ts`; mermaid.ink fetch for Mermaid, 8s
+timeout, shared sanitizer with the native PPT generator; base64 decode + 5KB-minimum
+guard for Imagen) and embedded by `assembler.ts` as **real `<p:pic>` shapes** — genuine
+media parts (`ppt/media/imageN.png`), `.rels` relationships, and
+`[Content_Types].xml` coverage — not a preview-only rendering. This was a real gap for
+part of the cycle: the results-preview page could show a generated diagram in the
+browser while the exported `.pptx` silently never contained it. Now:
+- A visual is only placed on a slide with neither an existing `<p:pic>` nor
+  `has_image`/`has_diagram` already true (double guard against overwriting an author's
+  own image).
+- **Text wins over visuals on a fit conflict** — if refined body text wouldn't fit
+  alongside the visual's reserved region (42% of the body box height, with a minimum-
+  height floor below which no visual is attempted at all), the visual is dropped, never
+  the text. Continuation slides are reserved for genuine text overflow only, never
+  created just to make room for a picture.
+- Rasterization never throws — a bad SVG, mermaid.ink outage, or undersized Imagen
+  result all resolve to "no visual embedded" rather than a failed request. Whenever a
+  proposed visual doesn't make it into the file (rasterization failure or fit-check
+  drop), `change_summary` gets a distinct suffix appended so it's visible to the faculty
+  member in the results UI, not just server logs.
+- Placement is a heuristic centered-in-region fit, not a measured no-overlap check.
+  Bottom "KEY INSIGHT" callout boxes stay text-only — visual embedding only ever targets
+  the title/body region.
+
+### Continuation Slides & "Allow New Slides"
+
+The bulk-refine UI option **"Allow Adding New Slides"** (`RefinementOptions.allow_new_slides`,
+default **on**) is the single gate for two independent mechanisms:
+1. **AI-proposed new slides** (from Expand Thin Sections / Add Real-World Examples / Add
+   Practice Problems): folded back into the parent slide as extra labeled bullets when
+   the toggle is off, instead of becoming a separate slide.
+2. **Continuation slides for text overflow**: when refined body text still overflows at
+   the auto-shrink floor, and the toggle is on, the largest whole-bullet prefix that
+   fits stays on the source slide and the remainder spills onto one appended
+   `"<title> (cont'd)"` slide — capped at exactly one continuation per source slide. If
+   even the continuation can't hold the overflow, or the toggle is off, the original
+   body text is kept and the slide is marked reverted.
+
+Both mechanisms independently check the same `allow_new_slides` toggle rather than
+inferring intent from any AI-emitted signal — see the model-flag-vs-user-toggle learning
+in §17.
+
+### Layout/Master Geometry-Inheritance Resolver
+
+A title or body shape with no explicit `<a:xfrm>` in its own `<p:spPr>` is not a shape
+with no position — OOXML resolves it from the matching placeholder in the slide's
+`slideLayout`, falling back to the `slideMaster` if the layout itself has no xfrm for
+it. Every fit/overlap check in `assembler.ts` originally only read a shape's own xfrm,
+so such placeholders were invisible to the fit estimator. `buildGeometryResolver()`
+parses each slide's layout + master once per deck, resolves title/body geometry through
+that inheritance chain, and feeds it into the same fit-check path used for
+explicitly-positioned shapes — one rule, not two. An inherited-geometry title is
+reverted (not kept oversized) specifically when it both grows noticeably longer than
+the original *and* its resolved box overlaps a fixed-position picture or table; an
+explicit-position title's overlap with another shape is left alone as a pre-existing
+authoring choice.
+
+### Change-Summary Label Taxonomy
+
+Seven distinct outcome states, defined once as string constants in
+`src/lib/ppt-refine/types.ts` and consumed by both the server (`refiner.ts`/
+`assembler.ts`) and the client (`page.tsx`) — a single source of truth so the UI can
+never drift from what the pipeline actually decided:
+
+| State | Meaning |
+|---|---|
+| No changes needed | Genuine AI no-op — refined content matched the original |
+| Refinement failed — original content preserved | All batch retries exhausted |
+| Refined content did not fit the slide — original kept | Full revert (title + body) |
+| Refined title did not fit — original title kept; body was updated | Partial revert (title only) |
+| Refined body did not fit — original body kept; title was updated | Partial revert (body only) |
+| Slide not selected for refinement — left unchanged | Deliberately deselected, never sent to AI |
+| Slide edited via chat — your changes applied | Single-slide chat mode result |
+| Refined content could not be applied to this slide's structure — original kept | AI proposed a real change but no title/body placeholder existed to write it into |
+
+A dropped/failed visual appends a distinct suffix to whichever of the above applies,
+rather than silently changing the summary's meaning.
+
+### Post-Generation Refine Flow (`/faculty/generate/refine/[contentId]`)
+
+Edits a deck this product's own generator already built, represented as
+`SlideContent[]` (flat `type`/`title`/`bullets`/`note`/`svg`/`mermaid`/`imagenPrompt`/
+quiz-style fields for practice slides) — not `ExtractedSlide`/`RefinedSlide`. Left
+column: slide list with reorder/delete/"+ Add slide after". Right column:
+`SlideChatConsole` (`chipBehavior="fill"`). Sending an instruction calls
+`POST /api/generate/ppt/refine` (`operation: "patch" | "insert"`, routes through
+`routeAI('ppt_gen', …)` — not the `ppt_refine` task the standalone tool uses). Changes
+only mutate local React state until the faculty member explicitly triggers a rebuild
+(`POST /api/generate/ppt/rebuild`), which regenerates the entire file from the current
+`slides` array via `generatePPTXBuffer()` — the same full-rebuild path as original PPT
+generation. No XML patching is involved in this flow at all.
+
+### Text Refinement Tab (`/faculty/refine` → "Text Refinement" sub-tab)
+
+Unrelated, much simpler pipeline predating the PPT-refine work (shipped ~Feb 2026,
+functionally unchanged since): paste/select text (≤15,000 chars) → 5 checkbox
+refinement types (`src/lib/refine/generator.ts`) → optional target-semester (shown only
+for Simplify) → `POST /api/refine` → `routeAI('refine', …)` → refined markdown rendered
+via `ReactMarkdown`. No `.pptx` parsing, no slide model, no XML assembly — shares no
+code path with `ppt-refine/*` beyond sitting in the same page's other tab.
 
 ---
 
@@ -920,6 +1086,16 @@ API routes:
 ## 17. Active Feature Roadmap
 
 ### Recently Shipped (July 2026)
+- **Content Refinement Tab (`/faculty/refine`) — complete, no longer deferred.** Full
+  extract → refine → assemble pipeline for the standalone PPT Refinement tab: per-slide
+  selection (default all-selected) driving bulk-option or single-slide-chat
+  refinement, real visual embedding (SVG/Mermaid/Imagen → rasterized `<p:pic>` shapes),
+  continuation slides for text overflow gated by Allow New Slides, and a layout/master
+  geometry-inheritance resolver for fit/overlap checks on inherited-position
+  placeholders. Text Refinement sub-tab unchanged. Post-generation refine flow
+  (`/faculty/generate/refine`) hardened alongside it, sharing only the
+  `SlideChatConsole` chat component with the standalone tool. **Complete — see §10 for
+  full architecture.**
 - **Math & Chemistry rendering (LaTeX / mhchem)** — full cross-surface system: KaTeX (screen) + MathJax→SVG→sharp→PNG (print/export), `$...$` math + bare `\ce{...}` chemistry, `MATH_CHEM_NOTATION_GUIDE` single source of truth, MathToolbar/MathTextarea authoring UI, CSV `### Mathematics ###`/`### Chemistry ###` sections, PYQ-archetype generation fallback (`archetypes.ts`). Wired into screen/PDF/Word/answer-key/PPT. **Complete for math; chemistry not yet live-tested (no chemistry subject seeded) — see §13.**
 - **Q paper PDF pagination/metadata bug fixes (this session):**
   - Header/instruction wrap not advancing the cursor (`drawPool`, `drawAttemptAnyOne`, `drawMCQRow`) — audited exhaustively via grep for `maxWidth:`, no fourth instance.
@@ -966,6 +1142,10 @@ API routes:
 5. Expand interview prep bank to 30+ questions
 6. Test TPO dashboard with real student batch
 7. Placement module bugs (branch matching, gap tag display, setup redirect) — unresolved
+8. Verify `dept_admin` role gap in `/api/generate/ppt/refine`'s allowed-roles array —
+   present on all three `ppt-refine/*` routes and `/api/refine`, absent on this one. No
+   commit explains the omission; confirm with Dhruv whether intentional before treating
+   it as a bug.
 
 **Tier 2 — Depth at PPSU:**
 9. Q bank UX simplification (too many steps for daily faculty use)
@@ -978,21 +1158,18 @@ API routes:
 12. NAAC auto-report generator (Criterion 2 from existing data — changes Dean's buying decision)
 13. Animated explainer renderer rewrite (dedicated session, start with array_sort pattern)
 14. Curriculum quality validator tool — deferred until Q Paper fully end-to-end verified
-15. **Content Refinement Tab** — explicitly deferred; scope to be defined by Dhruv in a
-    future session. Do NOT start or scope further until directed. (Distinct from the
-    existing text/PPT refinement in §7.)
-16. **Auto-regen-loop for PPT slides** (flagged, not built) — after slides are marked
+15. **Auto-regen-loop for PPT slides** (flagged, not built) — after slides are marked
     done, run a deterministic-first / AI-fallback-second validity pass so flagged/`null`
     slides self-heal in the same generation loop rather than needing manual Refine. Logged
     as a future practical improvement, not yet scoped.
 
 **Tier 4 — Agentic placement (after foundation):**
-17. Placement Agent (Gemini function-calling, multi-turn)
-18. Company Arrival Mode (full drive countdown auto-shift)
-19. Commerce/Architecture mini-project guides
+16. Placement Agent (Gemini function-calling, multi-turn)
+17. Company Arrival Mode (full drive countdown auto-shift)
+18. Commerce/Architecture mini-project guides
 
 **Tier 5 — Growth:**
-20. Dean/HOD provisioning UI, JD Gap Analysis, Credential Passport, Mock Interview, Multi-tenant
+19. Dean/HOD provisioning UI, JD Gap Analysis, Credential Passport, Mock Interview, Multi-tenant
 
 ### Key Learnings
 
@@ -1036,6 +1213,63 @@ API routes:
   were evaluated and rejected (PPR risky without per-route testing; ping doesn't
   warm the heavy serverless functions, only edge).
 
+- **A shared parser/config default can silently corrupt content project-wide — always
+  check the actual blast radius, don't assume a bug is scoped to where you found it.**
+  `fast-xml-parser`'s default `trimValues: true` was fusing run-boundary spaces across
+  PowerPoint's split `<a:r>` runs (e.g. `"MOVER "` + `"BREG "` joining into
+  `"MOVERBREGX"`). Fixed by setting `trimValues: false` in `extractor.ts`'s parser
+  config — confirmed safe to change because `fast-xml-parser` has exactly one call site
+  in the entire codebase. The reusable lesson is the check itself: a shared parser/
+  config change is not safe to assume scoped until you've grepped for every consumer.
+
+- **Fit-check/overlap logic must resolve REAL effective geometry, not just a shape's
+  own `<a:xfrm>`.** A title/body placeholder with an empty `<p:spPr/>` is not a shape
+  with no position — OOXML resolves it through the slideLayout, then the slideMaster.
+  Any check that only reads a shape's own xfrm is blind to every placeholder using
+  inherited geometry, which is common. The geometry-inheritance resolver in
+  `assembler.ts` (§10) closes this — walk the inheritance chain before treating "no
+  xfrm" as "no constraint."
+
+- **A model-emitted boolean is not a substitute for a deterministic trigger on an
+  explicit user toggle.** The `add_summary_slide` decision used to trust the AI's
+  self-reported `needs_summary` field, which silently defaulted to `false` on any batch
+  that fell back after exhausted retries — so the feature could fail exactly when
+  retries were already failing elsewhere. Fixed by making the user's own toggle the
+  sole trigger and treating the model's signal as vestigial. Prefer this pattern
+  generally: let the user's explicit setting decide, treat model output as advisory at
+  most.
+
+- **An option's toggle must be enforced at the code level as well as the prompt
+  level.** "Add Key Insights" bullets were being silently dropped whenever a slide was
+  already near the shared bullet-count schema cap from other active options — a prompt
+  instruction alone can't guarantee compliance under a hard schema constraint. The fix
+  is prompt guidance (reserve a slot) *plus* a deterministic post-generation presence
+  check that at least converts a silent failure into a logged one. A prompt-only
+  instruction is not a hard guarantee the model will honor it every time; back it with
+  code wherever the failure would otherwise be invisible.
+
+- **Preview and export can silently disagree — they need their own explicit parity
+  checks, not assumed from "the data looks right."** Two separate incidents this
+  cycle: an AI-proposed visual rendered in the browser preview while the exported
+  `.pptx` never contained it (the assembler was preview-only for visuals until real
+  embedding shipped, §10); and bullets rendered correctly on-screen but exported as
+  unbulleted plain paragraphs on AI-generated new/continuation slides (plain `<p:sp>`
+  shapes inherit no layout bullet formatting, unlike real `<p:ph>` placeholders). Both
+  were caught only by inspecting the actual rendered/exported artifact, not by trusting
+  the intermediate data — reinforces the "visual/rendered inspection is the only
+  authoritative check" learning above from a different angle.
+
+- **Any "revert to original" fallback path needs its own accurate, distinct label.** A
+  silent revert reported as a generic "No changes needed" is indistinguishable from a
+  genuine AI no-op, and erodes faculty trust exactly when something real went wrong
+  (batch failure, content that didn't fit, an AI edit that couldn't be mapped onto the
+  slide's structure). `ppt-refine/types.ts` now centralizes seven distinct
+  `change_summary` states as the single source of truth for both server and client —
+  see §10's label taxonomy table.
+
+- **Concurrent-session hygiene** — see §22 for the working-tree mitigation this cycle
+  surfaced repeatedly (large, vaguely-titled commits bundling unrelated work).
+
 ---
 
 ## 18. Known Issues
@@ -1057,6 +1291,8 @@ API routes:
 | Per-module difficulty ceiling UI (popover on module chips) | Designed, not built | Build UI once prioritized |
 | Placement module bugs (branch matching, gap tag display, setup redirect) | Active | Unresolved |
 | Curriculum quality validator tool | Deferred | Deferred until Q Paper fully end-to-end verified |
+| `dept_admin` missing from `/api/generate/ppt/refine` allowed roles | Open question | Present on all three `ppt-refine/*` routes + `/api/refine`; absent only here. No commit explains the omission — confirm with Dhruv whether intentional |
+| PPT-refine visual placement is a heuristic region reservation, not a measured no-overlap check | Known limitation | Acceptable for now — text always wins the fit conflict over a visual (§10) |
 
 ---
 
@@ -1083,6 +1319,12 @@ API routes:
 | Hamilton apportionment for sourcing mix | Guarantees per-run determinism; random sampling drifts from the configured % |
 | adm-zip NOT unzipper | Turbopack build failure with unzipper |
 | XML patching for PPT refinement | Round-trip parse/rebuild re-encodes nodes, breaks PowerPoint |
+| ppt-refine's `fast-xml-parser` config uses `trimValues: false` (not the library default) | Default trimming strips whitespace that sometimes lives at a PowerPoint run boundary, fusing adjacent words together on join. Confirmed via grep this is the only call site in the codebase — always re-verify blast radius before trusting a shared parser/config fix is scoped |
+| Geometry resolver walks layout→master inheritance for shapes with no explicit `<a:xfrm>` | A placeholder with no own position is not "no constraint" — OOXML resolves it through the slideLayout, then slideMaster. Fit/overlap checks that skip this are blind to a common case (§10) |
+| `change_summary` constants centralized in `ppt-refine/types.ts` | Single source of truth for revert/failure/success labels across server (`refiner.ts`/`assembler.ts`) and client (`page.tsx`) — prevents the UI ever showing a generic label for what was actually a specific failure |
+| PPT-refine visual embedding always drops the visual before ever shrinking/dropping refined text | Text integrity is prioritized over a cosmetic diagram — a slide with correct-but-plain text beats one with truncated text and a picture |
+| Post-gen refine flow uses `SlideContent[]` + full regeneration; standalone ppt-refine uses `ExtractedSlide`/`RefinedSlide` + XML patching — deliberately not unified | Post-gen operates on this product's own generated JSON (safe to fully regenerate via `generatePPTXBuffer()`); ppt-refine operates on an arbitrary uploaded `.pptx` whose original design must be preserved outside the patched text — full regeneration isn't an option there (§10) |
+| `allow_new_slides` is the sole gate for both AI-proposed new slides AND text-overflow continuation slides | One user-facing toggle, two independent enforcement points in code — avoids the AI's own signals (e.g. a model-emitted `needs_summary`/similar boolean) silently substituting for the user's explicit choice (§10, §17) |
 | get_my_role() SECURITY DEFINER for RLS | Breaks profiles→profiles recursion |
 | Faculty access via faculty_assignments only | Cross-school teaching support |
 | subject_content.created_by nullable | Seeded data has no creating user |
@@ -1140,6 +1382,15 @@ GOOGLE_CLOUD_TTS_KEY=          # Optional — for animated explainer voiceover
 7. Verification loop — exact logs and screenshots after each change
 8. Honest assessments — not confirmation
 9. Communication style — terse and directive
+10. **Concurrent-session hygiene (surfaced repeatedly during the Content Refinement Tab
+    cycle):** multiple agents/sessions writing to the same working tree can silently
+    bundle unrelated work into one commit, or clobber it. This repo's history has
+    several large, vaguely-titled commits ("Half hearted push," "remaining pushes")
+    that each bundle 100+ unrelated files across features, and at least one commit
+    whose own message admits folding in "an existing uncommitted fix" left in the tree
+    by a separate session. Mitigation: use separate git worktrees for genuinely
+    parallel sessions, and never trust a reported "committed and pushed" without
+    checking `git log` / `git show` yourself when it matters.
 
 ---
 
@@ -1159,7 +1410,7 @@ logs/screenshots, you verify before proceeding.
 
 **Key rules when working:**
 - Always read CLAUDE_CONTEXT.md before responding
-- Check Section 18 (architectural decisions) before suggesting changes
+- Check Section 19 (architectural decisions) before suggesting changes
 - Provide targeted Cursor prompts, not full file rewrites
 - `thinkingBudget: 0` for any structured JSON task
 - Never use `.rpc()` for cosine similarity — always JS loop
@@ -1183,3 +1434,8 @@ logs/screenshots, you verify before proceeding.
 - CO tag validation is a hard `validateCoOrNull` gate (invalid → null + warning), never nearest-fit guessing
 - Keep responseSchemas narrow — irrelevant optional fields cause runaway token cost independent of thinkingBudget
 - Chemistry rendering is NOT yet live-tested (no chemistry subject seeded) — treat it as an open gap
+- ppt-refine's `fast-xml-parser` config uses `trimValues: false` — don't "fix" this back to the library default, it fuses run-boundary spaces (§10)
+- PPT-refine fit/overlap checks must resolve inherited layout/master geometry, not just a shape's own `<a:xfrm>` (§10)
+- PPT-refine visual embedding always drops the visual before ever touching refined text — never the reverse (§10)
+- The post-gen refine flow and the standalone Content Refinement Tab intentionally use different data models (`SlideContent[]`+regenerate vs. `ExtractedSlide`/`RefinedSlide`+XML-patch) — don't try to unify them (§10)
+- Before starting a parallel/concurrent session on this repo, use a separate git worktree — see §22 for why
