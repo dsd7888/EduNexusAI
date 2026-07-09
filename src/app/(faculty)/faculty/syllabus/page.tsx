@@ -6,20 +6,25 @@
  * add/remove controls on each module card.
  */
 
-import { useEffect, useMemo, useState } from "react";
-import { BookOpen } from "lucide-react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import Link from "next/link";
+import { BookOpen, Loader2, Plus, Trash2 } from "lucide-react";
+import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { createBrowserClient } from "@/lib/db/supabase-browser";
-import { useFacultySubjects } from "@/hooks/useSupabaseData";
+import { useFacultySubjects, type SubjectRow } from "@/hooks/useSupabaseData";
 import { ModuleSyllabusCard } from "./_components/ModuleSyllabusCard";
 import {
   CONFIDENCE_CLASSES,
@@ -36,10 +41,22 @@ interface ExamScheme {
   total_marks: number | null;
 }
 
+const SUBJECT_CAP = 5;
+
 export default function FacultySyllabusPage() {
-  const { subjects, isLoading: subjectsLoading } = useFacultySubjects();
+  const { subjects, isLoading: subjectsLoading, refetch } = useFacultySubjects();
   const [subjectId, setSubjectId] = useState("");
   const [search, setSearch] = useState("");
+  const [pendingRemoval, setPendingRemoval] = useState<SubjectRow | null>(null);
+  const [removing, setRemoving] = useState(false);
+
+  // Land directly on a specific subject when arriving from the Add flow
+  // (/faculty/syllabus?subject={id}). Read from the URL directly rather than
+  // useSearchParams to avoid a Suspense-boundary build bailout.
+  useEffect(() => {
+    const fromUrl = new URLSearchParams(window.location.search).get("subject");
+    if (fromUrl) setSubjectId(fromUrl);
+  }, []);
 
   // Data is tagged with the subject it belongs to, so switching subjects
   // derives back to "loading" with no synchronous reset in an effect.
@@ -121,6 +138,32 @@ export default function FacultySyllabusPage() {
     });
   };
 
+  const handleConfirmRemove = useCallback(async () => {
+    if (!pendingRemoval) return;
+    setRemoving(true);
+    try {
+      const res = await fetch(
+        `/api/faculty/subjects/${encodeURIComponent(pendingRemoval.id)}`,
+        { method: "DELETE" }
+      );
+      if (!res.ok) {
+        const j = await res.json().catch(() => ({}));
+        toast.error(j.error ?? "Couldn't remove that subject");
+        return;
+      }
+      toast.success(`Removed ${pendingRemoval.code} from your subjects`);
+      if (subjectId === pendingRemoval.id) setSubjectId("");
+      setPendingRemoval(null);
+      refetch();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Couldn't remove that subject");
+    } finally {
+      setRemoving(false);
+    }
+  }, [pendingRemoval, subjectId, refetch]);
+
+  const atCap = subjects.length >= SUBJECT_CAP;
+
   return (
     <div className="p-6 max-w-6xl mx-auto flex gap-6">
       <div className="w-[280px] shrink-0 space-y-3">
@@ -128,6 +171,16 @@ export default function FacultySyllabusPage() {
           <BookOpen className="size-5" />
           Syllabus
         </h1>
+
+        <div className="flex items-center justify-between">
+          <span className="text-xs font-medium text-muted-foreground">
+            My Subjects
+          </span>
+          <span className="text-xs text-muted-foreground">
+            {subjects.length} of {SUBJECT_CAP} added
+          </span>
+        </div>
+
         {subjects.length > 5 && (
           <Input
             value={search}
@@ -136,34 +189,131 @@ export default function FacultySyllabusPage() {
             className="h-8 text-sm"
           />
         )}
-        <div>
-          <Label className="text-xs mb-1 block">Subject</Label>
-          <Select
-            value={activeSubjectId}
-            onValueChange={setSubjectId}
-            disabled={subjectsLoading || subjects.length === 0}
-          >
-            <SelectTrigger className="h-9 w-full">
-              <SelectValue
-                placeholder={
-                  subjectsLoading
-                    ? "Loading subjects…"
-                    : subjects.length === 0
-                      ? "No subjects assigned"
-                      : "Select subject"
-                }
-              />
-            </SelectTrigger>
-            <SelectContent>
-              {filteredSubjects.map((s) => (
-                <SelectItem key={s.id} value={s.id}>
-                  {s.code} — {s.name}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
+
+        {subjectsLoading ? (
+          <p className="text-sm text-muted-foreground">Loading subjects…</p>
+        ) : subjects.length === 0 ? (
+          <div className="rounded-md border border-dashed p-4 text-center space-y-2">
+            <p className="text-sm font-medium">Welcome! Let&apos;s get started.</p>
+            <p className="text-xs text-muted-foreground">
+              You haven&apos;t added any subjects yet. Add your first one to bring
+              in its syllabus and course outcomes.
+            </p>
+            <Button asChild size="sm" className="gap-1 w-full mt-1">
+              <Link href="/faculty/syllabus/add">
+                <Plus className="size-4" /> Add your first subject
+              </Link>
+            </Button>
+          </div>
+        ) : (
+          <div className="space-y-1">
+            {filteredSubjects.map((s) => {
+              const active = s.id === activeSubjectId;
+              return (
+                <div
+                  key={s.id}
+                  className={
+                    "group flex items-center gap-1 rounded-md border px-2 py-1.5 text-sm transition-colors " +
+                    (active
+                      ? "border-primary/40 bg-primary/5"
+                      : "hover:bg-muted")
+                  }
+                >
+                  <button
+                    type="button"
+                    onClick={() => setSubjectId(s.id)}
+                    className="flex-1 min-w-0 text-left"
+                    aria-current={active ? "true" : undefined}
+                  >
+                    <span className="font-medium">{s.code}</span>
+                    <span className="block truncate text-xs text-muted-foreground">
+                      {s.name}
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setPendingRemoval(s)}
+                    className="shrink-0 rounded-md p-1.5 text-muted-foreground opacity-0 transition-opacity hover:bg-destructive/10 hover:text-destructive focus:opacity-100 group-hover:opacity-100"
+                    aria-label={`Remove ${s.code} from your subjects`}
+                  >
+                    <Trash2 className="size-4" />
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {subjects.length > 0 && (
+          <div className="space-y-1 pt-1">
+            <Button
+              asChild={!atCap}
+              size="sm"
+              variant="outline"
+              disabled={atCap}
+              className="gap-1 w-full"
+              title={
+                atCap
+                  ? `You've reached the ${SUBJECT_CAP}-subject limit for this pilot.`
+                  : undefined
+              }
+            >
+              {atCap ? (
+                <span>
+                  <Plus className="size-4" /> Add Subject
+                </span>
+              ) : (
+                <Link href="/faculty/syllabus/add">
+                  <Plus className="size-4" /> Add Subject
+                </Link>
+              )}
+            </Button>
+            {atCap && (
+              <p className="text-xs text-muted-foreground text-center">
+                You&apos;ve reached the {SUBJECT_CAP}-subject limit for this pilot.
+              </p>
+            )}
+          </div>
+        )}
       </div>
+
+      <AlertDialog
+        open={pendingRemoval !== null}
+        onOpenChange={(open) => {
+          if (!open && !removing) setPendingRemoval(null);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              Remove {pendingRemoval?.code} from your subjects?
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              This removes {pendingRemoval?.code} — {pendingRemoval?.name} from your
+              list only. The syllabus itself isn&apos;t deleted, and you can add it
+              back later from the catalog.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={removing}>Keep it</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={(e) => {
+                e.preventDefault();
+                handleConfirmRemove();
+              }}
+              disabled={removing}
+            >
+              {removing ? (
+                <>
+                  <Loader2 className="size-4 animate-spin" /> Removing…
+                </>
+              ) : (
+                "Remove"
+              )}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       <div className="flex-1 min-w-0 space-y-4">
         <div className="rounded-md border border-primary/20 bg-primary/5 px-4 py-2 text-sm text-muted-foreground space-y-1.5">
