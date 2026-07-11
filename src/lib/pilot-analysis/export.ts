@@ -35,7 +35,6 @@ const GEN_COLUMNS: { key: string; label: string }[] = [
   { key: "answer_key", label: "Answer Keys" },
   { key: "visual_notes", label: "Visual Notes" },
   { key: "refined_notes", label: "Refined Notes" },
-  { key: "explainer", label: "Explainers" },
   { key: "qbank_question", label: "Q Bank Qs" },
 ];
 

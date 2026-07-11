@@ -66,12 +66,15 @@ function createGeminiProvider(): AIProvider {
           "pyq_extract",
           "qbank_generate",
           "qbank_tag",
-          "explainer_extract",
           // Answer-key blocks emit a strict JSON array. The MCQ block runs on
           // Flash, where leaving thinking uncapped silently consumes the
           // maxOutputTokens budget and truncates the JSON → parse failure.
           "answer_key_mcq",
           "answer_key_descriptive",
+          // Lesson-plan generation: per-module/practicals calls that always
+          // pass a narrow responseSchema. thinkingBudget:0 is MANDATORY here
+          // (CLAUDE_CONTEXT §19) — Flash thinking tokens would truncate the JSON.
+          "lesson_plan_gen",
         ].includes(taskName);
 
         const temperature =

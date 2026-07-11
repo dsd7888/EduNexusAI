@@ -22,9 +22,8 @@ const TASK_TO_MODEL: Record<string, "flash" | "pro"> = {
   qbank_generate: "flash",
   qbank_tag: "flash",
   module_co_classify: "flash",
-  explainer_ideate: "flash",
-  explainer_extract: "pro",
   qbank_image_question: "flash",
+  lesson_plan_gen: "flash",
 };
 
 const DEFAULT_MODEL: "flash" | "pro" = "flash";
@@ -139,13 +138,11 @@ export async function routeAI(
                             ? 8192
                             : task === "qbank_tag"
                               ? 2048
-                              : task === "explainer_extract"
-                                ? 16384
-                                : task === "explainer_ideate"
+                              : task === "qbank_image_question"
+                                ? 4096
+                                : task === "lesson_plan_gen"
                                   ? 8192
-                                  : task === "qbank_image_question"
-                                    ? 4096
-                                    : 4096),
+                                  : 4096),
   };
 
   const providerName =

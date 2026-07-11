@@ -1,8 +1,6 @@
 /**
  * Storage layer for question images: upload to the `question-images` bucket
- * and mint signed URLs for serving.  Mirrors the shape of
- * src/lib/explainer/storage.ts — same admin-client approach, same path
- * convention ({ownerId}/{uuid}.ext), same signed-URL helper.
+ * and mint signed URLs for serving.
  *
  * All functions take an admin (service-role) client so uploads and URL minting
  * run server-side and bypass RLS.
@@ -29,7 +27,7 @@ export function resolveImageExt(mimeType: string): string | null {
 
 /**
  * Upload a base64-encoded image to the question-images bucket.
- * Path: `{facultyId}/{uuid}.{ext}` — mirrors uploadExplainerHtml's path shape.
+ * Path: `{facultyId}/{uuid}.{ext}`.
  * Returns the storage path (never a URL).
  * Throws on upload failure so the caller can abort the DB insert.
  */

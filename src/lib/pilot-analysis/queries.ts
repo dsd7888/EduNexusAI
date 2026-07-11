@@ -130,13 +130,12 @@ export interface OverviewData {
 export async function getOverview(admin: AdminClient): Promise<OverviewData> {
   const thisWeek = istIsoWeekKey(new Date().toISOString());
 
-  const [facultyProfilesRes, logs, sessions, gc, explainersRes, qbankRes, settingRes] =
+  const [facultyProfilesRes, logs, sessions, gc, qbankRes, settingRes] =
     await Promise.all([
       admin.from("profiles").select("id").eq("role", "faculty"),
       loadAiCallLogs(admin),
       loadSessions(admin),
       fetchAll<GeneratedContentRow>(admin, "generated_content", "type, generated_by, created_at"),
-      admin.from("explainers").select("created_at"),
       admin.from("faculty_question_bank").select("created_at"),
       admin
         .from("pilot_analysis_settings")
@@ -202,11 +201,6 @@ export async function getOverview(admin: AdminClient): Promise<OverviewData> {
     bump(byType, r.type);
     if (istIsoWeekKey(r.created_at) === thisWeek) bump(thisWeekByType, r.type);
   }
-  const explainers = (explainersRes.data ?? []) as { created_at: string }[];
-  for (const e of explainers) {
-    bump(byType, "explainer");
-    if (istIsoWeekKey(e.created_at) === thisWeek) bump(thisWeekByType, "explainer");
-  }
   const qbank = (qbankRes.data ?? []) as { created_at: string }[];
   for (const q of qbank) {
     bump(byType, "qbank_question");
@@ -229,7 +223,6 @@ export async function getOverview(admin: AdminClient): Promise<OverviewData> {
   const qpaper = byType["qpaper"] ?? 0;
   const answerKey = byType["answer_key"] ?? 0;
   const qbankCount = byType["qbank_question"] ?? 0;
-  const explainerCount = byType["explainer"] ?? 0;
   // ppt_refine has no generated_content type — interim proxy: distinct successful
   // ppt_refine job_ids. FLAGGED as an open question in the report.
   const pptRefineJobs = new Set<string>();
@@ -241,7 +234,6 @@ export async function getOverview(admin: AdminClient): Promise<OverviewData> {
     qpaper,
     answer_key: answerKey,
     qbank: qbankCount,
-    explainer: explainerCount,
     ppt_refine: pptRefineJobs.size,
   };
   const hoursSavedByFeature: Record<string, { artifacts: number; hoursSaved: number }> = {};
@@ -296,14 +288,13 @@ export interface FacultyRow {
 }
 
 export async function getPerFaculty(admin: AdminClient): Promise<FacultyRow[]> {
-  const [profilesRes, assignmentsRes, logs, sessions, gc, explainersRes, qbankRes] =
+  const [profilesRes, assignmentsRes, logs, sessions, gc, qbankRes] =
     await Promise.all([
       admin.from("profiles").select("id, email, full_name").eq("role", "faculty"),
       admin.from("faculty_assignments").select("faculty_id, subjects(code)"),
       loadAiCallLogs(admin),
       loadSessions(admin),
       fetchAll<GeneratedContentRow>(admin, "generated_content", "type, generated_by, created_at"),
-      admin.from("explainers").select("created_by"),
       admin.from("faculty_question_bank").select("faculty_id"),
     ]);
 
@@ -451,12 +442,6 @@ export async function getPerFaculty(admin: AdminClient): Promise<FacultyRow[]> {
     const acc = byUserId.get(r.generated_by);
     if (!acc) continue;
     acc.generationCounts[r.type] = (acc.generationCounts[r.type] ?? 0) + 1;
-  }
-  for (const e of (explainersRes.data ?? []) as { created_by: string | null }[]) {
-    if (!e.created_by) continue;
-    const acc = byUserId.get(e.created_by);
-    if (!acc) continue;
-    acc.generationCounts["explainer"] = (acc.generationCounts["explainer"] ?? 0) + 1;
   }
   for (const q of (qbankRes.data ?? []) as { faculty_id: string | null }[]) {
     if (!q.faculty_id) continue;

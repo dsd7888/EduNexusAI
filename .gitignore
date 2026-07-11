@@ -33,6 +33,9 @@ yarn-error.log*
 # env files (can opt-in for committing if needed)
 .env*
 
+# live credentials produced by scripts/bulk-create-faculty.ts — never commit
+faculty-credentials-*.csv
+
 # vercel
 .vercel
 

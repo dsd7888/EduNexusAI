@@ -33,10 +33,6 @@ import {
 import type { SlideContent } from "@/lib/ppt/generator";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
-import {
-  ConceptExplainers,
-  type ConceptSlide,
-} from "./_components/ConceptExplainers";
 import { MyGenerationsPanel } from "./_components/MyGenerationsList";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -422,7 +418,6 @@ export default function FacultyGeneratePage() {
   const [logoUrl, setLogoUrl] = useState<string | null>(null);
   const [showWhat, setShowWhat] = useState(false);
   const [showPanel, setShowPanel] = useState(false);
-  const [conceptSlides, setConceptSlides] = useState<ConceptSlide[]>([]);
   const [recentGeneration, setRecentGeneration] = useState<{
     id: string;
     title: string;
@@ -873,27 +868,6 @@ export default function FacultyGeneratePage() {
         progressRef.current = null;
       }
 
-      // Capture concept slides for explainer section
-      const conceptOutline = (outline.outline as OutlineItem[]).filter(
-        (s) => s.type === "concept" || s.type === "diagram"
-      );
-      setConceptSlides(
-        conceptOutline.map((s) => {
-          const built = allSlides[s.index] as
-            | (SlideContent & { bullets?: string[] })
-            | null;
-          const bullets =
-            built && Array.isArray(built.bullets)
-              ? built.bullets.join(". ")
-              : "";
-          return {
-            index: s.index,
-            title: s.title,
-            contentHint: bullets.slice(0, 200),
-          };
-        })
-      );
-
       setResult(buildResult);
       setView("done");
 
@@ -957,7 +931,6 @@ export default function FacultyGeneratePage() {
     setProgress(0);
     setSelectedModuleId("");
     setCustomTopic("");
-    setConceptSlides([]);
     void loadResumable();
   };
 
@@ -1436,18 +1409,6 @@ export default function FacultyGeneratePage() {
               </Button>
             </div>
           </div>
-
-          {/* TODO: re-enable when Explainer is production-ready
-          <ConceptExplainers
-            slides={conceptSlides}
-            subjectId={selectedSubjectId}
-            moduleId={
-              inputMode === "module"
-                ? selectedModuleId || undefined
-                : undefined
-            }
-          />
-          */}
         </div>
 
         <MyGenerationsPanel

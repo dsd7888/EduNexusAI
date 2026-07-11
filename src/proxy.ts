@@ -13,7 +13,7 @@ type UserRole =
   | "hod";
 
 // dean/hod are faculty-tier roles: they reach /faculty/* and faculty-tier APIs
-// (e.g. the explainer feature) but not the superadmin tier.
+// but not the superadmin tier.
 const FACULTY_TIER_ROLES: UserRole[] = ["faculty", "dean", "hod"];
 
 const PUBLIC_PATHS = ["/", "/login", "/register", "/auth/callback", "/api/auth/callback"] as const;
@@ -120,8 +120,7 @@ export async function proxy(request: NextRequest) {
       path.startsWith("/api/qpaper") ||
       path.startsWith("/api/refine") ||
       path.startsWith("/api/approvals") ||
-      path.startsWith("/api/faculty") ||
-      path.startsWith("/api/explainer");
+      path.startsWith("/api/faculty");
     const isSuperadminTierApi =
       path.startsWith("/api/upload") || path.startsWith("/api/admin");
 

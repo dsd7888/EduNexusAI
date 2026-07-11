@@ -26,7 +26,7 @@ export function calculateTextCostInr(
   const rates = TEXT_MODEL_RATES[model];
   // Thinking tokens are billed at the output rate by Gemini — they must be added
   // to the output cost, not tracked separately and left uncosted (audit finding:
-  // explainer_ideate and chat currently undercount for this reason).
+  // chat currently undercounts for this reason).
   const billableOutputTokens = outputTokens + thinkingTokens;
   const costUsd =
     (inputTokens / 1_000_000) * rates.inputPerM +

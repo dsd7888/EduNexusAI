@@ -18,7 +18,6 @@ export const TIME_SAVED_MINUTES_PER_ARTIFACT: Record<
   answer_key: { manual: 45, ai: 5 },
   qbank: { manual: 10, ai: 2 }, // per question
   ppt_refine: { manual: 20, ai: 3 },
-  explainer: { manual: 60, ai: 10 },
 };
 
 // Update these if/when the Supabase tier changes.

@@ -1,5 +1,6 @@
 import type { NextRequest } from "next/server";
 import { apiError, requireRole } from "@/lib/api/helpers";
+import { assertSubjectAccess } from "@/lib/api/subjectAccess";
 import type {
   ExtractedSyllabus,
   ExtractedPractical,
@@ -7,12 +8,20 @@ import type {
 
 export async function GET(request: NextRequest) {
   try {
-    const authResult = await requireRole(["superadmin"]);
+    const authResult = await requireRole(["faculty", "superadmin", "dept_admin"]);
     if (authResult instanceof Response) return authResult;
-    const { adminClient } = authResult;
+    const { user, profile, adminClient } = authResult;
 
     const subjectId = request.nextUrl.searchParams.get("subject_id");
     if (!subjectId) return apiError("subject_id is required", 400);
+
+    const accessError = await assertSubjectAccess(
+      adminClient,
+      profile.role,
+      user.id,
+      subjectId
+    );
+    if (accessError) return accessError;
 
     const { data: subject, error: subjectErr } = await adminClient
       .from("subjects")

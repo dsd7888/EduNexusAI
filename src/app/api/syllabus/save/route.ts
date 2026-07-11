@@ -1,13 +1,14 @@
 import type { NextRequest } from "next/server";
 import { apiError, requireRole } from "@/lib/api/helpers";
+import { assertSubjectAccess } from "@/lib/api/subjectAccess";
 import { persistSyllabusAndClassify } from "@/lib/syllabus/persistAndClassify";
 import type { ExtractedSyllabus } from "@/lib/syllabus/types";
 
 export async function POST(request: NextRequest) {
   try {
-    const authResult = await requireRole(["superadmin"]);
+    const authResult = await requireRole(["faculty", "superadmin", "dept_admin"]);
     if (authResult instanceof Response) return authResult;
-    const { user, adminClient } = authResult;
+    const { user, profile, adminClient } = authResult;
 
     const body = (await request.json().catch(() => ({}))) as {
       subject_id?: string;
@@ -22,6 +23,14 @@ export async function POST(request: NextRequest) {
       return apiError("extracted payload is required", 400);
     }
 
+    const accessError = await assertSubjectAccess(
+      adminClient,
+      profile.role,
+      user.id,
+      subjectId
+    );
+    if (accessError) return accessError;
+
     const { data: subject, error: subjectErr } = await adminClient
       .from("subjects")
       .select("id")
@@ -35,7 +44,7 @@ export async function POST(request: NextRequest) {
       adminClient,
       subjectId,
       extracted,
-      { userId: user.id, userEmail: user.email ?? null, userRole: "superadmin" }
+      { userId: user.id, userEmail: user.email ?? null, userRole: profile.role }
     );
 
     return Response.json({ saved: true, warnings });

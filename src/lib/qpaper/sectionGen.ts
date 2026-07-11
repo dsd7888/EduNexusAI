@@ -1779,6 +1779,7 @@ async function callPro(
     systemPrompt: SYSTEM_PROMPT,
     temperature: 0.4,
     maxTokens,
+    thinkingBudget: 4096,
     logContext,
   });
   return String(result.content ?? "");

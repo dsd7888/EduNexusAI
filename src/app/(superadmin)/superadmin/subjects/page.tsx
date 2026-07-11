@@ -49,9 +49,6 @@ import { SubjectChangeLog } from "./_components/SubjectChangeLog";
  import { useCallback, useEffect, useMemo, useState } from "react";
  import { toast } from "sonner";
 
- type Branch = "chem" | "mech";
- 
- 
  
 export default function SubjectsPage() {
   const [tab, setTab] = useState<"subjects" | "modules" | "changes">(
@@ -66,7 +63,7 @@ export default function SubjectsPage() {
    const [name, setName] = useState("");
    const [code, setCode] = useState("");
    const [department, setDepartment] = useState("");
-   const [branch, setBranch] = useState<Branch | "">("");
+   const [branch, setBranch] = useState("");
    const [semester, setSemester] = useState("");
  
    // Modules tab state
@@ -342,15 +339,11 @@ export default function SubjectsPage() {
                </div>
                <div className="space-y-2">
                  <label className="text-sm font-medium">Branch</label>
-                 <Select value={branch} onValueChange={(v) => setBranch(v as Branch)}>
-                   <SelectTrigger className="w-full">
-                     <SelectValue placeholder="Select branch" />
-                   </SelectTrigger>
-                   <SelectContent>
-                     <SelectItem value="chem">chem</SelectItem>
-                     <SelectItem value="mech">mech</SelectItem>
-                   </SelectContent>
-                 </Select>
+                 <Input
+                   value={branch}
+                   onChange={(e) => setBranch(e.target.value)}
+                   placeholder="e.g. mech"
+                 />
                </div>
                <div className="space-y-2">
                  <label className="text-sm font-medium">Semester</label>

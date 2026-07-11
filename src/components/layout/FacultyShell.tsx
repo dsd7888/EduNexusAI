@@ -5,6 +5,7 @@ import { usePathname } from "next/navigation";
 import {
   BarChart2,
   BookOpen,
+  CalendarDays,
   FileText,
   GraduationCap,
   Lightbulb,
@@ -12,7 +13,6 @@ import {
   Library,
   PanelLeftClose,
   PanelLeftOpen,
-  PlayCircle,
   Presentation,
   Sparkles,
   User,
@@ -38,8 +38,8 @@ const STANDALONE_TOP: NavItem[] = [
 const CONTENT_GROUP: NavItem[] = [
   { href: "/faculty/generate", label: "Generate PPT", icon: <Presentation className="size-4" /> },
   { href: "/faculty/refine", label: "Refine Content", icon: <Sparkles className="size-4" /> },
-  { href: "/faculty/explainer", label: "Explainer", icon: <PlayCircle className="size-4" /> },
   { href: "/faculty/delivery-guide", label: "Delivery Guide", icon: <Lightbulb className="size-4" /> },
+  { href: "/faculty/lessonplan", label: "Lesson Plans", icon: <CalendarDays className="size-4" /> },
 ];
 
 const ASSESSMENT_GROUP: NavItem[] = [
