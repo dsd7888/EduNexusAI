@@ -1,8 +1,10 @@
 import { requireRole, apiError, apiSuccess } from "@/lib/api/helpers";
+import { assertSubjectAccess } from "@/lib/api/subjectAccess";
 import {
   loadLessonPlanContext,
   generateTheorySection,
   generatePracticalSection,
+  computeSyllabusFingerprint,
 } from "@/lib/lessonplan/generator";
 import type { AILogContext } from "@/lib/ai/providers/types";
 import type { LessonPlanSection } from "@/lib/lessonplan/types";
@@ -61,34 +63,44 @@ export async function POST(request: NextRequest) {
     }
 
     // ── Assignment check (faculty only; oversight roles bypass) ─────────────
-    if (profile.role === "faculty") {
-      const { data: assignment } = await adminClient
-        .from("faculty_assignments")
-        .select("subject_id")
-        .eq("faculty_id", user.id)
-        .eq("subject_id", subjectId)
-        .maybeSingle();
-      if (!assignment) {
-        return apiError("Forbidden: subject is not assigned to this faculty", 403);
-      }
-    }
+    const denied = await assertSubjectAccess(
+      adminClient,
+      profile.role,
+      user.id,
+      subjectId,
+    );
+    if (denied) return denied;
 
     const force = Boolean(body.force);
 
+    // Load the syllabus and fingerprint it up front so the cache can be
+    // invalidated when the subject's modules/practicals change (item B).
+    const ctx = await loadLessonPlanContext(subjectId);
+    if (section === "theory" && ctx.modules.length === 0) {
+      return apiError("This subject has no modules to plan", 400);
+    }
+    if (section === "practical" && ctx.practicals.length === 0) {
+      return apiError("This subject has no practicals to plan", 400);
+    }
+    const fingerprint = computeSyllabusFingerprint(ctx, section);
+
     // ── Cache hit path (cost control: reuse a colleague's generation) ───────
+    // A stale row (syllabus edited since it was written, or a pre-fingerprint
+    // row) is treated as a miss and regenerated below.
     if (!force) {
       const { data: cached } = await adminClient
         .from("lesson_plan_cache")
-        .select("payload, model_used, created_at")
+        .select("payload, model_used, created_at, syllabus_fingerprint")
         .eq("subject_id", subjectId)
         .eq("section", section)
         .maybeSingle();
-      if (cached) {
-        const row = cached as {
-          payload: unknown;
-          model_used: string | null;
-          created_at: string;
-        };
+      const row = cached as {
+        payload: unknown;
+        model_used: string | null;
+        created_at: string;
+        syllabus_fingerprint: string | null;
+      } | null;
+      if (row && row.syllabus_fingerprint === fingerprint) {
         return apiSuccess({
           fromCache: true,
           section,
@@ -97,15 +109,6 @@ export async function POST(request: NextRequest) {
           generatedAt: row.created_at,
         });
       }
-    }
-
-    // ── Generate fresh ──────────────────────────────────────────────────────
-    const ctx = await loadLessonPlanContext(subjectId);
-    if (section === "theory" && ctx.modules.length === 0) {
-      return apiError("This subject has no modules to plan", 400);
-    }
-    if (section === "practical" && ctx.practicals.length === 0) {
-      return apiError("This subject has no practicals to plan", 400);
     }
 
     const logContext: AILogContext = {
@@ -139,6 +142,7 @@ export async function POST(request: NextRequest) {
           payload,
           generated_by: user.id,
           model_used: MODEL_USED,
+          syllabus_fingerprint: fingerprint,
         },
         { onConflict: "subject_id,section" },
       );

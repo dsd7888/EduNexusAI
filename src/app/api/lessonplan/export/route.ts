@@ -1,4 +1,5 @@
 import { requireRole, apiError, apiSuccess } from "@/lib/api/helpers";
+import { assertSubjectAccess } from "@/lib/api/subjectAccess";
 import { PRACTICALS_STATE_KEY } from "@/lib/lessonplan/types";
 import { generateLessonPlanDocx } from "@/lib/lessonplan/docxBuilder";
 import { generateLessonPlanPdf } from "@/lib/lessonplan/pdfBuilder";
@@ -43,17 +44,13 @@ export async function POST(request: NextRequest) {
     }
 
     // ── Assignment check (faculty only) ─────────────────────────────────────
-    if (profile.role === "faculty") {
-      const { data: assignment } = await adminClient
-        .from("faculty_assignments")
-        .select("subject_id")
-        .eq("faculty_id", user.id)
-        .eq("subject_id", subjectId)
-        .maybeSingle();
-      if (!assignment) {
-        return apiError("Forbidden: subject is not assigned to this faculty", 403);
-      }
-    }
+    const denied = await assertSubjectAccess(
+      adminClient,
+      profile.role,
+      user.id,
+      subjectId,
+    );
+    if (denied) return denied;
 
     // ── Load the caller's plan ──────────────────────────────────────────────
     const { data: planRow } = await adminClient

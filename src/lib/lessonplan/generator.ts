@@ -14,10 +14,12 @@
 // warnings (never silent coercion — §19).
 // ============================================================================
 
+import { createHash } from "node:crypto";
 import { routeAI } from "@/lib/ai/router";
 import { createAdminClient } from "@/lib/db/supabase-server";
 import { validateCoOrNull } from "@/lib/qpaper/sectionGen";
 import type { AILogContext } from "@/lib/ai/providers/types";
+import type { LessonPlanSection } from "./types";
 import {
   buildTheorySkeleton,
   buildPracticalSkeleton,
@@ -201,6 +203,34 @@ export async function loadLessonPlanContext(
     courseOutcomes: (coRows ?? []) as LpCourseOutcome[],
     practicals,
   };
+}
+
+/**
+ * Section-scoped fingerprint of the syllabus inputs a generation depends on.
+ * Stored on the cache row; a mismatch means the syllabus changed since the cache
+ * was built, so the generate route treats it as a miss and regenerates (item B).
+ * Theory depends on modules (number/name/description/hours/weightage/CO map);
+ * practical depends on the practicals list — so a change to one section's inputs
+ * never needlessly invalidates the other's cache.
+ */
+export function computeSyllabusFingerprint(
+  ctx: LessonPlanContext,
+  section: LessonPlanSection,
+): string {
+  const h = createHash("sha256");
+  if (section === "theory") {
+    const mods = [...ctx.modules].sort((a, b) => a.module_number - b.module_number);
+    for (const m of mods) {
+      h.update(
+        `M${m.module_number}|${m.name}|${m.description}|${m.hours ?? ""}|` +
+          `${m.weightage_percent ?? ""}|${[...m.coCodes].sort().join(",")}\n`,
+      );
+    }
+  } else {
+    const pracs = [...ctx.practicals].sort((a, b) => a.sr_no - b.sr_no);
+    for (const p of pracs) h.update(`P${p.sr_no}|${p.name}|${p.hours ?? ""}\n`);
+  }
+  return h.digest("hex").slice(0, 32);
 }
 
 // ─── Prompts ─────────────────────────────────────────────────────────────────

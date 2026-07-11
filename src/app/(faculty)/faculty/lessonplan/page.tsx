@@ -260,6 +260,27 @@ export default function LessonPlanPage() {
     async (fresh: boolean) => {
       if (!selectedSubjectId || generating) return;
       const section = tab;
+
+      // Item A: loading a colleague's cached plan (fresh=false) uses THEIR
+      // parameters, so the faculty's typed hour/instruction edits don't apply.
+      // Confirm before discarding them, and don't send/stamp them for a load.
+      if (!fresh && section === "theory") {
+        const dirty =
+          Object.keys(hoursOverride).length > 0 ||
+          Object.values(moduleInstructions).some((v) => v.trim());
+        if (
+          dirty &&
+          !window.confirm(
+            "Loading the shared version will discard your hour and instruction edits for this subject. Load anyway?",
+          )
+        ) {
+          return;
+        }
+      }
+      // Faculty parameters only apply to a fresh generation.
+      const useOverrides = fresh ? hoursOverride : {};
+      const useInstructions = fresh ? moduleInstructions : {};
+
       const items =
         section === "theory"
           ? modules.map((m) => `Module ${m.module_number}: ${m.name}`)
@@ -278,7 +299,7 @@ export default function LessonPlanPage() {
             section,
             force: fresh,
             ...(section === "theory"
-              ? { hoursOverride, moduleInstructions }
+              ? { hoursOverride: useOverrides, moduleInstructions: useInstructions }
               : {}),
           }),
         });
@@ -303,8 +324,12 @@ export default function LessonPlanPage() {
           const next: LessonPlanDoc = { ...prev, moduleStates: { ...prev.moduleStates } };
           if (section === "theory") {
             next.theory = j.payload!.sessions ?? [];
+            // Only a fresh generation was built for the faculty's budget; a
+            // cache load used the cached author's budget, so don't stamp ours.
             next.hoursOverride =
-              Object.keys(hoursOverride).length > 0 ? { ...hoursOverride } : null;
+              fresh && Object.keys(useOverrides).length > 0
+                ? { ...useOverrides }
+                : null;
             // (re)initialise review flags for the generated modules
             const moduleNumbers = [
               ...new Set((j.payload!.sessions ?? []).map((s) => s.moduleNumber)),
@@ -329,6 +354,12 @@ export default function LessonPlanPage() {
         );
 
         if (j.fromCache) {
+          // The loaded plan isn't built for our typed edits — reset the setup
+          // inputs so the UI truthfully reflects what's in the plan (item A).
+          if (section === "theory") {
+            setHoursOverride({});
+            setModuleInstructions({});
+          }
           toast.success("Loaded a previously generated plan.");
         }
 

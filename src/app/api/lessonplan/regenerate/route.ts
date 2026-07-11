@@ -1,4 +1,5 @@
 import { requireRole, apiError, apiSuccess } from "@/lib/api/helpers";
+import { assertSubjectAccess } from "@/lib/api/subjectAccess";
 import {
   loadLessonPlanContext,
   regenerateTheorySession,
@@ -34,17 +35,13 @@ export async function POST(request: NextRequest) {
       return apiError("section must be 'theory' or 'practical'", 400);
     }
 
-    if (profile.role === "faculty") {
-      const { data: assignment } = await adminClient
-        .from("faculty_assignments")
-        .select("subject_id")
-        .eq("faculty_id", user.id)
-        .eq("subject_id", subjectId)
-        .maybeSingle();
-      if (!assignment) {
-        return apiError("Forbidden: subject is not assigned to this faculty", 403);
-      }
-    }
+    const denied = await assertSubjectAccess(
+      adminClient,
+      profile.role,
+      user.id,
+      subjectId,
+    );
+    if (denied) return denied;
 
     const instruction =
       typeof body.instruction === "string" ? body.instruction : undefined;

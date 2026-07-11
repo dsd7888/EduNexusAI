@@ -1,24 +1,7 @@
 import { requireRole, apiError, apiSuccess } from "@/lib/api/helpers";
-import { createAdminClient } from "@/lib/db/supabase-server";
+import { assertSubjectAccess } from "@/lib/api/subjectAccess";
 import type { LessonPlanDoc } from "@/lib/lessonplan/types";
 import type { NextRequest } from "next/server";
-
-/** Faculty must be assigned to the subject; oversight roles (superadmin/dean/hod) bypass. */
-async function assertAssignedOrOversight(
-  adminClient: ReturnType<typeof createAdminClient>,
-  role: string,
-  userId: string,
-  subjectId: string,
-): Promise<boolean> {
-  if (role !== "faculty") return true;
-  const { data } = await adminClient
-    .from("faculty_assignments")
-    .select("subject_id")
-    .eq("faculty_id", userId)
-    .eq("subject_id", subjectId)
-    .maybeSingle();
-  return Boolean(data);
-}
 
 // ── GET /api/lessonplan?subjectId= ──────────────────────────────────────────
 // Returns the caller's plan row (or null) + cache existence flags per section.
@@ -38,16 +21,13 @@ export async function GET(request: NextRequest) {
     ).trim();
     if (!subjectId) return apiError("subjectId is required", 400);
 
-    if (
-      !(await assertAssignedOrOversight(
-        adminClient,
-        profile.role,
-        user.id,
-        subjectId,
-      ))
-    ) {
-      return apiError("Forbidden: subject is not assigned to this faculty", 403);
-    }
+    const denied = await assertSubjectAccess(
+      adminClient,
+      profile.role,
+      user.id,
+      subjectId,
+    );
+    if (denied) return denied;
 
     const { data: planRow } = await adminClient
       .from("lesson_plans")
@@ -116,16 +96,13 @@ export async function PUT(request: NextRequest) {
       return apiError("plan (LessonPlanDoc) is required", 400);
     }
 
-    if (
-      !(await assertAssignedOrOversight(
-        adminClient,
-        profile.role,
-        user.id,
-        subjectId,
-      ))
-    ) {
-      return apiError("Forbidden: subject is not assigned to this faculty", 403);
-    }
+    const denied = await assertSubjectAccess(
+      adminClient,
+      profile.role,
+      user.id,
+      subjectId,
+    );
+    if (denied) return denied;
 
     const { error } = await adminClient.from("lesson_plans").upsert(
       {
