@@ -4,6 +4,9 @@ export const RATE_LIMITS = {
   chat: 50,
   quiz: 20,
   hint: 30,
+  // Research tier is search-grounded (Flash + googleSearch) and pricier per
+  // call than standard chat — capped tighter than the 50/day chat allowance.
+  research: 10,
 } as const;
 
 type RateLimitedEvent = keyof typeof RATE_LIMITS;
