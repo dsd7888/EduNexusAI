@@ -1,6 +1,40 @@
 export type QueryMode = "exam_prep" | "problem_solving" | "conceptual";
 
 /**
+ * Shared visual/diagram rules block. Identical text used by
+ * {@link buildTutorSystemPrompt} and {@link buildResearchTutorPrompt} so the two
+ * tutor prompts can never drift on diagram formatting.
+ */
+const VISUAL_DIAGRAM_RULES = `<visual_diagram_rules>
+When a visual genuinely aids understanding — and only then — include ONE diagram.
+
+Choose the right tool:
+
+SVG for precise 2D technical visuals (use \`\`\`svg fence):
+- Labeled schematics, apparatus, anatomical cross-sections
+- Algorithm step-through: array states, pointer movement, tree traversal
+- Graphs and plots: P-V diagram, ECG trace, dose-response curve, sine wave
+- Data structure layout: binary tree, linked list, hash table
+- Any diagram where geometry, spacing, and labels are critical
+
+Mermaid for flow and logic diagrams (use \`\`\`mermaid fence):
+- Step-by-step processes: thermodynamic cycles, reaction pathways, manufacturing steps
+- Decision trees: diagnostic algorithms, engineering choices
+- Cause-and-effect chains: pathophysiology cascade, economic feedback
+- Hierarchical classifications and timelines
+
+CRITICAL RULES:
+- ALWAYS wrap SVG in a fenced code block: \`\`\`svg ... \`\`\`  Never output raw <svg> tags.
+- SVG viewBox MUST be "0 0 800 400". Every element needs a <text> label. Min font-size 13px.
+- Mermaid: NO parentheses in edge labels |like (this)|. NO underscores in labels. Max 4 words per label. Max 8 nodes.
+- Place diagram AFTER your text explanation, never before.
+- One diagram per response maximum.
+
+SVG colors: #2563EB (blue), #1E40AF (dark blue), #16A34A (green), #D97706 (amber), #DC2626 (red)
+SVG background: always start with <rect width="800" height="400" fill="#F8FAFC"/>
+</visual_diagram_rules>`;
+
+/**
  * Classifies raw student intent so the tutor prompt can switch behavioral
  * mode. Pure function: deterministic, no DB/AI/imports, no side effects.
  *
@@ -181,34 +215,7 @@ LENGTH: Match response length to question complexity. Simple question = concise 
         Complex derivation = full treatment. Never pad with filler sentences.
 </response_rules>
 
-<visual_diagram_rules>
-When a visual genuinely aids understanding — and only then — include ONE diagram.
-
-Choose the right tool:
-
-SVG for precise 2D technical visuals (use \`\`\`svg fence):
-- Labeled schematics, apparatus, anatomical cross-sections
-- Algorithm step-through: array states, pointer movement, tree traversal
-- Graphs and plots: P-V diagram, ECG trace, dose-response curve, sine wave
-- Data structure layout: binary tree, linked list, hash table
-- Any diagram where geometry, spacing, and labels are critical
-
-Mermaid for flow and logic diagrams (use \`\`\`mermaid fence):
-- Step-by-step processes: thermodynamic cycles, reaction pathways, manufacturing steps
-- Decision trees: diagnostic algorithms, engineering choices
-- Cause-and-effect chains: pathophysiology cascade, economic feedback
-- Hierarchical classifications and timelines
-
-CRITICAL RULES:
-- ALWAYS wrap SVG in a fenced code block: \`\`\`svg ... \`\`\`  Never output raw <svg> tags.
-- SVG viewBox MUST be "0 0 800 400". Every element needs a <text> label. Min font-size 13px.
-- Mermaid: NO parentheses in edge labels |like (this)|. NO underscores in labels. Max 4 words per label. Max 8 nodes.
-- Place diagram AFTER your text explanation, never before.
-- One diagram per response maximum.
-
-SVG colors: #2563EB (blue), #1E40AF (dark blue), #16A34A (green), #D97706 (amber), #DC2626 (red)
-SVG background: always start with <rect width="800" height="400" fill="#F8FAFC"/>
-</visual_diagram_rules>
+${VISUAL_DIAGRAM_RULES}
 
 <few_shot_examples>
 Example 1 — Conceptual question (good response pattern):
@@ -229,6 +236,121 @@ that you CAN help with right now.
 
 ${closingLine}`;
 }
+
+/**
+ * Pure-regex detector for "give me current / latest" intent — no AI, no DB, no
+ * side effects. Used to decide whether a chat turn should be routed to the
+ * search-grounded research tier instead of the syllabus-locked tutor.
+ *
+ * Fires on recency language (latest / recent / current / this year / nowadays /
+ * state of the art / new research / recently discovered|published|...) and on a
+ * bare recent-year mention (2025, 2026, ...).
+ */
+export function isRecencyIntent(message: string): boolean {
+  const m = (message ?? "").trim();
+  if (!m) return false;
+
+  // Recency adjectives / phrases.
+  if (
+    /\b(latest|newest|recent(?:ly)?|current(?:ly)?|nowadays|these days|this year|up[-\s]?to[-\s]?date|state[-\s]of[-\s]the[-\s]art|cutting[-\s]edge|breaking|just (?:released|announced|published))\b/i.test(
+      m
+    )
+  )
+    return true;
+
+  // "new research", "new study", "new paper", "new development(s)".
+  if (/\bnew\s+(research|study|studies|paper|papers|findings?|develop\w*|advance\w*|discover\w*)\b/i.test(m))
+    return true;
+
+  // "recently discovered / published / released / found / developed".
+  if (/\brecently\s+(discovered|published|released|found|developed|announced)\b/i.test(m))
+    return true;
+
+  // A recent / near-future year (2020–2099).
+  if (/\b20[2-9]\d\b/.test(m)) return true;
+
+  return false;
+}
+
+/**
+ * Research-tier tutor prompt. Same signature as {@link buildTutorSystemPrompt};
+ * shares the persona, context and student_level blocks and the visual/diagram
+ * rules. The one substantive difference is SCOPE: instead of refusing anything
+ * out of syllabus, this prompt tells the model to ground answers in up-to-date
+ * search results, always tie findings back to the relevant syllabus module by
+ * name, clearly label information newer than the syllabus, and cite sources
+ * inline. There are no mode-specific closing hook lines.
+ */
+export function buildResearchTutorPrompt(options: {
+  subjectName: string;
+  subjectCode: string;
+  semester: number;
+  branch: string;
+  syllabusContent: string;
+  referenceBooks?: string;
+  /** Accepted for signature parity with buildTutorSystemPrompt; unused here. */
+  mode?: QueryMode;
+}): string {
+  const {
+    subjectName,
+    subjectCode,
+    semester,
+    branch,
+    syllabusContent,
+    referenceBooks,
+  } = options;
+
+  const complexityLevel =
+    semester <= 2 ? "beginner" : semester <= 4 ? "intermediate" : "advanced";
+  const explanation_style = {
+    beginner: "Use very simple language, avoid jargon, explain every term",
+    intermediate:
+      "Use clear language with some technical terms, provide examples",
+    advanced:
+      "Use technical language, assume foundational knowledge, focus on depth",
+  };
+
+  return `<persona>
+You are EduNexus — an expert university tutor specialising in ${subjectName} (${subjectCode}).
+You teach ${complexityLevel}-level students (Semester ${semester}, ${branch} branch).
+Your teaching is modelled on the best human tutors: you simplify without dumbing down,
+connect theory to real life, and make students feel capable rather than overwhelmed.
+</persona>
+
+<context>
+<syllabus>
+${syllabusContent}
+</syllabus>
+${referenceBooks ? `<reference_books>\n${referenceBooks}\n</reference_books>` : ""}
+<student_level>
+Semester ${semester} student. Complexity: ${complexityLevel}.
+Style: ${explanation_style[complexityLevel]}.
+</student_level>
+</context>
+
+<response_rules>
+SCOPE: You have live web search. Ground every answer in up-to-date search results
+        rather than refusing out-of-syllabus material. ALWAYS connect what you find
+        back to the relevant ${subjectName} syllabus module BY NAME ("This maps to
+        your module on ..."). CLEARLY LABEL any information that is newer than, or
+        not yet part of, the syllabus — e.g. a "Beyond your syllabus:" note — so the
+        student can tell settled coursework from current developments.
+CITATIONS: Cite your sources inline as you use them (source title or site), and
+        reference the syllabus with "According to your module on ..." when tying a
+        finding back to coursework.
+NUMERICAL PROBLEMS: Show complete step-by-step solutions. Never skip steps.
+FORMATTING: Bold key terms. Use numbered steps for processes. Show formulas on their own line.
+LENGTH: Match response length to question complexity. Simple question = concise answer.
+        Complex derivation = full treatment. Never pad with filler sentences.
+</response_rules>
+
+${VISUAL_DIAGRAM_RULES}
+
+Your goal: Give ${subjectName} students accurate, current, well-sourced answers grounded
+in live search — always mapped back to their syllabus modules by name, with anything newer
+than the syllabus clearly labelled and cited.`;
+}
+
 export function buildSuggestedPromptsRequest(options: {
   subjectId: string;
   syllabusContent: string;

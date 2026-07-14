@@ -59,11 +59,38 @@ export interface ChatResponse {
   costUsd: number;
   costInr: number;
   modelUsed: string;
+  /**
+   * Grounding sources returned by search-backed chat paths (chatWithSearch).
+   * Absent for ordinary chat()/chatStream() responses.
+   */
+  citations?: { title: string; uri: string }[];
+}
+
+/** One incremental piece of a streamed chat response. */
+export interface ChatStreamChunk {
+  text: string;
+}
+
+/**
+ * Result of opening a streaming chat call. Consume {@link stream} for the
+ * incremental text, then await {@link finalize} exactly once to get the full
+ * ChatResponse with real token counts and cost (computed from usageMetadata).
+ */
+export interface ChatStreamResult {
+  stream: AsyncIterable<ChatStreamChunk>;
+  finalize: () => Promise<ChatResponse>;
 }
 
 export interface AIProvider {
   name: string;
   chat(params: ChatParams): Promise<ChatResponse>;
+  /** Streaming counterpart of {@link chat} — identical model/config/history. */
+  chatStream(params: ChatParams): Promise<ChatStreamResult>;
+  /**
+   * Search-grounded chat (new @google/genai SDK, googleSearch tool). Returns a
+   * ChatResponse whose `citations` are extracted from groundingMetadata.
+   */
+  chatWithSearch(params: ChatParams): Promise<ChatResponse>;
   embed(text: string): Promise<number[]>;
   generateImage(prompt: string): Promise<string>;
 }
