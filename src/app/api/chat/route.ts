@@ -314,17 +314,24 @@ export async function POST(request: NextRequest) {
       incrementUsage: boolean;
       usageEventType: "chat" | "research";
       writeCache: boolean;
+      // False when the streaming path already persisted the user row eagerly,
+      // before generation started (see the pre-stream insert below) — avoids
+      // a duplicate row. Cache-hit/research callers pass true: they never take
+      // that eager-insert branch, so this is still their only insert.
+      insertUserRow: boolean;
     }): Promise<{ messageId: string | null; struggle: StruggleResult }> {
       let messageId: string | null = null;
       let struggle: StruggleResult = null;
 
-      // Insert user row.
-      try {
-        await adminClient
-          .from("chat_messages")
-          .insert({ session_id: sessionId, role: "user", content: message });
-      } catch (err) {
-        console.error("[chat] user message insert error:", err);
+      // Insert user row (skipped when already eagerly persisted pre-stream).
+      if (opts.insertUserRow) {
+        try {
+          await adminClient
+            .from("chat_messages")
+            .insert({ session_id: sessionId, role: "user", content: message });
+        } catch (err) {
+          console.error("[chat] user message insert error:", err);
+        }
       }
 
       // Insert assistant row (with cost/model metadata + citations).
@@ -508,6 +515,7 @@ export async function POST(request: NextRequest) {
               incrementUsage: false,
               usageEventType: "chat",
               writeCache: false,
+              insertUserRow: true,
             });
 
             // Update hit metadata.
@@ -619,6 +627,7 @@ export async function POST(request: NextRequest) {
         incrementUsage: true,
         usageEventType: "research",
         writeCache: false,
+        insertUserRow: true,
       });
 
       return Response.json({
@@ -629,6 +638,23 @@ export async function POST(request: NextRequest) {
         recencySuggested,
         struggle,
       });
+    }
+
+    // ── Eager user-row persist (streaming modes only) ────────────────────
+    // Written BEFORE generation starts so a dropped connection, refresh, or
+    // mid-stream failure never loses the student's own question — only the
+    // assistant's reply (and the quota it would have consumed) depends on the
+    // stream actually completing. If this insert itself fails, persistTurn's
+    // insertUserRow fallback (below) still attempts it at completion, so the
+    // message is never silently dropped on both ends.
+    let userRowInserted = false;
+    try {
+      await adminClient
+        .from("chat_messages")
+        .insert({ session_id: sessionId, role: "user", content: message });
+      userRowInserted = true;
+    } catch (err) {
+      console.error("[chat] eager user message insert error:", err);
     }
 
     // ── 9/10/11. STANDARD / REASONING — SSE stream ───────────────────────
@@ -718,6 +744,7 @@ export async function POST(request: NextRequest) {
           incrementUsage: true,
           usageEventType: "chat",
           writeCache: effectiveMode === "standard" && !bypassCache,
+          insertUserRow: !userRowInserted,
         });
 
         controller.enqueue(sse("done", { messageId, struggle }));

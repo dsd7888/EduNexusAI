@@ -38,20 +38,18 @@ SVG background: always start with <rect width="800" height="400" fill="#F8FAFC"/
  * Classifies raw student intent so the tutor prompt can switch behavioral
  * mode. Pure function: deterministic, no DB/AI/imports, no side effects.
  *
- * Evaluation order follows the spec — exam_prep → problem_solving →
- * conceptual (default / everything else).
+ * Evaluation order is problem_solving → exam_prep → conceptual (default /
+ * everything else). problem_solving MUST be checked first: exam_prep's
+ * shortNoQuestion shortcut (<60 chars, no question word) would otherwise
+ * capture terse numerical imperatives like "Calculate the height of a
+ * balanced BST with 15 nodes" and misroute them to exam_prep — since CP2
+ * this also misroutes model selection (Flash instead of Pro), not just
+ * prompt text. examKeyword and computeVerb share no overlapping terms, so
+ * this reorder changes only that shortNoQuestion-vs-numerical collision;
+ * every other classification is unaffected.
  */
 export function detectQueryMode(message: string): QueryMode {
   const m = (message ?? "").trim();
-
-  // ── exam_prep — recall / definition / one-liner intent ───────────────
-  const examKeyword =
-    /\b(defin|list|state|enumerat|abbreviat)\w*/i.test(m) ||
-    /what is the formula|write the equation|full form of|in one line/i.test(m);
-  const hasQuestionWord =
-    /\b(what|why|how|when|where|who|whom|whose|which)\b/i.test(m);
-  const shortNoQuestion = m.length < 60 && !hasQuestionWord;
-  if (examKeyword || shortNoQuestion) return "exam_prep";
 
   // ── problem_solving — numerical / derivation intent ──────────────────
   const hasDigit = /\d/.test(m);
@@ -61,6 +59,15 @@ export function detectQueryMode(message: string): QueryMode {
   const operatorsWithNumbers = /\d\s*[-+*/^=×÷]\s*\d/.test(m);
   if ((hasDigit && computeVerb) || operatorsWithNumbers)
     return "problem_solving";
+
+  // ── exam_prep — recall / definition / one-liner intent ───────────────
+  const examKeyword =
+    /\b(defin|list|state|enumerat|abbreviat)\w*/i.test(m) ||
+    /what is the formula|write the equation|full form of|in one line/i.test(m);
+  const hasQuestionWord =
+    /\b(what|why|how|when|where|who|whom|whose|which)\b/i.test(m);
+  const shortNoQuestion = m.length < 60 && !hasQuestionWord;
+  if (examKeyword || shortNoQuestion) return "exam_prep";
 
   // ── conceptual — default, full LearnLM behavior ──────────────────────
   return "conceptual";

@@ -1,144 +1,28 @@
 "use client";
 
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
-import { ScrollArea } from "@/components/ui/scroll-area";
 import { Skeleton } from "@/components/ui/skeleton";
-import MarkdownRenderer from "@/components/chat/MarkdownRenderer";
 import { createBrowserClient } from "@/lib/db/supabase-browser";
-import { Download, HelpCircle, Lightbulb, Loader2, Sparkles, X, Zap } from "lucide-react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
-type Role = "user" | "assistant";
+import { ChatHeader } from "./_components/ChatHeader";
+import { Composer } from "./_components/Composer";
+import { MessageList } from "./_components/MessageList";
+import { RecencyNudge } from "./_components/RecencyNudge";
+import { StruggleNudge } from "./_components/StruggleNudge";
+import { extractTrailingChip } from "./_components/helpers";
+import { sendChatMessage } from "./_components/streamClient";
+import type { RequestedMode, SubjectRow, UiMessage } from "./_components/types";
 
-type ChatMessage = {
-  role: Role;
-  content: string;
-};
+const QUOTA_LIMITS = { chat: 50, research: 10 } as const;
 
-type SubjectRow = {
-  id: string;
-  name: string;
-  code: string;
-  semester: number;
-  branch: string;
-};
-
-type InteractivePayload = {
-  html: string;
-  markdown: string;
-} | null;
-
-function parseInteractiveHtml(content: string): InteractivePayload {
-  const re = /```interactive-html\s*([\s\S]*?)```/i;
-  const match = content.match(re);
-  if (!match) return null;
-  const html = match[1]?.trim() ?? "";
-  if (!html) return null;
-  return {
-    html,
-    markdown: content.replace(re, "").trim(),
-  };
-}
-
-function InteractiveHtmlViewer({ htmlContent }: { htmlContent: string }) {
-  const [isFullscreen, setIsFullscreen] = useState(false);
-  const [isLoading, setIsLoading] = useState(true);
-  const [iframeHeight, setIframeHeight] = useState("520px");
-
-  useEffect(() => {
-    const update = () => setIframeHeight(window.innerWidth < 640 ? "400px" : "520px");
-    update();
-    window.addEventListener("resize", update);
-    return () => window.removeEventListener("resize", update);
-  }, []);
-
-  return (
-    <div className="my-6 rounded-xl overflow-hidden border border-blue-200 bg-gradient-to-br from-blue-50 to-indigo-50 shadow-sm">
-      {/* Header bar */}
-      <div className="bg-white border-b border-blue-200 px-4 py-2.5 flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse" />
-          <span className="text-sm font-medium text-gray-700">Interactive Visualization</span>
-        </div>
-        <div className="flex gap-2 flex-wrap sm:flex-nowrap">
-          <button
-            onClick={() => setIsFullscreen(true)}
-            className="px-3 py-1.5 text-xs font-medium bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors flex items-center gap-1.5"
-          >
-            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4" />
-            </svg>
-            <span className="hidden sm:inline">Expand</span>
-          </button>
-          <button
-            onClick={() => {
-              const blob = new Blob([htmlContent], { type: "text/html" });
-              const url = URL.createObjectURL(blob);
-              const a = document.createElement("a");
-              a.href = url;
-              a.download = "visualization.html";
-              a.click();
-              URL.revokeObjectURL(url);
-            }}
-            className="px-3 py-1.5 text-xs font-medium bg-gray-600 text-white rounded-lg hover:bg-gray-700 transition-colors flex items-center gap-1.5"
-          >
-            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
-            </svg>
-            <span className="hidden sm:inline">Download</span>
-          </button>
-        </div>
-      </div>
-
-      {/* Visualization container */}
-      <div className="relative bg-white">
-        {isLoading && (
-          <div className="absolute inset-0 flex items-center justify-center bg-white bg-opacity-90 z-10">
-            <div className="flex flex-col items-center gap-3">
-              <div className="w-8 h-8 border-2 border-blue-600 border-t-transparent rounded-full animate-spin" />
-              <p className="text-sm text-gray-600">Loading visualization...</p>
-            </div>
-          </div>
-        )}
-        <iframe
-          srcDoc={htmlContent}
-          title="Interactive visualization"
-          className="w-full border-0"
-          style={{ height: iframeHeight }}
-          sandbox="allow-scripts allow-same-origin"
-          onLoad={() => setIsLoading(false)}
-        />
-      </div>
-
-      {/* Fullscreen modal */}
-      {isFullscreen && (
-        <div className="fixed inset-0 z-50 bg-black bg-opacity-75 backdrop-blur-sm flex items-center justify-center sm:p-4 p-0">
-          <div className="bg-white sm:rounded-2xl rounded-none w-full h-full max-w-7xl sm:max-h-[95vh] max-h-full flex flex-col shadow-2xl">
-            <div className="px-4 sm:px-6 py-3 sm:py-4 border-b flex justify-between items-center bg-gradient-to-r from-blue-50 to-indigo-50">
-              <h3 className="text-lg font-semibold text-gray-800">Interactive Visualization</h3>
-              <button
-                onClick={() => setIsFullscreen(false)}
-                className="px-4 py-2 text-sm font-medium bg-gray-700 text-white rounded-lg hover:bg-gray-800 transition-colors"
-              >
-                Close
-              </button>
-            </div>
-            <iframe
-              srcDoc={htmlContent}
-              title="Interactive visualization fullscreen"
-              className="flex-1 w-full border-0"
-              sandbox="allow-scripts allow-same-origin"
-            />
-          </div>
-        </div>
-      )}
-    </div>
-  );
+function genId(): string {
+  return typeof crypto !== "undefined" && "randomUUID" in crypto
+    ? crypto.randomUUID()
+    : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
 
 export default function StudentSubjectChatPage() {
@@ -148,39 +32,48 @@ export default function StudentSubjectChatPage() {
   const [subject, setSubject] = useState<SubjectRow | null>(null);
   const [syllabusContent, setSyllabusContent] = useState<string>("");
   const [hasSyllabus, setHasSyllabus] = useState<boolean | null>(null);
-  const [suggestedPrompts, setSuggestedPrompts] = useState<string[]>([]);
+  const [suggestedPrompts, setSuggestedPrompts] = useState<string[]>([
+    "Summarize the syllabus and key units.",
+    "Explain the most important concepts for exams.",
+    "Give me 5 practice questions with answers.",
+    "Teach me Unit 1 step-by-step.",
+  ]);
 
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [messages, setMessages] = useState<UiMessage[]>([]);
   const [sessionId, setSessionId] = useState<string | null>(null);
-  const [showResumeBanner, setShowResumeBanner] = useState(false);
-  const [resumedCount, setResumedCount] = useState(0);
-  const [hoveredMessageId, setHoveredMessageId] = useState<number | null>(null);
-  const [struggleTopic, setStruggleTopic] = useState<string | null>(null);
-  const [hasShownStruggleBanner, setHasShownStruggleBanner] = useState(false);
+  const [isResumed, setIsResumed] = useState(false);
+  const [sessionCreatedAt, setSessionCreatedAt] = useState<Date | null>(null);
+
+  const [mode, setMode] = useState<RequestedMode>("auto");
   const [inputValue, setInputValue] = useState("");
-  const [isLoading, setIsLoading] = useState(false);
+  const [isSending, setIsSending] = useState(false);
   const [isRateLimited, setIsRateLimited] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
+  // Set only while an SSE token stream is actively arriving (meta received,
+  // not yet done/error) — gates the beforeunload guard. A separate ref (not
+  // state) provides the synchronous double-send lock: state updates land
+  // after a re-render, which is too late to block a second call arriving in
+  // the same tick (e.g. Enter key-repeat).
+  const [isStreamActive, setIsStreamActive] = useState(false);
+  const isSendingRef = useRef(false);
+
+  const [recencyNudgeVisible, setRecencyNudgeVisible] = useState(false);
+  const [struggleTopic, setStruggleTopic] = useState<string | null>(null);
+  // A resumed session's last loaded message was role=user with no assistant
+  // reply — set once on load, cleared as soon as any new exchange starts.
+  const [orphanMessage, setOrphanMessage] = useState<string | null>(null);
+
+  const [quotaChat, setQuotaChat] = useState(0);
+  const [quotaResearch, setQuotaResearch] = useState(0);
 
   const [loadingSubject, setLoadingSubject] = useState(true);
   const [loadingSyllabus, setLoadingSyllabus] = useState(true);
 
-  const bottomRef = useRef<HTMLDivElement | null>(null);
-  const inputRef = useRef<HTMLInputElement | null>(null);
+  const struggleDismissKey = subjectId ? `chat_struggle_dismissed_${subjectId}` : "";
 
-  const scrollToBottom = useCallback(() => {
-    requestAnimationFrame(() => {
-      bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-    });
-  }, []);
-
-  useEffect(() => {
-    scrollToBottom();
-  }, [messages, isLoading, scrollToBottom]);
-
+  // ── Load subject ─────────────────────────────────────────────────────
   useEffect(() => {
     if (!subjectId) return;
-
     const run = async () => {
       setLoadingSubject(true);
       try {
@@ -190,35 +83,23 @@ export default function StudentSubjectChatPage() {
           .select("id, name, code, semester, branch")
           .eq("id", subjectId)
           .single();
-        if (error || !data) {
-          setSubject(null);
-          return;
-        }
-        setSubject(data as SubjectRow);
+        setSubject(error || !data ? null : (data as SubjectRow));
       } finally {
         setLoadingSubject(false);
       }
     };
-
     run();
   }, [subjectId]);
 
+  // ── Load syllabus content ───────────────────────────────────────────
   useEffect(() => {
     if (!subjectId) return;
-
     const run = async () => {
       setLoadingSyllabus(true);
       try {
-        const res = await fetch(
-          `/api/subjects/content?subjectId=${encodeURIComponent(subjectId)}`
-        );
+        const res = await fetch(`/api/subjects/content?subjectId=${encodeURIComponent(subjectId)}`);
         const json = await res.json().catch(() => null);
-        if (!res.ok) {
-          setHasSyllabus(false);
-          setSyllabusContent("");
-          return;
-        }
-        if (!json) {
+        if (!res.ok || !json) {
           setHasSyllabus(false);
           setSyllabusContent("");
           return;
@@ -229,33 +110,41 @@ export default function StudentSubjectChatPage() {
         setLoadingSyllabus(false);
       }
     };
-
     run();
   }, [subjectId]);
 
+  // ── Session resume/create + suggestions + quota seed ────────────────
   useEffect(() => {
-    if (!subjectId) return;
-    if (!hasSyllabus) return;
-
+    if (!subjectId || !hasSyllabus) return;
     let cancelled = false;
 
     const run = async () => {
       try {
-        // Resume the last open session for this subject, or start fresh.
         const sessionRes = await fetch("/api/chat/session", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ subjectId }),
         });
         if (sessionRes.ok) {
-          const { sessionId: sid, isResumed, messageCount } =
-            await sessionRes.json();
+          const { sessionId: sid, isResumed: resumed, messageCount } = await sessionRes.json();
           if (cancelled) return;
           setSessionId(sid);
+          setIsResumed(resumed);
 
-          if (isResumed && messageCount > 0) {
-            // Load the last 20 messages of the resumed session on mount.
-            const supabase = createBrowserClient();
+          const supabase = createBrowserClient();
+
+          if (resumed) {
+            const { data: sessionRow } = await supabase
+              .from("chat_sessions")
+              .select("created_at")
+              .eq("id", sid)
+              .single();
+            if (!cancelled && sessionRow?.created_at) {
+              setSessionCreatedAt(new Date(sessionRow.created_at as string));
+            }
+          }
+
+          if (resumed && messageCount > 0) {
             const { data: rows } = await supabase
               .from("chat_messages")
               .select("role, content, created_at")
@@ -266,15 +155,43 @@ export default function StudentSubjectChatPage() {
             const ordered = (rows ?? [])
               .slice()
               .reverse()
-              .map((r: { role: Role; content: string }) => ({
-                role: r.role,
-                content: r.content,
-              }));
+              .map((r: { role: "user" | "assistant"; content: string }) => {
+                if (r.role === "user") {
+                  return { id: genId(), role: "user" as const, content: r.content };
+                }
+                const trailing = extractTrailingChip(r.content);
+                return {
+                  id: genId(),
+                  role: "assistant" as const,
+                  content: trailing ? trailing.remaining : r.content,
+                  status: "done" as const,
+                  trailingChip: trailing?.chip,
+                };
+              });
             if (ordered.length > 0) {
               setMessages(ordered);
-              setResumedCount(messageCount);
-              setShowResumeBanner(true);
+              const last = ordered[ordered.length - 1];
+              if (last.role === "user") {
+                setOrphanMessage(last.content);
+              }
             }
+          }
+
+          // Seed today's quota usage from usage_analytics (RLS: own rows only).
+          const today = new Date().toISOString().slice(0, 10);
+          const { data: usageRows } = await supabase
+            .from("usage_analytics")
+            .select("event_type, event_count")
+            .eq("date", today);
+          if (!cancelled && usageRows) {
+            let chatCount = 0;
+            let researchCount = 0;
+            for (const row of usageRows as { event_type: string; event_count: number }[]) {
+              if (row.event_type === "chat") chatCount += row.event_count ?? 0;
+              if (row.event_type === "research") researchCount += row.event_count ?? 0;
+            }
+            setQuotaChat(chatCount);
+            setQuotaResearch(researchCount);
           }
         }
 
@@ -285,127 +202,269 @@ export default function StudentSubjectChatPage() {
         });
         const json = await res.json().catch(() => ({}));
         if (!res.ok || cancelled) return;
-        const prompts = Array.isArray(json?.suggestions)
-          ? json.suggestions
-          : [];
-        setSuggestedPrompts(prompts.slice(0, 4));
+        const prompts = Array.isArray(json?.suggestions) ? json.suggestions : [];
+        if (prompts.length > 0) setSuggestedPrompts(prompts.slice(0, 4));
       } catch {
-        // ignore
+        // ignore — suggestions/quota are non-critical enhancements
       }
     };
 
     run();
-
     return () => {
       cancelled = true;
     };
   }, [subjectId, hasSyllabus, syllabusContent]);
 
-  const sendMessage = useCallback(
-    async (text: string) => {
-      const trimmed = text.trim();
-      if (!trimmed || !subjectId || isRateLimited) return;
+  // ── Warn on refresh/close while a stream is actively arriving ──────────
+  // In-app navigation (Next router / Link) is deliberately left alone —
+  // beforeunload only fires on an actual page unload (refresh/close/external
+  // nav), never on client-side route changes, so this can't block those.
+  // Part A's eager user-row persist means a lost in-app navigation is
+  // recoverable via the resume card on return; a lost tab isn't, hence the
+  // native prompt here.
+  useEffect(() => {
+    if (!isStreamActive) return;
+    const handler = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      e.returnValue = "";
+    };
+    window.addEventListener("beforeunload", handler);
+    return () => window.removeEventListener("beforeunload", handler);
+  }, [isStreamActive]);
 
-      setMessages((prev) => [...prev, { role: "user", content: trimmed }]);
-      setInputValue("");
-      setIsLoading(true);
-      // Dismiss the struggle nudge once the student sends their next message.
-      setStruggleTopic(null);
+  // ── Core exchange runner — shared by send / retry / regenerate / etc ──
+  const runExchange = useCallback(
+    async (
+      userText: string,
+      requestedMode: RequestedMode,
+      opts?: { retryAssistantId?: string }
+    ) => {
+      const trimmed = userText.trim();
+      if (!trimmed || !subjectId || !sessionId || isSendingRef.current || isRateLimited) return;
 
-      try {
-        const res = await fetch("/api/chat", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            subjectId,
-            message: trimmed,
-            history: messages
-              .slice(-6)
-              .map((m) => ({ role: m.role, content: m.content })),
-            sessionId,
-          }),
-        });
-        const data = await res.json().catch(() => ({}));
-        if (res.status === 429) {
-          setIsRateLimited(true);
-          const friendly =
-            "You've reached your daily chat limit. Come back tomorrow! 📚";
-          setMessages((prev) => [
-            ...prev,
-            {
-              role: "assistant",
-              content:
-                typeof data?.message === "string" && data.message
-                  ? `${data.message}\n\n${friendly}`
-                  : friendly,
-            },
-          ]);
-          return;
-        }
+      // Synchronous lock — closes the double-Enter/double-click race: two
+      // calls arriving in the same tick both read isSendingRef before either
+      // sets it, unlike isSending state (which only updates after a re-render).
+      isSendingRef.current = true;
+      setIsSending(true);
+      setIsStreamActive(false);
+      setRecencyNudgeVisible(false);
+      setOrphanMessage(null);
 
-        if (res.status === 404 && data?.error === "no_syllabus") {
-          setMessages((prev) => [
-            ...prev,
-            {
-              role: "assistant",
-              content:
-                "⚠️ This subject has no syllabus content yet. Please ask your admin to add content.",
-            },
-          ]);
-          return;
-        }
-
-        if (!res.ok) {
-          setMessages((prev) => [
-            ...prev,
-            {
-              role: "assistant",
-              content: "I couldn't process that request. Please try again.",
-            },
-          ]);
-          return;
-        }
-        const reply = String(
-          data?.content ?? data?.response ?? data?.message ?? ""
+      let assistantId: string;
+      if (opts?.retryAssistantId) {
+        assistantId = opts.retryAssistantId;
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.id === assistantId
+              ? { ...m, status: "thinking", content: "", errorMessage: undefined, citations: undefined, trailingChip: undefined, cached: undefined }
+              : m
+          )
         );
-        setMessages((prev) => [...prev, { role: "assistant", content: reply }]);
-
-        // Struggle nudge — at most once per session.
-        if (
-          data?.struggle_detected === true &&
-          typeof data?.topic === "string" &&
-          data.topic &&
-          !hasShownStruggleBanner
-        ) {
-          setStruggleTopic(data.topic);
-          setHasShownStruggleBanner(true);
-        }
-      } catch {
+      } else {
+        assistantId = genId();
         setMessages((prev) => [
           ...prev,
+          { id: genId(), role: "user", content: trimmed },
           {
+            id: assistantId,
             role: "assistant",
-            content: "Network error. Please try again.",
+            content: "",
+            status: "thinking",
+            respondingTo: trimmed,
+            requestedMode,
           },
         ]);
-      } finally {
-        setIsLoading(false);
-        requestAnimationFrame(() => inputRef.current?.focus());
       }
+
+      let accumulated = "";
+      const applyStruggle = (struggle: { struggle_detected: true; topic: string } | null) => {
+        if (!struggle?.struggle_detected) return;
+        if (typeof window !== "undefined" && sessionStorage.getItem(struggleDismissKey) === "1") {
+          return;
+        }
+        setStruggleTopic(struggle.topic);
+      };
+
+      await sendChatMessage(
+        { subjectId, message: trimmed, sessionId, mode: requestedMode },
+        {
+          onMeta: (meta) => {
+            // Only the SSE branch (standard/reasoning) ever emits a meta
+            // frame — this is what "a stream is in progress" means for the
+            // beforeunload guard below.
+            setIsStreamActive(true);
+            setMessages((prev) =>
+              prev.map((m) =>
+                m.id === assistantId
+                  ? {
+                      ...m,
+                      status: "streaming",
+                      effectiveMode: meta.mode,
+                      autoElevated: requestedMode === "auto" && meta.mode === "reasoning",
+                    }
+                  : m
+              )
+            );
+            if (meta.recencySuggested && meta.mode !== "research") setRecencyNudgeVisible(true);
+          },
+          onChunk: (text) => {
+            accumulated += text;
+            const snapshot = accumulated;
+            setMessages((prev) =>
+              prev.map((m) => (m.id === assistantId ? { ...m, content: snapshot, status: "streaming" } : m))
+            );
+          },
+          onError: (msg) => {
+            setIsStreamActive(false);
+            setMessages((prev) =>
+              prev.map((m) => (m.id === assistantId ? { ...m, status: "error", errorMessage: msg, retryable: true } : m))
+            );
+          },
+          onDone: ({ struggle }) => {
+            setIsStreamActive(false);
+            setQuotaChat((c) => c + 1);
+            const trailing = extractTrailingChip(accumulated);
+            setMessages((prev) =>
+              prev.map((m) =>
+                m.id === assistantId
+                  ? {
+                      ...m,
+                      status: "done",
+                      content: trailing ? trailing.remaining : accumulated,
+                      trailingChip: trailing?.chip,
+                    }
+                  : m
+              )
+            );
+            applyStruggle(struggle);
+          },
+          onJson: (data) => {
+            const trailing = extractTrailingChip(data.response);
+            setMessages((prev) =>
+              prev.map((m) =>
+                m.id === assistantId
+                  ? {
+                      ...m,
+                      status: "done",
+                      content: trailing ? trailing.remaining : data.response,
+                      trailingChip: trailing?.chip,
+                      cached: data.cached === true,
+                      effectiveMode: data.mode,
+                      citations: data.citations,
+                    }
+                  : m
+              )
+            );
+            if (data.recencySuggested && data.mode !== "research") setRecencyNudgeVisible(true);
+            if (data.mode === "research") setQuotaResearch((c) => c + 1);
+            applyStruggle(data.struggle ?? null);
+          },
+          onFatal: (payload) => {
+            if (payload.status === 429) {
+              setIsRateLimited(true);
+              setMessages((prev) =>
+                prev.map((m) =>
+                  m.id === assistantId
+                    ? { ...m, status: "error", errorMessage: payload.message ?? "Daily limit reached.", retryable: false }
+                    : m
+                )
+              );
+              return;
+            }
+            if (payload.error === "no_syllabus") {
+              setMessages((prev) =>
+                prev.map((m) =>
+                  m.id === assistantId
+                    ? {
+                        ...m,
+                        status: "error",
+                        errorMessage: payload.message ?? "This subject has no syllabus content yet.",
+                        retryable: false,
+                      }
+                    : m
+                )
+              );
+              return;
+            }
+            setMessages((prev) =>
+              prev.map((m) =>
+                m.id === assistantId
+                  ? {
+                      ...m,
+                      status: "error",
+                      errorMessage: payload.message ?? "Something went wrong. Please try again.",
+                      retryable: payload.retryable !== false,
+                    }
+                  : m
+              )
+            );
+          },
+          onNetworkError: () => {
+            setIsStreamActive(false);
+            setMessages((prev) =>
+              prev.map((m) =>
+                m.id === assistantId
+                  ? { ...m, status: "error", errorMessage: "The response was interrupted. Please try again.", retryable: true }
+                  : m
+              )
+            );
+          },
+        }
+      );
+
+      isSendingRef.current = false;
+      setIsSending(false);
+      setIsStreamActive(false);
     },
-    [
-      subjectId,
-      sessionId,
-      isRateLimited,
-      inputValue,
-      messages,
-      hasShownStruggleBanner,
-    ]
+    [subjectId, sessionId, isRateLimited, struggleDismissKey]
   );
 
-  const handleSubmit = async () => {
-    await sendMessage(inputValue);
+  const handleSend = () => {
+    const text = inputValue;
+    setInputValue("");
+    runExchange(text, mode);
   };
+
+  const onSuggestionSelect = (text: string) => runExchange(text, mode);
+
+  const onRetry = useCallback(
+    (id: string) => {
+      const msg = messages.find((m) => m.id === id);
+      if (!msg?.respondingTo) return;
+      runExchange(msg.respondingTo, msg.requestedMode ?? "auto", { retryAssistantId: id });
+    },
+    [messages, runExchange]
+  );
+
+  const onSimplify = useCallback(
+    (id: string) => {
+      const msg = messages.find((m) => m.id === id);
+      if (!msg?.respondingTo) return;
+      runExchange(`Explain the same thing more simply, shorter: ${msg.respondingTo}`, mode);
+    },
+    [messages, runExchange, mode]
+  );
+
+  const onGoDeeper = useCallback(
+    (id: string) => {
+      const msg = messages.find((m) => m.id === id);
+      if (!msg?.respondingTo) return;
+      runExchange(`Go deeper on the same topic, more rigor: ${msg.respondingTo}`, mode);
+    },
+    [messages, runExchange, mode]
+  );
+
+  const onVisualize = useCallback(
+    (id: string) => {
+      void id;
+      runExchange(
+        "Create an interactive visualization for the concept explained in your last response. Use the interactive-html format.",
+        mode
+      );
+    },
+    [runExchange, mode]
+  );
 
   const handleStartFresh = useCallback(async () => {
     if (!subjectId) return;
@@ -419,8 +478,8 @@ export default function StudentSubjectChatPage() {
       const { sessionId: sid } = await res.json();
       setSessionId(sid);
       setMessages([]);
-      setResumedCount(0);
-      setShowResumeBanner(false);
+      setIsResumed(false);
+      setSessionCreatedAt(null);
     } catch {
       // ignore — keep the current resumed session if the call fails
     }
@@ -436,46 +495,26 @@ export default function StudentSubjectChatPage() {
         body: JSON.stringify({ sessionId }),
       });
       if (!res.ok) throw new Error("Export failed");
-
       const blob = await res.blob();
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = `chat-${subject?.name ?? "notes"}-${new Date()
-        .toISOString()
-        .slice(0, 10)}.pdf`;
+      a.download = `chat-${subject?.name ?? "notes"}-${new Date().toISOString().slice(0, 10)}.pdf`;
       a.click();
       URL.revokeObjectURL(url);
     } catch {
-      // Silent fail — export is a convenience feature, don't interrupt chat
       console.error("[chat/export] failed");
     } finally {
       setIsExporting(false);
     }
   }
 
-  const handleKeyDown: React.KeyboardEventHandler<HTMLInputElement> = (e) => {
-    if (e.key === "Enter" && !e.shiftKey) {
-      e.preventDefault();
-      handleSubmit();
+  const dismissStruggle = () => {
+    setStruggleTopic(null);
+    if (typeof window !== "undefined" && struggleDismissKey) {
+      sessionStorage.setItem(struggleDismissKey, "1");
     }
   };
-
-  const suggestionCards = useMemo(() => {
-    const fallback = [
-      "Summarize the syllabus and key units.",
-      "Explain the most important concepts for exams.",
-      "Give me 5 practice questions with answers.",
-      "Teach me Unit 1 step-by-step.",
-    ];
-    const prompts = suggestedPrompts.length > 0 ? suggestedPrompts : fallback;
-    const icons = [Lightbulb, HelpCircle, Zap, Lightbulb] as const;
-
-    return prompts.slice(0, 4).map((p, idx) => ({
-      text: p,
-      Icon: icons[idx] ?? Lightbulb,
-    }));
-  }, [suggestedPrompts]);
 
   if (loadingSubject) {
     return (
@@ -518,7 +557,9 @@ export default function StudentSubjectChatPage() {
     return (
       <Card>
         <CardHeader>
-          <CardTitle>{subject.name} ({subject.code})</CardTitle>
+          <CardTitle>
+            {subject.name} ({subject.code})
+          </CardTitle>
         </CardHeader>
         <CardContent className="text-sm text-muted-foreground">
           No syllabus has been uploaded for this subject yet. Please check back soon.
@@ -532,244 +573,73 @@ export default function StudentSubjectChatPage() {
     );
   }
 
+  const quota =
+    mode === "research"
+      ? { used: quotaResearch, limit: QUOTA_LIMITS.research, label: "Research" }
+      : { used: quotaChat, limit: QUOTA_LIMITS.chat, label: "Chat" };
+
   return (
     <div className="flex h-[calc(100vh-7rem)] flex-col">
-      <div className="sticky top-0 z-10 flex items-center justify-between gap-4 border-b bg-background/80 px-2 py-3 backdrop-blur">
-        <div className="min-w-0">
-          <div className="truncate text-sm font-semibold sm:text-base">
-            <span className="block sm:hidden">
-              {subject.name.length > 20
-                ? `${subject.name.slice(0, 20)}…`
-                : subject.name}
-            </span>
-            <span className="hidden sm:inline">
-              {subject.name}{" "}
-              <span className="text-muted-foreground">
-                ({subject.code})
-              </span>
-            </span>
-          </div>
-          <div className="text-[11px] text-muted-foreground sm:text-xs">
-            Semester {subject.semester} • {subject.branch}
-          </div>
-        </div>
-        <div className="flex shrink-0 items-center gap-2">
-          {messages.length > 0 && sessionId && (
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={handleExportChat}
-              disabled={isExporting}
-              className="gap-1.5 text-xs"
-            >
-              {isExporting ? (
-                <Loader2 className="w-3.5 h-3.5 animate-spin" />
-              ) : (
-                <Download className="w-3.5 h-3.5" />
-              )}
-              {isExporting ? "Exporting..." : "Export PDF"}
-            </Button>
-          )}
-          <Badge className="hidden shrink-0 bg-emerald-600 text-white hover:bg-emerald-600 sm:inline-flex">
-            Syllabus-locked ✓
-          </Badge>
-        </div>
-      </div>
+      <ChatHeader
+        subject={subject}
+        isResumed={isResumed}
+        sessionCreatedAt={sessionCreatedAt}
+        quotaUsed={quota.used}
+        quotaLimit={quota.limit}
+        quotaLabel={quota.label}
+        hasMessages={messages.length > 0}
+        isExporting={isExporting}
+        onExport={handleExportChat}
+        onStartFresh={handleStartFresh}
+      />
 
-      {showResumeBanner && (
-        <div className="flex items-center justify-between gap-2 border-b bg-muted/50 px-3 py-2 text-xs text-muted-foreground">
-          <span className="min-w-0 truncate">
-            Continuing your last session — {resumedCount}{" "}
-            {resumedCount === 1 ? "message" : "messages"}
-          </span>
-          <div className="flex shrink-0 items-center gap-1">
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={handleStartFresh}
-              className="h-6 px-2 text-xs"
-            >
-              Start fresh
-            </Button>
-            <Button
-              variant="ghost"
-              size="icon"
-              onClick={() => setShowResumeBanner(false)}
-              className="h-6 w-6"
-              aria-label="Dismiss"
-            >
-              <X className="h-3.5 w-3.5" />
-            </Button>
-          </div>
-        </div>
-      )}
-
-      <ScrollArea className="flex-1 px-2 py-4 sm:px-3">
-        {messages.length === 0 ? (
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-            {suggestionCards.map(({ text, Icon }, idx) => (
-              <button
-                key={idx}
-                type="button"
-                onClick={() => {
-                  setInputValue(text);
-                  sendMessage(text);
-                }}
-                className="text-left"
-              >
-                <Card className="transition-shadow hover:shadow-md">
-                  <CardHeader className="flex flex-row items-start justify-between gap-3">
-                    <div className="min-w-0">
-                      <CardTitle className="text-sm font-semibold">
-                        {text}
-                      </CardTitle>
-                    </div>
-                    <Icon className="size-5 shrink-0 text-muted-foreground" />
-                  </CardHeader>
-                </Card>
-              </button>
-            ))}
-          </div>
-        ) : (
-          <div className="space-y-4">
-            {messages.map((m, idx) =>
-              m.role === "user" ? (
-                <div key={idx} className="flex justify-end">
-                  <div className="max-w-[90%] rounded-2xl bg-blue-600 px-4 py-2 text-sm sm:text-[0.95rem] text-white">
-                    {m.content}
-                  </div>
-                </div>
-              ) : (
-                <div
-                  key={idx}
-                  className="flex justify-start"
-                  onMouseEnter={() => setHoveredMessageId(idx)}
-                  onMouseLeave={() => setHoveredMessageId(null)}
-                >
-                  <Card className="max-w-[90%] border bg-card">
-                    <CardContent className="px-4 py-3">
-                      {(() => {
-                        const interactive = parseInteractiveHtml(m.content);
-                        if (!interactive) return <MarkdownRenderer content={m.content} />;
-                        return (
-                          <>
-                            {interactive.markdown ? (
-                              <MarkdownRenderer content={interactive.markdown} />
-                            ) : null}
-                            <InteractiveHtmlViewer htmlContent={interactive.html} />
-                          </>
-                        );
-                      })()}
-                      {hoveredMessageId === idx &&
-                        !m.content.includes("interactive-html") &&
-                        !isLoading && (
-                          <div className="mt-2 flex justify-end">
-                            <Button
-                              type="button"
-                              variant="ghost"
-                              size="sm"
-                              onClick={() => {
-                                const vizPrompt =
-                                  "Create an interactive visualization for the concept explained in your last response. Use the interactive-html format.";
-                                setInputValue(vizPrompt);
-                                sendMessage(vizPrompt);
-                              }}
-                              className="h-7 gap-1 rounded-md border border-border/60 px-2 text-xs text-muted-foreground hover:bg-accent hover:text-accent-foreground"
-                              aria-label="Visualize this concept"
-                            >
-                              <Sparkles className="h-3.5 w-3.5" />
-                              Visualize
-                            </Button>
-                          </div>
-                        )}
-                    </CardContent>
-                  </Card>
-                </div>
-              )
-            )}
-
-            {isLoading && (
-              <div className="flex justify-start">
-                <Card className="max-w-[90%] border bg-card">
-                  <CardContent className="px-4 py-3">
-                    <div className="flex items-center gap-1 text-sm text-muted-foreground">
-                      <span className="inline-block h-2 w-2 animate-pulse rounded-full bg-muted-foreground/60" />
-                      <span className="inline-block h-2 w-2 animate-pulse rounded-full bg-muted-foreground/60 [animation-delay:150ms]" />
-                      <span className="inline-block h-2 w-2 animate-pulse rounded-full bg-muted-foreground/60 [animation-delay:300ms]" />
-                    </div>
-                  </CardContent>
-                </Card>
-              </div>
-            )}
-          </div>
-        )}
-
-        <div ref={bottomRef} />
-      </ScrollArea>
+      <MessageList
+        messages={messages}
+        suggestedPrompts={suggestedPrompts}
+        onSuggestionSelect={onSuggestionSelect}
+        onRetry={onRetry}
+        onRegenerate={onRetry}
+        onSimplify={onSimplify}
+        onGoDeeper={onGoDeeper}
+        onVisualize={onVisualize}
+        orphanMessage={orphanMessage}
+        onGetOrphanAnswer={() => orphanMessage && runExchange(orphanMessage, mode)}
+      />
 
       <div className="sticky bottom-0 z-10 border-t bg-background/80 px-1 py-3 backdrop-blur">
-        {struggleTopic && (
-          <div className="mb-2 flex items-center justify-between gap-2 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-200">
-            <span className="min-w-0 truncate">
-              Looks like{" "}
-              <span className="font-semibold">{struggleTopic}</span> is tricky —
-              want a quick quiz?
-            </span>
-            <div className="flex shrink-0 items-center gap-1">
-              <Button
-                asChild
-                variant="ghost"
-                size="sm"
-                className="h-7 px-2 text-xs font-medium text-amber-900 hover:bg-amber-100 dark:text-amber-200 dark:hover:bg-amber-900/40"
-              >
-                <Link
-                  href={
-                    subjectId
-                      ? `/student/quiz?subjectId=${subjectId}`
-                      : "/student/quiz"
-                  }
-                >
-                  Try quiz →
-                </Link>
-              </Button>
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon"
-                onClick={() => setStruggleTopic(null)}
-                className="h-7 w-7 text-amber-900 hover:bg-amber-100 dark:text-amber-200 dark:hover:bg-amber-900/40"
-                aria-label="Dismiss"
-              >
-                <X className="h-3.5 w-3.5" />
-              </Button>
-            </div>
-          </div>
-        )}
-        <div className="flex items-center gap-2">
-          <Input
-            ref={inputRef}
-            value={inputValue}
-            onChange={(e) => setInputValue(e.target.value)}
-            onKeyDown={handleKeyDown}
-            placeholder={`Ask anything about ${subject.name}...`}
-            disabled={isLoading || isRateLimited}
-            className="h-12 text-base"
+        {recencyNudgeVisible && (
+          <RecencyNudge
+            onSwitchToResearch={() => {
+              setMode("research");
+              setRecencyNudgeVisible(false);
+            }}
+            onDismiss={() => setRecencyNudgeVisible(false)}
           />
-          <Button
-            onClick={handleSubmit}
-            disabled={isLoading || isRateLimited || !inputValue.trim()}
-            className="h-12 px-3 sm:px-4"
-          >
-            <span className="text-sm sm:text-base">Send</span>
-          </Button>
-        </div>
+        )}
+        {struggleTopic && subjectId && (
+          <StruggleNudge topic={struggleTopic} subjectId={subjectId} onDismiss={dismissStruggle} />
+        )}
+
+        <Composer
+          value={inputValue}
+          onChange={setInputValue}
+          onSend={handleSend}
+          mode={mode}
+          onModeChange={setMode}
+          disabled={isSending || isRateLimited}
+          isSending={isSending}
+          placeholder={
+            isRateLimited
+              ? "Daily limit reached — come back tomorrow"
+              : `Ask anything about ${subject.name}...`
+          }
+        />
         {isRateLimited && (
           <p className="mt-2 text-xs text-muted-foreground">
-            You've reached your daily chat limit. Come back tomorrow! 📚
+            You&apos;ve reached your daily chat limit. Come back tomorrow! 📚
           </p>
         )}
       </div>
     </div>
   );
 }
-

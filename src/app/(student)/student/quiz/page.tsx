@@ -163,6 +163,7 @@ function StudentQuizPageInner() {
   >(["mcq"]);
   const [selectedTopics, setSelectedTopics] = useState<string[]>([]);
   const [focusTopic, setFocusTopic] = useState("");
+  const focusTopicPresetApplied = useRef(false);
   const [socraticMode, setSocraticMode] = useState(false);
   const [isGenerating, setIsGenerating] = useState(false);
   // Inline (not toast) validation: show immediately under the CTA when the
@@ -292,6 +293,17 @@ function StudentQuizPageInner() {
     subjectPresetApplied.current = true;
     setSelectedSubjectIds([presetSubjectId]);
   }, [searchParams, subjects]);
+
+  // Pre-fill the focus topic when arriving via ?focusTopic= (chat
+  // struggle-nudge "Quick check" link). Applied once, independent of subjects
+  // loading since it's a free-text field with no validity check needed.
+  useEffect(() => {
+    if (focusTopicPresetApplied.current) return;
+    const presetFocusTopic = searchParams.get("focusTopic");
+    if (!presetFocusTopic) return;
+    focusTopicPresetApplied.current = true;
+    setFocusTopic(presetFocusTopic);
+  }, [searchParams]);
 
   const computeBreakdown = useCallback(
     (qs: QuizQuestion[], ans: Record<string, string>) => {
