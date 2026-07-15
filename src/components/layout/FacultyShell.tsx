@@ -6,6 +6,7 @@ import {
   BarChart2,
   BookOpen,
   CalendarDays,
+  FlaskConical,
   FileText,
   GraduationCap,
   Lightbulb,
@@ -40,6 +41,7 @@ const CONTENT_GROUP: NavItem[] = [
   { href: "/faculty/refine", label: "Refine Content", icon: <Sparkles className="size-4" /> },
   { href: "/faculty/delivery-guide", label: "Delivery Guide", icon: <Lightbulb className="size-4" /> },
   { href: "/faculty/lessonplan", label: "Lesson Plans", icon: <CalendarDays className="size-4" /> },
+  { href: "/faculty/labmanual", label: "Lab Manuals", icon: <FlaskConical className="size-4" /> },
 ];
 
 const ASSESSMENT_GROUP: NavItem[] = [

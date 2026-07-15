@@ -33,6 +33,7 @@ import {
   URL_PATTERN,
   TODO_MARKER_PATTERN,
   BOILERPLATE_LEARN_PATTERN,
+  META_COMMENTARY_PATTERN,
   type Difficulty,
   type ScaffoldKind,
   type PracticalManualSection,
@@ -778,6 +779,27 @@ export function buildOnePracticalSection(
           ? "Model solution is identical to the scaffold — nothing was filled in."
           : "Model solution still contains TODO( markers — it is not a complete solution.",
     });
+  }
+
+  // ── Meta-commentary leak ──────────────────────────────────────────────────
+  // The model reasoning about its own draft, inside an artifact the student
+  // reads (one run emitted "This is not helpful as A'B + AB is not a standard
+  // simplification." into a scaffold body). Checked on body/solution ONLY —
+  // prose fields use phrases like "note that" legitimately, code does not.
+  // Warning-only: the gate can't know which line is the leak, and cutting the
+  // wrong one would corrupt working code.
+  for (const [field, text] of [
+    ["scaffold", body],
+    ["solution", solution],
+  ] as const) {
+    if (text && META_COMMENTARY_PATTERN.test(text)) {
+      const match = text.match(META_COMMENTARY_PATTERN)?.[0] ?? "";
+      warnings.push({
+        practicalNo: pNo,
+        kind: "content_leak_suspect",
+        message: `The ${field} contains what looks like AI commentary ("${match}…") rather than lab content — read it before exporting.`,
+      });
+    }
   }
 
   // ── Fixed-length lists ────────────────────────────────────────────────────

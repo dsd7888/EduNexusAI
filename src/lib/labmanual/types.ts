@@ -147,6 +147,7 @@ export type LabManualWarningKind =
   | "gap_count_off_contract" // gap count outside the difficulty contract's range
   | "gap_marker_mismatch" // a TODO(n) with no gaps[] entry, or vice versa
   | "gap_quality_suspect" // a gap that teaches boilerplate, not the conceptual core
+  | "content_leak_suspect" // model meta-commentary leaked into a student-facing artifact
   | "solution_incomplete" // solution still has TODO( markers, or equals the body
   | "rubric_sum_adjusted" // rubric didn't sum to 10 — largest row adjusted
   | "url_stripped" // an http(s):// URL was removed from generated text
@@ -235,6 +236,23 @@ export const TODO_MARKER_PATTERN = /TODO\(\s*(\d+)\s*\)/g;
  */
 export const BOILERPLATE_LEARN_PATTERN =
   /\b(invocation|invoking|function call|calling the|method call|print(ing)? (the )?(result|output)|import|variable declaration|declaring|syntax of)\b/i;
+
+/**
+ * Model meta-commentary leaking into an artifact the student will read.
+ *
+ * One run emitted "This is not helpful as A'B + AB is not a standard
+ * simplification." straight into a scaffold body — the model reasoning about its
+ * own draft, mid-artifact. It did not reproduce, which is exactly why it needs a
+ * detector rather than a re-run: a non-reproducing one-off is invisible to CP5
+ * visual inspection, which only sees the practicals someone happens to render.
+ *
+ * Scanned against scaffold.body and solution ONLY — prose fields (theory, viva
+ * hints) can legitimately contain "note that" or "let me". Inside code, a
+ * procedure, or a calculation these phrases have near-zero legitimate use, so
+ * the precision is high. Warning-only: it cannot know which line is the leak.
+ */
+export const META_COMMENTARY_PATTERN =
+  /\b(this is not helpful|as an AI|I cannot|I'm sorry|I apologize|note that I|let me (know|clarify|explain|rewrite)|as requested|here('s| is) the (corrected|revised|updated)|I've (added|changed|updated)|my previous (answer|response))\b/i;
 
 /** Max practicals per /generate request (§5) — keeps the route inside its 120s budget. */
 export const MAX_PRACTICALS_PER_REQUEST = 4;

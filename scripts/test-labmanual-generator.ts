@@ -344,6 +344,44 @@ async function gateTests() {
     );
   }
 
+  // 7c. meta-commentary leak (the non-reproducing one-off, now a caught class)
+  console.log("\n--- 7c. AI meta-commentary leaked into an artifact ---");
+  {
+    const w: LabManualWarning[] = [];
+    const row = goodRow();
+    scaffoldOf(row).body =
+      "Step 1: F = A'B + AB\nThis is not helpful as A'B + AB is not a standard simplification.\nStep 2: TODO(1)";
+    buildOnePracticalSection(row, GATE_INPUT, w);
+    const hit = w.find((x) => x.kind === "content_leak_suspect");
+    check("content_leak_suspect fired on the real observed leak", !!hit, w.map((x) => x.kind).join(","));
+    check("names the offending field", !!hit && hit.message.includes("scaffold"), hit?.message);
+  }
+  {
+    const w: LabManualWarning[] = [];
+    const row = goodRow();
+    row.solution = "def f():\n    pass\n# I apologize, here's the corrected version:\ndef f2(): pass";
+    buildOnePracticalSection(row, GATE_INPUT, w);
+    check(
+      "detects leak in the solution too",
+      w.some((x) => x.kind === "content_leak_suspect" && x.message.includes("solution")),
+      w.map((x) => x.kind).join(","),
+    );
+  }
+  {
+    // precision guard: prose fields legitimately use these phrases, and the
+    // detector must not scan them.
+    const w: LabManualWarning[] = [];
+    const row = goodRow();
+    row.theory = "Note that I/O bound tasks differ here. Let me be precise: this is not helpful for large n.";
+    (row.viva as Row[])[0].hint = "Let me know if the array is sorted first";
+    buildOnePracticalSection(row, GATE_INPUT, w);
+    check(
+      "no false positive from prose fields (theory/viva are not scanned)",
+      !w.some((x) => x.kind === "content_leak_suspect"),
+      w.filter((x) => x.kind === "content_leak_suspect").map((x) => x.message).join(" | "),
+    );
+  }
+
   // 8. list lengths
   console.log("\n--- 8. commonErrors / viva / checkpoints lengths ---");
   {
