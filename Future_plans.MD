@@ -1,3 +1,29 @@
+## Lesson plan — queued fix (found Jul 15, 2026 during Lab Manual CP2)
+
+**`co_empty` fallback bypasses `validateCoOrNull`.** In
+`src/lib/lessonplan/generator.ts`, `buildOneTheorySession`'s no-valid-CO branch
+assigns `module.coCodes.slice(0, 1)` straight into the session. Those codes come
+from `module_co_mapping`, while the validator's allowlist comes from
+`course_outcomes` — so the fallback writes an *unvalidated* code into the plan on
+the exact path taken when the AI already failed to produce a valid one.
+`generatePracticalSection` has no such fallback, so this is theory-only.
+
+**Zero behaviour change today, by definition:** an audit of all 5 seeded subjects
+showed the two tables agree on CO spelling *within* every subject (they disagree
+*across* subjects — 4 use `"CO 1"`, IDCH3051 uses `"CO1"` — but that's harmless
+since each subject is internally consistent). The bug only bites if one subject's
+two tables ever drift, at which point the plan silently carries a CO code that
+doesn't exist in `course_outcomes`.
+
+**Fix:** wrap the fallback in `validateCoOrNull(code, validCoCodes)` and emit the
+existing `co_empty` warning when it returns null, rather than trusting the slice.
+One line + the warning. Ship as its OWN tiny commit after Lab Manual CP5 — not
+folded into the lab-manual feature (§22: concurrent-session hygiene / no bundled
+commits). The lab-manual gate validates its own fallback rather than copying this
+hole.
+
+---
+
 ## Chat — carried forward after CP1–CP5 (Jul 2026)
 
 Chat itself is **shipped**: streaming, reasoning/research tiers, citations,
