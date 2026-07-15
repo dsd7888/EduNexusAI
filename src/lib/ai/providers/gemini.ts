@@ -139,6 +139,13 @@ function createGeminiProvider(): AIProvider {
       // pass a narrow responseSchema. thinkingBudget:0 is MANDATORY here
       // (CLAUDE_CONTEXT §19) — Flash thinking tokens would truncate the JSON.
       "lesson_plan_gen",
+      // Lab-manual generation: the per-practical section call and the
+      // learning-path proposal both pass a narrow responseSchema.
+      // thinkingBudget:0 is MANDATORY (CLAUDE_CONTEXT §19) — the section call
+      // emits the largest structured payload in the product, so Flash thinking
+      // tokens eating maxOutputTokens would truncate it mid-scaffold.
+      "lab_manual_gen",
+      "lab_path_gen",
       // Chat Visualize, call 1 + the diagram branch of call 2: both pass a
       // narrow responseSchema. Listed here for the structured-task temperature
       // (0.4 — a routing decision and terse markup, neither wants 0.7) and as

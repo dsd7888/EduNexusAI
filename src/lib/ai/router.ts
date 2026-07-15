@@ -38,6 +38,8 @@ const TASK_TO_MODEL: Record<string, "flash" | "pro"> = {
   module_co_classify: "flash",
   qbank_image_question: "flash",
   lesson_plan_gen: "flash",
+  lab_manual_gen: "flash", // per-practical lab manual section
+  lab_path_gen: "flash", // lab manual learning-path proposal
 };
 
 const DEFAULT_MODEL: "flash" | "pro" = "flash";
@@ -174,7 +176,16 @@ function resolveChatParams(task: string, params: ChatParams): ChatParams {
                                     ? 4096
                                     : task === "lesson_plan_gen"
                                       ? 8192
-                                      : 4096),
+                                      : // A lab-manual section is the largest structured
+                                        // payload in the product: theory + worked example +
+                                        // scaffold + solution + viva + rubric + conduct guide
+                                        // in ONE object. The path proposal is far smaller —
+                                        // a few units of grouping metadata.
+                                        task === "lab_manual_gen"
+                                        ? 8192
+                                        : task === "lab_path_gen"
+                                          ? 4096
+                                          : 4096),
   };
 }
 

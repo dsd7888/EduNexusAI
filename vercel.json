@@ -14,6 +14,7 @@
     "src/app/api/lessonplan/generate/route.ts": { "maxDuration": 120, "memory": 1024 },
     "src/app/api/lessonplan/regenerate/route.ts": { "maxDuration": 30, "memory": 1024 },
     "src/app/api/lessonplan/export/route.ts": { "maxDuration": 60, "memory": 1024 },
+    "src/app/api/labmanual/path/route.ts": { "maxDuration": 60, "memory": 1024 },
     "src/app/api/chat/route.ts": { "maxDuration": 60, "memory": 1024 },
     "src/app/api/chat/visualize/route.ts": { "maxDuration": 120, "memory": 1024 },
     "src/app/api/refine/route.ts": { "maxDuration": 30, "memory": 1024 },
