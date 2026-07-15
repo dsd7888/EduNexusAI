@@ -1,3 +1,34 @@
+## Chat — carried forward after CP1–CP5 (Jul 2026)
+
+Chat itself is **shipped**: streaming, reasoning/research tiers, citations,
+persist-before-stream, semantic cache v2, and Visualize. See CLAUDE_CONTEXT §9A for the
+route contract and §3 for model routing. What was deliberately left undone:
+
+1. **Quota-count endpoint (`GET /api/chat/quota`).** The UI increments a local counter,
+   so remaining-quota drifts across tabs/devices and resets on reload. Now spans three
+   buckets: chat 50, research 10, hint 30 (shared by hints and Visualize). Small, and
+   the only user-visible correctness gap left in chat. (§18)
+
+2. **`scheduleLog` request-scope guard.** `routeAI` logs cost via `next/server`'s
+   `after()`, which needs an active request context — so `routeAI` currently cannot be
+   called from a script, cron, or detached task. It fails on the *logging* path after
+   spending the tokens. Must be fixed before any non-request caller exists (e.g. a
+   batch/offline generation worker). (§18)
+
+3. **CP2b RAG over `document_chunks`.** Dormant by design — pointless until notes/PDF
+   ingestion actually populates the table. Revisit when ingestion lands, not before.
+
+4. **`illustration` vizType (Imagen).** The slot is designed for: add one `VIZ_TYPES`
+   entry, one `VIZ_REGISTRY` entry, one prompt builder, one line in each `vizTypes.ts`
+   map — no route change (§3). Worth it only if a subject needs depictive/photographic
+   visuals that Mermaid and computed SVG genuinely can't serve.
+
+5. **Cosmetic, accepted:** the interactive step-1 renders empty operand pills before
+   values are assigned. Semantically honest (they genuinely aren't assigned yet), and
+   chasing it risks the prompt inventing placeholder values — which is worse. Leave it.
+
+---
+
 Good questions. Honest answers:
 
 ---

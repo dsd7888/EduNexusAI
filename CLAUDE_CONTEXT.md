@@ -59,6 +59,12 @@ EduNexus AI is a **syllabus-locked, role-aware institutional intelligence platfo
 ```typescript
 const TASK_TO_MODEL = {
   chat: "flash",                   // maxTokens: 16384
+  chat_reasoning: "pro",           // maxTokens: 32768 — deeper multi-step chat answers
+  chat_research: "flash",          // maxTokens: 16384 — search-grounded; routed via chatWithSearch()
+  chat_viz_classify: "flash",      // maxTokens: 512, thinkingBudget 0, responseSchema — Visualize call 1
+  chat_visualize: "pro",           // maxTokens 16384 (see Pro note) — interactive srcDoc HTML
+  chat_viz_diagram: "flash",       // maxTokens: 4096, thinkingBudget 0, responseSchema — Mermaid source
+  chat_viz_plot: "pro",            // maxTokens 8192 (see Pro note) — computed-plot HTML
   quiz_gen: "flash",               // maxTokens: 8192
   placement_prep: "flash",         // maxTokens: 6000
   ppt_gen: "flash",                // maxTokens: 32768
@@ -89,6 +95,28 @@ const TASK_TO_MODEL = {
 - `svg` / `dual` or absent hint → Flash if `diagramComplexity === "standard"`, Pro if `"intricate"`
 
 `routeDiagramBatchModel(slides[])` takes Pro if ANY slide in the batch needs Pro. The batch route sets `maxTokens: 8192` explicitly for every diagram batch regardless of model choice.
+
+**Chat Visualize routing — `VIZ_REGISTRY` in `src/lib/ai/vizPrompts.ts`:**
+The Visualize button is a two-call pipeline, NOT a chat turn (§9A). Call 1
+(`chat_viz_classify`) returns `vizType: interactive | diagram | plot`; call 2 is
+looked up in `VIZ_REGISTRY[vizType] → { task, payloadKind, buildPrompt }`. The route
+never switches on `vizType` itself, so a fourth type (`illustration` → Imagen, the
+designed-for slot) is one registry entry + one prompt builder, with no route change.
+This is the same per-content-type table pattern as `routeDiagramModel` above — when
+adding a content type, extend the table, never add a branch at the call site.
+
+The taxonomy is deliberately split across two modules **by runtime, not by concern**:
+`vizTypes.ts` (VIZ_TYPES, VizClassification, loading copy, labels) is client-safe and
+imported by the browser panel; `vizPrompts.ts` (prompts, the worked example,
+VIZ_REGISTRY) is server-only. Importing the latter into a client component would ship
+every prompt and the ~85-line worked example into the page bundle — a payload cost and
+a prompt-leak. Keep new prompt text out of `vizTypes.ts`.
+
+**Pro `maxTokens` note:** `chat_visualize` / `chat_viz_plot` declare 16384 / 8192, but
+gemini.ts pins Pro to 32768 and ignores them (see the Pro row in §19). The declared
+values are recorded intent and DO bind if either task ever falls back to Flash. The
+effective limit on Pro is the prompt-level `VIZ_SIZE_CONTRACT` (250 lines) — verified
+holding at 2834 max output tokens against an 8k watch threshold (Jul 2026).
 
 **CRITICAL:** `thinkingBudget: 0` for ALL structured JSON tasks. Gemini 2.5 Flash's thinking tokens consume `maxOutputTokens`, causing JSON truncation. Hard-won discovery.
 
@@ -597,8 +625,80 @@ ConceptExplainers component hidden from PPT generation result page (July 2026) �
 ## 9. Semantic Cache Architecture
 
 - Cosine similarity in JS loop, NEVER `.rpc()` (PostgREST truncates 3072-dim vectors)
-- Threshold: 0.90, scoped by subject_id + module_id
+- **Threshold: 0.92**, scoped by subject_id + module_id (`SIMILARITY_THRESHOLD` in
+  `src/app/api/chat/route.ts`). Raised 0.78 → 0.92 (Jul 2026): at 0.78 near-but-distinct
+  questions collided and students got answers to a question they didn't ask. 0.92 keeps
+  hits to genuine paraphrases — a deliberately lower hit-rate for correctness.
 - `shouldBypassCache()` handles numerical/personal/pasted queries
+- **`mode` column** stores `detectQueryMode()`'s exam_prep/problem_solving/conceptual
+  classification of the query. NOT the same as the request tier
+  (standard/reasoning/research) — two different things both called "mode" (§9A).
+- **Cache-eligible = standard tier only, non-bypassed.** reasoning/research never read
+  or write the cache.
+- **Eviction:** `CACHE_MAX_ROWS_PER_SUBJECT = 500`, LRU by `last_used_at`, trimmed on
+  write.
+- **Rate limit is checked AFTER the cache lookup**, so a cache hit costs no quota and
+  makes no AI call. Ordering is load-bearing: checking first would charge students for
+  answers the cache served for free.
+
+---
+
+## 9A. Chat Route Contract (`POST /api/chat`, `POST /api/chat/visualize`)
+
+Numbered 9A to avoid renumbering §10–§23. Rebuilt across CP1–CP5 (Jul 2026).
+
+### Two things are called "mode" — do not conflate
+| | Values | Set by | Meaning |
+|---|---|---|---|
+| **Request tier** | standard / reasoning / research | client `mode` param, or auto | which model + path serves the turn |
+| **Query mode** | exam_prep / problem_solving / conceptual | `detectQueryMode(text)` | student intent; picks prompt behaviour; stored in `semantic_cache.mode` |
+
+Tier resolution: an explicit non-`auto` tier always wins. Under `auto`,
+`problem_solving` → reasoning, everything else → standard. **research is never
+auto-selected** — it is search-grounded and pricier, so it is opt-in only
+(`RATE_LIMITS.research` = 10/day vs chat's 50).
+
+### `detectQueryMode` evaluation order is load-bearing
+problem_solving MUST be tested before exam_prep. exam_prep's `shortNoQuestion`
+shortcut (<60 chars, no question word) otherwise captures terse numerical
+imperatives like "Calculate the height of a balanced BST with 15 nodes" and
+misroutes them. Since CP2 this also picks the MODEL (Flash instead of Pro), so
+the reorder is no longer cosmetic. The two keyword sets don't overlap, so this
+affects only that collision.
+
+### Response shapes — the client must handle all three
+1. **SSE stream** (standard/reasoning). Frames: `meta` `{mode, recencySuggested}` →
+   `chunk` `{text}` (repeated) → `done` `{messageId, struggle}`, or `error`
+   `{message}` mid-stream.
+2. **Plain JSON** (cache hit, research) — same route, no stream.
+3. **Fatal JSON** (429/404/500) — may arrive even though the happy path streams.
+
+`streamClient.ts` dispatches on content-type. **Every success path returns
+`messageId`** (the `chat_messages` row id) — Visualize depends on it.
+
+### Invariants
+- **Persist-before-stream:** the user's row is inserted BEFORE generation starts, so
+  a dropped connection, refresh, or mid-stream failure never loses the question.
+  `persistTurn({insertUserRow:false})` on the streaming path avoids the duplicate.
+- **History is server-side** — last `HISTORY_LIMIT = 12` rows re-read per request.
+  The client never sends conversation history; don't add it.
+- **Messages are saved on cache hits AND misses.** Quota is not consumed on a hit.
+- **`dbId` ≠ `id`** in `UiMessage`: `id` is a client `genId()` (stable React key from
+  optimistic render); `dbId` is the `chat_messages` row id, absent until the row
+  exists. Anything addressing a turn server-side must use `dbId`. History loads must
+  `select("id", ...)` — omitting it silently breaks Visualize on every resumed
+  session (which, given the 72h resume window, is the majority case).
+- Session-cap cleanup runs ONLY on new-session creation in `chat/session/route.ts`,
+  never per-message — doing it per-message deleted other subjects' sessions.
+
+### Visualize (`POST /api/chat/visualize`) — CLASSIFY → GENERATE
+Two AI calls per click, never a chat turn. Classify (`chat_viz_classify`) → generate
+via `VIZ_REGISTRY` (§3). Rendered in an inline panel below the message; errors retry
+in place and never enter the transcript. **Regenerate replays the stored
+classification → 1 AI call, not 2** (the client sends it back; the server re-validates
+rather than trusting it, and falls back to a fresh classify if unusable). Quota reuses
+the `hint` bucket (30/day, same comprehension-aid class) and decrements **only on a
+delivered visualization** — a failed build costs the student nothing.
 
 ---
 
@@ -1086,6 +1186,20 @@ API routes:
 ## 17. Active Feature Roadmap
 
 ### Recently Shipped (July 2026)
+- **Chat, rebuilt end-to-end (CP1–CP5) — complete.** The full ladder now ships:
+  token streaming (SSE); the reasoning tier (Pro) with auto-elevation from
+  `detectQueryMode`; the research tier (search-grounded Flash) with citations;
+  persist-before-stream so a dropped connection never loses a question; server-side
+  history; semantic cache v2 (0.92, mode column, LRU eviction, rate-limit-after-cache);
+  and **Visualize** as a two-call CLASSIFY → GENERATE pipeline rendering interactive
+  HTML / Mermaid / computed plots in an inline panel. Contract in §9A, routing in §3.
+  Inline diagram triage reworked in the same pass: Mermaid is now the DEFAULT inline
+  visual, freeform SVG is restricted to plots/geometry/data-structures with a verbatim
+  `<marker>` arrowhead template, and above a ~15-element budget the model must defer to
+  Visualize rather than draw a cramped diagram.
+  Deferred, not blocking (see §18): quota-count endpoint; `scheduleLog` request-scope
+  guard; the `illustration` (Imagen) vizType slot, designed for in `VIZ_REGISTRY` but
+  deliberately not built.
 - **Content Refinement Tab (`/faculty/refine`) — complete, no longer deferred.** Full
   extract → refine → assemble pipeline for the standalone PPT Refinement tab: per-slide
   selection (default all-selected) driving bulk-option or single-slide-chat
@@ -1190,6 +1304,25 @@ API routes:
   constrained decoding — a distinct failure mode from the known thinking-token issue, and
   it must be checked separately. Narrow schemas to the fields a given call actually needs.
 
+- **Gemini double-escapes newlines in `responseSchema` string fields.** A schema field
+  holding multi-line text (Mermaid source, code, anything newline-delimited) frequently
+  comes back with the backslash itself escaped, so `JSON.parse` yields the two characters
+  `\` + `n` instead of a newline. The payload looks fine by length and parses cleanly —
+  it just arrives as ONE line and every downstream line-based consumer silently fails.
+  **This is a Gemini quirk, not a Mermaid one:** any future responseSchema'd task
+  emitting multi-line text will hit it. Un-escape at the consuming route
+  (`normalizeMermaid` in `chat/visualize/route.ts` is the reference). Note
+  `sanitizeMermaidCode` cannot catch it — that helper splits on real newlines, so a
+  one-line payload is invisible to it; it was never broken because the PPT diagram path
+  doesn't use responseSchema. Found only by rendering the output (Jul 2026).
+
+- **Live-drive the real UI; static checks cannot see wiring gaps.** The `dbId` bug
+  (§9A) passed tsc, lint, build, and every API-level test — the route was correct and
+  the client was correct, but the client was sending a client-minted UUID where the
+  route expected a row id. Only clicking the button in a browser surfaced it. For any
+  feature where the client addresses a server-side entity, drive it end-to-end before
+  calling it done.
+
 - **Visual/rendered inspection is the only authoritative check for document outputs.**
   Text-extraction tools are unreliable once inline images / embedded objects are mixed
   into a paragraph — this session a fix nearly shipped for a bug that didn't exist, based
@@ -1277,6 +1410,8 @@ API routes:
 | Issue | Status | Fix |
 |---|---|---|
 | Flash cost shows ₹0.0000 in PPT log | Active | Wire totalFlashCost from routeAI in build route |
+| `routeAI` cannot be called outside a request scope | Active | `scheduleLog` wraps `logAICall` in `next/server`'s `after()`, which requires an active request context. Any `routeAI` call from a script, a cron worker, or a detached background task throws on the logging path rather than the AI path — so it fails *after* spending the tokens. Needs a request-scope guard in `scheduleLog` (fall back to a direct `await logAICall`) before any non-request caller is added |
+| No quota-count endpoint | Active | The chat UI derives remaining quota by incrementing a local counter after each turn, so it drifts across tabs/devices and resets on reload. Needs a `GET /api/chat/quota` reading `usage_analytics`. Now spans three buckets (chat 50, research 10, hint 30 — the last shared by hints and Visualize) |
 | Supabase India ISP DNS block | Ongoing | Cloudflare DNS or WARP VPN |
 | Supabase free tier pauses after 1 week | Ongoing | Keep active before demos |
 | Email confirmation disabled | Active | Re-enable before go-live |
@@ -1311,6 +1446,11 @@ API routes:
 | Diagram batches: 1 slide per request | Prevents SVG token truncation |
 | Content batches: 5 slides per request | Prevents Flash truncation |
 | srcDoc for interactive viz | Blob URLs break due to React re-render |
+| Visualize is a dedicated route, never a chat prompt-prefix | The original implementation asked the tutor persona for "interactive-html" — the model refused its own UI button, and every attempt and failure became a visible chat turn. A UI affordance must not depend on a persona agreeing to break character (§9A) |
+| The ~85-line worked example in `buildVizInteractivePrompt` stays long | Its length IS its function: models copy visible discipline far more reliably than they follow abstract instructions to be disciplined. It is what makes `VIZ_LAYOUT_SAFETY` actually land, and it anchors the 250-line size contract. Shortening it to save prompt tokens reintroduces the §15 layout failures |
+| `VIZ_SIZE_CONTRACT` is a prompt-level cap, not a `maxTokens` one | The interactive/plot calls run on Pro (pinned 32768) and emit freeform HTML, so they can carry no responseSchema — the same no-stopping-pressure shape as the runaway below. The prompt ceiling is the only mitigation that doesn't touch the shared provider. Watch `ai_call_logs.output_tokens`; >~8k typical means it stopped holding |
+| `vizTypes.ts` / `vizPrompts.ts` split by runtime, not concern | The panel is a client component; importing the prompt module would ship four prompts + the worked example into the page bundle (payload cost + prompt leak) |
+| `UiMessage.dbId` separate from `UiMessage.id` | `id` must exist at optimistic-render time (before any row does) to be a stable React key; `dbId` must be the real row id for server addressing. One field cannot be both (§9A) |
 | PYQ via Gemini Flash direct | LlamaParse returns raw text; Flash extracts structured data |
 | Section-relative slot keys Q1–Q4 | Prevents Section II naming mismatch |
 | Module assignment computed in code | Guarantees weightage compliance, AI never picks modules |

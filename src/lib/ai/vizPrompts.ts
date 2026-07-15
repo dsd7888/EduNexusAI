@@ -94,6 +94,14 @@ visibly broken visualization. They override anything else in this prompt.
      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
    A label may be clipped to an ellipsis. A label may NEVER escape its box or
    overlap a neighbour.
+2b. ROTATED TEXT RESERVES ITS ROTATED BOUNDING BOX. A vertical axis label
+   (transform: rotate(-90deg), or SVG <text transform="rotate(...)">) occupies
+   its TEXT LENGTH as height and its FONT SIZE as width — the opposite of the
+   unrotated box. Reserve that rotated extent explicitly; a container sized for
+   the horizontal text will clip it to a fragment like "Collision Probability p(".
+   If the rotated label cannot fit its full length, do NOT rotate it: place a
+   short horizontal label above the axis instead. A horizontal label that fits
+   beats a rotated one that is cut in half.
 3. MOTION IS CSS TRANSITIONS ONLY. Use \`transition: <prop> 300ms ease\`.
    NO requestAnimationFrame loops, NO setInterval animation, NO physics. State
    changes flip a class or a style value; the browser tweens it.
