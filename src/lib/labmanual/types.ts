@@ -146,6 +146,7 @@ export type LabManualWarningKind =
   | "scaffold_kind_defaulted" // AI kind not in the enum — defaulted by heuristic
   | "gap_count_off_contract" // gap count outside the difficulty contract's range
   | "gap_marker_mismatch" // a TODO(n) with no gaps[] entry, or vice versa
+  | "gap_quality_suspect" // a gap that teaches boilerplate, not the conceptual core
   | "solution_incomplete" // solution still has TODO( markers, or equals the body
   | "rubric_sum_adjusted" // rubric didn't sum to 10 — largest row adjusted
   | "url_stripped" // an http(s):// URL was removed from generated text
@@ -187,6 +188,53 @@ export const SCAFFOLD_KINDS: ScaffoldKind[] = [
 
 /** Rubric rows must sum to exactly this (PPSU practical CE scheme). */
 export const RUBRIC_TOTAL_MARKS = 10;
+
+export const RUBRIC_MIN_ROWS = 3;
+export const RUBRIC_MAX_ROWS = 5;
+
+export const COMMON_ERRORS_COUNT = 3;
+export const VIVA_COUNT = 6;
+export const CHECKPOINT_COUNT = 2;
+
+/**
+ * A practical whose title reads like a programming task. SINGLE SOURCE OF
+ * TRUTH — the setup UI uses it to decide whether to offer the language selector
+ * (§7), and the generator gate uses it as the code_scaffold arm of its
+ * scaffold-kind fallback heuristic (§4b). If those two ever disagree, a faculty
+ * could pick "python" for a practical the gate then defaults to a procedure
+ * scaffold. Client-safe: this module imports nothing server-only.
+ */
+export const CODE_PRACTICAL_PATTERN =
+  /implement|program|write a program|algorithm|code/i;
+
+/** A practical whose title reads like a numerical/calculation task. */
+export const CALC_PRACTICAL_PATTERN =
+  /calculat|comput|numerical|solve|determine|estimate|evaluate the|design a .*(circuit|beam|column)/i;
+
+/** Matches any http(s) URL — stripped from every generated string (§8, MANDATORY). */
+export const URL_PATTERN = /https?:\/\/[^\s)"'\]]+/gi;
+
+/** Matches the TODO(n) gap markers inside a scaffold body. */
+export const TODO_MARKER_PATTERN = /TODO\(\s*(\d+)\s*\)/g;
+
+/**
+ * A gap whose OWN `learn` field admits it teaches boilerplate.
+ *
+ * Matched against `learn` — the concept the model claims the gap proves — not
+ * against `hint`. That's deliberate: a hint may legitimately say "call the
+ * recursive function on the left subtree" (recursion IS the concept), whereas a
+ * `learn` of "function invocation" is the model self-reporting that the gap
+ * teaches nothing. High precision, few false positives.
+ *
+ * Exists because the prompt alone does not hold: even with an explicit ban and a
+ * worked example, Flash intermittently pads gaps with function calls to reach
+ * the difficulty's gap-count target — it did so on one run and not the next with
+ * an identical prompt. CLAUDE_CONTEXT §17: back a prompt-level rule with a code
+ * check wherever the failure would otherwise be invisible. This only warns; it
+ * cannot rewrite a scaffold, and faculty decide whether to regenerate.
+ */
+export const BOILERPLATE_LEARN_PATTERN =
+  /\b(invocation|invoking|function call|calling the|method call|print(ing)? (the )?(result|output)|import|variable declaration|declaring|syntax of)\b/i;
 
 /** Max practicals per /generate request (§5) — keeps the route inside its 120s budget. */
 export const MAX_PRACTICALS_PER_REQUEST = 4;
