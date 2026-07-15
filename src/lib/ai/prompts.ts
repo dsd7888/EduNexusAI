@@ -8,30 +8,68 @@ export type QueryMode = "exam_prep" | "problem_solving" | "conceptual";
 const VISUAL_DIAGRAM_RULES = `<visual_diagram_rules>
 When a visual genuinely aids understanding — and only then — include ONE diagram.
 
-Choose the right tool:
-
-SVG for precise 2D technical visuals (use \`\`\`svg fence):
-- Labeled schematics, apparatus, anatomical cross-sections
-- Algorithm step-through: array states, pointer movement, tree traversal
-- Graphs and plots: P-V diagram, ECG trace, dose-response curve, sine wave
-- Data structure layout: binary tree, linked list, hash table
-- Any diagram where geometry, spacing, and labels are critical
-
-Mermaid for flow and logic diagrams (use \`\`\`mermaid fence):
-- Step-by-step processes: thermodynamic cycles, reaction pathways, manufacturing steps
+MERMAID IS THE DEFAULT. Reach for it first (use \`\`\`mermaid fence):
+- Flows and step-by-step processes: thermodynamic cycles, reaction pathways,
+  manufacturing steps, protocol exchanges
 - Decision trees: diagnostic algorithms, engineering choices
 - Cause-and-effect chains: pathophysiology cascade, economic feedback
-- Hierarchical classifications and timelines
+- Hierarchies, classifications, architectures, lifecycles, timelines
+A renderer lays Mermaid out for you, so its labels and arrows are always clean.
+Hand-drawn SVG of the same content is worse in every case.
 
-CRITICAL RULES:
-- ALWAYS wrap SVG in a fenced code block: \`\`\`svg ... \`\`\`  Never output raw <svg> tags.
-- SVG viewBox MUST be "0 0 800 400". Every element needs a <text> label. Min font-size 13px.
-- Mermaid: NO parentheses in edge labels |like (this)|. NO underscores in labels. Max 4 words per label. Max 8 nodes.
-- Place diagram AFTER your text explanation, never before.
+SVG ONLY for the three things Mermaid genuinely cannot express
+(use \`\`\`svg fence):
+1. Plots and curves: P-V diagram, ECG trace, dose-response curve, sine wave
+2. Geometry: force diagrams, ray optics, cross-sections, labelled apparatus
+3. Data-structure layout: binary tree, linked list, hash table, array states
+If your content is not one of these three, use Mermaid. A flow, a process, or a
+hierarchy drawn in freeform SVG is a mistake — those go to Mermaid, always.
+
+<svg_rules>
+- ALWAYS wrap in a fenced code block: \`\`\`svg ... \`\`\`  Never output raw <svg> tags.
+- viewBox MUST be "0 0 800 450". Start with:
+  <rect width="800" height="450" fill="#F8FAFC"/>
+- ARROWHEADS: never hand-draw a triangle, and never put a polygon at a line's
+  end. Define ONE marker and reference it. Copy this template EXACTLY:
+
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10"
+            refX="9" refY="5"
+            markerWidth="6" markerHeight="6"
+            orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#64748B"/>
+    </marker>
+  </defs>
+
+  Then on every arrow: <line ... stroke="#64748B" stroke-width="2" marker-end="url(#arrow)"/>
+
+- LABELS: max 6 words each. Min font-size 13px. Every element gets a <text>.
+- CLEARANCE: at least 8px of empty space around every text element. No text may
+  touch, overlap, or sit on top of a line, a box edge, or another text element.
+  Text anchored mid-line needs a background <rect> behind it.
+- Keep every element inside the viewBox with a 20px margin.
+- Colors: #2563EB (blue), #1E40AF (dark blue), #16A34A (green), #D97706 (amber),
+  #DC2626 (red), #64748B (lines/arrows)
+</svg_rules>
+
+<complexity_limit>
+COUNT the elements a faithful diagram would need — shapes, arrows, and labels.
+If it exceeds 15, DO NOT DRAW IT. A cramped, overlapping SVG teaches nothing and
+is worse than no diagram.
+
+Instead, end that section with exactly this line:
+For an interactive walkthrough, tap Visualize on this message.
+</complexity_limit>
+
+<mermaid_rules>
+- 4 to 16 nodes. \`flowchart LR\` for flows, \`flowchart TD\` for hierarchies.
+- Max 4 words per label.
+- NO parentheses, underscores, or curly braces inside any label.
+  Write "public key" not "public_key". Write "hash the data" not "hash(data)".
+</mermaid_rules>
+
+- Place the diagram AFTER your text explanation, never before.
 - One diagram per response maximum.
-
-SVG colors: #2563EB (blue), #1E40AF (dark blue), #16A34A (green), #D97706 (amber), #DC2626 (red)
-SVG background: always start with <rect width="800" height="400" fill="#F8FAFC"/>
 </visual_diagram_rules>`;
 
 /**

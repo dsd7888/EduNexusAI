@@ -139,6 +139,14 @@ function createGeminiProvider(): AIProvider {
       // pass a narrow responseSchema. thinkingBudget:0 is MANDATORY here
       // (CLAUDE_CONTEXT §19) — Flash thinking tokens would truncate the JSON.
       "lesson_plan_gen",
+      // Chat Visualize, call 1 + the diagram branch of call 2: both pass a
+      // narrow responseSchema. Listed here for the structured-task temperature
+      // (0.4 — a routing decision and terse markup, neither wants 0.7) and as
+      // defence in depth on thinkingBudget:0, which both call sites also set
+      // explicitly. The interactive/plot branches emit freeform HTML and are
+      // deliberately NOT listed — they want the creative default.
+      "chat_viz_classify",
+      "chat_viz_diagram",
     ].includes(taskName);
 
     const temperature =

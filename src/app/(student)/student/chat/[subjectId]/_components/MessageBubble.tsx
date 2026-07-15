@@ -19,15 +19,18 @@ import { parseInteractiveHtml } from "./helpers";
 import { InteractiveHtmlViewer } from "./InteractiveHtmlViewer";
 import { CitationList } from "./CitationList";
 import { SuggestionChip } from "./SuggestionChips";
+import { VisualizationPanel } from "./VisualizationPanel";
 import type { UiMessage } from "./types";
 
 interface Props {
   message: UiMessage;
+  /** Null until the session resolves; Visualize stays hidden until then. */
+  sessionId: string | null;
+  subjectId: string;
   onRetry: (id: string) => void;
   onRegenerate: (id: string) => void;
   onSimplify: (id: string) => void;
   onGoDeeper: (id: string) => void;
-  onVisualize: (id: string) => void;
   onSuggestionTap: (text: string) => void;
 }
 
@@ -46,14 +49,16 @@ function ThinkingDots() {
 
 export function MessageBubble({
   message,
+  sessionId,
+  subjectId,
   onRetry,
   onRegenerate,
   onSimplify,
   onGoDeeper,
-  onVisualize,
   onSuggestionTap,
 }: Props) {
   const [copied, setCopied] = useState(false);
+  const [vizOpen, setVizOpen] = useState(false);
   const streaming = message.status === "streaming";
   const renderedContent = useDebouncedStreamText(message.content, streaming, 80);
 
@@ -177,10 +182,10 @@ export function MessageBubble({
                     <Sparkles className="h-3 w-3" />
                     Go deeper
                   </button>
-                  {!interactive && !message.content.includes("interactive-html") && (
+                  {!interactive && sessionId && message.dbId && !vizOpen && (
                     <button
                       type="button"
-                      onClick={() => onVisualize(message.id)}
+                      onClick={() => setVizOpen(true)}
                       aria-label="Visualize"
                       className="flex h-6 items-center gap-1 rounded-md px-1.5 text-[11px] text-muted-foreground hover:bg-accent hover:text-accent-foreground"
                     >
@@ -189,6 +194,15 @@ export function MessageBubble({
                     </button>
                   )}
                 </div>
+              )}
+
+              {vizOpen && sessionId && message.dbId && (
+                <VisualizationPanel
+                  sessionId={sessionId}
+                  subjectId={subjectId}
+                  messageId={message.dbId}
+                  onClose={() => setVizOpen(false)}
+                />
               )}
             </>
           )}

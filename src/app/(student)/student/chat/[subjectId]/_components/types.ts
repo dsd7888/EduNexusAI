@@ -9,7 +9,18 @@ export interface Citation {
 export type MessageStatus = "thinking" | "streaming" | "done" | "error";
 
 export interface UiMessage {
+  /** Client-side React key. NOT the database id — see `dbId`. */
   id: string;
+  /**
+   * The chat_messages row id, when known. Distinct from `id`: `id` is minted
+   * client-side (genId) so a message has a stable key from the instant it is
+   * optimistically rendered, before the row exists.
+   *
+   * Required by anything that must reference this turn on the server —
+   * currently /api/chat/visualize. Absent while a reply is still streaming,
+   * and on the user's own turns.
+   */
+  dbId?: string;
   role: "user" | "assistant";
   content: string;
   status?: MessageStatus;

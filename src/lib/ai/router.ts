@@ -13,6 +13,12 @@ const TASK_TO_MODEL: Record<string, "flash" | "pro"> = {
   chat_reasoning: "pro",
   // Research tier — search-grounded chat; routed through chatWithSearch.
   chat_research: "flash",
+  // ── Chat "Visualize" pipeline: CLASSIFY → GENERATE (see lib/ai/vizPrompts.ts).
+  // Call 1 picks the form; exactly one of the three generation tasks then runs.
+  chat_viz_classify: "flash", // narrow responseSchema, a routing decision only
+  chat_visualize: "pro", // freeform interactive HTML — the quality-critical path
+  chat_viz_diagram: "flash", // Mermaid source only; Pro buys nothing (cf. routeDiagramModel)
+  chat_viz_plot: "pro", // computed-plot HTML: formula → sampled points → SVG
   quiz_gen: "flash",
   placement_prep: "flash",
   ppt_gen: "flash",
@@ -140,7 +146,21 @@ function resolveChatParams(task: string, params: ChatParams): ChatParams {
                       ? 16384
                       : task === "chat_reasoning"
                         ? 32768
-                        : task === "chat_research"
+                        : task === "chat_viz_classify"
+                        ? 512
+                        : // NOTE: chat_visualize and chat_viz_plot run on Pro, where
+                          // gemini.ts pins maxOutputTokens to 32768 and ignores these
+                          // values (§19). They are recorded here as the intended
+                          // ceiling — and they DO bind if either task ever falls back
+                          // to Flash. The effective limit on Pro is the prompt-level
+                          // VIZ_SIZE_CONTRACT in vizPrompts.ts.
+                          task === "chat_visualize"
+                          ? 16384
+                          : task === "chat_viz_plot"
+                          ? 8192
+                          : task === "chat_viz_diagram"
+                          ? 4096
+                          : task === "chat_research"
                           ? 16384
                           : task === "syllabus_extract"
                             ? 8192

@@ -147,7 +147,7 @@ export default function StudentSubjectChatPage() {
           if (resumed && messageCount > 0) {
             const { data: rows } = await supabase
               .from("chat_messages")
-              .select("role, content, created_at")
+              .select("id, role, content, created_at")
               .eq("session_id", sid)
               .order("created_at", { ascending: false })
               .limit(20);
@@ -155,13 +155,16 @@ export default function StudentSubjectChatPage() {
             const ordered = (rows ?? [])
               .slice()
               .reverse()
-              .map((r: { role: "user" | "assistant"; content: string }) => {
+              .map((r: { id: string; role: "user" | "assistant"; content: string }) => {
                 if (r.role === "user") {
                   return { id: genId(), role: "user" as const, content: r.content };
                 }
                 const trailing = extractTrailingChip(r.content);
                 return {
                   id: genId(),
+                  // Resumed turns already exist server-side, so Visualize works
+                  // on them immediately after a refresh.
+                  dbId: String(r.id),
                   role: "assistant" as const,
                   content: trailing ? trailing.remaining : r.content,
                   status: "done" as const,
@@ -321,7 +324,7 @@ export default function StudentSubjectChatPage() {
               prev.map((m) => (m.id === assistantId ? { ...m, status: "error", errorMessage: msg, retryable: true } : m))
             );
           },
-          onDone: ({ struggle }) => {
+          onDone: ({ messageId, struggle }) => {
             setIsStreamActive(false);
             setQuotaChat((c) => c + 1);
             const trailing = extractTrailingChip(accumulated);
@@ -330,6 +333,7 @@ export default function StudentSubjectChatPage() {
                 m.id === assistantId
                   ? {
                       ...m,
+                      dbId: messageId ?? undefined,
                       status: "done",
                       content: trailing ? trailing.remaining : accumulated,
                       trailingChip: trailing?.chip,
@@ -346,6 +350,7 @@ export default function StudentSubjectChatPage() {
                 m.id === assistantId
                   ? {
                       ...m,
+                      dbId: data.messageId ?? undefined,
                       status: "done",
                       content: trailing ? trailing.remaining : data.response,
                       trailingChip: trailing?.chip,
@@ -455,16 +460,10 @@ export default function StudentSubjectChatPage() {
     [messages, runExchange, mode]
   );
 
-  const onVisualize = useCallback(
-    (id: string) => {
-      void id;
-      runExchange(
-        "Create an interactive visualization for the concept explained in your last response. Use the interactive-html format.",
-        mode
-      );
-    },
-    [runExchange, mode]
-  );
+  // Visualize is NOT a chat exchange. It posts to /api/chat/visualize and
+  // renders inline, owned by MessageBubble's VisualizationPanel — asking the
+  // tutor persona for "interactive-html" made the model refuse its own UI
+  // button, and turned every attempt into a visible chat turn.
 
   const handleStartFresh = useCallback(async () => {
     if (!subjectId) return;
@@ -595,13 +594,14 @@ export default function StudentSubjectChatPage() {
 
       <MessageList
         messages={messages}
+        sessionId={sessionId}
+        subjectId={subjectId}
         suggestedPrompts={suggestedPrompts}
         onSuggestionSelect={onSuggestionSelect}
         onRetry={onRetry}
         onRegenerate={onRetry}
         onSimplify={onSimplify}
         onGoDeeper={onGoDeeper}
-        onVisualize={onVisualize}
         orphanMessage={orphanMessage}
         onGetOrphanAnswer={() => orphanMessage && runExchange(orphanMessage, mode)}
       />

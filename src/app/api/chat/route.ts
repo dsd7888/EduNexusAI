@@ -506,7 +506,7 @@ export async function POST(request: NextRequest) {
             const cachedResponse = String(bestRow.response ?? "");
 
             // Rate limit is NOT consumed on a hit.
-            const { struggle } = await persistTurn({
+            const { messageId, struggle } = await persistTurn({
               assistantText: cachedResponse,
               modelUsed: null,
               outputTokens: null,
@@ -533,6 +533,7 @@ export async function POST(request: NextRequest) {
 
             return Response.json({
               response: cachedResponse,
+              messageId,
               cached: true,
               mode: effectiveMode,
               recencySuggested,
@@ -618,7 +619,7 @@ export async function POST(request: NextRequest) {
       const responseText = String(ai.content ?? "");
       const citations = ai.citations ?? null;
 
-      const { struggle } = await persistTurn({
+      const { messageId, struggle } = await persistTurn({
         assistantText: responseText,
         modelUsed: ai.modelUsed ?? null,
         outputTokens: ai.tokensUsed?.output ?? null,
@@ -632,6 +633,7 @@ export async function POST(request: NextRequest) {
 
       return Response.json({
         response: responseText,
+        messageId,
         citations: citations ?? undefined,
         mode: "research",
         cached: false,

@@ -9,13 +9,15 @@ import type { UiMessage } from "./types";
 
 interface Props {
   messages: UiMessage[];
+  /** Null until the session resolves; forwarded to each bubble's Visualize panel. */
+  sessionId: string | null;
+  subjectId: string;
   suggestedPrompts: string[];
   onSuggestionSelect: (text: string) => void;
   onRetry: (id: string) => void;
   onRegenerate: (id: string) => void;
   onSimplify: (id: string) => void;
   onGoDeeper: (id: string) => void;
-  onVisualize: (id: string) => void;
   /** Set once, on session resume, when the last loaded message is a user
    * turn with no assistant reply — cleared as soon as any new exchange starts. */
   orphanMessage?: string | null;
@@ -26,13 +28,14 @@ const PIN_THRESHOLD_PX = 120;
 
 export function MessageList({
   messages,
+  sessionId,
+  subjectId,
   suggestedPrompts,
   onSuggestionSelect,
   onRetry,
   onRegenerate,
   onSimplify,
   onGoDeeper,
-  onVisualize,
   orphanMessage,
   onGetOrphanAnswer,
 }: Props) {
@@ -75,11 +78,12 @@ export function MessageList({
               <MessageBubble
                 key={m.id}
                 message={m}
+                sessionId={sessionId}
+                subjectId={subjectId}
                 onRetry={onRetry}
                 onRegenerate={onRegenerate}
                 onSimplify={onSimplify}
                 onGoDeeper={onGoDeeper}
-                onVisualize={onVisualize}
                 onSuggestionTap={onSuggestionSelect}
               />
             ))}

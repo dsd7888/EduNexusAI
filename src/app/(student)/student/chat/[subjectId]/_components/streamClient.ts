@@ -2,6 +2,8 @@ import type { Citation, EffectiveMode, RequestedMode } from "./types";
 
 export interface ChatJsonPayload {
   response: string;
+  /** chat_messages row id for the assistant turn; needed by Visualize. */
+  messageId?: string | null;
   cached?: boolean;
   mode: EffectiveMode;
   recencySuggested?: boolean;
