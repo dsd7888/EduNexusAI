@@ -24,6 +24,53 @@ hole.
 
 ---
 
+## Lab manual — backlog after the ship audit (Jul 16, 2026)
+
+Shipped: all 5 checkpoints, three-variant export. These three came out of the
+post-push audit as non-blocking; #1 (cache contamination) and #3 (silent BTL
+default) were fixed before merge, these were not.
+
+1. **`finalized` never un-finalizes.** A whole-student export sets
+   `lab_manuals.status='finalized'`, but later autosave PUTs don't flip it back,
+   so a manual can read "finalized" while its `doc` has drifted from every
+   exported artifact. Either flip `status` back to `draft` in the PUT handler
+   when `doc` changes, or accept "finalized" = "was exported at least once" and
+   document that. Deans will eventually filter on this column, so decide the
+   semantics deliberately. Small.
+
+2. **Export objects accumulate forever.** Every export uploads
+   `..._${Date.now()}.ext` and only the newest path is stored; older objects
+   orphan in the `lab-manuals` bucket. Harmless at pilot scale. Fix: delete the
+   previously-stored path before storing the new one (per variant×format
+   column), or a periodic cleanup script. Mirrors the qpaper-history delete
+   pattern.
+
+3. **Invisible cache — dead `setCacheFreshness` state.** GET /api/labmanual
+   returns per-practical cache-freshness flags and the page stores them, but
+   nothing renders them — the "a colleague already generated this" affordance
+   (lesson-plan UX) silently dropped. Cache reuse still works transparently;
+   faculty just get no "instant vs pay-for-fresh" signal. Either restore the
+   banner in the path/setup stage or delete the plumbing — don't keep zombie
+   state.
+
+4. **`expectedOutput` runs through `latexToReadable` even for code practicals.**
+   For a code lab it's literal program output, where a `$` in shell output would
+   be eaten as a math delimiter. Rare (most expected output is plain), but the
+   export should skip the latex transform when `scaffold.kind === "code_scaffold"`.
+
+5. **Optional: hint-free viva export toggle.** Viva hints currently print in the
+   student manual (defensible as a prep aid). Some faculty will want a hint-free
+   viva for assessment. A per-export toggle is a cheap future option, not a v1
+   need.
+
+6. **Path re-plan semantics after generation.** Returning faculty land straight
+   in review; confirm the route back to re-plan the path communicates that
+   existing sections survive a path edit (they do — sections are keyed by
+   practicalNo, independent of unit grouping) and that only a regenerate is
+   destructive. A UX-copy clarification, not a code bug.
+
+---
+
 ## Chat — carried forward after CP1–CP5 (Jul 2026)
 
 Chat itself is **shipped**: streaming, reasoning/research tiers, citations,

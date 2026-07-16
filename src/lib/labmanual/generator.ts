@@ -905,7 +905,17 @@ export function buildOnePracticalSection(
     .slice(0, 3);
 
   const btlRaw = Math.trunc(Number(row.btl));
-  const btl = Number.isFinite(btlRaw) && btlRaw >= 1 && btlRaw <= 6 ? btlRaw : 3;
+  const btlValid = Number.isFinite(btlRaw) && btlRaw >= 1 && btlRaw <= 6;
+  const btl = btlValid ? btlRaw : 3;
+  if (!btlValid) {
+    // BTL is accreditation metadata — warn like every other repair, don't
+    // coerce silently (the gate's warn-everything rule).
+    warnings.push({
+      practicalNo: pNo,
+      kind: "btl_defaulted",
+      message: `AI returned BTL "${String(row.btl)}" (outside 1-6) — defaulted to 3. Set the correct Bloom level.`,
+    });
+  }
 
   const section: PracticalManualSection = {
     // syllabus-owned — never from the model

@@ -108,20 +108,26 @@ export async function POST(request: NextRequest) {
       language ?? doc?.language ?? null,
     );
 
-    const { error: upsertError } = await adminClient.from("lab_manual_cache").upsert(
-      {
-        subject_id: subjectId,
-        practical_no: practicalNo,
-        difficulty,
-        payload: section,
-        syllabus_fingerprint: fingerprint,
-        generated_by: user.id,
-        model_used: MODEL_USED,
-      },
-      { onConflict: "subject_id,practical_no,difficulty" },
-    );
-    if (upsertError) {
-      console.warn("[labmanual regenerate] cache upsert failed:", upsertError.message);
+    // Same rule as /generate: a regeneration driven by a personal instruction
+    // must not overwrite the shared neutral cache. A plain difficulty-change
+    // regen (no instruction) is neutral and DOES update the cache so colleagues
+    // benefit from the better version at that difficulty.
+    if (!instruction) {
+      const { error: upsertError } = await adminClient.from("lab_manual_cache").upsert(
+        {
+          subject_id: subjectId,
+          practical_no: practicalNo,
+          difficulty,
+          payload: section,
+          syllabus_fingerprint: fingerprint,
+          generated_by: user.id,
+          model_used: MODEL_USED,
+        },
+        { onConflict: "subject_id,practical_no,difficulty" },
+      );
+      if (upsertError) {
+        console.warn("[labmanual regenerate] cache upsert failed:", upsertError.message);
+      }
     }
 
     return apiSuccess({ section, warnings, modelUsed: MODEL_USED });

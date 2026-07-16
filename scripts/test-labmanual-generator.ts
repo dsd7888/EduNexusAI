@@ -429,6 +429,24 @@ async function gateTests() {
     check("legit \\text{ m} unit annotation untouched", repairGeminiMathEscapes("$5 \\text{ m}$").includes("\\text{ m}"));
   }
 
+  // 7e. BTL out of range warns (compliance metadata — no silent coercion)
+  console.log("\n--- 7e. invalid BTL warns ---");
+  {
+    const w: LabManualWarning[] = [];
+    const row = goodRow();
+    row.btl = 9;
+    const s = buildOnePracticalSection(row, GATE_INPUT, w);
+    check("BTL coerced to 3", s.btl === 3, String(s.btl));
+    check("btl_defaulted warning fired", w.some((x) => x.kind === "btl_defaulted"));
+  }
+  {
+    const w: LabManualWarning[] = [];
+    const row = goodRow();
+    row.btl = 4;
+    const s = buildOnePracticalSection(row, GATE_INPUT, w);
+    check("valid BTL kept, no warning", s.btl === 4 && !w.some((x) => x.kind === "btl_defaulted"));
+  }
+
   // 8. list lengths
   console.log("\n--- 8. commonErrors / viva / checkpoints lengths ---");
   {

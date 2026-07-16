@@ -104,6 +104,7 @@ export const SCAFFOLD_KIND_BADGE: Record<ScaffoldKind, string> = {
 export const WARNING_LABELS: Record<LabManualWarningKind, string> = {
   co_stripped: "An invalid CO was removed",
   co_empty: "No course outcome — assign one",
+  btl_defaulted: "Bloom level was defaulted — set the right one",
   scaffold_kind_defaulted: "Scaffold type was guessed — check it fits",
   gap_count_off_contract: "Gap count is off for this difficulty",
   gap_marker_mismatch: "Scaffold blanks and the gaps table don't line up",

@@ -190,6 +190,15 @@ export async function POST(request: NextRequest) {
         sections.push(section);
         perPracticalFromCache[section.practicalNo] = false;
 
+        // Do NOT write a PERSONALISED generation into the shared cache. A
+        // per-practical customInstruction ("use recursion only", "frame it
+        // around our lab kit") is binding for the requester, but the cache
+        // exists to share NEUTRAL generations — persisting a tailored one would
+        // silently make one faculty's constraint every colleague's default. The
+        // requester still gets their section; the shared cache keeps whatever
+        // neutral version was there.
+        if (instructions?.[section.practicalNo]) continue;
+
         const { error: upsertError } = await adminClient.from("lab_manual_cache").upsert(
           {
             subject_id: subjectId,

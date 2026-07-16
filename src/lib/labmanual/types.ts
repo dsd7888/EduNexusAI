@@ -144,6 +144,7 @@ export type LabManualWarningKind =
   | "co_stripped" // an AI CO code failed validateCoOrNull and was dropped
   | "co_empty" // a practical ended up with no valid CO
   | "scaffold_kind_defaulted" // AI kind not in the enum — defaulted by heuristic
+  | "btl_defaulted" // AI btl outside 1-6 — defaulted (compliance-relevant metadata)
   | "gap_count_off_contract" // gap count outside the difficulty contract's range
   | "gap_marker_mismatch" // a TODO(n) with no gaps[] entry, or vice versa
   | "gap_quality_suspect" // a gap that teaches boilerplate, not the conceptual core
