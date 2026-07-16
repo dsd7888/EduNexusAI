@@ -225,6 +225,134 @@ export function hasLatex(text: string): boolean {
   return extractLatexSegments(text).some((s) => s.type === "math");
 }
 
+// Control code → the JSON escape it came from. When a model emits a single
+// backslash before frac/text/beta/… inside a responseSchema JSON string, the
+// sequence \f \t \b \n \r \v is a VALID JSON escape, so JSON.parse silently
+// turns "\frac" into form-feed + "rac" (CLAUDE_CONTEXT §17, the LaTeX face of
+// the Gemini escaping quirk). The control char survives, so the original
+// command is recoverable: put the backslash back.
+const CTRL_TO_BACKSLASH: Record<number, string> = {
+  8: "\\b", // \beta \bar \binom …
+  9: "\\t", // \theta \times \text \tan …
+  10: "\\n", // \nabla \neq \nu …
+  11: "\\v", // \vec \varphi …
+  12: "\\f", // \frac \forall …
+  13: "\\r", // \rho \right \rightarrow …
+};
+
+function isAsciiLetter(code: number): boolean {
+  return (code >= 65 && code <= 90) || (code >= 97 && code <= 122);
+}
+
+// Symbol commands Gemini Flash sometimes mis-writes with a `\text` prefix — it
+// emits `\textDelta` / `\text{\textapprox}` where it means `\Delta` / `\approx`,
+// producing an undefined command that KaTeX can't render. A CLOSED list (not a
+// catch-all) so legitimate `\text{ m}` / `\text{o}C` unit annotations are never
+// touched — only a `\text` glued directly to a known symbol name is rewritten.
+// Symbols the model sometimes mangles. Used ONLY inside delimited contexts
+// (`\text{…}`, `\text…`) where each is anchored right after `\text`, so there is
+// no prefix-collision hazard between e.g. `ne` and `neq` — the `\text` prefix
+// disambiguates. Sorted longest-first anyway, belt-and-suspenders.
+const SYMBOL_LIST = [
+  "Delta", "Gamma", "Sigma", "Omega", "Theta", "Lambda", "Phi", "Psi", "Pi",
+  "approx", "times", "div", "cdot", "pm", "mp", "leq", "geq", "neq", "ne",
+  "infty", "partial", "nabla", "alpha", "beta", "gamma", "theta", "lambda",
+  "mu", "nu", "rho", "sigma", "tau", "phi", "psi", "omega", "pi", "degree",
+  "circ", "sum", "prod", "int", "sqrt", "frac",
+].sort((a, b) => b.length - a.length);
+const TEXT_PREFIXED_SYMBOLS = SYMBOL_LIST.join("|");
+const TEXT_PREFIX_RE = new RegExp(
+  `\\\\text\\{\\\\text(${TEXT_PREFIXED_SYMBOLS})\\}|\\\\text(${TEXT_PREFIXED_SYMBOLS})\\b|` +
+    `\\\\text\\{\\s*(${TEXT_PREFIXED_SYMBOLS})\\s*\\}`,
+  "g",
+);
+
+// The glued-symbol fix (`\DeltaT` → `\Delta T`) is restricted to UPPERCASE
+// Greek: those are complete commands, none is a prefix of another, and a letter
+// glued to them is always a variable — so unlike the lowercase names (`ne`
+// inside `neq`, `int` inside `infty`) this can never split a valid command.
+const GLUED_GREEK_RE = /\\(Delta|Gamma|Sigma|Omega|Theta|Lambda|Phi|Psi|Pi)([A-Za-z])/g;
+
+/** Restore control-char-before-letter within one math span's inner text. */
+function repairSpanInner(inner: string): string {
+  let out = "";
+  for (let i = 0; i < inner.length; i++) {
+    const c = inner.charCodeAt(i);
+    if (CTRL_TO_BACKSLASH[c] && isAsciiLetter(inner.charCodeAt(i + 1))) {
+      out += CTRL_TO_BACKSLASH[c];
+    } else {
+      out += inner[i];
+    }
+  }
+  // Undo the model's `\text`-prefixed / `\text{…}`-wrapped symbol tics.
+  out = out.replace(TEXT_PREFIX_RE, (_m, a, b, c) => `\\${a ?? b ?? c}`);
+  // Un-glue an uppercase-Greek command from a following variable letter.
+  out = out.replace(GLUED_GREEK_RE, "\\$1 $2");
+  return out;
+}
+
+/**
+ * Repair LaTeX commands corrupted by JSON-escape consumption in a Gemini
+ * responseSchema response (see above). Scoped to math regions so it never
+ * touches legitimate whitespace: inside `$…$` / `$$…$$` spans it restores ALL
+ * six escape chars (tabs/newlines there are always broken commands, e.g. a
+ * newline mid-span is a mangled `\neq`); OUTSIDE spans it only restores the
+ * three chars — form-feed, backspace, vertical-tab — that never occur in real
+ * prose. A real tab/newline between two spans is left untouched.
+ *
+ * Do NOT run this on code (`scaffold.body`, `solution`): a leading tab before an
+ * identifier is legitimate indentation there, not a broken `\text`.
+ */
+export function repairGeminiMathEscapes(text: string): string {
+  if (!text) return text;
+  // Fast path: nothing to repair unless there's a repairable control char
+  // (codes 8-13, the escape-consumption case) OR a backslash command (the
+  // `\text`-tic / glued-symbol case). Plain prose has neither and returns as-is.
+  let anyCtrl = false;
+  for (let k = 0; k < text.length; k++) {
+    const c = text.charCodeAt(k);
+    if (c >= 8 && c <= 13) {
+      anyCtrl = true;
+      break;
+    }
+  }
+  if (!anyCtrl && !text.includes("\\")) return text;
+
+  let out = "";
+  let i = 0;
+  const n = text.length;
+  while (i < n) {
+    if (text[i] === "$") {
+      const display = text[i + 1] === "$";
+      const delim = display ? "$$" : "$";
+      const start = i + delim.length;
+      let j = start;
+      let close = -1;
+      while (j < n) {
+        if (text[j] === "$" && (!display || text[j + 1] === "$")) {
+          close = j;
+          break;
+        }
+        j++;
+      }
+      if (close !== -1) {
+        out += delim + repairSpanInner(text.slice(start, close)) + delim;
+        i = close + delim.length;
+        continue;
+      }
+    }
+    // Outside any span: restore only the three chars that are never real prose.
+    const c = text.charCodeAt(i);
+    if ((c === 8 || c === 11 || c === 12) && isAsciiLetter(text.charCodeAt(i + 1))) {
+      out += CTRL_TO_BACKSLASH[c];
+    } else {
+      out += text[i];
+    }
+    i++;
+  }
+  return out;
+}
+
 /**
  * Find the index where `delimiter` next occurs starting at `from`, skipping an
  * escaped `\$`. Returns -1 if not found (caller then treats the opener as literal).

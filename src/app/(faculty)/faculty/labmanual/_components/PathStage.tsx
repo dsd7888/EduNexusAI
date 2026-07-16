@@ -56,6 +56,7 @@ import {
   DIFFICULTIES,
   DIFFICULTY_LABELS,
   DIFFICULTY_HINTS,
+  DIFFICULTY_BADGE,
   WARNING_LABELS,
   type Difficulty,
   type LearningPath,
@@ -350,15 +351,23 @@ export function PathStage({
                           <CollapsibleTrigger asChild>
                             <button
                               type="button"
-                              className="text-muted-foreground hover:text-foreground ml-7 flex items-center gap-1 text-xs"
+                              className="text-muted-foreground hover:text-foreground ml-7 flex items-center gap-1.5 text-xs"
                             >
                               <Pencil className="size-3" />
-                              {DIFFICULTY_LABELS[
-                                practicalStates[n]?.difficulty ?? "standard"
-                              ]}
+                              <span
+                                className={`rounded-full border px-1.5 py-0.5 text-[10px] font-medium ${
+                                  DIFFICULTY_BADGE[
+                                    practicalStates[n]?.difficulty ?? "standard"
+                                  ]
+                                }`}
+                              >
+                                {DIFFICULTY_LABELS[
+                                  practicalStates[n]?.difficulty ?? "standard"
+                                ]}
+                              </span>
                               {practicalStates[n]?.customInstruction
-                                ? " · has instruction"
-                                : ""}
+                                ? "has instruction"
+                                : "edit"}
                             </button>
                           </CollapsibleTrigger>
                           <CollapsibleContent className="bg-muted/40 ml-7 mt-1 space-y-2 rounded-md p-2">

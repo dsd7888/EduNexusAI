@@ -382,6 +382,53 @@ async function gateTests() {
     );
   }
 
+  // 7d. Gemini math-escape repair (the §17 LaTeX-escape corruption)
+  console.log("\n--- 7d. corrupted-LaTeX repair (\\frac → formfeed+rac) ---");
+  {
+    const { repairGeminiMathEscapes } = await import("@/lib/text/latexSegments");
+    const { hasLatex } = await import("@/lib/text/latexSegments");
+    const FF = String.fromCharCode(12); // what JSON.parse("\\f") yields
+    const TAB = String.fromCharCode(9);
+    const NL = String.fromCharCode(10);
+    // exactly the corruption observed live: "$Q = -kA\frac{dT}{dx}$"
+    const broken = `Rate is $Q = -kA${FF}rac{dT}{dx}$ and $${FF}rac{1}{2}$$ end.`;
+    const fixed = repairGeminiMathEscapes(broken);
+    check("form-feed before letter → \\f inside $…$", fixed.includes("\\frac{dT}{dx}"), JSON.stringify(fixed.slice(0, 40)));
+    check("form-feed inside $$…$$ repaired", fixed.includes("\\frac{1}{2}"), fixed);
+    check("repaired text now renders as math", hasLatex(fixed) && !hasLatex(broken.replace(/\$/g, "")));
+
+    // tab → \text inside a span (the other observed case)
+    const brokenTab = `Value is $0.22${TAB}ext{ m}$ across.`;
+    check("tab before letter → \\t inside span", repairGeminiMathEscapes(brokenTab).includes("\\text{ m}"));
+
+    // newline INSIDE a span is a broken \neq; newline BETWEEN spans is left alone
+    const brokenNeq = `We need $x ${NL}eq 0$ here.`;
+    check("newline inside span → \\n (\\neq restored)", repairGeminiMathEscapes(brokenNeq).includes("\\neq"));
+
+    // a REAL paragraph break outside any span must survive untouched
+    const prose = `First paragraph.${NL}${NL}Second paragraph.`;
+    check("paragraph newlines outside spans untouched", repairGeminiMathEscapes(prose) === prose);
+
+    // a real tab as CODE indentation (body/solution) must NOT be repaired —
+    // proven by NOT calling repair on those fields; here assert the function
+    // itself leaves a tab-before-letter alone when there is no surrounding span.
+    const codeish = `${TAB}if (x) return;`;
+    check("bare tab-indent (no span) is NOT turned into \\t", repairGeminiMathEscapes(codeish) === codeish);
+
+    // no-op fast path
+    check("plain text is returned unchanged", repairGeminiMathEscapes("no math here") === "no math here");
+
+    // model LaTeX-tic normalisation (observed live on the heat-transfer subject)
+    check("\\textDelta → \\Delta", repairGeminiMathEscapes("$\\textDelta T$").includes("\\Delta"));
+    check("\\DeltaT (glued) → \\Delta T", repairGeminiMathEscapes("$\\DeltaT_{o}$").includes("\\Delta T"));
+    check("\\text{approx} → \\approx", repairGeminiMathEscapes("$a \\text{approx} b$").includes("\\approx"));
+
+    // PREFIX HAZARD — the load-bearing sort must NOT split these valid commands
+    check("valid \\neq is NOT split into \\ne q", !repairGeminiMathEscapes("$x \\neq y$").includes("\\ne q"));
+    check("valid \\infty is NOT split into \\int fty", !repairGeminiMathEscapes("$n \\infty x$").includes("\\int"));
+    check("legit \\text{ m} unit annotation untouched", repairGeminiMathEscapes("$5 \\text{ m}$").includes("\\text{ m}"));
+  }
+
   // 8. list lengths
   console.log("\n--- 8. commonErrors / viva / checkpoints lengths ---");
   {

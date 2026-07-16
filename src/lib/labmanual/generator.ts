@@ -18,6 +18,10 @@
 
 import { routeAI } from "@/lib/ai/router";
 import { validateCoOrNull } from "@/lib/qpaper/sectionGen";
+import {
+  MATH_CHEM_NOTATION_GUIDE,
+  repairGeminiMathEscapes,
+} from "@/lib/text/latexSegments";
 import { buildModuleDigest, type SubjectContext } from "@/lib/subjectContext";
 import type { AILogContext } from "@/lib/ai/providers/types";
 import {
@@ -355,7 +359,20 @@ ${GAP_QUALITY_EXAMPLE}
     noting the contemporary alternative — but never substitute it, and never
     refuse the task on the grounds that it is outdated.
 
-11. Output JSON only, conforming to the schema.`;
+11. MATHS AND CHEMISTRY NOTATION — write EVERY formula, equation, variable with a
+    subscript/superscript, fraction, or chemical species in the notation below so
+    it renders as a real equation, not plain text. e.g. write $Q = -kA\\frac{dT}{dx}$,
+    NOT "Q = -kA(dT/dx)"; write $k_{exp,i}$, NOT "k_exp,i"; write \\ce{H2SO4 -> H2O + SO3}
+    for reactions. This applies in theory, workedExample, expectedOutput, viva and
+    everywhere prose appears — but NOT inside scaffold.body or solution (those are
+    literal code/procedure text and must stay verbatim). Common mistakes to AVOID:
+    write $\\Delta T$ with a SPACE (never $\\DeltaT$); use $\\approx$ and $\\times$
+    directly (never $\\text{approx}$ or $\\textDelta$); put units in \\text, e.g.
+    $5\\ \\text{m}^2$. The rules:
+
+${MATH_CHEM_NOTATION_GUIDE}
+
+12. Output JSON only, conforming to the schema.`;
 }
 
 // Narrow schema (§19) — mirrors PracticalManualSection MINUS practicalNo/title/
@@ -652,6 +669,16 @@ export function buildOnePracticalSection(
     return text;
   };
 
+  /**
+   * Prose fields additionally get their math un-corrupted. Gemini's
+   * responseSchema JSON turns a lone `\frac` into form-feed + "rac" (§17); this
+   * puts the backslash back so `$…$` and `\ce{…}` render as equations instead of
+   * garbled text. NOT applied to scaffold.body / solution — a leading tab there
+   * is real code indentation, not a broken `\text`.
+   */
+  const cleanProse = (v: unknown, max: number): string =>
+    repairGeminiMathEscapes(clean(v, max));
+
   // ── CO validation (hard gate — strip invalid, warn; never guess) ───────────
   const rawCos = Array.isArray(row.coCodes) ? (row.coCodes as unknown[]) : [];
   const validCos: string[] = [];
@@ -709,8 +736,8 @@ export function buildOnePracticalSection(
       const row2 = (g ?? {}) as Record<string, unknown>;
       return {
         n: Math.trunc(Number(row2.n)),
-        hint: clean(row2.hint, 200),
-        learn: clean(row2.learn, 100),
+        hint: cleanProse(row2.hint, 200),
+        learn: cleanProse(row2.learn, 100),
       };
     })
     .filter((g) => Number.isFinite(g.n) && g.hint);
@@ -808,7 +835,7 @@ export function buildOnePracticalSection(
     rawErrors
       .map((e) => {
         const r = (e ?? {}) as Record<string, unknown>;
-        return { error: clean(r.error, 200), meaning: clean(r.meaning, 240) };
+        return { error: cleanProse(r.error, 200), meaning: cleanProse(r.meaning, 240) };
       })
       .filter((e) => e.error),
     COMMON_ERRORS_COUNT,
@@ -823,7 +850,7 @@ export function buildOnePracticalSection(
     rawViva
       .map((v) => {
         const r = (v ?? {}) as Record<string, unknown>;
-        return { q: clean(r.q, 220), hint: clean(r.hint, 160) };
+        return { q: cleanProse(r.q, 220), hint: cleanProse(r.hint, 160) };
       })
       .filter((v) => v.q),
     VIVA_COUNT,
@@ -841,8 +868,8 @@ export function buildOnePracticalSection(
       const lvl = String(r.level ?? "").toLowerCase().trim();
       return {
         level: (allowedLevels.includes(lvl) ? lvl : "basic") as ExtensionProblem["level"],
-        statement: clean(r.statement, 400),
-        expected: clean(r.expected, 240),
+        statement: cleanProse(r.statement, 400),
+        expected: cleanProse(r.expected, 240),
       };
     })
     .filter((e) => e.statement)
@@ -850,7 +877,7 @@ export function buildOnePracticalSection(
 
   const rawConduct = (row.conductGuide ?? {}) as Record<string, unknown>;
   const rawCheckpoints = Array.isArray(rawConduct.checkpoints)
-    ? (rawConduct.checkpoints as unknown[]).map((c) => clean(c, 240)).filter(Boolean)
+    ? (rawConduct.checkpoints as unknown[]).map((c) => cleanProse(c, 240)).filter(Boolean)
     : [];
   const checkpoints = fitList(
     rawCheckpoints,
@@ -868,12 +895,12 @@ export function buildOnePracticalSection(
   );
 
   const objectives = (Array.isArray(row.objectives) ? (row.objectives as unknown[]) : [])
-    .map((o) => clean(o, 140))
+    .map((o) => cleanProse(o, 140))
     .filter(Boolean)
     .slice(0, 4);
 
   const prereqChecks = (Array.isArray(row.prereqChecks) ? (row.prereqChecks as unknown[]) : [])
-    .map((p) => clean(p, 160))
+    .map((p) => cleanProse(p, 160))
     .filter(Boolean)
     .slice(0, 3);
 
@@ -886,13 +913,13 @@ export function buildOnePracticalSection(
     title: skeleton.title,
     hours: skeleton.hours,
     difficulty,
-    aim: clean(row.aim, 300) || skeleton.title,
+    aim: cleanProse(row.aim, 300) || skeleton.title,
     objectives,
     coCodes: validCos,
     btl,
     prereqChecks,
-    theory: clean(row.theory, 1800),
-    workedExample: clean(row.workedExample, 1500),
+    theory: cleanProse(row.theory, 1800),
+    workedExample: cleanProse(row.workedExample, 1500),
     scaffold: {
       kind,
       // A code scaffold takes the faculty's chosen language; only if none was
@@ -906,17 +933,17 @@ export function buildOnePracticalSection(
       gaps,
     },
     solution,
-    expectedOutput: clean(row.expectedOutput, 800),
+    expectedOutput: cleanProse(row.expectedOutput, 800),
     commonErrors,
     extensions,
     viva,
     rubric,
     conductGuide: {
-      opener: clean(rawConduct.opener, 300),
-      hintRelease: clean(rawConduct.hintRelease, 300),
+      opener: cleanProse(rawConduct.opener, 300),
+      hintRelease: cleanProse(rawConduct.hintRelease, 300),
       checkpoints,
-      deliberateMistake: clean(rawConduct.deliberateMistake, 240),
-      wrapUp: clean(rawConduct.wrapUp, 240),
+      deliberateMistake: cleanProse(rawConduct.deliberateMistake, 240),
+      wrapUp: cleanProse(rawConduct.wrapUp, 240),
     },
   };
 

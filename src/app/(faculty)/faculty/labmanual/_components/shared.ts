@@ -70,6 +70,32 @@ export const SCAFFOLD_KIND_LABELS: Record<ScaffoldKind, string> = {
   calculation_scaffold: "Calculation",
 };
 
+// ── Colour tokens ───────────────────────────────────────────────────────────
+// The screens were flat monochrome, so nothing read as interactive and faculty
+// had to hunt for what was editable. These give each meaningful axis a colour:
+// difficulty and scaffold-kind badges are now instantly distinguishable, and the
+// review card groups its sections by a coloured accent so "student pages",
+// "assessment" and "faculty-only" are visually separate. Tailwind literals (not
+// dynamic strings) so the JIT compiler keeps them.
+
+export const DIFFICULTY_BADGE: Record<Difficulty, string> = {
+  guided:
+    "border-emerald-300 bg-emerald-50 text-emerald-700 dark:border-emerald-800 dark:bg-emerald-950/50 dark:text-emerald-300",
+  standard:
+    "border-sky-300 bg-sky-50 text-sky-700 dark:border-sky-800 dark:bg-sky-950/50 dark:text-sky-300",
+  challenge:
+    "border-amber-300 bg-amber-50 text-amber-700 dark:border-amber-800 dark:bg-amber-950/50 dark:text-amber-300",
+};
+
+export const SCAFFOLD_KIND_BADGE: Record<ScaffoldKind, string> = {
+  code_scaffold:
+    "border-violet-300 bg-violet-50 text-violet-700 dark:border-violet-800 dark:bg-violet-950/50 dark:text-violet-300",
+  procedure_scaffold:
+    "border-teal-300 bg-teal-50 text-teal-700 dark:border-teal-800 dark:bg-teal-950/50 dark:text-teal-300",
+  calculation_scaffold:
+    "border-indigo-300 bg-indigo-50 text-indigo-700 dark:border-indigo-800 dark:bg-indigo-950/50 dark:text-indigo-300",
+};
+
 /**
  * Human labels for every warning class. Faculty must never be shown a raw
  * warning kind — the chip has to say what to DO about it, in a sentence a lab

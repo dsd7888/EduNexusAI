@@ -114,6 +114,31 @@ export default function LabManualPage() {
     if (selectedSubjectId) void loadSubject(selectedSubjectId);
   }, [selectedSubjectId, loadSubject]);
 
+  // ── Block navigation during generation ───────────────────────────────────
+  // Generation can't be aborted mid-flight, so a back-press or tab-close would
+  // strand half-finished requests. Same guard the Q-paper and PPT builders use:
+  // swallow the back button (re-push the history entry) and warn on unload.
+  // Editing in the review stage is NOT guarded — autosave persists every
+  // keystroke, so leaving and returning restores the manual intact.
+  useEffect(() => {
+    if (!generating) return;
+    const onPopState = () => {
+      window.history.pushState(null, "", window.location.href);
+    };
+    window.history.pushState(null, "", window.location.href);
+    window.addEventListener("popstate", onPopState);
+    const onBeforeUnload = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      e.returnValue = "The lab manual is still generating. Please wait.";
+      return e.returnValue;
+    };
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return () => {
+      window.removeEventListener("popstate", onPopState);
+      window.removeEventListener("beforeunload", onBeforeUnload);
+    };
+  }, [generating]);
+
   // ── Debounced autosave ───────────────────────────────────────────────────
   useEffect(() => {
     if (!selectedSubjectId) return;

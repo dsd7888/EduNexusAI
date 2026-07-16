@@ -6,7 +6,7 @@
  * that finishes before the content does learns to distrust the whole screen.
  */
 
-import { Check, Loader2, X } from "lucide-react";
+import { Check, Info, Loader2, X } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
 
@@ -38,6 +38,12 @@ export function GeneratingStage({ items }: { items: GenItem[] }) {
       <p className="text-muted-foreground text-center text-xs tabular-nums">
         {settled} of {items.length} done
       </p>
+
+      <div className="flex items-center justify-center gap-1.5 rounded-md border border-sky-200 bg-sky-50 px-3 py-2 text-xs text-sky-700 dark:border-sky-900 dark:bg-sky-950/40 dark:text-sky-300">
+        <Info className="size-3.5 shrink-0" />
+        Keep this tab open until it finishes — generation can&rsquo;t be resumed
+        mid-way.
+      </div>
 
       <Card>
         <CardContent className="p-0">
