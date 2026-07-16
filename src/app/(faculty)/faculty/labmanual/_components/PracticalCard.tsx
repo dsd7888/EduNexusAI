@@ -23,6 +23,7 @@ import {
   ChevronDown,
   ClipboardCheck,
   Eye,
+  FileText,
   FlaskConical,
   Lightbulb,
   Loader2,
@@ -62,19 +63,25 @@ import {
   rubricSum,
   canReview,
   type Difficulty,
+  type ExportFormat,
+  type ExportVariant,
   type LabManualWarning,
   type PracticalManualSection,
   type PracticalState,
 } from "./shared";
+import { Download } from "lucide-react";
 
 interface Props {
   section: PracticalManualSection;
   state: PracticalState;
   warnings: LabManualWarning[];
   regenerating: boolean;
+  format: ExportFormat;
+  exportingKey: string | null;
   onChange: (patch: Partial<PracticalManualSection>) => void;
   onStateChange: (patch: Partial<PracticalState>) => void;
   onRegenerate: (difficulty: Difficulty, instruction?: string) => void;
+  onExport: (variant: ExportVariant, format: ExportFormat) => void;
 }
 
 /** A collapsible titled section — the unit of structure inside the card. */
@@ -136,12 +143,16 @@ export function PracticalCard({
   state,
   warnings,
   regenerating,
+  format,
+  exportingKey,
   onChange,
   onStateChange,
   onRegenerate,
+  onExport,
 }: Props) {
   const [regenOpen, setRegenOpen] = useState(false);
   const [regenInstruction, setRegenInstruction] = useState("");
+  const [exportOpen, setExportOpen] = useState(false);
 
   const sum = rubricSum(section.rubric);
   const rubricValid = sum === RUBRIC_TOTAL_MARKS;
@@ -211,6 +222,57 @@ export function PracticalCard({
             )}
             Regenerate
           </Button>
+          {state.reviewed && (
+            <div className="relative">
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={exportingKey !== null}
+                onClick={() => setExportOpen((v) => !v)}
+              >
+                {exportingKey?.endsWith(`:${section.practicalNo}`) ? (
+                  <Loader2 className="size-4 animate-spin" />
+                ) : (
+                  <Download className="size-4" />
+                )}
+                Export
+              </Button>
+              {exportOpen && (
+                <div
+                  className="bg-popover absolute right-0 top-full z-20 mt-1 w-56 space-y-1 rounded-md border p-1 shadow-md"
+                  onMouseLeave={() => setExportOpen(false)}
+                >
+                  <p className="text-muted-foreground px-2 py-1 text-[10px] uppercase tracking-wide">
+                    This practical · {format.toUpperCase()}
+                  </p>
+                  {(
+                    [
+                      ["student", "Student page"],
+                      ["instructor", "Instructor page"],
+                      ["solutions", "Model solution"],
+                    ] as const
+                  ).map(([variant, label]) => (
+                    <button
+                      key={variant}
+                      type="button"
+                      className="hover:bg-muted flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm"
+                      onClick={() => {
+                        onExport(variant, format);
+                        setExportOpen(false);
+                      }}
+                    >
+                      {variant === "solutions" ? (
+                        <Lock className="size-3.5 text-amber-600" />
+                      ) : (
+                        <FileText className="size-3.5" />
+                      )}
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
           <Button
             variant={state.reviewed ? "default" : "outline"}
             size="sm"

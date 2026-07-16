@@ -17,15 +17,18 @@ import {
 } from "@/components/ui/accordion";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { useState } from "react";
 import {
   CheckCircle2,
   ChevronLeft,
   FileText,
   GraduationCap,
+  Loader2,
   Lock,
 } from "lucide-react";
 import { Progress } from "@/components/ui/progress";
 import { PracticalCard } from "./PracticalCard";
+import type { ExportFormat, ExportVariant } from "./shared";
 import {
   allReviewed,
   groupWarnings,
@@ -53,6 +56,8 @@ interface Props {
     instruction?: string,
   ) => void;
   onBackToPath: () => void;
+  onExport: (variant: ExportVariant, format: ExportFormat, scope: "all" | number) => void;
+  exportingKey: string | null;
   saving: boolean;
 }
 
@@ -64,8 +69,11 @@ export function ReviewStage({
   onStateChange,
   onRegenerate,
   onBackToPath,
+  onExport,
+  exportingKey,
   saving,
 }: Props) {
+  const [format, setFormat] = useState<ExportFormat>("pdf");
   const byPractical = groupWarnings(warnings);
   const sectionOf = new Map(doc.sections.map((s) => [s.practicalNo, s]));
   const done = reviewedCount(doc);
@@ -88,9 +96,12 @@ export function ReviewStage({
         state={stateFor(doc, n)}
         warnings={byPractical.get(n) ?? []}
         regenerating={regenSet.has(n)}
+        format={format}
+        exportingKey={exportingKey}
         onChange={(patch) => onSectionChange(n, patch)}
         onStateChange={(patch) => onStateChange(n, patch)}
         onRegenerate={(d, instr) => onRegenerate(n, d, instr)}
+        onExport={(variant, fmt) => onExport(variant, fmt, n)}
       />
     );
   };
@@ -209,28 +220,68 @@ export function ReviewStage({
           </div>
 
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <p className="text-muted-foreground text-xs">
-              {ready ? (
-                <span className="flex items-center gap-1 text-emerald-600 dark:text-emerald-400">
-                  <CheckCircle2 className="size-3.5" />
-                  All reviewed — exports (Student / Instructor / Solutions, PDF &amp;
-                  Word) are the final build step.
+            <div className="flex items-center gap-2">
+              <span className="text-muted-foreground text-xs">Format</span>
+              <div className="flex overflow-hidden rounded-md border">
+                {(["pdf", "docx"] as const).map((f) => (
+                  <button
+                    key={f}
+                    type="button"
+                    onClick={() => setFormat(f)}
+                    className={`px-3 py-1 text-xs font-medium uppercase transition-colors ${
+                      format === f
+                        ? "bg-primary text-primary-foreground"
+                        : "text-muted-foreground hover:bg-muted"
+                    }`}
+                  >
+                    {f === "docx" ? "Word" : "PDF"}
+                  </button>
+                ))}
+              </div>
+              {!ready && (
+                <span className="text-muted-foreground text-xs">
+                  Review all {total} to enable
                 </span>
-              ) : (
-                "Review every practical to unlock the three export formats."
               )}
-            </p>
+            </div>
             <div className="flex flex-wrap items-center gap-2">
-              <Button size="sm" variant="outline" disabled>
-                <FileText className="size-4" />
+              <Button
+                size="sm"
+                disabled={!ready || exportingKey !== null}
+                onClick={() => onExport("student", format, "all")}
+              >
+                {exportingKey === `student:${format}:all` ? (
+                  <Loader2 className="size-4 animate-spin" />
+                ) : (
+                  <FileText className="size-4" />
+                )}
                 Student Manual
               </Button>
-              <Button size="sm" variant="outline" disabled>
-                <GraduationCap className="size-4" />
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={!ready || exportingKey !== null}
+                onClick={() => onExport("instructor", format, "all")}
+              >
+                {exportingKey === `instructor:${format}:all` ? (
+                  <Loader2 className="size-4 animate-spin" />
+                ) : (
+                  <GraduationCap className="size-4" />
+                )}
                 Instructor Manual
               </Button>
-              <Button size="sm" variant="outline" disabled>
-                <Lock className="size-4" />
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={!ready || exportingKey !== null}
+                className="border-amber-300 text-amber-700 hover:bg-amber-50 dark:border-amber-800 dark:text-amber-400"
+                onClick={() => onExport("solutions", format, "all")}
+              >
+                {exportingKey === `solutions:${format}:all` ? (
+                  <Loader2 className="size-4 animate-spin" />
+                ) : (
+                  <Lock className="size-4" />
+                )}
                 Model Solutions
               </Button>
             </div>

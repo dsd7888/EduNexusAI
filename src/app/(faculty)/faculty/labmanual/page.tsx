@@ -139,22 +139,22 @@ export default function LabManualPage() {
     };
   }, [generating]);
 
-  // ── Debounced autosave ───────────────────────────────────────────────────
-  useEffect(() => {
-    if (!selectedSubjectId) return;
-    // Nothing worth persisting yet.
-    if (!doc.path && doc.sections.length === 0) return;
-
-    const serialized = JSON.stringify(doc);
-    if (serialized === lastSavedRef.current) return;
-
-    const t = setTimeout(async () => {
+  // ── Persist ──────────────────────────────────────────────────────────────
+  // One saver for both the debounced autosave and the immediate flush after
+  // generation. The flush is what makes "generate a unit → press back" safe:
+  // the debounced save would otherwise not have fired yet, so a fast navigation
+  // or reload would land on an empty manual — exactly the "shows nothing done"
+  // report. Generation persists before it hands control back.
+  const persistDoc = useCallback(
+    async (docToSave: LabManualDoc, subjectId: string) => {
+      const serialized = JSON.stringify(docToSave);
+      if (serialized === lastSavedRef.current) return;
       setSaving(true);
       try {
         const res = await fetch("/api/labmanual", {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ subjectId: selectedSubjectId, doc }),
+          body: JSON.stringify({ subjectId, doc: docToSave }),
         });
         if (!res.ok) {
           const json = await res.json().catch(() => null);
@@ -166,10 +166,18 @@ export default function LabManualPage() {
       } finally {
         setSaving(false);
       }
-    }, AUTOSAVE_DEBOUNCE_MS);
+    },
+    [],
+  );
 
+  // ── Debounced autosave (edits) ───────────────────────────────────────────
+  useEffect(() => {
+    if (!selectedSubjectId) return;
+    if (!doc.path && doc.sections.length === 0) return; // nothing worth saving yet
+    if (JSON.stringify(doc) === lastSavedRef.current) return;
+    const t = setTimeout(() => void persistDoc(doc, selectedSubjectId), AUTOSAVE_DEBOUNCE_MS);
     return () => clearTimeout(t);
-  }, [doc, selectedSubjectId]);
+  }, [doc, selectedSubjectId, persistDoc]);
 
   // ── EDIT-UNREVIEWS ───────────────────────────────────────────────────────
   // The single state transition for it: ANY edit to a practical's content flips
@@ -339,27 +347,27 @@ export default function LabManualPage() {
         }
       }
 
-      // Merge: newly generated sections replace their previous version.
-      setDoc((prev) => {
-        const bySection = new Map(prev.sections.map((s) => [s.practicalNo, s]));
-        for (const s of collected) bySection.set(s.practicalNo, s);
-        return {
-          ...prev,
-          sections: [...bySection.values()].sort(
-            (a, b) => a.practicalNo - b.practicalNo,
+      // Merge newly generated sections into the CURRENT doc (built explicitly,
+      // not via a setDoc updater, so the exact same object can be flushed to the
+      // server before we navigate — see persistDoc).
+      const base = docRef.current;
+      const bySection = new Map(base.sections.map((s) => [s.practicalNo, s]));
+      for (const s of collected) bySection.set(s.practicalNo, s);
+      const mergedDoc: LabManualDoc = {
+        ...base,
+        sections: [...bySection.values()].sort((a, b) => a.practicalNo - b.practicalNo),
+        practicalStates: {
+          ...base.practicalStates,
+          // Freshly generated content is by definition unreviewed.
+          ...Object.fromEntries(
+            collected.map((s) => [
+              s.practicalNo,
+              { ...stateFor(base, s.practicalNo), reviewed: false },
+            ]),
           ),
-          practicalStates: {
-            ...prev.practicalStates,
-            // Freshly generated content is by definition unreviewed.
-            ...Object.fromEntries(
-              collected.map((s) => [
-                s.practicalNo,
-                { ...stateFor(prev, s.practicalNo), reviewed: false },
-              ]),
-            ),
-          },
-        };
-      });
+        },
+      };
+      setDoc(mergedDoc);
       setWarnings((w) => {
         const touched = new Set(collected.map((s) => s.practicalNo));
         return [
@@ -369,10 +377,16 @@ export default function LabManualPage() {
       });
 
       setGenerating(false);
-      if (collected.length > 0) setView("review");
-      else setView("path");
+      // Flush BEFORE navigating so a back-press/reload can never lose the
+      // just-generated content.
+      if (collected.length > 0) {
+        await persistDoc(mergedDoc, selectedSubjectId);
+        setView("review");
+      } else {
+        setView("path");
+      }
     },
-    [selectedSubjectId, practicals, globalInstruction],
+    [selectedSubjectId, practicals, globalInstruction, persistDoc],
   );
 
   // ── Single-practical regen ───────────────────────────────────────────────
@@ -434,6 +448,52 @@ export default function LabManualPage() {
     }
   }
 
+  // ── Export ───────────────────────────────────────────────────────────────
+  const [exportingKey, setExportingKey] = useState<string | null>(null);
+  const exportManual = useCallback(
+    async (
+      variant: "student" | "instructor" | "solutions",
+      format: "docx" | "pdf",
+      scope: "all" | number,
+    ) => {
+      if (!selectedSubjectId) return;
+      const key = `${variant}:${format}:${scope}`;
+      setExportingKey(key);
+      try {
+        const res = await fetch("/api/labmanual/export", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ subjectId: selectedSubjectId, variant, format, scope }),
+        });
+        const data = await res.json();
+        if (res.status === 422) {
+          toast.error(
+            `${data.error}. Left: ${(data.unreviewed ?? []).slice(0, 3).join(", ")}${
+              (data.unreviewed ?? []).length > 3 ? "…" : ""
+            }`,
+          );
+          return;
+        }
+        if (!res.ok || !data.url) throw new Error(data?.error ?? "Export failed");
+        // Trigger the download (the signed URL carries a content-disposition).
+        const a = document.createElement("a");
+        a.href = data.url;
+        a.rel = "noopener";
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        toast.success(
+          `${variant[0].toUpperCase() + variant.slice(1)} ${format.toUpperCase()} ready`,
+        );
+      } catch (err) {
+        toast.error(err instanceof Error ? err.message : "Export failed");
+      } finally {
+        setExportingKey(null);
+      }
+    },
+    [selectedSubjectId],
+  );
+
   // ── Render ───────────────────────────────────────────────────────────────
   if (view === "generating") {
     return (
@@ -451,6 +511,8 @@ export default function LabManualPage() {
           practicals={practicals}
           warnings={warnings}
           practicalStates={doc.practicalStates}
+          generatedNos={new Set(doc.sections.map((s) => s.practicalNo))}
+          onGoToReview={() => setView("review")}
           onPathChange={(path) => setDoc((d) => ({ ...d, path }))}
           onStateChange={updateState}
           onBack={() => setView("setup")}
@@ -470,9 +532,14 @@ export default function LabManualPage() {
             }));
             toast.success("Path approved — you can generate now");
           }}
-          onGenerateAll={() =>
-            void generate((doc.path?.units ?? []).flatMap((u) => u.practicalNos))
-          }
+          onGenerateAll={() => {
+            const all = (doc.path?.units ?? []).flatMap((u) => u.practicalNos);
+            const done = new Set(doc.sections.map((s) => s.practicalNo));
+            const remaining = all.filter((n) => !done.has(n));
+            // "Generate remaining" skips what's already done; if nothing has been
+            // generated yet this is simply all of them.
+            void generate(remaining.length > 0 ? remaining : all);
+          }}
           onGenerateUnit={(unitNo) =>
             void generate(
               doc.path?.units.find((u) => u.unitNo === unitNo)?.practicalNos ?? [],
@@ -495,6 +562,8 @@ export default function LabManualPage() {
           onStateChange={updateState}
           onRegenerate={regenerate}
           onBackToPath={() => setView("path")}
+          onExport={exportManual}
+          exportingKey={exportingKey}
           saving={saving}
         />
       </div>

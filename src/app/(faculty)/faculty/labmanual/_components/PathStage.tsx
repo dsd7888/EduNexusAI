@@ -71,6 +71,9 @@ interface Props {
   practicals: UiPractical[];
   warnings: LabManualWarning[];
   practicalStates: Record<number, PracticalState>;
+  /** practicalNos that already have generated content — drives the "done" state. */
+  generatedNos: Set<number>;
+  onGoToReview: () => void;
   onPathChange: (p: LearningPath) => void;
   onStateChange: (practicalNo: number, patch: Partial<PracticalState>) => void;
   onBack: () => void;
@@ -148,6 +151,8 @@ export function PathStage({
   practicals,
   warnings,
   practicalStates,
+  generatedNos,
+  onGoToReview,
   onPathChange,
   onStateChange,
   onBack,
@@ -160,6 +165,11 @@ export function PathStage({
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
   );
+
+  const allNos = path.units.flatMap((u) => u.practicalNos);
+  const generatedCount = allNos.filter((n) => generatedNos.has(n)).length;
+  const anyGenerated = generatedCount > 0;
+  const allGenerated = allNos.length > 0 && generatedCount === allNos.length;
 
   const titleOf = useMemo(() => {
     const m = new Map(practicals.map((p) => [p.practicalNo, p.title]));
@@ -323,16 +333,41 @@ export function PathStage({
                       </p>
                     )}
                   </div>
-                  {path.approved && unit.practicalNos.length > 0 && (
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      disabled={generating}
-                      onClick={() => onGenerateUnit(unit.unitNo)}
-                    >
-                      Generate unit
-                    </Button>
-                  )}
+                  {path.approved &&
+                    unit.practicalNos.length > 0 &&
+                    (() => {
+                      const gen = unit.practicalNos.filter((n) => generatedNos.has(n)).length;
+                      const total = unit.practicalNos.length;
+                      const unitDone = gen === total;
+                      return (
+                        <div className="flex shrink-0 items-center gap-2">
+                          {gen > 0 && (
+                            <span
+                              className={`flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium tabular-nums ${
+                                unitDone
+                                  ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-300"
+                                  : "bg-muted text-muted-foreground"
+                              }`}
+                            >
+                              {unitDone && <Check className="size-3" />}
+                              {gen}/{total}
+                            </span>
+                          )}
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            disabled={generating}
+                            onClick={() => onGenerateUnit(unit.unitNo)}
+                          >
+                            {gen === 0
+                              ? "Generate unit"
+                              : unitDone
+                                ? "Regenerate"
+                                : "Generate rest"}
+                          </Button>
+                        </div>
+                      );
+                    })()}
                 </div>
               </CardHeader>
               <CardContent className="space-y-2">
@@ -475,24 +510,44 @@ export function PathStage({
         </div>
       )}
 
-      <div className="bg-background sticky bottom-0 flex items-center justify-end gap-2 border-t py-3">
-        {!path.approved ? (
-          <Button onClick={onApprove}>
-            <Check className="size-4" />
-            Approve path
-          </Button>
-        ) : (
-          <Button onClick={onGenerateAll} disabled={generating}>
-            {generating ? (
-              <>
-                <Loader2 className="size-4 animate-spin" />
-                Generating…
-              </>
-            ) : (
-              "Generate all practicals"
-            )}
-          </Button>
-        )}
+      <div className="bg-background/95 sticky bottom-0 flex flex-wrap items-center justify-between gap-2 border-t py-3 backdrop-blur">
+        <p className="text-muted-foreground text-xs">
+          {!path.approved
+            ? "Approve the grouping to start generating."
+            : anyGenerated
+              ? `${generatedCount} of ${allNos.length} practicals generated.`
+              : `${allNos.length} practicals across ${path.units.length} units.`}
+        </p>
+        <div className="flex items-center gap-2">
+          {!path.approved ? (
+            <Button onClick={onApprove}>
+              <Check className="size-4" />
+              Approve path
+            </Button>
+          ) : (
+            <>
+              {anyGenerated && (
+                <Button variant="outline" onClick={onGoToReview} disabled={generating}>
+                  Review manual ({generatedCount})
+                </Button>
+              )}
+              <Button onClick={onGenerateAll} disabled={generating || allGenerated}>
+                {generating ? (
+                  <>
+                    <Loader2 className="size-4 animate-spin" />
+                    Generating…
+                  </>
+                ) : allGenerated ? (
+                  "All generated"
+                ) : anyGenerated ? (
+                  `Generate remaining (${allNos.length - generatedCount})`
+                ) : (
+                  "Generate all practicals"
+                )}
+              </Button>
+            </>
+          )}
+        </div>
       </div>
     </div>
   );
