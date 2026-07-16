@@ -1186,6 +1186,33 @@ API routes:
 ## 17. Active Feature Roadmap
 
 ### Recently Shipped (July 2026)
+- **Lab Manual Generator (faculty) — complete, shipped to main (Jul 16).** A
+  term-work lab manual for an assigned subject, four-stage builder
+  (`/faculty/labmanual`): (1) LEARNING PATH — AI proposes unit grouping + bridge
+  exercises, faculty drags/edits/approves (code-validated partition; never drops
+  or invents a practical); (2) CONTENT — one Flash call per practical
+  (`lab_manual_gen`), concurrency 4, the largest structured payload in the
+  product (theory + worked example + gapped scaffold + faculty-only solution +
+  viva + rubric + faculty-only conduct guide); (3) REVIEW — per-practical gate,
+  every field inline-editable with live KaTeX/mhchem, rubric-sum-blocks-review,
+  edit-unreviews, single-practical regen; (4) EXPORT — three variants (STUDENT /
+  INSTRUCTOR / MODEL SOLUTIONS) × docx/pdf, whole-manual or single-practical,
+  private `lab-manuals` bucket. Shared subject-context loader extracted to
+  `src/lib/subjectContext.ts` (lesson-plan refactored onto it, behaviour
+  unchanged). Key hard-won details: `repairGeminiMathEscapes` fixes the LaTeX
+  face of the §17 responseSchema escaping quirk (`\frac`→formfeed+"rac"), scoped
+  to `$…$` spans and NOT applied to code; `assertNoFacultyLeak` fingerprints the
+  actual solution/conduct strings against the finished student block list and
+  throws (a code second line of defence behind by-construction filtering — spec
+  §8); export uses NO images, so math is converted to readable plain text
+  (`latexToReadable`); a warn-everything gate (CO/BTL/gap-count/scaffold-kind/
+  rubric/URL/list-length/gap-quality/content-leak). DB: `lab_manual_cache`
+  (per-practical, keyed subject+practical+difficulty, language-via-fingerprint)
+  + `lab_manuals` (per-faculty doc, six artifact-path columns). Migrations
+  20260715000000 (tables+bucket, applied) and 20260716000000 (docs-only
+  ai_call_logs comment, **not yet applied**). Verified by four harnesses
+  (generator gate, path gate, export, plus the shared refactor) + a live
+  end-to-end route drive.
 - **Chat, rebuilt end-to-end (CP1–CP5) — complete.** The full ladder now ships:
   token streaming (SSE); the reasoning tier (Pro) with auto-elevation from
   `detectQueryMode`; the research tier (search-grounded Flash) with citations;
@@ -1474,6 +1501,9 @@ API routes:
 | markdownLite not a full Markdown parser | Only the constructs Gemini actually leaks (pipe tables, bold, code, bullets) — a full parser would add complexity with no benefit |
 | qpaper_history stores Storage paths not URLs | Signed URLs expire; paths are stable — re-sign on demand for confidential answer key |
 | qpaper_drafts: no dean/hod read | Drafts are private scratch state, not a reviewable artifact — nothing to oversee until finalized |
+| Lab-manual: a per-practical `customInstruction` generation is NEVER written to `lab_manual_cache` (both /generate and /regenerate skip the upsert when an instruction is present) | The cache shares NEUTRAL generations across faculty. Persisting a tailored one ("use recursion only", "our lab kit") would silently make one faculty's binding constraint every colleague's default at that difficulty. The requester still gets their section; the shared cache keeps the neutral version. A plain difficulty-change regen (no instruction) IS neutral and does update the cache. |
+| Lab-manual: `solution` + `conductGuide` are faculty-only; the student export asserts their absence in code (`assertNoFacultyLeak`), not by convention | By-construction filtering can regress on a later edit; the assertion fingerprints the actual solution/conduct strings against the finished student block list and throws, so a leak fails the export loudly instead of shipping answers to students (spec §8) |
+| Lab-manual export uses NO images — math is converted to readable plain text (`latexToReadable`), not rasterised | Spec §6 forbids images/logos. On screen it's full KaTeX; in the document `$…$`/`\ce{}` become greek/operators/super-subscripts as text. Do not add MathJax→PNG rasterisation to this export |
 | Template `scope` column (personal/school/dept) | Enables future cross-subject template sharing without a separate table |
 | Weightage always primary in `makePicker` (5% shortfall threshold before CO score breaks ties) | CO% targeting must never let mark distribution drift from syllabus weightage — the whole product's credibility rests on weightage compliance |
 | btlRange/coTargetsPct/difficultyTargets stored in `qpaper_templates.structure` jsonb, not new columns | `structure` is already unvalidated jsonb passed through as-is by the templates route — adding keys there needs no migration and degrades gracefully for old rows |
