@@ -12,6 +12,28 @@ the source of truth for *why* things are the way they are.
 The Next.js project lives in this `edunexus-ai/` subdirectory, not the repo root. All
 commands below assume you are inside `edunexus-ai/`.
 
+## Version-control discipline (non-negotiable)
+
+**"Committed" and "safe" are different claims. Work that is committed but unpushed
+exists only on one disk and is one failure away from gone — this has already bitten
+this repo (a full feature sat unpushed on a local `dev` branch while its DB schema was
+live in prod).**
+
+- **Push before reporting a checkpoint or feature "done".** A completion report MUST
+  include the output of `git push` and `git log origin/<branch> -1` — proof the remote
+  has it — not just `git show --stat` of a local commit. If you cannot push, say so
+  explicitly and call the work "committed locally, NOT pushed".
+- **Feature work goes on a branch (`dev` or a feature branch), never straight to
+  `main`.** `main` is the deployed pilot. Merging to `main` = deploying to live users;
+  treat it as an outward-facing action that needs explicit approval, and never
+  fast-forward `main` as a side effect of "finishing".
+- **Schema and code ship together.** If a migration is applied to the live DB, the code
+  that uses it must be pushed in the same breath — a prod schema referencing unpushed
+  code is the failure mode above.
+- Concurrent sessions on this repo have repeatedly bypassed these conventions
+  (unpushed branches, direct-to-`main` pushes). Do not assume the remote matches your
+  local state — `git fetch` and check `origin/*` yourself before branching or merging.
+
 ## Commands
 
 ```bash
