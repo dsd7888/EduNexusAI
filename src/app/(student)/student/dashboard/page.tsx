@@ -94,15 +94,27 @@ export default function StudentDashboard() {
           return;
         }
 
-        // 2. Subjects for full branch (all semesters)
+        // 2. Subjects for full branch (all semesters). Resolved via
+        // subject_offerings — a subject's content can be offered under multiple
+        // branches, so branch lives on the offering, not the subjects row itself.
         if (profile?.branch) {
-          const { data: subjectRows } = await supabase
-            .from("subjects")
-            .select("id, name, code")
-            .eq("branch", profile.branch)
-            .limit(6);
+          const { data: offeringRows } = await supabase
+            .from("subject_offerings")
+            .select("subject:subjects(id, name, code)")
+            .eq("branch", profile.branch);
 
-          setSubjects((subjectRows ?? []) as SubjectRow[]);
+          // Dedupe by subject id — the same content can have multiple offerings
+          // (different semesters) within one branch — before slicing to a preview.
+          type OfferingRow = { subject: SubjectRow | null };
+          const seen = new Set<string>();
+          const rows: SubjectRow[] = [];
+          for (const r of (offeringRows ?? []) as unknown as OfferingRow[]) {
+            if (!r.subject || seen.has(r.subject.id)) continue;
+            seen.add(r.subject.id);
+            rows.push(r.subject);
+            if (rows.length >= 6) break;
+          }
+          setSubjects(rows);
         }
 
         // 3. Recent quiz attempts
@@ -400,7 +412,6 @@ export default function StudentDashboard() {
                 const score = attempt.score ?? 0;
                 return (
                   <div
-                    // eslint-disable-next-line react/no-array-index-key
                     key={idx}
                     className="flex items-center justify-between px-6 py-3 text-sm"
                   >
@@ -474,7 +485,6 @@ export default function StudentDashboard() {
                 const score = attempt.score ?? 0;
                 return (
                   <div
-                    // eslint-disable-next-line react/no-array-index-key
                     key={idx}
                     className="flex items-center justify-between px-6 py-3 text-sm"
                   >

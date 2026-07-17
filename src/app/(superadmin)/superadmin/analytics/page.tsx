@@ -176,7 +176,6 @@ export default function SuperadminAnalyticsPage() {
   useEffect(() => {
     fetchSummary();
     fetchData();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const totalAttempts = useMemo(
@@ -578,7 +577,6 @@ export default function SuperadminAnalyticsPage() {
                           else if (entry.range === "0-39") color = "#DC2626";
                           return (
                             <Cell
-                              // eslint-disable-next-line react/no-array-index-key
                               key={`cell-${index}`}
                               fill={color}
                             />

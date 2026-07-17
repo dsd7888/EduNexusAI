@@ -37,7 +37,7 @@ export async function getQuestionsFromBank(options: {
   for (const [category, needed] of Object.entries(distribution)) {
     if (needed === 0) continue;
 
-    let query = adminClient
+    const query = adminClient
       .from("placement_question_bank")
       .select("id, question, times_used, quality_score")
       .eq("company_id", companyId)
@@ -370,7 +370,7 @@ function pickWeighted(
 
   const freshCount = Math.min(freshTarget, fresh.length);
   const seasonedCount = Math.min(seasonedTarget, seasoned.length);
-  let classicCount = Math.min(
+  const classicCount = Math.min(
     needed - freshCount - seasonedCount,
     classic.length
   );

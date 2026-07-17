@@ -572,6 +572,13 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    // Complexity level and branch framing should follow the actual student in the
+    // conversation, not the subject's own (now possibly ambiguous, since one subject
+    // can have multiple offerings) branch/semester. Fall back to the subject's values
+    // only if the student's profile is missing them.
+    const effectiveSemester = profile.semester ?? subject.semester;
+    const effectiveBranch = profile.branch ?? subject.branch;
+
     const jobId = crypto.randomUUID();
     const logContext = {
       userId: user.id,
@@ -589,8 +596,8 @@ export async function POST(request: NextRequest) {
       const systemPrompt = buildResearchTutorPrompt({
         subjectName: subject.name,
         subjectCode: subject.code,
-        semester: subject.semester,
-        branch: subject.branch,
+        semester: effectiveSemester,
+        branch: effectiveBranch,
         syllabusContent: contentRow.content ?? "",
         referenceBooks: contentRow.reference_books ?? "",
       });
@@ -664,8 +671,8 @@ export async function POST(request: NextRequest) {
     const systemPrompt = buildTutorSystemPrompt({
       subjectName: subject.name,
       subjectCode: subject.code,
-      semester: subject.semester,
-      branch: subject.branch,
+      semester: effectiveSemester,
+      branch: effectiveBranch,
       syllabusContent: contentRow.content ?? "",
       referenceBooks: contentRow.reference_books ?? "",
       mode: isReasoning ? "problem_solving" : queryMode,

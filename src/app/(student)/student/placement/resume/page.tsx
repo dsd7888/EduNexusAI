@@ -708,20 +708,23 @@ export default function ResumeBuilderPage() {
       ).slice(0, 8);
       setConceptSuggestions(concepts);
 
-      // Subject suggestions for relevant courses
+      // Subject suggestions for relevant courses. Resolved via subject_offerings
+      // — a subject's content can be offered under multiple branches, so branch
+      // lives on the offering, not the subjects row itself.
       if (branch) {
         try {
-          const { data: subjectRows } = await supabase
-            .from("subjects")
-            .select("name")
-            .eq("branch", branch)
-            .limit(6);
-          if (!cancelled && subjectRows) {
-            setSubjectSuggestions(
-              (subjectRows as Array<{ name: string }>)
-                .map((s) => s.name)
-                .filter(Boolean)
-            );
+          const { data: offeringRows } = await supabase
+            .from("subject_offerings")
+            .select("subject:subjects(name)")
+            .eq("branch", branch);
+          if (!cancelled && offeringRows) {
+            type OfferingRow = { subject: { name: string } | null };
+            const names = new Set<string>();
+            for (const r of offeringRows as unknown as OfferingRow[]) {
+              if (r.subject?.name) names.add(r.subject.name);
+              if (names.size >= 6) break;
+            }
+            setSubjectSuggestions([...names]);
           }
         } catch {
           /* suggestions are optional */

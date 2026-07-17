@@ -225,15 +225,30 @@ function StudentQuizPageInner() {
     const branch = (profile as { branch?: string } | null)?.branch ?? null;
     if (branch == null) return;
 
-    const { data: subs, error } = await supabase
-      .from("subjects")
-      .select("id, code, name, semester, department")
-      .eq("branch", branch)
-      .order("semester", { ascending: true })
-      .order("name", { ascending: true });
+    // Resolved via subject_offerings — a subject's content can be offered under
+    // multiple branches/semesters, so branch/semester live on the offering, not
+    // the subjects row itself.
+    const { data: offerings, error } = await supabase
+      .from("subject_offerings")
+      .select("semester, subject:subjects(id, code, name, department)")
+      .eq("branch", branch);
 
-    if (!error && subs) {
-      setSubjects((subs ?? []) as SubjectRow[]);
+    if (!error && offerings) {
+      type OfferingRow = {
+        semester: number;
+        subject: { id: string; code: string; name: string; department: string } | null;
+      };
+      const subs = (offerings as unknown as OfferingRow[])
+        .filter((r) => r.subject)
+        .map((r) => ({
+          id: r.subject!.id,
+          code: r.subject!.code,
+          name: r.subject!.name,
+          department: r.subject!.department,
+          semester: r.semester,
+        }))
+        .sort((a, b) => a.semester - b.semester || a.name.localeCompare(b.name));
+      setSubjects(subs as SubjectRow[]);
     }
   }, []);
 

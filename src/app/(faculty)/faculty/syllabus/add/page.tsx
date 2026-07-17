@@ -27,6 +27,19 @@ import {
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { BRANCHES, MAX_SEMESTER, MIN_SEMESTER } from "@/lib/constants/branches";
+
+const SEMESTERS = Array.from(
+  { length: MAX_SEMESTER - MIN_SEMESTER + 1 },
+  (_, i) => MIN_SEMESTER + i
+);
 
 interface CatalogSubject {
   id: string;
@@ -45,6 +58,8 @@ export default function AddSubjectPage() {
   const [selected, setSelected] = useState<CatalogSubject | null>(null);
   const [name, setName] = useState("");
   const [file, setFile] = useState<File | null>(null);
+  const [branch, setBranch] = useState("");
+  const [semester, setSemester] = useState("");
 
   // "idle" | "adding" — a single honest processing state. We can't see the server's
   // extract→classify phase boundary from one request, so we don't fake granular steps.
@@ -116,11 +131,13 @@ export default function AddSubjectPage() {
           return;
         }
         if (json.status === "assigned_existing") {
-          toast.success(
-            json.alreadyInList
-              ? "That subject was already in your list"
-              : "You've been added to this subject"
-          );
+          if (json.alreadyInList && !json.newOffering) {
+            toast.success("That subject was already in your list");
+          } else if (json.alreadyInList && json.newOffering) {
+            toast.success("Added this branch/semester to a subject already in your list");
+          } else {
+            toast.success("You've been added to this subject");
+          }
         } else {
           toast.success("Subject added");
         }
@@ -138,11 +155,21 @@ export default function AddSubjectPage() {
 
   const handleAddExisting = useCallback(() => {
     if (!activeExisting) return;
+    if (!branch) {
+      toast.error("Select a branch");
+      return;
+    }
+    if (!semester) {
+      toast.error("Select a semester");
+      return;
+    }
     const form = new FormData();
     form.append("code", activeExisting.code);
     form.append("name", activeExisting.name);
+    form.append("branch", branch);
+    form.append("semester", semester);
     submit(form);
-  }, [activeExisting, submit]);
+  }, [activeExisting, branch, semester, submit]);
 
   const handleAddNew = useCallback(() => {
     if (!trimmedQuery) {
@@ -151,6 +178,14 @@ export default function AddSubjectPage() {
     }
     if (!name.trim()) {
       toast.error("Enter a subject name");
+      return;
+    }
+    if (!branch) {
+      toast.error("Select a branch");
+      return;
+    }
+    if (!semester) {
+      toast.error("Select a semester");
       return;
     }
     if (!file) {
@@ -164,9 +199,11 @@ export default function AddSubjectPage() {
     const form = new FormData();
     form.append("code", trimmedQuery);
     form.append("name", name.trim());
+    form.append("branch", branch);
+    form.append("semester", semester);
     form.append("file", file);
     submit(form);
-  }, [trimmedQuery, name, file, submit]);
+  }, [trimmedQuery, name, branch, semester, file, submit]);
 
   // ── Processing state — full-page, honest, single message ──────────────────────
   if (submitting) {
@@ -254,6 +291,44 @@ export default function AddSubjectPage() {
             )}
           </div>
 
+          {/* ── Branch + semester: which offering is this? Required for both the
+              existing-subject and new-subject paths, since the same syllabus
+              content can be taught across multiple branches/semesters. ── */}
+          {(activeExisting || showNewSubjectPanel) && (
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-2">
+                <Label htmlFor="subject-branch">Branch</Label>
+                <Select value={branch} onValueChange={setBranch}>
+                  <SelectTrigger id="subject-branch" className="w-full">
+                    <SelectValue placeholder="Select branch" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {BRANCHES.map((b) => (
+                      <SelectItem key={b} value={b}>
+                        {b}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="subject-semester">Semester</Label>
+                <Select value={semester} onValueChange={setSemester}>
+                  <SelectTrigger id="subject-semester" className="w-full">
+                    <SelectValue placeholder="Select semester" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {SEMESTERS.map((s) => (
+                      <SelectItem key={s} value={String(s)}>
+                        Semester {s}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+          )}
+
           {/* ── Existing-subject path: no file needed ── */}
           {activeExisting && (
             <div className="space-y-3 rounded-md border border-primary/20 bg-primary/5 p-4">
@@ -269,7 +344,11 @@ export default function AddSubjectPage() {
                   course-outcome mapping right after.
                 </p>
               </div>
-              <Button onClick={handleAddExisting} className="gap-2">
+              <Button
+                onClick={handleAddExisting}
+                disabled={!branch || !semester}
+                className="gap-2"
+              >
                 <Plus className="size-4" />
                 Add this subject
               </Button>
@@ -311,7 +390,7 @@ export default function AddSubjectPage() {
               </div>
               <Button
                 onClick={handleAddNew}
-                disabled={!name.trim() || !file}
+                disabled={!name.trim() || !file || !branch || !semester}
                 className="gap-2"
               >
                 <Upload className="size-4" />

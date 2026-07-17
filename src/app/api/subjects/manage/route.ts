@@ -54,7 +54,7 @@ import { requireAuth, requireRole, apiError, apiSuccess } from "@/lib/api/helper
          })
          .select("id")
          .single();
- 
+
        if (insertError) {
          console.error("[subjects/manage] subject create error:", insertError);
          if (insertError.code === "23505") {
@@ -65,7 +65,21 @@ import { requireAuth, requireRole, apiError, apiSuccess } from "@/lib/api/helper
          }
          return NextResponse.json({ error: insertError.message }, { status: 500 });
        }
- 
+
+       // Keep subject_offerings in sync — this path is superseded by faculty
+       // self-serve upload, but if it's ever used it must not create an
+       // offering-less subject (student pickers/placement/CO-batch routes all
+       // resolve branch/semester via subject_offerings, not subjects directly).
+       if (created?.id) {
+         const { error: offeringError } = await adminClient
+           .from("subject_offerings")
+           .insert({ subject_id: created.id, branch, semester });
+         if (offeringError) {
+           console.error("[subjects/manage] offering create error:", offeringError);
+           return NextResponse.json({ error: offeringError.message }, { status: 500 });
+         }
+       }
+
        return NextResponse.json({ success: true, id: created?.id ?? null });
      }
  
