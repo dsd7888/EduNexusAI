@@ -386,9 +386,14 @@ export default function FacultySyllabusPage() {
                 </Link>
               )}
             </Button>
-            {atCap && (
+            {atCap ? (
               <p className="text-xs text-muted-foreground text-center">
                 You&apos;ve reached the {SUBJECT_CAP}-subject limit for this pilot.
+              </p>
+            ) : (
+              <p className="text-[11px] leading-snug text-muted-foreground text-center">
+                Teach one in several branches? Add it again and pick a different
+                branch/semester — the tags show where you teach each.
               </p>
             )}
           </div>
