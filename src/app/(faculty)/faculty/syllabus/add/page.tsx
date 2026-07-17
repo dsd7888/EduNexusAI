@@ -15,7 +15,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { toast } from "sonner";
-import { ChevronLeft, Loader2, Plus, Search, Upload } from "lucide-react";
+import { ChevronLeft, Info, Loader2, Plus, Search, Upload } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -292,6 +292,20 @@ export default function AddSubjectPage() {
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
+          {/* Multi-branch guidance — the flow isn't obvious otherwise. */}
+          <div className="flex gap-2.5 rounded-md border border-blue-200 bg-blue-50/60 p-3 text-xs text-blue-900 dark:border-blue-900/40 dark:bg-blue-950/30 dark:text-blue-200">
+            <Info className="size-4 shrink-0 mt-0.5" />
+            <div className="space-y-1">
+              <p className="font-medium">Teaching a subject in more than one branch or semester?</p>
+              <p>
+                Add it once for each. Search the same subject code again and pick a
+                different branch and semester — the syllabus is reused, so there&apos;s
+                nothing to re-upload. Each branch/semester you add shows up as a tag on
+                the subject in your list.
+              </p>
+            </div>
+          </div>
+
           <div className="space-y-2">
             <Label htmlFor="subject-search">Subject code</Label>
             <div className="relative">
