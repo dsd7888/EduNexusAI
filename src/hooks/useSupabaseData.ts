@@ -152,8 +152,15 @@ export function useSubjectModules(subjectId: string | null) {
 }
 
 /**
- * Fetches subjects for a student filtered by branch and semester.
- * Only runs when both branch and semester are provided.
+ * Fetches subjects for a student's branch (all semesters — the page groups by
+ * semester client-side). `semester` is only used as a readiness gate: we wait
+ * until the profile is loaded before querying, matching prior behaviour, but it
+ * is intentionally NOT a filter — a student can see every subject in their
+ * branch, not just their current semester.
+ *
+ * Resolves through subject_offerings rather than filtering `subjects` directly —
+ * a subject's content (name/code) can be offered under multiple branch/semester
+ * combos, so branch+semester live on the offering, not the content row.
  */
 export function useStudentSubjects(branch: string | null, semester: number | null) {
   const [subjects, setSubjects] = useState<SubjectRow[]>([]);
@@ -164,13 +171,27 @@ export function useStudentSubjects(branch: string | null, semester: number | nul
     setIsLoading(true);
     const supabase = createBrowserClient();
     supabase
-      .from("subjects")
-      .select("id, name, code, department, branch, semester")
+      .from("subject_offerings")
+      .select("branch, semester, subject:subjects(id, name, code, department)")
       .eq("branch", branch)
-      .order("semester", { ascending: true })
-      .order("code", { ascending: true })
       .then(({ data }) => {
-        setSubjects((data ?? []) as SubjectRow[]);
+        type OfferingRow = {
+          branch: string;
+          semester: number;
+          subject: { id: string; name: string; code: string; department?: string } | null;
+        };
+        const rows = ((data ?? []) as unknown as OfferingRow[])
+          .filter((r) => r.subject)
+          .map((r) => ({
+            id: r.subject!.id,
+            name: r.subject!.name,
+            code: r.subject!.code,
+            department: r.subject!.department,
+            branch: r.branch,
+            semester: r.semester,
+          }))
+          .sort((a, b) => a.semester - b.semester || a.code.localeCompare(b.code));
+        setSubjects(rows as SubjectRow[]);
         setIsLoading(false);
       });
   }, [branch, semester]);

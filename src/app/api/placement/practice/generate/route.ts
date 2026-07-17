@@ -251,13 +251,17 @@ export async function POST(request: NextRequest) {
     // 4. Student profile already loaded (branch, semester)
     const studentBranch = (profile.branch ?? "Engineering") as string;
 
-    // 5. Fetch syllabus content for student's branch (combine + slice to 3000 chars)
-    const { data: subjects } = await adminClient
-      .from("subjects")
-      .select("id")
+    // 5. Fetch syllabus content for student's branch (combine + slice to 3000 chars).
+    // Resolved via subject_offerings — a subject's content can be offered under
+    // multiple branches, so branch lives on the offering, not the subjects row.
+    const { data: offerings } = await adminClient
+      .from("subject_offerings")
+      .select("subject_id")
       .eq("branch", studentBranch);
 
-    const subjectIds = (subjects ?? []).map((s: any) => s.id as string);
+    const subjectIds = [
+      ...new Set((offerings ?? []).map((o: { subject_id: string }) => o.subject_id)),
+    ];
 
     let combinedSyllabus = "";
     if (subjectIds.length > 0) {

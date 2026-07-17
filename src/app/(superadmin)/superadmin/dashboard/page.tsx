@@ -386,7 +386,6 @@ export default function SuperadminDashboard() {
               {recentUploads.map((doc, idx) => {
                 const meta = uploadTypeMeta(doc.type);
                 return (
-                  // eslint-disable-next-line react/no-array-index-key
                   <div
                     key={idx}
                     className="flex items-center justify-between px-6 py-3 text-sm"

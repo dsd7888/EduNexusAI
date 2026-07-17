@@ -82,6 +82,16 @@ export interface Subject {
   updated_at: string;
 }
 
+// Which branch + semester a subject's content is taught in. A subject (content) can
+// have multiple offerings (e.g. the same code taught to both CSE-3 and IT-3).
+export interface SubjectOffering {
+  id: string;
+  subject_id: string;
+  branch: string;
+  semester: number;
+  created_at: string;
+}
+
 export interface Module {
   id: string;
   subject_id: string;

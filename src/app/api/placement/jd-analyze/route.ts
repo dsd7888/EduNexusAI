@@ -130,17 +130,26 @@ export async function POST(request: NextRequest) {
     const primaryTarget =
       (placementRow?.primary_target as string | null) ?? null;
 
-    // ── Step 2: Build subject context (non-fatal) ──────────────────────────────
+    // ── Step 2: Build subject context (non-fatal). Resolved via subject_offerings
+    // — a subject's content can be offered under multiple branches, so branch
+    // lives on the offering, not the subjects row itself. ──────────────────────
     let subjectContext = "";
     if (branch) {
       try {
-        const { data: subjectRows, error: subjectsError } = await adminClient
-          .from("subjects")
-          .select("name, modules(name, module_number)")
-          .eq("branch", branch)
-          .limit(50);
-        if (!subjectsError && subjectRows) {
-          subjectContext = buildSubjectContext(subjectRows as SubjectRow[]);
+        const { data: offeringRows, error: subjectsError } = await adminClient
+          .from("subject_offerings")
+          .select("subject:subjects(name, modules(name, module_number))")
+          .eq("branch", branch);
+        if (!subjectsError && offeringRows) {
+          type OfferingRow = { subject: SubjectRow | null };
+          const seen = new Set<string>();
+          const subjectRows: SubjectRow[] = [];
+          for (const r of offeringRows as unknown as OfferingRow[]) {
+            if (!r.subject || seen.has(r.subject.name)) continue;
+            seen.add(r.subject.name);
+            subjectRows.push(r.subject);
+          }
+          subjectContext = buildSubjectContext(subjectRows);
         }
       } catch (err) {
         console.error("[jd-analyze] Subject fetch failed:", err);

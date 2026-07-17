@@ -2,24 +2,30 @@ import type { NextRequest } from "next/server";
 import { apiError, requireRole } from "@/lib/api/helpers";
 import { extractSyllabusFromPdf } from "@/lib/syllabus/extract";
 import { persistSyllabusAndClassify } from "@/lib/syllabus/persistAndClassify";
+import { isValidBranch, isValidSemester } from "@/lib/constants/branches";
 
 const SUBJECT_CAP = 5;
 
-// Fixed, hidden metadata for this single-department pilot — never shown to or entered
-// by faculty. Exact strings must match every existing subject row (see seed_cse_sem1_4).
+// Department is still a true pilot-wide invariant (single-department pilot per
+// CLAUDE.md) — unlike branch/semester, faculty never pick this.
 const FIXED_DEPARTMENT = "Engineering";
-const FIXED_BRANCH = "Computer Science and Engineering";
-const FIXED_SEMESTER = 1;
+
+type AdminClient = Parameters<typeof persistSyllabusAndClassify>[0];
 
 /**
  * POST /api/faculty/subjects/upload
  *
  * Core faculty self-serve route. multipart/form-data: file (PDF), code, name (name
- * only required when code doesn't match an existing subject).
+ * only required when code doesn't match an existing subject), branch, semester.
+ *
+ * `subjects` rows are canonical CONTENT (code, name, syllabus/modules/COs), keyed by
+ * globally-unique `code`. `subject_offerings` rows record which branch+semester that
+ * content is taught in — the same content can have multiple offerings (e.g. the same
+ * code taught to both CSE-3 and IT-3) without re-running extraction/classification.
  *
  * Two outcomes, distinguishable by the `status` field in the response:
- *  - "assigned_existing": the code already existed; faculty were attached directly,
- *    no extraction happened.
+ *  - "assigned_existing": the code already existed; faculty were attached (and/or a
+ *    new offering was recorded), no extraction happened.
  *  - "added_new": a brand-new subject was created, its syllabus extracted, modules +
  *    COs persisted and classified.
  */
@@ -30,29 +36,21 @@ export async function POST(request: NextRequest) {
     const { user, adminClient } = authResult;
     const facultyEmail = user.email ?? "";
 
-    // ── a. CAP CHECK FIRST, before extracting or creating anything ──────────────
-    const { count: currentCount, error: countErr } = await adminClient
-      .from("faculty_assignments")
-      .select("id", { count: "exact", head: true })
-      .eq("faculty_id", user.id);
-    if (countErr) return apiError(countErr.message, 500);
-    if ((currentCount ?? 0) >= SUBJECT_CAP) {
-      return apiError(
-        `You've reached the ${SUBJECT_CAP}-subject limit for this pilot.`,
-        400
-      );
-    }
-
     const formData = await request.formData();
     // Normalize: trim + uppercase code consistently for every lookup and insert, so
     // near-duplicate rows can't be created by casing/whitespace alone.
     const code = String(formData.get("code") ?? "").trim().toUpperCase();
     const name = String(formData.get("name") ?? "").trim();
+    const branch = String(formData.get("branch") ?? "").trim().toUpperCase();
+    const semesterRaw = formData.get("semester");
+    const semester = Number(String(semesterRaw ?? ""));
     const pdf = formData.get("file") as File | null;
 
     if (!code) return apiError("A subject code is required", 400);
+    if (!isValidBranch(branch)) return apiError("Select a valid branch", 400);
+    if (!isValidSemester(semester)) return apiError("Select a valid semester", 400);
 
-    // ── b. Look up existing subject by code (case-insensitive, trimmed) ─────────
+    // ── Look up existing subject by code (case-insensitive, trimmed) ────────────
     const { data: existingSubject } = await adminClient
       .from("subjects")
       .select("id, code, name")
@@ -64,7 +62,9 @@ export async function POST(request: NextRequest) {
         adminClient,
         user.id,
         facultyEmail,
-        existingSubject as { id: string; code: string; name: string }
+        existingSubject as { id: string; code: string; name: string },
+        branch,
+        semester
       );
     }
 
@@ -77,24 +77,39 @@ export async function POST(request: NextRequest) {
       return apiError("Only PDF files are accepted", 400);
     }
 
-    // ── c. Create the subject row ───────────────────────────────────────────────
+    // ── Cap check — this path always creates a brand-new assignment, so check now,
+    // before extracting or creating anything ────────────────────────────────────
+    const { count: currentCount, error: countErr } = await adminClient
+      .from("faculty_assignments")
+      .select("id", { count: "exact", head: true })
+      .eq("faculty_id", user.id);
+    if (countErr) return apiError(countErr.message, 500);
+    if ((currentCount ?? 0) >= SUBJECT_CAP) {
+      return apiError(
+        `You've reached the ${SUBJECT_CAP}-subject limit for this pilot.`,
+        400
+      );
+    }
+
+    // ── Create the subject row ──────────────────────────────────────────────────
     const { data: created, error: createErr } = await adminClient
       .from("subjects")
       .insert({
         name,
         code,
         department: FIXED_DEPARTMENT,
-        branch: FIXED_BRANCH,
-        semester: FIXED_SEMESTER,
+        branch,
+        semester,
         created_by: user.id,
       })
       .select("id, code, name")
       .single();
 
     if (createErr || !created) {
-      // Edge case 1: two faculty racing to create the same new code. code is UNIQUE,
-      // so the loser's insert fails — fall back to the assigned_existing path rather
-      // than erroring the person out with a raw DB error.
+      // Edge case: two faculty racing to create the same new code. code is UNIQUE,
+      // so the loser's insert fails — fall back to the assigned_existing path (with
+      // this request's own branch/semester) rather than erroring the person out with
+      // a raw DB error.
       const isUniqueViolation =
         createErr?.code === "23505" ||
         /duplicate key|unique/i.test(createErr?.message ?? "");
@@ -109,7 +124,9 @@ export async function POST(request: NextRequest) {
             adminClient,
             user.id,
             facultyEmail,
-            raced as { id: string; code: string; name: string }
+            raced as { id: string; code: string; name: string },
+            branch,
+            semester
           );
         }
       }
@@ -118,9 +135,21 @@ export async function POST(request: NextRequest) {
 
     const newSubjectId = (created as { id: string }).id;
 
-    // ── d + e. Extract, then persist + classify. On ANY failure here the subject
-    // row from step c already exists; roll it back (delete) so we never leave an
-    // orphaned subject with no modules and no assignment. modules/exam_scheme/etc.
+    // ── Create this subject's first offering, alongside the subject row and before
+    // extraction, so a rollback below (subjects delete, ON DELETE CASCADE) cleans up
+    // both in one step ──────────────────────────────────────────────────────────
+    const { error: offeringErr } = await adminClient
+      .from("subject_offerings")
+      .insert({ subject_id: newSubjectId, branch, semester });
+    if (offeringErr) {
+      await adminClient.from("subjects").delete().eq("id", newSubjectId);
+      console.error("[faculty/subjects/upload] offering insert failed, rolled back subject:", offeringErr);
+      return apiError(offeringErr.message, 500);
+    }
+
+    // ── Extract, then persist + classify. On ANY failure here the subject row
+    // already exists; roll it back (delete) so we never leave an orphaned subject
+    // with no modules and no assignment. modules/exam_scheme/subject_offerings/etc.
     // cascade-delete with the subject row. (Chosen over "leave it": simpler to reason
     // about — a failed upload leaves zero trace, matching the qpaper convention of not
     // half-committing a generation.)
@@ -154,7 +183,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // ── f. Assign this faculty to the new subject ───────────────────────────────
+    // ── Assign this faculty to the new subject ──────────────────────────────────
     const { error: assignErr } = await adminClient
       .from("faculty_assignments")
       .insert({
@@ -167,7 +196,7 @@ export async function POST(request: NextRequest) {
       return apiError(assignErr.message, 500);
     }
 
-    // ── g. Audit log ────────────────────────────────────────────────────────────
+    // ── Audit log ────────────────────────────────────────────────────────────
     await adminClient.from("subject_change_log").insert({
       faculty_id: user.id,
       faculty_email_snapshot: facultyEmail,
@@ -175,9 +204,10 @@ export async function POST(request: NextRequest) {
       subject_code_snapshot: code,
       subject_name_snapshot: name,
       action: "added_new",
+      metadata: { branch, semester },
     });
 
-    // ── h. Hand back the id so the frontend can redirect into /faculty/syllabus ──
+    // ── Hand back the id so the frontend can redirect into /faculty/syllabus ────
     return Response.json({
       status: "added_new",
       subject_id: newSubjectId,
@@ -192,15 +222,25 @@ export async function POST(request: NextRequest) {
 }
 
 /**
- * Attach a faculty member to an already-existing subject (the assigned_existing path).
- * No extraction, no new subject row. Idempotent: if they're already attached we just
- * return the subject id so the frontend can redirect them into it.
+ * Attach a faculty member to an already-existing subject (the assigned_existing
+ * path), ensuring the requested (branch, semester) offering exists. No extraction,
+ * no new subject row. Idempotent on both dimensions:
+ *  - faculty_assignments: if already assigned, we don't insert again (or double-count
+ *    against SUBJECT_CAP).
+ *  - subject_offerings: if this branch/semester combo already exists for this
+ *    subject, we don't insert again — this is what lets the same syllabus content be
+ *    reused across branches/semesters without re-processing.
+ * A faculty already teaching this subject under one offering can still add another
+ * offering (different branch/semester) for the SAME subject — that's a genuine and
+ * expected case (one faculty, multiple branches), so the two checks are independent.
  */
 async function attachToExisting(
-  adminClient: Parameters<typeof persistSyllabusAndClassify>[0],
+  adminClient: AdminClient,
   facultyId: string,
   facultyEmail: string,
-  subject: { id: string; code: string; name: string }
+  subject: { id: string; code: string; name: string },
+  branch: string,
+  semester: number
 ): Promise<Response> {
   const { data: alreadyAssigned } = await adminClient
     .from("faculty_assignments")
@@ -209,6 +249,50 @@ async function attachToExisting(
     .eq("subject_id", subject.id)
     .maybeSingle();
 
+  // Only enforce the cap when this request would actually create a new assignment —
+  // adding another offering of a subject the faculty already teaches costs them no
+  // extra "slot".
+  if (!alreadyAssigned) {
+    const { count: currentCount, error: countErr } = await adminClient
+      .from("faculty_assignments")
+      .select("id", { count: "exact", head: true })
+      .eq("faculty_id", facultyId);
+    if (countErr) return apiError(countErr.message, 500);
+    if ((currentCount ?? 0) >= SUBJECT_CAP) {
+      return apiError(
+        `You've reached the ${SUBJECT_CAP}-subject limit for this pilot.`,
+        400
+      );
+    }
+  }
+
+  const { data: existingOffering } = await adminClient
+    .from("subject_offerings")
+    .select("id")
+    .eq("subject_id", subject.id)
+    .eq("branch", branch)
+    .eq("semester", semester)
+    .maybeSingle();
+
+  let isNewOffering = false;
+  if (!existingOffering) {
+    const { error: offeringErr } = await adminClient
+      .from("subject_offerings")
+      .insert({ subject_id: subject.id, branch, semester });
+    if (offeringErr) {
+      // Race: another request created the same (subject_id, branch, semester)
+      // offering concurrently. UNIQUE(subject_id, branch, semester) means the
+      // loser's insert fails — that's fine, the offering exists either way.
+      const isUniqueViolation =
+        offeringErr.code === "23505" ||
+        /duplicate key|unique/i.test(offeringErr.message ?? "");
+      if (!isUniqueViolation) return apiError(offeringErr.message, 500);
+    } else {
+      isNewOffering = true;
+    }
+  }
+
+  let isNewAssignment = false;
   if (!alreadyAssigned) {
     const { error: assignErr } = await adminClient
       .from("faculty_assignments")
@@ -218,7 +302,10 @@ async function attachToExisting(
         assigned_by: facultyId,
       });
     if (assignErr) return apiError(assignErr.message, 500);
+    isNewAssignment = true;
+  }
 
+  if (isNewOffering || isNewAssignment) {
     await adminClient.from("subject_change_log").insert({
       faculty_id: facultyId,
       faculty_email_snapshot: facultyEmail,
@@ -226,6 +313,7 @@ async function attachToExisting(
       subject_code_snapshot: subject.code,
       subject_name_snapshot: subject.name,
       action: "assigned_existing",
+      metadata: { branch, semester, new_offering: isNewOffering, new_assignment: isNewAssignment },
     });
   }
 
@@ -235,5 +323,6 @@ async function attachToExisting(
     code: subject.code,
     name: subject.name,
     alreadyInList: Boolean(alreadyAssigned),
+    newOffering: isNewOffering,
   });
 }

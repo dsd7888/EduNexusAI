@@ -16,7 +16,7 @@ const VALID_DIFFICULTIES = ["easy", "medium", "hard", "mixed"] as const;
 const VALID_TYPES = ["mcq", "true_false", "short", "multiple_correct", "match"] as const;
 
 function parseQuizResponse(raw: string): any[] | null {
-  let cleaned = raw
+  const cleaned = raw
     .replace(/```json\s*/gi, "")
     .replace(/```\s*/gi, "")
     .trim();

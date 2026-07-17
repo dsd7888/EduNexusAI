@@ -198,12 +198,16 @@ export async function POST(request: NextRequest) {
       // Intentionally allowed; using student's branch for technical generation
     }
 
-    // 6. Fetch syllabus content for student's branch and combine
-    const { data: subjects } = await adminClient
-      .from("subjects")
-      .select("id")
+    // 6. Fetch syllabus content for student's branch and combine. Resolved via
+    // subject_offerings — a subject's content can be offered under multiple
+    // branches, so branch lives on the offering, not the subjects row itself.
+    const { data: offerings } = await adminClient
+      .from("subject_offerings")
+      .select("subject_id")
       .eq("branch", studentBranch);
-    const subjectIds = (subjects ?? []).map((s: any) => s.id);
+    const subjectIds = [
+      ...new Set((offerings ?? []).map((o: { subject_id: string }) => o.subject_id)),
+    ];
 
     let combinedSyllabus = "";
     if (subjectIds.length > 0) {

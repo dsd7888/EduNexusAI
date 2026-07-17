@@ -99,17 +99,33 @@ export default function StudentChatHubPage() {
           return;
         }
 
+        // Resolved via subject_offerings — a subject's content can be offered
+        // under multiple branches/semesters, so branch/semester live on the
+        // offering, not the subjects row itself.
         const { data, error } = await supabase
-          .from("subjects")
-          .select("id, code, name, branch, semester")
-          .eq("branch", branch)
-          .order("semester", { ascending: true })
-          .order("code", { ascending: true });
+          .from("subject_offerings")
+          .select("branch, semester, subject:subjects(id, code, name)")
+          .eq("branch", branch);
 
         if (error || !data) {
           if (!cancelled) setSubjects([]);
         } else if (!cancelled) {
-          setSubjects(data as ChatSubject[]);
+          type OfferingRow = {
+            branch: string;
+            semester: number;
+            subject: { id: string; code: string; name: string } | null;
+          };
+          const rows = (data as unknown as OfferingRow[])
+            .filter((r) => r.subject)
+            .map((r) => ({
+              id: r.subject!.id,
+              code: r.subject!.code,
+              name: r.subject!.name,
+              branch: r.branch,
+              semester: r.semester,
+            }))
+            .sort((a, b) => a.semester - b.semester || a.code.localeCompare(b.code));
+          setSubjects(rows as ChatSubject[]);
         }
       } finally {
         if (!cancelled) setIsLoading(false);

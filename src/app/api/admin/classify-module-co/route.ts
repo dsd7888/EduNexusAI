@@ -30,13 +30,15 @@ export async function POST(request: NextRequest) {
       if (error || !data) return apiError("Subject not found", 404);
       subjectIds = [id];
     } else if (body.branch) {
-      // Batch mode — branch (+ optional semester)
+      // Batch mode — branch (+ optional semester). Resolved via subject_offerings:
+      // a subject's content can be offered under multiple branch/semester combos,
+      // so branch/semester live on the offering, not the subjects row itself.
       const branch = String(body.branch).trim();
       if (!branch) return apiError("branch must not be empty", 400);
 
       let query = adminClient
-        .from("subjects")
-        .select("id")
+        .from("subject_offerings")
+        .select("subject_id")
         .eq("branch", branch);
 
       if (body.semester !== undefined && body.semester !== null) {
@@ -52,7 +54,9 @@ export async function POST(request: NextRequest) {
           404
         );
       }
-      subjectIds = (data as { id: string }[]).map((r) => r.id);
+      subjectIds = [
+        ...new Set((data as { subject_id: string }[]).map((r) => r.subject_id)),
+      ];
     } else {
       return apiError(
         "Provide either subject_id or branch (+ optional semester)",
