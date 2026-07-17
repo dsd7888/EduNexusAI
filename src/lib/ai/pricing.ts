@@ -1,20 +1,29 @@
-export const USD_TO_INR = 83.33; // single source — gemini.ts, imagen.ts, build/route.ts,
+export const USD_TO_INR = 98; // single source — gemini.ts, imagen.ts, build/route.ts,
 // generator.ts, and costLogger.ts must all import this,
-// not redeclare it
+// not redeclare it. Real market rate as of 2026-07 (~96-98); round-numbered on
+// purpose since this only sizes the pilot budget, not a billing reconciliation.
 
+// Verified against https://ai.google.dev/gemini-api/docs/pricing (2026-07).
+// Pro's >200k-token-prompt tier ($2.50 in / $15 out) is intentionally omitted —
+// this app's prompts run 1k-6k tokens, nowhere near that threshold.
 export const TEXT_MODEL_RATES = {
-  flash: { inputPerM: 0.15, outputPerM: 0.6 },
-  pro: { inputPerM: 1.25, outputPerM: 10.0 },
+  flash: { inputPerM: 0.30, outputPerM: 2.50 }, // gemini-2.5-flash
+  pro: { inputPerM: 1.25, outputPerM: 10.0 }, // gemini-2.5-pro, <=200k-token-prompt tier
 } as const;
 
-// Imagen is priced per-image, not per-token. Confirm these two tier rates against
-// current Google pricing before hardcoding — audit found the existing standard-tier
-// rate ($0.04) and intricate-tier rate ($0.10) already in use in two places
-// (build/route.ts and the older generator.ts, which ignores the intricate tier
-// entirely — that inconsistency is fixed by centralizing here).
+// Both tiers are native Gemini image generation (see IMAGE_MODEL_CHAIN in
+// imagen.ts), not the classic per-request Imagen API — priced as image *output
+// tokens*, converted here to a flat per-image rate at each model's default
+// (1K/2K) resolution. Verified against https://ai.google.dev/gemini-api/docs/pricing
+// (2026-07):
+//   standard  → gemini-2.5-flash-image: 1290 img-tokens @ $30/M = $0.0387/image
+//   intricate → gemini-3-pro-image:     $0.134/image (1K/2K tier)
+// Both tiers can fall back to gemini-3.1-flash-image (~$0.045-$0.151/image
+// depending on resolution) if the primary model fails — the flat rate below
+// doesn't distinguish primary vs. fallback, so treat this as an approximation.
 export const IMAGE_MODEL_RATES = {
-  standard: 0.04, // USD per image
-  intricate: 0.10, // USD per image
+  standard: 0.039, // USD per image
+  intricate: 0.134, // USD per image
 } as const;
 
 export function calculateTextCostInr(
