@@ -43,7 +43,26 @@ export async function DELETE(_request: NextRequest, { params }: RouteContext) {
       .eq("id", subjectId)
       .maybeSingle();
 
-    // The ONLY deletion: this faculty's own assignment link. Nothing else.
+    // Remove this faculty's OWN links to the subject, at both levels:
+    //  1. faculty_assignments (content access).
+    //  2. faculty_offerings for every offering of this subject (the branch/semester
+    //     links). Removing a subject from your list drops all branches you taught it
+    //     in. Never touches the subject/offering rows themselves — other faculty and
+    //     the offerings persist.
+    const { data: offeringRows } = await adminClient
+      .from("subject_offerings")
+      .select("id")
+      .eq("subject_id", subjectId);
+    const offeringIds = (offeringRows ?? []).map((o: { id: string }) => o.id);
+    if (offeringIds.length > 0) {
+      const { error: facOfferingDelErr } = await adminClient
+        .from("faculty_offerings")
+        .delete()
+        .eq("faculty_id", user.id)
+        .in("subject_offering_id", offeringIds);
+      if (facOfferingDelErr) return apiError(facOfferingDelErr.message, 500);
+    }
+
     const { error: delErr } = await adminClient
       .from("faculty_assignments")
       .delete()

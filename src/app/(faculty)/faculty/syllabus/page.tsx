@@ -333,6 +333,19 @@ export default function FacultySyllabusPage() {
                     <span className="block truncate text-xs text-muted-foreground">
                       {s.name}
                     </span>
+                    {s.offerings && s.offerings.length > 0 && (
+                      <span className="mt-1 flex flex-wrap gap-1">
+                        {s.offerings.map((o) => (
+                          <Badge
+                            key={`${o.branch}-${o.semester}`}
+                            variant="secondary"
+                            className="px-1.5 py-0 text-[10px] font-normal"
+                          >
+                            {o.branch} · Sem {o.semester}
+                          </Badge>
+                        ))}
+                      </span>
+                    )}
                   </button>
                   <button
                     type="button"
