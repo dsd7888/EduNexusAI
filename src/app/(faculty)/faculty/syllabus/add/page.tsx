@@ -231,6 +231,43 @@ export default function AddSubjectPage() {
     );
   }
 
+  // Branch + semester picker — the same fields for both the existing- and
+  // new-subject panels, so a subject is always attached to a concrete offering.
+  const branchSemesterFields = (
+    <div className="grid grid-cols-2 gap-3">
+      <div className="space-y-2">
+        <Label htmlFor="subject-branch">Branch</Label>
+        <Select value={branch} onValueChange={setBranch}>
+          <SelectTrigger id="subject-branch" className="w-full">
+            <SelectValue placeholder="Select branch" />
+          </SelectTrigger>
+          <SelectContent>
+            {BRANCHES.map((b) => (
+              <SelectItem key={b} value={b}>
+                {b}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
+      <div className="space-y-2">
+        <Label htmlFor="subject-semester">Semester</Label>
+        <Select value={semester} onValueChange={setSemester}>
+          <SelectTrigger id="subject-semester" className="w-full">
+            <SelectValue placeholder="Select semester" />
+          </SelectTrigger>
+          <SelectContent>
+            {SEMESTERS.map((s) => (
+              <SelectItem key={s} value={String(s)}>
+                Semester {s}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
+    </div>
+  );
+
   return (
     <div className="p-6 max-w-2xl mx-auto space-y-4">
       <Link
@@ -291,47 +328,9 @@ export default function AddSubjectPage() {
             )}
           </div>
 
-          {/* ── Branch + semester: which offering is this? Required for both the
-              existing-subject and new-subject paths, since the same syllabus
-              content can be taught across multiple branches/semesters. ── */}
-          {(activeExisting || showNewSubjectPanel) && (
-            <div className="grid grid-cols-2 gap-3">
-              <div className="space-y-2">
-                <Label htmlFor="subject-branch">Branch</Label>
-                <Select value={branch} onValueChange={setBranch}>
-                  <SelectTrigger id="subject-branch" className="w-full">
-                    <SelectValue placeholder="Select branch" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {BRANCHES.map((b) => (
-                      <SelectItem key={b} value={b}>
-                        {b}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="subject-semester">Semester</Label>
-                <Select value={semester} onValueChange={setSemester}>
-                  <SelectTrigger id="subject-semester" className="w-full">
-                    <SelectValue placeholder="Select semester" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {SEMESTERS.map((s) => (
-                      <SelectItem key={s} value={String(s)}>
-                        Semester {s}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-            </div>
-          )}
-
           {/* ── Existing-subject path: no file needed ── */}
           {activeExisting && (
-            <div className="space-y-3 rounded-md border border-primary/20 bg-primary/5 p-4">
+            <div className="space-y-4 rounded-md border border-primary/20 bg-primary/5 p-4">
               <div>
                 <p className="text-sm font-medium">
                   This subject already exists — you&apos;ll be added to it.
@@ -340,10 +339,12 @@ export default function AddSubjectPage() {
                   {activeExisting.code} — {activeExisting.name}
                 </p>
                 <p className="text-xs text-muted-foreground mt-2">
-                  No upload needed. You&apos;ll be able to review its syllabus and
+                  Pick the branch and semester you teach it in, then add it. No
+                  upload needed — you&apos;ll be able to review its syllabus and
                   course-outcome mapping right after.
                 </p>
               </div>
+              {branchSemesterFields}
               <Button
                 onClick={handleAddExisting}
                 disabled={!branch || !semester}
@@ -355,7 +356,7 @@ export default function AddSubjectPage() {
             </div>
           )}
 
-          {/* ── New-subject path: name + PDF upload ── */}
+          {/* ── New-subject path: name + branch/semester + PDF upload ── */}
           {showNewSubjectPanel && (
             <div className="space-y-4 rounded-md border p-4">
               <p className="text-sm text-muted-foreground">
@@ -374,6 +375,7 @@ export default function AddSubjectPage() {
                   placeholder="e.g. Data Structures and Algorithms"
                 />
               </div>
+              {branchSemesterFields}
               <div className="space-y-2">
                 <Label htmlFor="syllabus-pdf">Syllabus PDF</Label>
                 <Input

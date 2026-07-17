@@ -137,15 +137,18 @@ export async function POST(request: NextRequest) {
 
     // ── Create this subject's first offering, alongside the subject row and before
     // extraction, so a rollback below (subjects delete, ON DELETE CASCADE) cleans up
-    // both in one step ──────────────────────────────────────────────────────────
-    const { error: offeringErr } = await adminClient
+    // both in one step. Capture its id to link the faculty to this specific offering. ─
+    const { data: newOffering, error: offeringErr } = await adminClient
       .from("subject_offerings")
-      .insert({ subject_id: newSubjectId, branch, semester });
-    if (offeringErr) {
+      .insert({ subject_id: newSubjectId, branch, semester })
+      .select("id")
+      .single();
+    if (offeringErr || !newOffering) {
       await adminClient.from("subjects").delete().eq("id", newSubjectId);
       console.error("[faculty/subjects/upload] offering insert failed, rolled back subject:", offeringErr);
-      return apiError(offeringErr.message, 500);
+      return apiError(offeringErr?.message ?? "Failed to create offering", 500);
     }
+    const newOfferingId = (newOffering as { id: string }).id;
 
     // ── Extract, then persist + classify. On ANY failure here the subject row
     // already exists; roll it back (delete) so we never leave an orphaned subject
@@ -183,7 +186,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // ── Assign this faculty to the new subject ──────────────────────────────────
+    // ── Assign this faculty to the new subject (content access) ─────────────────
     const { error: assignErr } = await adminClient
       .from("faculty_assignments")
       .insert({
@@ -194,6 +197,19 @@ export async function POST(request: NextRequest) {
     if (assignErr) {
       console.error("[faculty/subjects/upload] assignment insert failed:", assignErr);
       return apiError(assignErr.message, 500);
+    }
+
+    // ── Link this faculty to the specific offering they teach (the many-to-many) ─
+    const { error: facOfferingErr } = await adminClient
+      .from("faculty_offerings")
+      .insert({
+        faculty_id: user.id,
+        subject_offering_id: newOfferingId,
+        assigned_by: user.id,
+      });
+    if (facOfferingErr) {
+      console.error("[faculty/subjects/upload] faculty_offering insert failed:", facOfferingErr);
+      return apiError(facOfferingErr.message, 500);
     }
 
     // ── Audit log ────────────────────────────────────────────────────────────
@@ -275,22 +291,35 @@ async function attachToExisting(
     .maybeSingle();
 
   let isNewOffering = false;
-  if (!existingOffering) {
-    const { error: offeringErr } = await adminClient
+  let offeringId = (existingOffering as { id: string } | null)?.id ?? null;
+  if (!offeringId) {
+    const { data: inserted, error: offeringErr } = await adminClient
       .from("subject_offerings")
-      .insert({ subject_id: subject.id, branch, semester });
-    if (offeringErr) {
+      .insert({ subject_id: subject.id, branch, semester })
+      .select("id")
+      .single();
+    if (offeringErr || !inserted) {
       // Race: another request created the same (subject_id, branch, semester)
       // offering concurrently. UNIQUE(subject_id, branch, semester) means the
-      // loser's insert fails — that's fine, the offering exists either way.
+      // loser's insert fails — re-fetch the winner's row so we still get its id.
       const isUniqueViolation =
-        offeringErr.code === "23505" ||
-        /duplicate key|unique/i.test(offeringErr.message ?? "");
-      if (!isUniqueViolation) return apiError(offeringErr.message, 500);
+        offeringErr?.code === "23505" ||
+        /duplicate key|unique/i.test(offeringErr?.message ?? "");
+      if (!isUniqueViolation) return apiError(offeringErr?.message ?? "Failed to create offering", 500);
+      const { data: raced } = await adminClient
+        .from("subject_offerings")
+        .select("id")
+        .eq("subject_id", subject.id)
+        .eq("branch", branch)
+        .eq("semester", semester)
+        .maybeSingle();
+      offeringId = (raced as { id: string } | null)?.id ?? null;
     } else {
+      offeringId = (inserted as { id: string }).id;
       isNewOffering = true;
     }
   }
+  if (!offeringId) return apiError("Failed to resolve offering", 500);
 
   let isNewAssignment = false;
   if (!alreadyAssigned) {
@@ -305,7 +334,37 @@ async function attachToExisting(
     isNewAssignment = true;
   }
 
-  if (isNewOffering || isNewAssignment) {
+  // Link this faculty to the specific offering (the many-to-many). Idempotent: a
+  // faculty who already teaches this exact offering isn't re-linked. This is
+  // independent of the assignment check — a faculty already teaching the subject in
+  // one branch legitimately gains a NEW faculty_offerings row for a second branch.
+  const { data: existingFacOffering } = await adminClient
+    .from("faculty_offerings")
+    .select("id")
+    .eq("faculty_id", facultyId)
+    .eq("subject_offering_id", offeringId)
+    .maybeSingle();
+
+  let isNewFacultyOffering = false;
+  if (!existingFacOffering) {
+    const { error: facOfferingErr } = await adminClient
+      .from("faculty_offerings")
+      .insert({
+        faculty_id: facultyId,
+        subject_offering_id: offeringId,
+        assigned_by: facultyId,
+      });
+    if (facOfferingErr) {
+      const isUniqueViolation =
+        facOfferingErr.code === "23505" ||
+        /duplicate key|unique/i.test(facOfferingErr.message ?? "");
+      if (!isUniqueViolation) return apiError(facOfferingErr.message, 500);
+    } else {
+      isNewFacultyOffering = true;
+    }
+  }
+
+  if (isNewOffering || isNewAssignment || isNewFacultyOffering) {
     await adminClient.from("subject_change_log").insert({
       faculty_id: facultyId,
       faculty_email_snapshot: facultyEmail,
@@ -313,7 +372,13 @@ async function attachToExisting(
       subject_code_snapshot: subject.code,
       subject_name_snapshot: subject.name,
       action: "assigned_existing",
-      metadata: { branch, semester, new_offering: isNewOffering, new_assignment: isNewAssignment },
+      metadata: {
+        branch,
+        semester,
+        new_offering: isNewOffering,
+        new_assignment: isNewAssignment,
+        new_faculty_offering: isNewFacultyOffering,
+      },
     });
   }
 
@@ -322,7 +387,12 @@ async function attachToExisting(
     subject_id: subject.id,
     code: subject.code,
     name: subject.name,
+    // Two independent signals the UI needs for an accurate toast:
+    //  - alreadyInList: the subject was already in this faculty's list.
+    //  - newOffering:   a new branch/semester link was created for them this time.
+    // (alreadyInList && !newOffering) = exact duplicate; (alreadyInList &&
+    // newOffering) = added a new branch/semester to a subject they already teach.
     alreadyInList: Boolean(alreadyAssigned),
-    newOffering: isNewOffering,
+    newOffering: isNewFacultyOffering,
   });
 }

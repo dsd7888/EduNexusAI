@@ -5,6 +5,11 @@ import { createBrowserClient } from "@/lib/db/supabase-browser";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
+export interface OfferingRef {
+  branch: string;
+  semester: number;
+}
+
 export interface SubjectRow {
   id: string;
   name: string;
@@ -12,6 +17,10 @@ export interface SubjectRow {
   department?: string;
   branch?: string;
   semester?: number;
+  // The specific branch/semester offerings the faculty teaches this subject in.
+  // A subject can be taught in several (one faculty, multiple branches). Populated
+  // by useFacultySubjects; other consumers may leave it undefined.
+  offerings?: OfferingRef[];
 }
 
 export interface ModuleRow {
@@ -101,14 +110,40 @@ export function useFacultySubjects() {
 
         if (ids.length === 0) { if (!cancelled) setIsLoading(false); return; }
 
-        const { data: subs } = await supabase
-          .from("subjects")
-          .select("id, name, code")
-          .in("id", ids)
-          .order("code");
+        // Fetch subjects (content) and, in parallel, the specific offerings this
+        // faculty teaches (branch/semester) via faculty_offerings → subject_offerings.
+        const [{ data: subs }, { data: facOfferings }] = await Promise.all([
+          supabase.from("subjects").select("id, name, code").in("id", ids).order("code"),
+          supabase
+            .from("faculty_offerings")
+            .select("subject_offering:subject_offerings(subject_id, branch, semester)")
+            .eq("faculty_id", user.id),
+        ]);
 
         if (cancelled) return;
-        setSubjects((subs ?? []) as SubjectRow[]);
+
+        // Group this faculty's offerings by subject_id, sorted for stable display.
+        type FacOfferingRow = {
+          subject_offering: { subject_id: string; branch: string; semester: number } | null;
+        };
+        const offeringsBySubject = new Map<string, OfferingRef[]>();
+        for (const r of (facOfferings ?? []) as unknown as FacOfferingRow[]) {
+          const o = r.subject_offering;
+          if (!o) continue;
+          const list = offeringsBySubject.get(o.subject_id) ?? [];
+          list.push({ branch: o.branch, semester: o.semester });
+          offeringsBySubject.set(o.subject_id, list);
+        }
+        for (const list of offeringsBySubject.values()) {
+          list.sort((a, b) => a.semester - b.semester || a.branch.localeCompare(b.branch));
+        }
+
+        const enriched = ((subs ?? []) as SubjectRow[]).map((s) => ({
+          ...s,
+          offerings: offeringsBySubject.get(s.id) ?? [],
+        }));
+
+        setSubjects(enriched);
         setIsLoading(false);
       })
       .catch((err) => {
