@@ -233,13 +233,24 @@ const SUGGESTION_SCHEMA = {
           btlLevel: { type: "integer" },
           rationale: { type: "string", maxLength: MAX_RATIONALE },
         },
-        // moduleNumber is required because BOTH entityTypes reachable from the
-        // fixes array (module_co_mapping, btl_levels) name a module. Leaving it
-        // optional let the model return mapping fixes with no module at all,
-        // which the gate then correctly but pointlessly dropped — observed on
-        // 2 of 3 CO-mapping proposals in the first live run. coCode stays
-        // optional: btl_levels genuinely has no CO.
-        required: ["findingId", "entityType", "moduleNumber", "rationale"],
+        // moduleNumber and btlLevel are required for the same hard-won reason:
+        // an optional field is a field this model omits. Leaving moduleNumber
+        // optional lost 2 of 3 CO-mapping fixes in the first live run; leaving
+        // btlLevel optional then lost BOTH BTL fixes in the browser run
+        // ("undefined" is not a Bloom's level 1-6). Neither is meaningful for
+        // every entityType — btlLevel is ignored on a mapping fix — but a
+        // couple of wasted tokens beats a silently dropped proposal.
+        //
+        // coCode stays optional because it is genuinely recoverable: a
+        // co_coverage finding's entity names the CO, and buildProposal reads it
+        // back from there. There is no equivalent source for a BTL level.
+        required: [
+          "findingId",
+          "entityType",
+          "moduleNumber",
+          "btlLevel",
+          "rationale",
+        ],
       },
     },
     discoveries: {

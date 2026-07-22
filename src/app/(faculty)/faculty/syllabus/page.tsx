@@ -8,11 +8,12 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { BookOpen, Loader2, Pencil, Plus, Trash2 } from "lucide-react";
+import { BookOpen, Loader2, Pencil, Plus, Stethoscope, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -31,6 +32,12 @@ import {
 } from "@/components/syllabus/StructuredSyllabusEditor";
 import type { ExtractedSyllabus } from "@/lib/syllabus/types";
 import { ModuleSyllabusCard } from "./_components/ModuleSyllabusCard";
+import { HealthTab } from "./_components/health/HealthTab";
+import type {
+  Dimension,
+  DimensionScore,
+  Finding,
+} from "@/lib/syllabus-audit/types";
 import {
   CONFIDENCE_CLASSES,
   type CourseOutcomeRef,
@@ -47,6 +54,12 @@ interface ExamScheme {
 }
 
 const SUBJECT_CAP = 5;
+
+interface AuditPayload {
+  findings: Finding[];
+  scores: Record<Dimension, DimensionScore>;
+  overallHealth: number;
+}
 
 export default function FacultySyllabusPage() {
   const { subjects, isLoading: subjectsLoading, refetch } = useFacultySubjects();
@@ -73,6 +86,20 @@ export default function FacultySyllabusPage() {
     mappingsByModule: Map<string, MappingRow[]>;
   } | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
+
+  // ─── Syllabus Health ────────────────────────────────────────────────────
+  // The audit is owned HERE rather than inside the Health tab so the tab-strip
+  // badge stays accurate while the faculty member is on the editor tab (§6e:
+  // "Health · 3" → "Health · 1" after fixing a mapping, without switching).
+  // Radix unmounts inactive TabsContent, so a fetch owned by the tab would only
+  // run while the tab is already open.
+  const [audit, setAudit] = useState<{
+    subjectId: string;
+    payload: AuditPayload;
+  } | null>(null);
+  const [auditLoading, setAuditLoading] = useState(false);
+  // The editor stays the primary view — Health is opt-in, never the landing tab.
+  const [tab, setTab] = useState<"editor" | "health">("editor");
 
   const [editing, setEditing] = useState(false);
   const [editLoading, setEditLoading] = useState(false);
@@ -151,6 +178,46 @@ export default function FacultySyllabusPage() {
       });
     });
   }, [activeSubjectId, reloadKey]);
+
+  const loadAudit = useCallback(async () => {
+    if (!activeSubjectId) return;
+    setAuditLoading(true);
+    try {
+      const res = await fetch(
+        `/api/syllabus/audit?subjectId=${encodeURIComponent(activeSubjectId)}`
+      );
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        // Non-fatal: the editor is the primary view and must stay usable even
+        // if the audit fails, so this never blocks or toasts over the page.
+        console.warn("[syllabus health] audit failed:", json.error);
+        return;
+      }
+      setAudit({ subjectId: activeSubjectId, payload: json as AuditPayload });
+    } catch (err) {
+      console.warn("[syllabus health] audit failed:", err);
+    } finally {
+      setAuditLoading(false);
+    }
+  }, [activeSubjectId]);
+
+  // Re-audits on subject change and after every save (reloadKey), so the badge
+  // reflects the current syllabus whichever tab is open.
+  useEffect(() => {
+    void loadAudit();
+  }, [loadAudit, reloadKey]);
+
+  const auditPayload =
+    audit && audit.subjectId === activeSubjectId ? audit.payload : null;
+  const healthFindingCount = auditPayload?.findings.length ?? null;
+
+  const handleAuditReplace = useCallback(
+    (next: AuditPayload) => {
+      if (!activeSubjectId) return;
+      setAudit({ subjectId: activeSubjectId, payload: next });
+    },
+    [activeSubjectId]
+  );
 
   const updateMappings = (moduleId: string, next: MappingRow[]) => {
     setDataState((prev) => {
@@ -439,27 +506,6 @@ export default function FacultySyllabusPage() {
       </AlertDialog>
 
       <div className="flex-1 min-w-0 space-y-4">
-        <div className="rounded-md border border-primary/20 bg-primary/5 px-4 py-2 text-sm text-muted-foreground space-y-1.5">
-          <p>
-            CO mappings shown here are used by the Question Paper generator to
-            distribute questions across outcomes. Changes take effect
-            immediately.
-          </p>
-          <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs">
-            <span>Chip color = AI confidence in that mapping:</span>
-            <span className="flex items-center gap-1">
-              <Badge className={CONFIDENCE_CLASSES.high}>CO#</Badge> high
-            </span>
-            <span className="flex items-center gap-1">
-              <Badge className={CONFIDENCE_CLASSES.medium}>CO#</Badge> medium
-            </span>
-            <span className="flex items-center gap-1">
-              <Badge className={CONFIDENCE_CLASSES.low}>CO#</Badge> low
-            </span>
-            <span>· Hover a chip to see who verified it.</span>
-          </div>
-        </div>
-
         {!activeSubjectId && !subjectsLoading && (
           <p className="text-sm text-muted-foreground">
             Select a subject to view its syllabus.
@@ -467,106 +513,171 @@ export default function FacultySyllabusPage() {
         )}
 
         {activeSubjectId && (
-          <>
-            <div className="flex items-start justify-between gap-3 flex-wrap">
-              <div>
-                <h2 className="text-lg font-semibold">
-                  {activeSubject ? `${activeSubject.code} — ${activeSubject.name}` : ""}
-                </h2>
-                {examScheme && !editing && (
-                  <p className="text-xs text-muted-foreground mt-1">
-                    {[
-                      examScheme.theory_ce != null && `Theory CE ${examScheme.theory_ce}`,
-                      examScheme.theory_ese != null && `Theory ESE ${examScheme.theory_ese}`,
-                      examScheme.practical_ce != null &&
-                        `Practical CE ${examScheme.practical_ce}`,
-                      examScheme.practical_ese != null &&
-                        `Practical ESE ${examScheme.practical_ese}`,
-                      examScheme.total_marks != null && `Total ${examScheme.total_marks}`,
-                    ]
-                      .filter(Boolean)
-                      .join(" · ")}
-                  </p>
+          <Tabs
+            value={tab}
+            onValueChange={(v) => setTab(v as "editor" | "health")}
+          >
+            <TabsList className="mb-3">
+              <TabsTrigger value="editor" className="gap-1.5">
+                <BookOpen className="size-4" />
+                Syllabus
+              </TabsTrigger>
+              {/* Disabled mid-edit for the same reason the subject list is:
+                  leaving the editor would discard an in-progress edit. */}
+              <TabsTrigger
+                value="health"
+                className="gap-1.5"
+                disabled={editing}
+                title={editing ? "Finish or cancel editing first" : undefined}
+              >
+                <Stethoscope className="size-4" />
+                Syllabus Health
+                {healthFindingCount != null && healthFindingCount > 0 && (
+                  <Badge
+                    variant="secondary"
+                    className="ml-1 px-1.5 py-0 text-[10px] font-normal"
+                  >
+                    {healthFindingCount}
+                  </Badge>
                 )}
-              </div>
+              </TabsTrigger>
+            </TabsList>
 
-              {!editing ? (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={handleStartEdit}
-                  disabled={editLoading}
-                  className="gap-1"
-                >
-                  {editLoading ? (
-                    <Loader2 className="size-4 animate-spin" />
-                  ) : (
-                    <Pencil className="size-4" />
-                  )}
-                  Edit Syllabus
-                </Button>
-              ) : (
-                <div className="flex items-center gap-2">
-                  {editState?.dirty && (
-                    <Badge
-                      variant="outline"
-                      className="text-amber-700 border-amber-400"
-                    >
-                      Unsaved changes
-                    </Badge>
-                  )}
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={handleCancelEdit}
-                    disabled={editSaving}
-                  >
-                    Cancel
-                  </Button>
-                  <Button
-                    size="sm"
-                    onClick={handleSaveEdit}
-                    disabled={editSaving}
-                    className="gap-1"
-                  >
-                    {editSaving && <Loader2 className="size-4 animate-spin" />}
-                    Save changes
-                  </Button>
-                </div>
-              )}
-            </div>
-
-            {editing ? (
-              editState ? (
-                <StructuredSyllabusEditor
-                  extracted={editState.extracted}
-                  update={updateEditState}
-                />
-              ) : (
-                <p className="text-sm text-muted-foreground">Loading syllabus…</p>
-              )
-            ) : loading ? (
-              <p className="text-sm text-muted-foreground">Loading syllabus…</p>
-            ) : modules.length === 0 ? (
-              <p className="text-sm text-muted-foreground">
-                No modules recorded for this subject yet. Click{" "}
-                <span className="font-medium">Edit Syllabus</span> to add course
-                info, modules, and outcomes.
+            <TabsContent value="editor" className="space-y-4">
+            <div className="rounded-md border border-primary/20 bg-primary/5 px-4 py-2 text-sm text-muted-foreground space-y-1.5">
+              <p>
+                CO mappings shown here are used by the Question Paper generator to
+                distribute questions across outcomes. Changes take effect
+                immediately.
               </p>
-            ) : (
-              <div className="space-y-4">
-                {modules.map((m) => (
-                  <ModuleSyllabusCard
-                    key={m.id}
-                    module={m}
-                    mappings={mappingsByModule.get(m.id) ?? []}
-                    courseOutcomes={courseOutcomes}
-                    onMappingsChange={updateMappings}
-                  />
-                ))}
+              <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs">
+                <span>Chip color = AI confidence in that mapping:</span>
+                <span className="flex items-center gap-1">
+                  <Badge className={CONFIDENCE_CLASSES.high}>CO#</Badge> high
+                </span>
+                <span className="flex items-center gap-1">
+                  <Badge className={CONFIDENCE_CLASSES.medium}>CO#</Badge> medium
+                </span>
+                <span className="flex items-center gap-1">
+                  <Badge className={CONFIDENCE_CLASSES.low}>CO#</Badge> low
+                </span>
+                <span>· Hover a chip to see who verified it.</span>
               </div>
-            )}
-          </>
+            </div>
+                <div className="flex items-start justify-between gap-3 flex-wrap">
+                  <div>
+                    <h2 className="text-lg font-semibold">
+                      {activeSubject ? `${activeSubject.code} — ${activeSubject.name}` : ""}
+                    </h2>
+                    {examScheme && !editing && (
+                      <p className="text-xs text-muted-foreground mt-1">
+                        {[
+                          examScheme.theory_ce != null && `Theory CE ${examScheme.theory_ce}`,
+                          examScheme.theory_ese != null && `Theory ESE ${examScheme.theory_ese}`,
+                          examScheme.practical_ce != null &&
+                            `Practical CE ${examScheme.practical_ce}`,
+                          examScheme.practical_ese != null &&
+                            `Practical ESE ${examScheme.practical_ese}`,
+                          examScheme.total_marks != null && `Total ${examScheme.total_marks}`,
+                        ]
+                          .filter(Boolean)
+                          .join(" · ")}
+                      </p>
+                    )}
+                  </div>
+
+                  {!editing ? (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={handleStartEdit}
+                      disabled={editLoading}
+                      className="gap-1"
+                    >
+                      {editLoading ? (
+                        <Loader2 className="size-4 animate-spin" />
+                      ) : (
+                        <Pencil className="size-4" />
+                      )}
+                      Edit Syllabus
+                    </Button>
+                  ) : (
+                    <div className="flex items-center gap-2">
+                      {editState?.dirty && (
+                        <Badge
+                          variant="outline"
+                          className="text-amber-700 border-amber-400"
+                        >
+                          Unsaved changes
+                        </Badge>
+                      )}
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={handleCancelEdit}
+                        disabled={editSaving}
+                      >
+                        Cancel
+                      </Button>
+                      <Button
+                        size="sm"
+                        onClick={handleSaveEdit}
+                        disabled={editSaving}
+                        className="gap-1"
+                      >
+                        {editSaving && <Loader2 className="size-4 animate-spin" />}
+                        Save changes
+                      </Button>
+                    </div>
+                  )}
+                </div>
+
+                {editing ? (
+                  editState ? (
+                    <StructuredSyllabusEditor
+                      extracted={editState.extracted}
+                      update={updateEditState}
+                    />
+                  ) : (
+                    <p className="text-sm text-muted-foreground">Loading syllabus…</p>
+                  )
+                ) : loading ? (
+                  <p className="text-sm text-muted-foreground">Loading syllabus…</p>
+                ) : modules.length === 0 ? (
+                  <p className="text-sm text-muted-foreground">
+                    No modules recorded for this subject yet. Click{" "}
+                    <span className="font-medium">Edit Syllabus</span> to add course
+                    info, modules, and outcomes.
+                  </p>
+                ) : (
+                  <div className="space-y-4">
+                    {modules.map((m) => (
+                      <ModuleSyllabusCard
+                        key={m.id}
+                        module={m}
+                        mappings={mappingsByModule.get(m.id) ?? []}
+                        courseOutcomes={courseOutcomes}
+                        onMappingsChange={updateMappings}
+                      />
+                    ))}
+                  </div>
+                )}
+            </TabsContent>
+
+            <TabsContent value="health">
+              {/* Remounting on subject/save clears the proposal buffer by
+                  construction — proposals computed against an older syllabus
+                  must never survive an edit. */}
+              <HealthTab
+                key={`${activeSubjectId}:${reloadKey}`}
+                subjectId={activeSubjectId}
+                audit={auditPayload}
+                loading={auditLoading}
+                onRefresh={() => void loadAudit()}
+                onAuditReplace={handleAuditReplace}
+              />
+            </TabsContent>
+          </Tabs>
         )}
       </div>
     </div>
