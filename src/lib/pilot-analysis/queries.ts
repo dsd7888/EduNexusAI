@@ -223,18 +223,41 @@ export async function getOverview(admin: AdminClient): Promise<OverviewData> {
   const qpaper = byType["qpaper"] ?? 0;
   const answerKey = byType["answer_key"] ?? 0;
   const qbankCount = byType["qbank_question"] ?? 0;
-  // ppt_refine has no generated_content type — interim proxy: distinct successful
-  // ppt_refine job_ids. FLAGGED as an open question in the report.
-  const pptRefineJobs = new Set<string>();
+  // Features with no generated_content type are counted from ai_call_logs
+  // instead. Two different proxies, because the right unit differs per feature —
+  // and the unit MUST match the one its TIME_SAVED_MINUTES_PER_ARTIFACT rate is
+  // quoted in, or the hours-saved figure is wrong by whatever the fan-out is:
+  //
+  //   distinct successful job_id  →  one job = one artifact. Used where the rate
+  //     is per DOCUMENT (a lesson plan is 240min for the whole course-file plan,
+  //     an audit is 120min for the subject) even though the job fans out into
+  //     several AI calls internally.
+  //   successful calls of one task →  one call = one artifact. Used for
+  //     lab_manual, whose rate is quoted PER PRACTICAL (45min) while a single
+  //     generate request covers up to 4 — counting jobs would undercount by 4x.
+  //
+  // ppt_refine's job-id proxy is the pre-existing one, unchanged; it remains
+  // FLAGGED as an open question in the report.
+  const jobsByFeature = new Map<string, Set<string>>();
+  let labManualSections = 0;
   for (const l of logs) {
-    if (l.feature === "ppt_refine" && l.status === "success") pptRefineJobs.add(l.job_id);
+    if (l.status !== "success") continue;
+    if (l.feature === "ppt_refine" || l.feature === "lesson_plan" || l.feature === "syllabus_audit") {
+      const set = jobsByFeature.get(l.feature) ?? new Set<string>();
+      set.add(l.job_id);
+      jobsByFeature.set(l.feature, set);
+    }
+    if (l.task === "lab_manual_gen") labManualSections++;
   }
   const artifactCountByFeature: Record<string, number> = {
     ppt_generation: ppt,
     qpaper,
     answer_key: answerKey,
     qbank: qbankCount,
-    ppt_refine: pptRefineJobs.size,
+    ppt_refine: jobsByFeature.get("ppt_refine")?.size ?? 0,
+    lesson_plan: jobsByFeature.get("lesson_plan")?.size ?? 0,
+    lab_manual: labManualSections,
+    syllabus_audit: jobsByFeature.get("syllabus_audit")?.size ?? 0,
   };
   const hoursSavedByFeature: Record<string, { artifacts: number; hoursSaved: number }> = {};
   let hoursSavedTotal = 0;
