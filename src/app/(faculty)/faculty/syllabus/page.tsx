@@ -6,7 +6,7 @@
  * add/remove controls on each module card.
  */
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { BookOpen, Loader2, Pencil, Plus, Stethoscope, Trash2 } from "lucide-react";
 import { toast } from "sonner";
@@ -98,6 +98,9 @@ export default function FacultySyllabusPage() {
     payload: AuditPayload;
   } | null>(null);
   const [auditLoading, setAuditLoading] = useState(false);
+  const [auditError, setAuditError] = useState(false);
+  /** Monotonic request id — see loadAudit; guards against out-of-order responses. */
+  const auditSeq = useRef(0);
   // The editor stays the primary view — Health is opt-in, never the landing tab.
   const [tab, setTab] = useState<"editor" | "health">("editor");
 
@@ -181,23 +184,35 @@ export default function FacultySyllabusPage() {
 
   const loadAudit = useCallback(async () => {
     if (!activeSubjectId) return;
+    // Only the most recent request may write state. Switching subjects while an
+    // audit is in flight otherwise lets the SLOWER, older response land last and
+    // overwrite the newer one — after which `auditPayload` derives to null
+    // (its tagged subject no longer matches) and the Health tab renders empty
+    // with no way back, because the Re-check button lives inside the tab it
+    // just blanked. Verified reproducible by delaying the first response.
+    const seq = ++auditSeq.current;
     setAuditLoading(true);
+    setAuditError(false);
     try {
       const res = await fetch(
         `/api/syllabus/audit?subjectId=${encodeURIComponent(activeSubjectId)}`
       );
       const json = await res.json().catch(() => ({}));
+      if (seq !== auditSeq.current) return; // superseded — drop it silently
       if (!res.ok) {
         // Non-fatal: the editor is the primary view and must stay usable even
         // if the audit fails, so this never blocks or toasts over the page.
         console.warn("[syllabus health] audit failed:", json.error);
+        setAuditError(true);
         return;
       }
       setAudit({ subjectId: activeSubjectId, payload: json as AuditPayload });
     } catch (err) {
+      if (seq !== auditSeq.current) return;
       console.warn("[syllabus health] audit failed:", err);
+      setAuditError(true);
     } finally {
-      setAuditLoading(false);
+      if (seq === auditSeq.current) setAuditLoading(false);
     }
   }, [activeSubjectId]);
 
@@ -673,6 +688,7 @@ export default function FacultySyllabusPage() {
                 subjectId={activeSubjectId}
                 audit={auditPayload}
                 loading={auditLoading}
+                error={auditError}
                 onRefresh={() => void loadAudit()}
                 onAuditReplace={handleAuditReplace}
               />

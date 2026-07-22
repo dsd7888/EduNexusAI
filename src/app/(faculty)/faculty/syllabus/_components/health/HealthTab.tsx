@@ -69,6 +69,8 @@ interface HealthTabProps {
    */
   audit: AuditPayload | null;
   loading: boolean;
+  /** The last audit attempt failed. Distinguished from "still loading". */
+  error?: boolean;
   /** Re-run the deterministic audit (the "Re-check" button). */
   onRefresh: () => void;
   /** Replace the audit with a server-recomputed one after suggest/apply. */
@@ -262,6 +264,7 @@ export function HealthTab({
   subjectId,
   audit,
   loading,
+  error,
   onRefresh,
   onAuditReplace,
 }: HealthTabProps) {
@@ -285,6 +288,15 @@ export function HealthTab({
   const [expanded, setExpanded] = useState<Dimension | null>(null);
   const [showProposals, setShowProposals] = useState(false);
   const [exporting, setExporting] = useState(false);
+  /**
+   * Which proposal is currently being applied. Two simultaneous accepts each
+   * return a freshly recomputed audit, and whichever resolves LAST wins — so
+   * the slower response can render a state computed before the other write
+   * landed, hiding a change the faculty member just made. Serialising is
+   * correct here rather than merely convenient: each /apply re-validates
+   * against the live syllabus, so they must not overlap.
+   */
+  const [applyingId, setApplyingId] = useState<string | null>(null);
 
   // Proposals are deliberately NOT persisted across a subject switch or a
   // syllabus save. The page remounts this component (key={subjectId}:{reloadKey})
@@ -327,7 +339,9 @@ export function HealthTab({
       const res = await fetch("/api/syllabus/audit/suggest", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ subjectId }),
+        // A button labelled "Regenerate" that returns the cached set is a lie.
+        // The first run may use the cache; an explicit regenerate must not.
+        body: JSON.stringify({ subjectId, force: aiRan }),
       });
       const json = await res.json().catch(() => ({}));
       if (!res.ok) {
@@ -359,10 +373,13 @@ export function HealthTab({
     } finally {
       setSuggesting(false);
     }
-  }, [subjectId, onAuditReplace]);
+  }, [subjectId, onAuditReplace, aiRan]);
 
   const handleAccept = useCallback(
     async (proposal: Proposal) => {
+      if (applyingId) return;
+      setApplyingId(proposal.id);
+      try {
       const res = await fetch("/api/syllabus/audit/apply", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -401,12 +418,24 @@ export function HealthTab({
             ? "Lesson plan and lab manual caches refreshed — they'll regenerate from the updated syllabus."
             : undefined,
       });
+      } finally {
+        setApplyingId(null);
+      }
     },
-    [subjectId, onAuditReplace],
+    [subjectId, onAuditReplace, applyingId],
   );
 
   const handleExport = useCallback(async () => {
     if (!subjectId) return;
+    // Open the tab NOW, while we still hold the click's user activation, and
+    // point it at the URL once the PDF exists. Chrome only allows window.open
+    // during a transient activation window (~5s); this export takes ~4s locally
+    // and longer on a cold serverless start, so calling open() after the await
+    // is intermittently blocked — and a blocked popup would leave the faculty
+    // member with a "report ready" toast and no report, the worst failure shape
+    // available. If the browser refuses even the synchronous open, we fall back
+    // to same-tab navigation rather than silently succeeding.
+    const tab = window.open("", "_blank");
     setExporting(true);
     try {
       const res = await fetch("/api/syllabus/audit/export", {
@@ -416,14 +445,15 @@ export function HealthTab({
       });
       const json = await res.json().catch(() => ({}));
       if (!res.ok || !json.url) {
+        tab?.close();
         toast.error(json.error ?? "Couldn't build the compliance report");
         return;
       }
-      // Opened rather than navigated to: the signed URL is short-lived, and
-      // replacing the page would lose any proposals still under review.
-      window.open(json.url as string, "_blank", "noopener,noreferrer");
+      if (tab && !tab.closed) tab.location.href = json.url as string;
+      else window.location.href = json.url as string;
       toast.success("Compliance report ready");
     } catch (err) {
+      tab?.close();
       toast.error(
         err instanceof Error ? err.message : "Couldn't build the compliance report",
       );
@@ -431,6 +461,18 @@ export function HealthTab({
       setExporting(false);
     }
   }, [subjectId]);
+
+  const revealProposal = useCallback((proposalId: string) => {
+    setShowProposals(true);
+    // Revealing the section is not enough: the proposals render ABOVE the
+    // findings list, so a faculty member reading a finding sees nothing change.
+    // Defer past the render that mounts the card, then bring it into view.
+    requestAnimationFrame(() => {
+      document
+        .getElementById(`proposal-${proposalId}`)
+        ?.scrollIntoView({ behavior: "smooth", block: "center" });
+    });
+  }, []);
 
   const handleDismiss = useCallback((proposalId: string) => {
     // Not persisted, by design (spec §6c): re-running suggestions brings it back.
@@ -453,7 +495,28 @@ export function HealthTab({
     );
   }
 
-  if (!data) return null;
+  // No audit and not loading. Previously this returned null, which rendered a
+  // completely blank tab — no message, and no Re-check button either, since
+  // that lives further down this same component. The only escape was switching
+  // subjects. Any terminal state needs its own recovery affordance.
+  if (!data) {
+    return (
+      <div className="rounded-lg border border-dashed p-6 text-center space-y-3">
+        <p className="text-sm font-medium">
+          {error ? "Couldn't audit this syllabus." : "No audit loaded yet."}
+        </p>
+        <p className="text-xs text-muted-foreground">
+          {error
+            ? "The check didn't complete. Your syllabus is unchanged — nothing here writes to it."
+            : "Run the compliance check to see findings for this subject."}
+        </p>
+        <Button size="sm" variant="outline" onClick={onRefresh} className="gap-1">
+          <RefreshCw className="size-4" />
+          {error ? "Try again" : "Run check"}
+        </Button>
+      </div>
+    );
+  }
 
   const grouped = ALL_DIMENSIONS.map((d) => ({
     dimension: d,
@@ -590,6 +653,7 @@ export function HealthTab({
                   finding={findingById.get(p.findingId) ?? null}
                   onAccept={handleAccept}
                   onDismiss={handleDismiss}
+                  blocked={applyingId !== null && applyingId !== p.id}
                 />
               ))}
             </div>
@@ -616,7 +680,7 @@ export function HealthTab({
                     key={f.id}
                     finding={f}
                     proposal={proposalByFinding.get(f.id)}
-                    onView={() => setShowProposals(true)}
+                    onView={() => revealProposal(proposalByFinding.get(f.id)!.id)}
                   />
                 ))}
               </div>

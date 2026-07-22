@@ -28,6 +28,8 @@ interface ProposalCardProps {
   finding: Finding | null;
   onAccept: (proposal: Proposal) => Promise<void>;
   onDismiss: (proposalId: string) => void;
+  /** Another proposal is mid-apply; accepts are serialised (see HealthTab). */
+  blocked?: boolean;
 }
 
 export function ProposalCard({
@@ -35,6 +37,7 @@ export function ProposalCard({
   finding,
   onAccept,
   onDismiss,
+  blocked = false,
 }: ProposalCardProps) {
   const [busy, setBusy] = useState(false);
 
@@ -50,7 +53,10 @@ export function ProposalCard({
   };
 
   return (
-    <div className="rounded-lg border bg-card p-4 space-y-3">
+    <div
+      id={`proposal-${proposal.id}`}
+      className="rounded-lg border bg-card p-4 space-y-3 scroll-mt-4"
+    >
       <div className="flex items-start justify-between gap-3 flex-wrap">
         <div className="space-y-1 min-w-0">
           <div className="flex items-center gap-2 flex-wrap">
@@ -96,7 +102,12 @@ export function ProposalCard({
       </div>
 
       <div className="flex items-center gap-2">
-        <Button size="sm" onClick={handleAccept} disabled={busy} className="gap-1">
+        <Button
+          size="sm"
+          onClick={handleAccept}
+          disabled={busy || blocked}
+          className="gap-1"
+        >
           {busy ? <Loader2 className="size-4 animate-spin" /> : <Check className="size-4" />}
           Accept
         </Button>
@@ -104,7 +115,7 @@ export function ProposalCard({
           size="sm"
           variant="outline"
           onClick={() => onDismiss(proposal.id)}
-          disabled={busy}
+          disabled={busy || blocked}
           className="gap-1"
         >
           <X className="size-4" />

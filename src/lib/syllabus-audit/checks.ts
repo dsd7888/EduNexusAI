@@ -187,8 +187,14 @@ function wordBigrams(text: string): Set<string> {
  * names two of the module's concepts IS about that module, but two modules that
  * merely share the word "analysis" are not the same topic.
  */
-export function practicalModuleScore(title: string, moduleText: string): number {
-  const haystack = moduleText.toLowerCase();
+export function practicalModuleScore(
+  title: string,
+  moduleText: string,
+  /** Pre-derived module features, so a caller looping over modules x practicals
+   *  doesn't re-tokenise the same description once per practical. */
+  precomputed?: { haystack: string; bigrams: Set<string> },
+): number {
+  const haystack = precomputed?.haystack ?? moduleText.toLowerCase();
   const tokens = significantTokens(title);
   if (tokens.length === 0) return 0;
 
@@ -196,7 +202,7 @@ export function practicalModuleScore(title: string, moduleText: string): number 
   const tokenCoverage = hits / tokens.length;
 
   const titleBigrams = wordBigrams(title);
-  const moduleBigrams = wordBigrams(moduleText);
+  const moduleBigrams = precomputed?.bigrams ?? wordBigrams(moduleText);
   let shared = 0;
   for (const b of titleBigrams) if (moduleBigrams.has(b)) shared++;
   const bigramCoverage = titleBigrams.size > 0 ? shared / titleBigrams.size : 0;
@@ -411,9 +417,16 @@ export function checkPracticalAlignment(input: AuditInput): Finding[] {
   const findings: Finding[] = [];
   if (ctx.practicals.length === 0 || ctx.modules.length === 0) return findings;
 
-  const moduleTexts = new Map<string, string>();
+  // Derive each module's matching features ONCE. Doing it inside the practical
+  // loop re-tokenised every description once per practical — O(P x M) string
+  // work where O(M) suffices, and the descriptions are the long side.
+  const moduleFeatures = new Map<string, { haystack: string; bigrams: Set<string> }>();
   for (const m of ctx.modules) {
-    moduleTexts.set(m.id, `${m.name} ${m.description}`);
+    const combined = `${m.name} ${m.description}`;
+    moduleFeatures.set(m.id, {
+      haystack: combined.toLowerCase(),
+      bigrams: wordBigrams(combined),
+    });
   }
 
   const matchedModuleIds = new Set<string>();
@@ -422,7 +435,7 @@ export function checkPracticalAlignment(input: AuditInput): Finding[] {
     let best = 0;
     let bestModuleId: string | null = null;
     for (const m of ctx.modules) {
-      const score = practicalModuleScore(p.name, moduleTexts.get(m.id) ?? "");
+      const score = practicalModuleScore(p.name, "", moduleFeatures.get(m.id));
       if (score > best) {
         best = score;
         bestModuleId = m.id;

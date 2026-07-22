@@ -19,6 +19,8 @@
     "src/app/api/labmanual/regenerate/route.ts": { "maxDuration": 30, "memory": 1024 },
     "src/app/api/labmanual/export/route.ts": { "maxDuration": 60, "memory": 1024 },
     "src/app/api/syllabus/audit/suggest/route.ts": { "maxDuration": 60, "memory": 1024 },
+    "src/app/api/syllabus/audit/export/route.ts": { "maxDuration": 60, "memory": 1024 },
+    "src/app/api/syllabus/audit/apply/route.ts": { "maxDuration": 30, "memory": 1024 },
     "src/app/api/chat/route.ts": { "maxDuration": 60, "memory": 1024 },
     "src/app/api/chat/visualize/route.ts": { "maxDuration": 120, "memory": 1024 },
     "src/app/api/refine/route.ts": { "maxDuration": 30, "memory": 1024 },
