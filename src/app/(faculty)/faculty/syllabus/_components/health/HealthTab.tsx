@@ -21,6 +21,7 @@ import { useCallback, useMemo, useState } from "react";
 import {
   AlertTriangle,
   ChevronDown,
+  Download,
   Loader2,
   RefreshCw,
   Sparkles,
@@ -283,6 +284,7 @@ export function HealthTab({
   const [aiFindings, setAiFindings] = useState<Finding[]>([]);
   const [expanded, setExpanded] = useState<Dimension | null>(null);
   const [showProposals, setShowProposals] = useState(false);
+  const [exporting, setExporting] = useState(false);
 
   // Proposals are deliberately NOT persisted across a subject switch or a
   // syllabus save. The page remounts this component (key={subjectId}:{reloadKey})
@@ -403,6 +405,33 @@ export function HealthTab({
     [subjectId, onAuditReplace],
   );
 
+  const handleExport = useCallback(async () => {
+    if (!subjectId) return;
+    setExporting(true);
+    try {
+      const res = await fetch("/api/syllabus/audit/export", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ subjectId }),
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok || !json.url) {
+        toast.error(json.error ?? "Couldn't build the compliance report");
+        return;
+      }
+      // Opened rather than navigated to: the signed URL is short-lived, and
+      // replacing the page would lose any proposals still under review.
+      window.open(json.url as string, "_blank", "noopener,noreferrer");
+      toast.success("Compliance report ready");
+    } catch (err) {
+      toast.error(
+        err instanceof Error ? err.message : "Couldn't build the compliance report",
+      );
+    } finally {
+      setExporting(false);
+    }
+  }, [subjectId]);
+
   const handleDismiss = useCallback((proposalId: string) => {
     // Not persisted, by design (spec §6c): re-running suggestions brings it back.
     setProposals((prev) => prev.filter((p) => p.id !== proposalId));
@@ -446,6 +475,20 @@ export function HealthTab({
         <div className="flex items-start justify-between gap-4 flex-wrap">
           <HealthRing score={data.overallHealth} assessedCount={assessedCount} />
           <div className="flex items-center gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => void handleExport()}
+              disabled={exporting}
+              className="gap-1"
+            >
+              {exporting ? (
+                <Loader2 className="size-4 animate-spin" />
+              ) : (
+                <Download className="size-4" />
+              )}
+              Download Compliance Report
+            </Button>
             <Button
               variant="outline"
               size="sm"

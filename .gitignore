@@ -42,3 +42,6 @@ faculty-credentials-*.csv
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# Local compliance-report renders (scripts/test-syllabus-audit-export.ts)
+.reports/
