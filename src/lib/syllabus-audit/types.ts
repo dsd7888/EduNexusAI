@@ -172,6 +172,71 @@ export interface CoPoMappingRow {
 export interface AuditInput {
   ctx: import("@/lib/subjectContext").SubjectContext;
   coPoMappings: CoPoMappingRow[];
+  /**
+   * Titles only, from subject_content.reference_books. Read by the AI layer's
+   * missing_topics check (a textbook's coverage is the best available proxy for
+   * "what a course like this normally includes"). No deterministic check uses
+   * it. Deliberately loaded here rather than added to the shared SubjectContext:
+   * the lesson-plan and lab-manual pipelines have no use for it, and §13 already
+   * records that reference_books is title-only and weak as a content source.
+   */
+  referenceBooks: string | null;
+}
+
+// ─── AI layer ────────────────────────────────────────────────────────────────
+
+export type AuditWarningKind =
+  | "orphan_proposal" // findingId matched no real finding
+  | "non_fixable_proposal" // proposal aimed at an advisory-only finding
+  | "bad_entity_type" // entityType outside the whitelist for that dimension
+  | "unknown_entity" // module number / CO code not in this subject
+  | "incomplete_patch" // required field for the entityType was missing
+  | "empty_rationale"
+  | "duplicate_proposal"
+  | "redundant_proposal" // the change is already true in the DB
+  | "bad_discovery" // AI-dimension finding failed validation
+  | "generation_failed";
+
+export interface AuditWarning {
+  kind: AuditWarningKind;
+  message: string;
+}
+
+/**
+ * Which entityType each dimension is allowed to propose against. This is the
+ * load-bearing half of the gate: it is what stops a co_coverage finding from
+ * arriving with a co_description patch and quietly rewriting a course outcome
+ * when the faculty thought they were accepting a module mapping.
+ *
+ * Only three dimensions are reachable today — the remaining entityTypes exist in
+ * the type because hours_balance / practical_alignment / co_po_mapping findings
+ * are deliberately advisory (fixable: false), so nothing can currently propose
+ * against them. Making one fixable means adding its dimension here, on purpose.
+ */
+export const DIMENSION_ENTITY_TYPES: Partial<
+  Record<Dimension, readonly ProposalEntityType[]>
+> = {
+  co_coverage: ["module_co_mapping"],
+  btl_profile: ["btl_levels"],
+  co_verb_quality: ["co_description"],
+};
+
+/** Severity is set by policy per dimension, never by the model. */
+export const AI_DIMENSION_SEVERITY: Record<
+  (typeof AI_DIMENSIONS)[number],
+  Severity
+> = {
+  co_verb_quality: "warning",
+  modern_relevance: "info",
+  missing_topics: "info",
+};
+
+/** What the suggest route returns, and what gets cached. */
+export interface SuggestionResult {
+  proposals: Proposal[];
+  /** Findings for the three AI-only dimensions — merged into the Layer 1 list. */
+  aiFindings: Finding[];
+  warnings: AuditWarning[];
 }
 
 // ─── Scoring policy ──────────────────────────────────────────────────────────

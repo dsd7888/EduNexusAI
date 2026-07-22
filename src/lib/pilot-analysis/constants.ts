@@ -20,6 +20,11 @@ export const TIME_SAVED_MINUTES_PER_ARTIFACT: Record<
   ppt_refine: { manual: 20, ai: 3 },
   lesson_plan: { manual: 240, ai: 15 }, // a full course-file lesson plan is an afternoon by hand
   lab_manual: { manual: 45, ai: 6 }, // per practical — writing one lab sheet by hand vs. generate+review
+  // Auditing a syllabus against AICTE/NBA by hand means cross-tabulating every
+  // CO against every module, checking BTL spread, and reconciling hours with
+  // weightage — a half-day for one subject, and the reason it usually only
+  // happens right before an accreditation visit.
+  syllabus_audit: { manual: 120, ai: 8 },
 };
 
 // Update these if/when the Supabase tier changes.

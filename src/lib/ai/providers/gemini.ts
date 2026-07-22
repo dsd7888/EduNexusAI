@@ -146,6 +146,11 @@ function createGeminiProvider(): AIProvider {
       // tokens eating maxOutputTokens would truncate it mid-scaffold.
       "lab_manual_gen",
       "lab_path_gen",
+      // Syllabus audit: the single suggestion call passes a narrow
+      // responseSchema. thinkingBudget:0 is MANDATORY (CLAUDE_CONTEXT §19) —
+      // a truncated response here silently loses proposals off the end of the
+      // array, which looks like "the AI found nothing" rather than an error.
+      "syllabus_audit",
       // Chat Visualize, call 1 + the diagram branch of call 2: both pass a
       // narrow responseSchema. Listed here for the structured-task temperature
       // (0.4 — a routing decision and terse markup, neither wants 0.7) and as

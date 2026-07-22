@@ -40,6 +40,7 @@ const TASK_TO_MODEL: Record<string, "flash" | "pro"> = {
   lesson_plan_gen: "flash",
   lab_manual_gen: "flash", // per-practical lab manual section
   lab_path_gen: "flash", // lab manual learning-path proposal
+  syllabus_audit: "flash", // ONE call per subject: fix proposals + AI-only findings
 };
 
 const DEFAULT_MODEL: "flash" | "pro" = "flash";
@@ -185,7 +186,12 @@ function resolveChatParams(task: string, params: ChatParams): ChatParams {
                                         ? 8192
                                         : task === "lab_path_gen"
                                           ? 4096
-                                          : 4096),
+                                          : // Syllabus audit: one bounded call —
+                                            // ≤24 fixes + ≤12 discoveries, every
+                                            // string maxLength-capped in the schema.
+                                            task === "syllabus_audit"
+                                            ? 4096
+                                            : 4096),
   };
 }
 

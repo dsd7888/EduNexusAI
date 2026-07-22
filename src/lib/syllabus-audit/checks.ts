@@ -73,6 +73,21 @@ function findingId(dimension: Dimension, entity: string, kind: string): string {
     .slice(0, 16);
 }
 
+/**
+ * The same id scheme, for findings the AI layer discovers. Exported (rather
+ * than duplicated in suggestions.ts) so a Layer 1 and a Layer 2 finding can
+ * never collide by using two different hashes, and so an AI finding keeps a
+ * stable id across re-audits — which is what lets a cached proposal still
+ * resolve to its finding after the page reloads.
+ */
+export function aiFindingId(
+  dimension: Dimension,
+  entity: string,
+  kind: string,
+): string {
+  return findingId(dimension, entity, kind);
+}
+
 function makeFinding(args: {
   dimension: Dimension;
   kind: string;

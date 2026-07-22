@@ -18,18 +18,29 @@ export async function loadAuditInput(subjectId: string): Promise<AuditInput> {
   const admin = createAdminClient();
 
   // SubjectContext already carries modules (+ btl_levels + coCodes), course
-  // outcomes and practicals. CO-PO is the only thing it does not know about,
-  // because no generator needs it — the audit is its first consumer.
-  const [ctx, coPoResult] = await Promise.all([
+  // outcomes and practicals. CO-PO and reference books are the two things it
+  // does not know about, because no generator needs them — the audit is their
+  // first consumer.
+  const [ctx, coPoResult, contentResult] = await Promise.all([
     loadSubjectContext(subjectId),
     admin
       .from("co_po_mapping")
       .select("co_code, po_code, strength")
       .eq("subject_id", subjectId),
+    admin
+      .from("subject_content")
+      .select("reference_books")
+      .eq("subject_id", subjectId)
+      .maybeSingle(),
   ]);
+
+  const referenceBooks =
+    (contentResult.data as { reference_books?: string | null } | null)
+      ?.reference_books ?? null;
 
   return {
     ctx,
     coPoMappings: (coPoResult.data ?? []) as CoPoMappingRow[],
+    referenceBooks: referenceBooks?.trim() ? referenceBooks.trim() : null,
   };
 }

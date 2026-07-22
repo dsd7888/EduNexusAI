@@ -116,7 +116,9 @@ function inputOf(
   ctx: SubjectContext,
   coPo: AuditInput["coPoMappings"] = [],
 ): AuditInput {
-  return { ctx, coPoMappings: coPo };
+  // referenceBooks is read only by the AI layer (missing_topics); no
+  // deterministic check touches it, so these fixtures always pass null.
+  return { ctx, coPoMappings: coPo, referenceBooks: null };
 }
 
 const kinds = (fs: Finding[]) => fs.map((f) => `${f.severity}:${f.entity}`).sort();
