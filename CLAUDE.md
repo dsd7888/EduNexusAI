@@ -47,6 +47,26 @@ There is **no test framework and no test suite**. `npm run build` (full type-che
 Next.js compile) and `npm run lint` are the only automated checks. Verify changes by
 building and by exercising the relevant role flow manually.
 
+### Verification protocol (checkpoint / feature completion — non-negotiable)
+
+Build + lint + a happy-path click-through is **not** sufficient verification and
+must not be reported as if it were. Browser verification of any interactive
+feature MUST include:
+
+- **at least one interrupted flow** — back-navigate mid-async, switch subject/
+  entity while a request is in flight, or double-click an action; and
+- **at least one concurrent flow** — two actions overlapping (e.g. two Accepts,
+  or an Accept while a re-fetch is running).
+
+Rationale, learned the hard way (Syllabus Health Audit, Jul 2026): a stale-audit
+race that rendered the Health tab permanently blank passed tsc, lint, build, and
+a full happy-path browser drive — because every such bug lives in the *unhappy*
+path (interrupted, concurrent, or slow), never the success path. Any handler that
+mutates React state after an `await` needs a staleness/concurrency guard, and the
+verification that would catch a missing one must be run before calling the work
+done. **If an unhappy-path case was not exercised, the completion report must say
+so explicitly** rather than implying full coverage.
+
 ## Stack
 
 Next.js 16 (App Router, React 19) · TypeScript (strict) · Tailwind v4 · shadcn/ui

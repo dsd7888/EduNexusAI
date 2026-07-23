@@ -166,6 +166,39 @@ The smarter architecture for post-pilot:
 
 None of this requires a different tech stack. All implementable with what you have. Priority order for post-pilot: parallel batches first (biggest speed win, 2 hours), then JSON schema enforcement (biggest reliability win, 1 day), then iterative refinement (biggest quality win, 3 days).
 
+---
+
+## Syllabus Health Audit — deferred after the CP1–CP5 ship audit (Jul 23, 2026)
+
+Shipped: deterministic 7-check audit, AI suggestions with a conservative gate,
+proposal diff view, cascade cache invalidation, compliance-report PDF, plus six
+P0–P2 fixes from the self-audit. See CLAUDE_CONTEXT §17. These three were
+consciously deferred with Dhruv's sign-off — none blocks the pilot.
+
+1. **`findingIds` targeted re-suggest — UI not wired.** The `/suggest` route
+   already accepts `findingIds?: string[]` and re-runs the AI for just those
+   findings, bypassing the cache both ways (so a re-roll never overwrites the
+   shared canonical set). The backend is complete and tested; the front end
+   never sends it. The intended UX is "dismiss a proposal → re-suggest just this
+   one." Nice-to-have, not a first-month miss for pilot faculty. When built, it's
+   one button on the dismissed finding + passing `{ findingIds: [id] }` — no
+   server change.
+
+2. **CO / Module coverage matrix overflows past ~20 modules in the PDF.** Cell
+   width is `min(34, (515 − 46 − 40) / moduleCount)`; below ~15pt usable the
+   "M{n}" header and the "X" marks start to crowd. Widest real subject in the DB
+   is 8 modules and AICTE curricula rarely exceed ~10, so this is theoretical.
+   If a 15+-module subject ever appears, the fix is rotating the column headers
+   90° or switching the matrix to a heatmap — deliberately NOT built now
+   (speculative). It degrades by crowding text, not by dropping data.
+
+3. **No rate limiting on `/api/syllabus/audit/suggest`.** Consistent with the
+   lesson-plan and lab-manual AI routes, and mitigated by the fingerprint cache
+   (repeat calls are free until the syllabus changes). Fine at pilot scale
+   (27 faculty). The rate-limiting conversation belongs at 200+ faculty or when
+   any student-facing AI route ships without caching — tracked in
+   CLAUDE_CONTEXT §18 as a cross-cutting gap, not a per-feature one.
+
 1. Practice Q based on quiz feedbacks -- just like placement prep
 2. Medical oriented-- adaptable to fields
 3. Placement—text box based answers too, with yt reference… &/ same such reference sources in AI chat.

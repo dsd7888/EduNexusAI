@@ -1,6 +1,6 @@
 # EduNexus AI — Complete Project Context
 
-*Last updated: July 9, 2026 | Solo developer: Dhruv | Stack: Next.js 16 + Supabase + Gemini*
+*Last updated: July 23, 2026 | Solo developer: Dhruv | Stack: Next.js 16 + Supabase + Gemini*
 *This document is the single source of truth for any Claude instance working on EduNexus AI.*
 
 --- 
@@ -1186,6 +1186,38 @@ API routes:
 ## 17. Active Feature Roadmap
 
 ### Recently Shipped (July 2026)
+- **Syllabus Health Audit (faculty + oversight) — complete, shipped to main
+  (Jul 23).** A second tab on `/faculty/syllabus` (NOT a new page — the editor
+  stays the primary view). Two layers: (1) a DETERMINISTIC audit — seven pure
+  checks (`co_coverage`, `btl_profile`, `hours_balance`, `topic_density`,
+  `practical_alignment`, `co_po_mapping`, `assessment_coverage`) computed from
+  already-loaded DB data with no AI, re-running instantly on tab open and after
+  every syllabus edit; (2) an AI layer — ONE `routeAI('syllabus_audit')` Flash
+  call that turns fixable findings into concrete PROPOSALS and adds the three
+  dimensions no rule can compute (`co_verb_quality`, `modern_relevance`,
+  `missing_topics`). Every fix goes into a proposal buffer shown as a red/green
+  diff; nothing writes to the syllabus until the faculty member presses Accept.
+  Accept (`/api/syllabus/audit/apply`) validates the patch server-side against
+  the live syllabus (identifiers only, re-resolved, subject-scoped — a valid
+  module id from another subject is refused), writes as `faculty_verified`, then
+  DELETES `lesson_plan_cache` + `lab_manual_cache` rows for that subject
+  (immediate cascade, not fingerprint-only) and returns a freshly recomputed
+  audit. A one-page compliance-report PDF (`/api/syllabus/audit/export`, private
+  `syllabus-audits` bucket, 10-min signed URL) carries the score ring, dimension
+  grid, findings table, CO×Module matrix and BTL distribution.
+  Files: `src/lib/syllabus-audit/{types,checks,load,fingerprint,suggestions,apply,pdfBuilder}.ts`,
+  routes under `src/app/api/syllabus/audit/{,suggest,apply,export}/`, UI under
+  `src/app/(faculty)/faculty/syllabus/_components/health/`. Migrations
+  20260722000000 (`syllabus_audit_cache` + bucket) and 20260722000001
+  (ai_call_logs feature comment). `syllabus_audit` added to the AI router,
+  `isStructuredTask` allowlist (thinkingBudget:0), and pilot-analysis time-saved
+  ({manual:120, ai:8}). Same pass wired `lesson_plan`/`lab_manual`/`syllabus_audit`
+  into `artifactCountByFeature` — all three previously read 0 artifacts.
+  Hard-won details in §19: the responseSchema `maxItems` serving ceiling, and the
+  cross-surface unhappy-path verification rule (§17 Key Learnings). Verified by
+  four harnesses (`test-syllabus-audit-{checks,suggest,apply,export}.ts`, 117
+  checks) plus real-browser drives of the suggest/accept/export flows and the
+  interrupted/concurrent cases from the self-audit.
 - **Lab Manual Generator (faculty) — complete, shipped to main (Jul 16).** A
   term-work lab manual for an assigned subject, four-stage builder
   (`/faculty/labmanual`): (1) LEARNING PATH — AI proposes unit grouping + bridge
@@ -1313,6 +1345,20 @@ API routes:
 19. Dean/HOD provisioning UI, JD Gap Analysis, Credential Passport, Mock Interview, Multi-tenant
 
 ### Key Learnings
+
+- **Happy-path verification is not verification — exercise the interrupted and
+  concurrent paths.** The Syllabus Health Audit passed tsc, lint, build, and a full
+  happy-path browser drive, yet shipped a P0: switching subjects while an audit was
+  in flight let the slower, older response land last and render the Health tab
+  permanently blank, with no recovery control (the Re-check button lived inside the
+  tab it blanked). Every bug of this class lives in the UNHAPPY path — interrupted
+  (back-navigate mid-async, switch entity mid-flight, double-click), concurrent (two
+  Accepts overlapping), or slow — never the success path. Two systemic rules from
+  this: (a) any handler that mutates React state after an `await` needs a
+  staleness/concurrency guard (a monotonic request-id seq, or serialising the
+  action); (b) browser verification of an interactive feature MUST include at least
+  one interrupted and one concurrent flow, and a completion report that only drove
+  the happy path must say so. Codified in CLAUDE.md's Verification protocol.
 
 - **Generic-over-block-type, not per-type patches:** shortfall/validity/duplicate
   detection built for one block type (pool) had to be separately rediscovered missing
@@ -1455,6 +1501,9 @@ API routes:
 | Curriculum quality validator tool | Deferred | Deferred until Q Paper fully end-to-end verified |
 | `dept_admin` missing from `/api/generate/ppt/refine` allowed roles | Open question | Present on all three `ppt-refine/*` routes + `/api/refine`; absent only here. No commit explains the omission — confirm with Dhruv whether intentional |
 | PPT-refine visual placement is a heuristic region reservation, not a measured no-overlap check | Known limitation | Acceptable for now — text always wins the fit conflict over a visual (§10) |
+| Rate limiting on AI routes | Known gap | Cache mitigates at pilot scale; revisit at multi-institution. The syllabus-audit, lesson-plan and lab-manual `/suggest`/`generate` routes have no per-user rate limit — the fingerprint caches make repeat calls free, which holds at 27 pilot faculty. This becomes a real conversation at 200+ faculty, or the moment any student-facing AI route ships without caching. Cross-cutting, not per-feature |
+| Syllabus-audit `findingIds` targeted re-suggest — UI not wired | Deferred (Jul 23) | `/api/syllabus/audit/suggest` accepts `findingIds?` and re-rolls just those (cache-bypassed both ways); the front end never sends it. UX = "dismiss → re-suggest just this one." Nice-to-have; one button + one field, no server change. FUTURE_PLANS.md |
+| Syllabus-audit CO×Module matrix overflows past ~20 modules in the PDF | Deferred (Jul 23) | Cell width `min(34,(515−46−40)/n)`; below ~15pt usable the header/marks crowd. Widest real subject is 8 modules, AICTE rarely >10 — theoretical. If a 15+-module subject appears, rotate headers 90° or switch to a heatmap. Degrades by crowding, not by dropping data. FUTURE_PLANS.md |
 
 ---
 
@@ -1512,6 +1561,7 @@ API routes:
 | `MATH_CHEM_NOTATION_GUIDE` is the single exported notation constant | One source consumed by generation prompts, CSV docs, and in-app help — never restate the rules inline elsewhere |
 | `paperMath.ts` pre-renders all math spans before PDF/Word build | PDF/Word builders are synchronous — all rasterized image bytes must exist up front; dedupe rasterizes each unique span once per paper |
 | responseSchema narrowed to only the fields a call needs (CONTENT_BATCH_SCHEMA text-only, svgCode maxLength-bounded) | Irrelevant optional fields in a schema remove the model's natural stopping pressure under constrained decoding → runaway token cost (~18× slower/~12× costlier observed). Distinct from the thinkingBudget failure mode |
+| responseSchema array `maxItems` has a hard SERVING ceiling, separate from `maxLength` | Gemini compiles a responseSchema into a constraint state machine, and array `maxItems` multiplies the states of everything nested inside it. Past a threshold the API rejects the request outright with `400 "The specified schema produces a constraint that has too many states for serving"` — BEFORE generating a token, so it fails 100% of the time, not intermittently. Probed empirically for the syllabus-audit call (Jul 2026): `fixes: maxItems 12 / discoveries: maxItems 8` serves; 14/8 and 12/10 are both rejected. `maxItems` drives this, NOT `maxLength` (24/12 is rejected even with every length bound removed), so the "narrow schema, maxLength everywhere" rule (above) is fully compatible — this is a DIFFERENT axis. Keep per-array `maxItems` small and cap the prompt-side input to match; never raise `maxItems` to "allow more" without re-probing, or the whole call 400s |
 
 ---
 
