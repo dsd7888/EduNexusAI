@@ -127,6 +127,88 @@ async function main() {
       );
     }
 
+    // Column listing — the \d equivalent available over PostgREST. The REST
+    // root serves an OpenAPI document whose `definitions` carry every exposed
+    // table's columns, types and NOT NULL-ness.
+    if (process.env.SKIP_SCHEMA !== "1") {
+      const res = await fetch(
+        `${process.env.NEXT_PUBLIC_SUPABASE_URL}/rest/v1/`,
+        {
+          headers: {
+            apikey: process.env.SUPABASE_SERVICE_ROLE_KEY ?? "",
+            Authorization: `Bearer ${process.env.SUPABASE_SERVICE_ROLE_KEY ?? ""}`,
+          },
+        }
+      );
+      const doc = (await res.json()) as {
+        definitions?: Record<
+          string,
+          { properties?: Record<string, { format?: string; description?: string }> }
+        >;
+      };
+      for (const table of [
+        "quiz_sessions",
+        "student_question_attempts",
+        "student_topic_mastery",
+      ]) {
+        const props = doc.definitions?.[table]?.properties ?? {};
+        console.log(`\n  ${table}:`);
+        for (const [col, meta] of Object.entries(props)) {
+          const note = (meta.description ?? "").replace(/\s+/g, " ").trim();
+          console.log(
+            `    ${col.padEnd(20)} ${(meta.format ?? "?").padEnd(28)} ${note.slice(0, 60)}`
+          );
+        }
+      }
+      const fqb = doc.definitions?.faculty_question_bank?.properties ?? {};
+      console.log("\n  faculty_question_bank (new columns only):");
+      for (const col of ["numeric_answer", "numeric_tolerance"]) {
+        console.log(
+          `    ${col.padEnd(20)} ${(fqb[col]?.format ?? "ABSENT").padEnd(28)}`
+        );
+      }
+    }
+
+    // CHECK-constraint probe. PostgREST cannot read pg_constraint, so prove the
+    // expansion behaviourally: 'msq' must now be accepted and a bogus type must
+    // still be rejected with 23514. Both rows are removed immediately.
+    {
+      const { data: probeSubject } = await admin
+        .from("subjects")
+        .select("id")
+        .limit(1)
+        .maybeSingle();
+      const { data: probeFaculty } = await admin
+        .from("faculty_assignments")
+        .select("faculty_id")
+        .limit(1)
+        .maybeSingle();
+      const sid = (probeSubject as { id: string } | null)?.id;
+      const fid = (probeFaculty as { faculty_id: string } | null)?.faculty_id;
+      if (sid && fid) {
+        const probeRow = (question_type: string) => ({
+          subject_id: sid,
+          faculty_id: fid,
+          question_text: "[CP-Q1 VERIFY SEED constraint probe]",
+          question_type,
+          marks: 1,
+          source: "ai_generated",
+          is_verified: false,
+        });
+        for (const t of ["msq", "nat", "definitely_not_a_type"]) {
+          const { data, error } = await admin
+            .from("faculty_question_bank")
+            .insert(probeRow(t))
+            .select("id");
+          const id = ((data ?? []) as Array<{ id: string }>)[0]?.id;
+          if (id) await admin.from("faculty_question_bank").delete().eq("id", id);
+          console.log(
+            `\n  question_type='${t}' → ${error ? `REJECTED (${error.code ?? "?"}: ${error.message.slice(0, 70)})` : "accepted"}`
+          );
+        }
+      }
+    }
+
     // ── fixtures ──────────────────────────────────────────────────────────
     const { data: subjRow } = await admin
       .from("subjects")
@@ -296,18 +378,99 @@ async function main() {
       },
       admin
     );
+    // What the bank holds for these slots, so the served order can be checked
+    // against it rather than taken on trust.
+    const { data: poolRows } = await admin
+      .from("faculty_question_bank")
+      .select("id, is_verified, usage_count, question_text")
+      .eq("subject_id", bankSubject.id)
+      .eq("module_id", modules[0].id)
+      .eq("question_type", "mcq")
+      .eq("difficulty", "easy");
+    const pool = (poolRows ?? []) as Array<{
+      id: string;
+      is_verified: boolean;
+      usage_count: number;
+      question_text: string;
+    }>;
+    console.log(
+      `\n  candidate pool for (M${modules[0].module_number}, mcq, easy): ${pool.length} rows — ` +
+        `${pool.filter((r) => r.is_verified).length} verified / ${pool.filter((r) => !r.is_verified).length} unverified`
+    );
+
+    const verifiedById = new Map(pool.map((r) => [r.id, r.is_verified]));
     const fillB = await fillFromBank(planB.slots, student.id, admin);
     console.log(
       `\n  WITH bank : ${planB.slots.length} slots → filled=${fillB.filled.length} unfilled=${fillB.unfilled.length} excludedByRecency=${fillB.excludedByRecency}`
     );
     for (const q of fillB.filled) {
+      const v = verifiedById.get(q.bankQuestionId ?? "");
       console.log(
-        `    ${q.slotId} ← bank ${q.bankQuestionId?.slice(0, 8)}  "${q.question.slice(0, 60)}…"  key=${q.correctAnswer}`
+        `    ${q.slotId} ← bank ${q.bankQuestionId?.slice(0, 8)} [${v ? "VERIFIED  " : "unverified"}]  "${q.question.slice(0, 55)}…"  key=${q.correctAnswer}`
       );
     }
     for (const s of fillB.unfilled) {
       console.log(`    ${s.slotId} → AI (no bank match: ${s.questionType}/${s.difficulty})`);
     }
+    const servedOrder = fillB.filled.map((q) =>
+      verifiedById.get(q.bankQuestionId ?? "") ? "V" : "u"
+    );
+    const orderingHolds = servedOrder.join("").indexOf("V") === -1 ||
+      !servedOrder.join("").includes("uV");
+    console.log(
+      `  served order (V=verified): ${servedOrder.join(" ")} → is_verified-first ${orderingHolds ? "HOLDS" : "VIOLATED"}`
+    );
+
+    // ── 30-day exclusion, demonstrated live ───────────────────────────────
+    // Record an attempt for every question just served, then re-run the SAME
+    // plan. Bank-first must not serve any of them again.
+    hr("(b2) 30-day per-student exclusion — re-run after recording attempts");
+    const attemptRows = fillB.filled.map((q) => ({
+      student_id: student.id,
+      question_id: q.bankQuestionId ?? null,
+      subject_id: q.subjectId,
+      module_id: q.moduleId,
+      question_text: q.question,
+      question_type: q.type,
+      student_answer: q.correctAnswer,
+      is_correct: true,
+      time_taken_seconds: 30,
+      source: q.source,
+      session_id: null,
+    }));
+    if (attemptRows.length > 0) {
+      const { data: attempts, error: attErr } = await admin
+        .from("student_question_attempts")
+        .insert(attemptRows)
+        .select("id");
+      if (attErr) console.log(`  attempt insert failed: ${attErr.message}`);
+      for (const r of (attempts ?? []) as Array<{ id: string }>) {
+        createdAttemptIds.push(r.id);
+      }
+      console.log(
+        `  recorded ${createdAttemptIds.length} attempt(s) for the questions served above`
+      );
+    }
+
+    const fillB2 = await fillFromBank(planB.slots, student.id, admin);
+    const servedFirst = new Set(
+      fillB.filled.map((q) => q.bankQuestionId).filter(Boolean)
+    );
+    const repeats = fillB2.filled.filter((q) =>
+      servedFirst.has(q.bankQuestionId ?? "")
+    );
+    console.log(
+      `\n  re-run    : filled=${fillB2.filled.length} unfilled=${fillB2.unfilled.length} excludedByRecency=${fillB2.excludedByRecency}`
+    );
+    for (const q of fillB2.filled) {
+      const v = verifiedById.get(q.bankQuestionId ?? "");
+      console.log(
+        `    ${q.slotId} ← bank ${q.bankQuestionId?.slice(0, 8)} [${v ? "VERIFIED  " : "unverified"}]  "${q.question.slice(0, 55)}…"`
+      );
+    }
+    console.log(
+      `  repeats of the just-attempted questions: ${repeats.length} → 30-day exclusion ${repeats.length === 0 ? "HOLDS" : "VIOLATED"}`
+    );
 
     const planEmpty = await planAssessment(
       {

@@ -1371,6 +1371,21 @@ API routes:
   every code path. A hard format-validate-or-null gate (`validateCoOrNull`) closed it in
   one pass. Prefer a gate over ever-smarter guessing.
 
+- **Deterministic apportionment across two dimensions must decorrelate — matched
+  periods produce perfect coupling.** The Assessment Engine (CP-Q1) cycled question
+  type by slot index (`i % types.length`) and laid the mixed-difficulty sequence down
+  positionally. Both were individually exact — 10 easy / 10 medium / 10 hard, 10 mcq /
+  10 msq / 10 nat over 30 slots — and the *combination* was worthless: every MCQ came
+  out easy and every NAT hard, because the two cycles shared a period of 3. Neither
+  distribution check catches it; only reading the slot list does. **The general fix is
+  to DEAL the second dimension round-robin across the first's cycle** (order slot
+  indices by `i % types.length`, then hand out the difficulty sequence in that order):
+  both marginals stay exact and the correlation disappears. This failure mode is
+  latent anywhere two deterministic allocations are applied over the same index —
+  qpaper's slot construction included, if a section's question-type count and
+  difficulty-bucket count ever share a factor. When adding a second per-slot
+  dimension, verify the JOINT distribution, never just the two marginals.
+
 - **Schema shape can cause runaway generation independent of `thinkingBudget`.** A
   responseSchema that includes optional fields irrelevant to a given content type (e.g.
   free-form `svgCode` on a text slide) gives the model no natural stopping pressure under
@@ -1561,6 +1576,7 @@ API routes:
 | `MATH_CHEM_NOTATION_GUIDE` is the single exported notation constant | One source consumed by generation prompts, CSV docs, and in-app help — never restate the rules inline elsewhere |
 | `paperMath.ts` pre-renders all math spans before PDF/Word build | PDF/Word builders are synchronous — all rasterized image bytes must exist up front; dedupe rasterizes each unique span once per paper |
 | responseSchema narrowed to only the fields a call needs (CONTENT_BATCH_SCHEMA text-only, svgCode maxLength-bounded) | Irrelevant optional fields in a schema remove the model's natural stopping pressure under constrained decoding → runaway token cost (~18× slower/~12× costlier observed). Distinct from the thinkingBudget failure mode |
+| Any responseSchema'd call with a narrative field carries an explicit word/token ceiling IN THE PROMPT, not only in the schema | Schema `maxLength` does NOT reliably constrain free-text under constrained decoding — it is a validation bound, not a generation budget, and Gemini blows through it. Third confirmed instance (Jul 2026): `chat_visualize` and `chat_viz_plot` needed `VIZ_SIZE_CONTRACT` because freeform HTML carries no schema at all; `quiz_gen_v2` NAT explanations blew a 2048-token batch budget writing 2037 tokens of duplicate arithmetic **while the schema said `maxLength: 700`**. The prompt ceiling ("explanation is at most 60 words — state the steps and stop") fixed it in one pass. Note the blast radius: one over-long field truncates the WHOLE batch, losing every question in it, not just the long one. This is a THIRD axis, independent of the narrow-schema rule (below) and of `thinkingBudget` — a narrow schema removes irrelevant fields, this bounds the relevant ones. Any new task emitting explanations, rationales, summaries, or model answers under a responseSchema needs one |
 | responseSchema array `maxItems` has a hard SERVING ceiling, separate from `maxLength` | Gemini compiles a responseSchema into a constraint state machine, and array `maxItems` multiplies the states of everything nested inside it. Past a threshold the API rejects the request outright with `400 "The specified schema produces a constraint that has too many states for serving"` — BEFORE generating a token, so it fails 100% of the time, not intermittently. Probed empirically for the syllabus-audit call (Jul 2026): `fixes: maxItems 12 / discoveries: maxItems 8` serves; 14/8 and 12/10 are both rejected. `maxItems` drives this, NOT `maxLength` (24/12 is rejected even with every length bound removed), so the "narrow schema, maxLength everywhere" rule (above) is fully compatible — this is a DIFFERENT axis. Keep per-array `maxItems` small and cap the prompt-side input to match; never raise `maxItems` to "allow more" without re-probing, or the whole call 400s |
 
 ---

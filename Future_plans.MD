@@ -199,6 +199,49 @@ consciously deferred with Dhruv's sign-off — none blocks the pilot.
    any student-facing AI route ships without caching — tracked in
    CLAUDE_CONTEXT §18 as a cross-cutting gap, not a per-feature one.
 
+---
+
+## Faculty Q Bank surfaces need MSQ/NAT support (opened Jul 25, 2026 — CP-Q1)
+
+**Blocking for: the moment the Assessment Engine's write-through starts producing
+GATE questions in production (CP-Q3), not before.**
+
+CP-Q1's migration (`20260725000000_assessment_engine.sql`) widened
+`faculty_question_bank.question_type` from 5 values to 7 — `'msq'` (multiple-select,
+pipe-separated correct letters) and `'nat'` (numerical answer type, answer in the
+new `numeric_answer` + `numeric_tolerance` columns rather than `model_answer`). The
+engine writes those rows with `source='ai_generated', is_verified=false`, so they
+land in the faculty Q Bank UI for review.
+
+Every faculty-side surface in §11 was built against the 5-type world and will meet a
+type it does not know:
+
+1. **CSV import parser** (`src/lib/qbank/parser.ts`) — `question_type` validation
+   rejects `msq`/`nat`; MSQ needs a multi-correct `correct_option` (today it accepts
+   one of A–D), NAT needs answer + tolerance columns and no options.
+2. **Add Questions → Single / Bulk Images** (`/faculty/qbank`) — type selector has 5
+   options; the manual form has no multi-correct checkbox set and no numeric
+   answer/tolerance fields.
+3. **Auto-tagger** (`src/lib/qbank/tagger.ts`) — BTL/CO inference prompts describe
+   the 5 types.
+4. **ReviewFlowDialog** — renders options as single-select radio; an MSQ shows one
+   correct answer instead of the set, a NAT shows nothing gradeable.
+5. **Q paper renderers** — `bankFill.ts`'s `poolItemBankType`/`descriptiveBankType`
+   have no mapping for the new types, and `builder.ts` / `docxBuilder.ts` /
+   `ReviewAndValidateStage` render options assuming exactly one correct option.
+
+**Minimum safe scope** (what actually prevents "unknown type" breakage, as opposed
+to full authoring support): make every faculty surface *display and filter* the two
+types correctly, and make the Q paper bank-fill *skip* them rather than mis-render
+them. Full faculty authoring of MSQ/NAT is a separate, larger piece.
+
+**Interim mitigation, already true:** these rows are `is_verified=false`, and Q paper
+bank-fill matches on type + marks, so an MSQ/NAT row is only reachable by a slot
+asking for that type — which no current template produces. The gap is latent, not
+live. It goes live with CP-Q3.
+
+---
+
 1. Practice Q based on quiz feedbacks -- just like placement prep
 2. Medical oriented-- adaptable to fields
 3. Placement—text box based answers too, with yt reference… &/ same such reference sources in AI chat.
