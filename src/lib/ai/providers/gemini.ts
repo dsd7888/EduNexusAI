@@ -122,6 +122,12 @@ function createGeminiProvider(): AIProvider {
       "ppt_extract",
       "ppt_refine",
       "quiz_gen",
+      // Assessment Engine batches (CP-Q1). Every call passes a narrow per-type
+      // responseSchema, so thinkingBudget:0 is MANDATORY (CLAUDE_CONTEXT §19) —
+      // thinking tokens eating maxOutputTokens would truncate the questions
+      // array mid-object, which reads as "the AI produced 3 of 5" rather than
+      // as an error. The call site sets it explicitly too; this is the default.
+      "quiz_gen_v2",
       "placement_prep",
       "qpaper_gen",
       "refine",

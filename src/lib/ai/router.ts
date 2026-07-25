@@ -20,6 +20,11 @@ const TASK_TO_MODEL: Record<string, "flash" | "pro"> = {
   chat_viz_diagram: "flash", // Mermaid source only; Pro buys nothing (cf. routeDiagramModel)
   chat_viz_plot: "pro", // computed-plot HTML: formula → sampled points → SVG
   quiz_gen: "flash",
+  // Assessment Engine (CP-Q1): ONE batch of ≤5 student quiz questions per call,
+  // narrow per-type responseSchema, thinkingBudget 0. Separate task from
+  // quiz_gen so the old single-call route keeps its own budget and its cost is
+  // still distinguishable in ai_call_logs after CP-Q3 swaps the route.
+  quiz_gen_v2: "flash",
   placement_prep: "flash",
   ppt_gen: "flash",
   ppt_diagram: "pro", // diagram-only PPT batches — Pro produces better SVG/diagram code
@@ -135,6 +140,11 @@ function resolveChatParams(task: string, params: ChatParams): ChatParams {
             ? 32768
             : task === "quiz_gen"
               ? 8192
+              : // quiz_gen_v2 always passes an explicit estimateMaxOutputTokens
+                // value (tokenBudget "assessment" profile); this default only
+                // applies if a caller ever omits it.
+                task === "quiz_gen_v2"
+                ? 4096
               : task === "placement_prep"
                 ? 6000
                 : task === "qpaper_gen"
