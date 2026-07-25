@@ -14,7 +14,42 @@ import { calculateImageCostInr } from "@/lib/ai/pricing";
 import type { AILogContext } from "@/lib/ai/providers/types";
 import type { NextRequest } from "next/server";
 
+// A build-stage failure (bad title slide, upload error, DB write error, thrown
+// exception, ANY exit that doesn't reach the final "completed" write) must not
+// leave the checkpoint row stuck at a non-terminal status forever — that's what
+// made a failed row perpetually "resumable" with no visible error (Resume just
+// replays the same broken payload and fails identically every time). Best-effort
+// and defensive: never let a logging failure mask the real error being returned,
+// never clobber a row a concurrent request already finished successfully, and
+// never touch a row that isn't this user's.
+async function markGeneratedContentFailed(
+  adminClient: ReturnType<typeof createAdminClient> | null,
+  contentId: string | null,
+  userId: string | null,
+  reason: string
+) {
+  if (!adminClient || !contentId) return;
+  try {
+    let query = adminClient
+      .from("generated_content")
+      .update({ status: "failed" })
+      .eq("id", contentId)
+      .eq("type", "ppt")
+      .neq("status", "completed");
+    if (userId) query = query.eq("generated_by", userId);
+    const { error } = await query;
+    if (error) {
+      console.error(`[ppt/build] markFailed update error (${reason}):`, error);
+    }
+  } catch (err) {
+    console.error(`[ppt/build] Failed to mark row failed (${reason}):`, err);
+  }
+}
+
 export async function POST(request: NextRequest) {
+  let contentId: string | null = null;
+  let userId: string | null = null;
+  let adminClientRef: ReturnType<typeof createAdminClient> | null = null;
   try {
     console.log("[ppt/build] POST request received");
 
@@ -27,13 +62,15 @@ export async function POST(request: NextRequest) {
     const authResult = await requireRole(["faculty", "superadmin", "dean", "hod"]);
     if (authResult instanceof Response) return authResult;
     const { user, profile, adminClient } = authResult;
+    adminClientRef = adminClient;
+    userId = user.id;
 
     const body = await request.json().catch(() => ({} as Record<string, unknown>));
     const subjectId = String(body?.subjectId ?? "").trim();
     // contentId of the checkpoint row created by the outline route. When
     // present, build finalizes (UPDATEs) that row instead of inserting a new
     // one (Task 3). Absent only for legacy/edge callers.
-    const contentId = String(body?.contentId ?? "").trim() || null;
+    contentId = String(body?.contentId ?? "").trim() || null;
     const presentationTitle = String(body?.presentationTitle ?? "").trim();
     const subject = String(body?.subject ?? "").trim();
     const topic = String(body?.topic ?? "").trim();
@@ -109,6 +146,7 @@ export async function POST(request: NextRequest) {
         console.error(
           `[ppt/build][abort] Refusing to ship a deck with a failed TITLE slide. Failed slides: ${failedDesc}`
         );
+        await markGeneratedContentFailed(adminClientRef, contentId, userId, "title slide failed");
         return apiError(
           "Presentation generation failed on the title slide and was not shipped. Please regenerate.",
           502
@@ -286,6 +324,7 @@ export async function POST(request: NextRequest) {
 
     if (uploadError) {
       console.error("[ppt/build] Upload error:", uploadError);
+      await markGeneratedContentFailed(adminClientRef, contentId, userId, "storage upload failed");
       return apiError("Failed to store presentation", 500);
     }
 
@@ -294,6 +333,8 @@ export async function POST(request: NextRequest) {
       .createSignedUrl(filePath, 86400);
 
     if (signedError || !signedData) {
+      console.error("[ppt/build] Signed URL error:", signedError);
+      await markGeneratedContentFailed(adminClientRef, contentId, userId, "signed URL failed");
       return apiError("Failed to get download URL", 500);
     }
 
@@ -357,6 +398,7 @@ export async function POST(request: NextRequest) {
 
         if (updateError) {
           console.error("[ppt/build] Finalize update error:", updateError);
+          await markGeneratedContentFailed(adminClientRef, contentId, userId, "finalize update failed");
           return apiError("Failed to record generated content", 500);
         }
         finalContentId = contentId;
@@ -412,6 +454,7 @@ export async function POST(request: NextRequest) {
     });
   } catch (err) {
     console.error("[ppt/build] Error:", err);
+    await markGeneratedContentFailed(adminClientRef, contentId, userId, "unhandled exception");
     const message =
       err instanceof Error ? err.message : "Failed to build presentation";
     return apiError(message, 500);

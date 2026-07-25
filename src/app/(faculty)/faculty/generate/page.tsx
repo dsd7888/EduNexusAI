@@ -711,6 +711,7 @@ export default function FacultyGeneratePage() {
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
               subjectId: cfg.subjectId,
+              contentId,
               moduleId: cfg.moduleId,
               customTopic: cfg.moduleId ? undefined : cfg.customTopic,
               slides: batch.map((s) => ({
