@@ -628,6 +628,7 @@ function PptRefinementTab() {
               body_text: current.body_text,
             },
             instruction,
+            extraction_id: extraction?.extraction_id,
             subject_name:
               subjects.find((s) => s.id === selectedSubjectId)?.name ?? deck.detected_topic,
             topic: deck.detected_topic,
@@ -698,7 +699,7 @@ function PptRefinementTab() {
         setIsSlideRefining(false);
       }
     },
-    [singleSelectedIndex, deck, isSlideRefining, currentSlideContent, subjects, selectedSubjectId]
+    [singleSelectedIndex, deck, extraction, isSlideRefining, currentSlideContent, subjects, selectedSubjectId]
   );
 
   // ── Refine call ──
