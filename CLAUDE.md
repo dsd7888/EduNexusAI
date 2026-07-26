@@ -86,6 +86,36 @@ rather than a manual click-through. Three rules, each learned by breaking it:
 - **Verify the cleanup, don't assume it.** After a run, query the touched tables
   for residue and say so in the report.
 
+#### RLS verification: the four-assertion template
+
+Any harness claiming "role X cannot read table Y" MUST have all four of these.
+Reference implementation: `_cp_q3_verify/key_exposure.ts` (CP-Q3 Part 1,
+`quiz_session_keys`). Three of the four exist because the obvious one-assertion
+version passes for the wrong reasons.
+
+1. **A real client for the role under test** — anon key plus a genuine user JWT,
+   the same object a browser holds. Mint it with
+   `admin.auth.admin.generateLink({type:'magiclink'})` → `client.auth.verifyOtp()`
+   so no password needs to live in `.env.local`. A service-role client with a
+   `.eq()` filter proves nothing: it tests your WHERE clause, not the policy.
+2. **A positive control** — assert the service role CAN read the row. Without it
+   "returns []" passes identically against a table that is simply empty, and an
+   empty table is the most likely state of a freshly-migrated one.
+3. **Empty AND no error.** PostgREST returns `[]` with **no error** when RLS
+   matches no policy (§14). An *error* means something else broke — bad JWT,
+   missing table, typo'd name — and must never be scored as "blocked". Assert
+   both halves separately so a green run can't hide a broken query.
+4. **A canary string, and grep the serialised payload for it.** Checking that a
+   column or property is absent is weaker than it looks: the value can survive
+   inside a nested blob, a joined row, or a field you forgot to enumerate. Put a
+   unique sentinel in the secret at seed time and assert it appears nowhere in
+   `JSON.stringify(response)`.
+
+Plus the counterpart assertion whenever the fix was "split the table" rather
+than "remove the policy": prove the role STILL reads what it legitimately
+should. A test suite that only proves things are blocked passes just as well
+against an outage.
+
 ## Stack
 
 Next.js 16 (App Router, React 19) · TypeScript (strict) · Tailwind v4 · shadcn/ui

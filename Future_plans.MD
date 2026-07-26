@@ -266,6 +266,64 @@ live. It goes live with CP-Q3.
 
 ---
 
+## CP-Q3 deferrals (logged Jul 26, 2026 — student assessment UX)
+
+### `/student/quiz/legacy` removal — CP-Q5 cleanup task
+
+The 1,766-line quiz setup/taking/results page moved to `/student/quiz/legacy` in
+CP-Q3 Part 2 as a **pure `git mv`, no code change**, so the pilot has a one-week
+fallback if the new assessment UX hits a problem. It still talks to the old
+`/api/quiz/generate` + `/api/quiz/submit` routes, which also remain live and
+untouched.
+
+**Removal is a CP-Q5 task, not a CP-Q4 one**, and it is three deletions that must
+happen together or not at all:
+
+1. `src/app/(student)/student/quiz/legacy/page.tsx`
+2. `/api/quiz/generate`, `/api/quiz/submit`, `/api/quiz/hint`, `/api/quiz/export`
+   — but ONLY after confirming nothing else calls them (the chat struggle nudge
+   and `/student/subjects`' Quiz button link to `/student/quiz?subjectId=`, which
+   the new landing already absorbs; grep before deleting).
+3. The `quizzes` / `quiz_attempts` tables — **check first.** `/student/history`
+   reads `quiz_attempts`, so a student's pre-CP-Q3 quiz history lives there and
+   deleting the tables deletes their record. The likely right answer is to keep
+   the tables read-only and drop only the write path.
+
+Precondition for starting: one full pilot week on the new UX with no rollback,
+and `usage_analytics` showing zero `/student/quiz/legacy` page loads.
+
+### Visualize integration on the results page — CP-Q4/5
+
+Deliberately NOT wired in CP-Q3. The `InteractiveHtmlViewer` sandbox and the
+`chat/visualize` CLASSIFY→GENERATE pipeline (§9A) would let a student turn a
+wrong answer's explanation into an interactive diagram directly from the results
+page. Two reasons it waits: it costs a Pro call per click on a surface a student
+lands on after *every* session (chat's Visualize is opt-in mid-conversation, a
+much lower-frequency trigger), and the results page's own value has to be proven
+before adding the most expensive affordance in the product to it. Revisit once
+there is real usage data on the results page.
+
+### Lint debt — tracked, not scheduled
+
+`npm run lint` baseline as of Jul 26, 2026: **312 problems (158 errors, 154
+warnings)**, overwhelmingly `@typescript-eslint/no-explicit-any` in the older
+qpaper/ppt lib files. Nothing here blocks anything today and it does not need to
+move now. It is recorded because a number that only ever grows quietly becomes
+expensive at the exact moment you least want to touch it — the first time a lint
+gate is added to CI, or the first time a real error hides in the noise. Re-read
+this number each checkpoint; if it grows, the checkpoint added debt.
+
+### Mastery hub enhancements — CP-Q4/5
+
+CP-Q3 ships the mastery hub as subject grid → module breakdown with accuracy,
+attempts and the promotion-threshold indicator. Not shipped, in rough priority
+order: per-module history over time (needs an attempts-over-time query, not just
+the current mastery row), faculty visibility into cohort mastery (the RLS policies
+already permit it — `stm_select_faculty_assigned` — so this is UI only), and
+"practise this module" deep links that pre-scope a mastery session to one module.
+
+---
+
 1. Practice Q based on quiz feedbacks -- just like placement prep
 2. Medical oriented-- adaptable to fields
 3. Placement—text box based answers too, with yt reference… &/ same such reference sources in AI chat.

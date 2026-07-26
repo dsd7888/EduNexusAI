@@ -16,6 +16,11 @@ import { StruggleNudge } from "./_components/StruggleNudge";
 import { extractTrailingChip } from "./_components/helpers";
 import { sendChatMessage } from "./_components/streamClient";
 import type { RequestedMode, SubjectRow, UiMessage } from "./_components/types";
+import {
+  buildPrefillMessage,
+  sweepQuizPrefills,
+  takeQuizPrefill,
+} from "@/lib/assessment/chatHandoff";
 
 const QUOTA_LIMITS = { chat: 50, research: 10 } as const;
 
@@ -430,6 +435,49 @@ export default function StudentSubjectChatPage() {
     setInputValue("");
     runExchange(text, mode);
   };
+
+  // ── "Ask AI why" handoff from a quiz reveal (CP-Q3 Part 4) ──────────────
+  // The payload is in sessionStorage under a short token; only the token
+  // travels in the URL (see lib/assessment/chatHandoff.ts for why — a raw
+  // prefill would truncate on long stems and leak wrong answers into history
+  // and access logs).
+  //
+  // window.location.search rather than useSearchParams(): this page is a
+  // client route with no Suspense boundary of its own, and useSearchParams
+  // would force one. A one-shot read inside an effect is the right shape
+  // anyway — nothing here needs to re-render on a search-param change.
+  //
+  // Fires once. takeQuizPrefill() is read-and-DELETE and prefillFiredRef
+  // guards the double-invoked development effect, so a refresh cannot
+  // re-submit the same question and burn another chat quota unit.
+  const prefillFiredRef = useRef(false);
+  useEffect(() => {
+    if (prefillFiredRef.current) return;
+    // Wait for the session to exist so the turn is attributed to it rather
+    // than racing session creation.
+    if (!sessionId || !hasSyllabus) return;
+
+    sweepQuizPrefills();
+    const token = new URLSearchParams(window.location.search).get("prefill");
+    if (!token) return;
+
+    const payload = takeQuizPrefill(token);
+    // Strip the token from the URL either way — a spent or stale token in the
+    // address bar invites a confusing refresh.
+    const url = new URL(window.location.href);
+    url.searchParams.delete("prefill");
+    window.history.replaceState({}, "", url.toString());
+
+    if (!payload) return;
+    prefillFiredRef.current = true;
+
+    const text = buildPrefillMessage(payload);
+    // Populate the composer before sending, so the student sees what was asked
+    // on their behalf rather than an answer to an invisible question.
+    setInputValue(text);
+    runExchange(text, mode);
+    setInputValue("");
+  }, [sessionId, hasSyllabus, mode, runExchange]);
 
   const onSuggestionSelect = (text: string) => runExchange(text, mode);
 

@@ -1346,6 +1346,72 @@ API routes:
 
 ### Key Learnings
 
+- **Streak/period semantics: the current period is PENDING, past periods are
+  JUDGED — a mechanic must never create a loss the user has not earned.** The
+  CP-Q3 streak spec required ≥3 sessions "in each of N consecutive weeks
+  including the current week". Mechanically consistent, behaviourally wrong:
+  read literally, every streak in the product dies at 00:00 Monday (the current
+  week necessarily has 0 sessions) and revives on Wednesday, making Monday
+  morning the moment the app tells a student they lost something. That is
+  precisely the guilt mechanic the design rejects. The fix is asymmetric
+  treatment by period state: the current period can only ADD to the streak,
+  never break it; a period is judged only once it is over; and the UI gets a
+  `currentWeekPending` flag so it can invite ("2 more this week counts it")
+  without ever accusing. Generalises to any windowed metric shown live —
+  daily goals, monthly quotas, rolling averages: never let an incomplete
+  period be scored as a failed one. Same class of correction as CP-Q1.5's
+  marks-assigned-after-the-gate (spec ordering was internally consistent and
+  produced wrong prices).
+
+- **Engagement-mechanic copy belongs in ONE pure function with the rejected
+  framings named in its header.** `streakCopy()` in
+  `src/lib/assessment/streak.ts` is the only place streak strings exist, and
+  its header lists what is permanently banned ("Don't break your streak",
+  "You're about to lose…", any countdown to a loss) with the reason. A
+  convention ("we don't do guilt copy") decays across sessions and
+  contributors; a function every copy change must be made inside does not.
+  The property that matters: a future revision wanting soft gamification has to
+  argue against a stated principle rather than fill a silence, and a reviewer
+  can check the whole rule by reading one file instead of auditing every
+  surface. Apply to any mechanic with a persuasive surface — streaks, nudges,
+  progress prompts, re-engagement copy.
+
+- **Parent-notified state via effect, not per-mutation callback, when the
+  initial state resolves asynchronously.** A child that owns a selection and
+  reports it upward through `onChange` calls placed inside its mutation handlers
+  is correct only if every state change is a mutation. It is not, whenever the
+  child accepts an `initialSelected`-style prop whose values must be RESOLVED
+  against data that loads later: the initial state exists from the first render
+  (a `?subjectId=` deep link is in the URL immediately), the data does not, and
+  no mutation ever fires — so the child renders the selection while the parent
+  believes there is none. The visible symptom is a permanently disabled action
+  button on a deep link only, which reads as "sometimes doesn't work" and
+  survives for weeks. Found in `SubjectSearchPicker` (CP-Q3 Part 2). **The fix
+  is one effect that notifies on the resolved value**, which additionally gets
+  you two things the per-mutation shape cannot: waiting for resolution before
+  notifying (never hand the parent a truncated list mid-load) and pruning ids
+  that never resolve (stale bookmark, de-offered subject). Two implementation
+  requirements: hold the callback in a ref, because callers pass inline arrows
+  and a fresh identity every render makes the effect a render loop; and
+  de-duplicate on a signature of the state, or the effect re-fires on unrelated
+  re-renders. Latent anywhere a controlled-ish child takes both an initial value
+  and an async-loaded option list — which is most pickers.
+
+- **A post-migration invariant check must RAISE on violation, not warn.** A
+  migration that moves data (backfill → strip) has a failure mode between
+  "applied" and "not applied": *applied 99%, and nobody noticed.* The
+  quiz_session_keys migration (CP-Q3 Part 1) ends with a `DO $$` block that
+  counts rows still carrying the old shape and `RAISE EXCEPTION`s if any
+  remain — so a partial backfill aborts the transaction instead of leaving a
+  table where most rows moved and a few silently didn't. A `RAISE NOTICE` here
+  would be worthless: migrations are applied by pasting into the Supabase SQL
+  editor, and a notice scrolls past. Pair this with copy-then-strip ordering
+  (never strip-then-copy), so an interrupted run duplicates data rather than
+  destroying it — the same recoverable-direction bias as CP-Q1.5's dual-pass
+  resolution. Any future migration that relocates or reshapes existing rows
+  gets both: ordered so interruption is recoverable, and terminated by a check
+  that raises.
+
 - **Happy-path verification is not verification — exercise the interrupted and
   concurrent paths.** The Syllabus Health Audit passed tsc, lint, build, and a full
   happy-path browser drive, yet shipped a P0: switching subjects while an audit was

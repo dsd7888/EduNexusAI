@@ -20,7 +20,7 @@ import {
   type SubmittedAnswer,
 } from "@/lib/assessment/grading";
 import { MODE_CONFIG } from "@/lib/assessment/presets";
-import type { SessionAnswerKey } from "@/lib/assessment/runner";
+import { loadSessionKey } from "@/lib/assessment/runner";
 import type { AssessmentMode } from "@/lib/assessment/types";
 import type { NegativeMarkingRule } from "@/lib/assessment/presets";
 
@@ -30,7 +30,8 @@ interface SessionRow {
   mode: AssessmentMode;
   status: string;
   config: {
-    key?: SessionAnswerKey[];
+    // No `key` here — as of CP-Q3 Part 1 the answer key lives in
+    // quiz_session_keys (no student SELECT policy). See loadSessionKey().
     questions?: Array<{ slotId: string; options?: string[] | null }>;
     negative_marking?: boolean;
     negative_marking_rule?: string | null;
@@ -83,7 +84,9 @@ export async function POST(request: NextRequest) {
       return apiError("This session has already been submitted", 409);
     }
 
-    const key = session.config?.key ?? [];
+    // Server-side read with the admin client — quiz_session_keys has no
+    // student-readable policy, which is the whole point of the table.
+    const key = await loadSessionKey(adminClient, session.id);
     if (key.length === 0) {
       return apiError("Session has no answer key — cannot grade", 500);
     }

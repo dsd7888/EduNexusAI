@@ -9,6 +9,17 @@
  * There is no partial-submit path in CP-Q2: a session is either finished or
  * abandoned. This route therefore returns the served questions and the
  * session's clock, never a half-graded state.
+ *
+ * ⚠ INVARIANT (CP-Q3 Part 1): THIS ROUTE MUST NEVER RETURN ANSWER-KEY DATA in
+ * any response shape, not even to the owning student, and not even for a
+ * completed session. It does not read `quiz_session_keys` at all — grading
+ * happens server-side in /api/assessment/submit and /api/assessment/answer, and
+ * results come back from those. Two rules follow, and both are load-bearing:
+ *   - never spread `session.config` into the response; enumerate fields, as
+ *     below. A spread would ship whatever a future writer added to config.
+ *   - if resume ever needs to show already-revealed answers (immediate-feedback
+ *     modes), read them from student_question_attempts — the record of what the
+ *     student was already told — never from the key.
  */
 
 import { apiError, apiSuccess, requireRole } from "@/lib/api/helpers";

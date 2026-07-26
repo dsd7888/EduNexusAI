@@ -24,6 +24,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { buildProcessedSubjectGroups } from "@/lib/student/subjectGroups";
 import { cn } from "@/lib/utils";
 import { useStudentSubjects, type SubjectRow } from "@/hooks/useSupabaseData";
+import SubjectSearchPicker from "@/components/SubjectSearchPicker";
 
 function SubjectCard({
   subject,
@@ -93,6 +94,11 @@ export default function StudentSubjectsPage() {
   );
   const [sortOrder, setSortOrder] = useState<"asc" | "desc">("asc");
 
+  // Search narrows the grid to one subject rather than navigating — this page's
+  // value is the three actions on the card (Chat / Notes / Quiz), so search
+  // should get the student to that card, not past it.
+  const [focusedSubjectId, setFocusedSubjectId] = useState<string | null>(null);
+
   // Quick Notes modal state
   const [notesSubjectId, setNotesSubjectId] = useState<string | null>(null);
   const [notesMode, setNotesMode] = useState<"subject" | "module">("subject");
@@ -146,16 +152,29 @@ export default function StudentSubjectsPage() {
     [semester]
   );
 
+  const visibleSubjects = useMemo(
+    () =>
+      focusedSubjectId
+        ? subjects.filter((s) => s.id === focusedSubjectId)
+        : subjects,
+    [subjects, focusedSubjectId]
+  );
+
   const processedGroups = useMemo(
     () =>
       buildProcessedSubjectGroups(
-        subjects,
+        visibleSubjects,
         groupBy,
         sortOrder,
         profile.semester
       ),
-    [subjects, groupBy, sortOrder, profile.semester]
+    [visibleSubjects, groupBy, sortOrder, profile.semester]
   );
+
+  const focusedSubject =
+    focusedSubjectId != null
+      ? subjects.find((s) => s.id === focusedSubjectId) ?? null
+      : null;
 
   const activeSubject =
     notesSubjectId != null
@@ -312,6 +331,33 @@ export default function StudentSubjectsPage() {
         </Card>
       ) : (
         <div className="space-y-6">
+          {/* filterByBranch={false}: this page has always shown every semester
+              of the student's branch (see useStudentSubjects — semester is a
+              readiness gate there, not a filter). Narrowing search to the
+              current semester would make it find fewer subjects than the grid
+              below already displays. */}
+          <SubjectSearchPicker
+            filterByBranch={false}
+            placeholder="Search your subjects…"
+            onSelect={(s) => setFocusedSubjectId(s.id)}
+          />
+
+          {focusedSubject ? (
+            <div className="flex flex-wrap items-center gap-2 text-sm">
+              <span className="text-muted-foreground">Showing</span>
+              <Badge variant="secondary" className="font-mono text-xs">
+                {focusedSubject.code}
+              </Badge>
+              <button
+                type="button"
+                onClick={() => setFocusedSubjectId(null)}
+                className="text-xs text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
+              >
+                Show all subjects
+              </button>
+            </div>
+          ) : null}
+
           <div className="flex flex-wrap items-center gap-2">
             <span className="text-sm text-muted-foreground">Group by:</span>
             <div className="flex overflow-hidden rounded-md border text-xs font-medium">

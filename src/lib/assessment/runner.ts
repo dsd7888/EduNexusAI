@@ -212,16 +212,23 @@ function slotIndex(slotId: string): number {
 /**
  * Persist the session.
  *
- * ⚠ THE ANSWER KEY LIVES IN `config.key`, AND quiz_sessions HAS A STUDENT
- * SELECT POLICY. Every route reads this through the admin client and strips the
- * key before responding, so nothing leaks through the API — but a student who
- * queries `quiz_sessions` directly with the browser client can read their own
- * row, which for a deferred-feedback exam_sim is an integrity hole. CP-Q1's
- * spec forbade schema changes here, so the fix is deliberately deferred and
- * named: CP-Q3 should either move the key to a table with no student SELECT
- * policy, or drop the student SELECT policy on quiz_sessions in favour of
- * API-only access (the resume route already covers every legitimate read).
- * Do not build a student-facing feature that reads this table directly.
+ * THE ANSWER KEY DOES NOT LIVE IN `config` (CP-Q3 Part 1,
+ * 20260727000000_quiz_session_keys.sql). It goes to `quiz_session_keys`, a
+ * table with RLS on and NO SELECT policy for authenticated users — because
+ * `quiz_sessions` DOES have a student SELECT policy, so anything stored in
+ * `config` is readable by the owning student with the browser client. That was
+ * an integrity hole for deferred-feedback exam_sim once CP-Q3's UI shipped.
+ *
+ * Two consequences to keep in mind when editing this file:
+ *   1. Never put grading data back into `config`. `config.questions` is the
+ *      studentSafe() projection and must stay that way.
+ *   2. Reads of the key are server-side ONLY, via loadSessionKey() below with
+ *      the admin client. There is no client path, and there should not be one.
+ *
+ * The two writes are ordered session-then-key (the FK requires it) and the key
+ * write is treated as fatal: a session row with no key row is ungradeable, so
+ * it is rolled back rather than handed to a student who would lose their work
+ * at submit time.
  */
 async function createSession(
   admin: AdminClient,
@@ -250,9 +257,8 @@ async function createSession(
       negative_marking_rule: sessionConfig.negativeMarkingRule,
       preset: planInput.preset ?? null,
       immediate_feedback: MODE_CONFIG[planInput.mode].immediateFeedback,
-      // Student-safe payload + the key, see the warning above.
+      // Student-safe projection ONLY. The key goes to quiz_session_keys.
       questions: questions.map(studentSafe),
-      key: questions.map(answerKey),
     },
     status: "in_progress",
     total_marks: totalMarks,
@@ -261,7 +267,48 @@ async function createSession(
     console.warn(`[runAssessment] session insert failed: ${error.message}`);
     return null;
   }
+
+  const { error: keyError } = await admin.from("quiz_session_keys").insert({
+    session_id: id,
+    key: questions.map(answerKey),
+  });
+  if (keyError) {
+    // A session with no key cannot be graded. Failing here and rolling back is
+    // strictly better than serving a quiz that will 500 at submit after the
+    // student has spent twenty minutes on it.
+    console.warn(
+      `[runAssessment] answer key insert failed, rolling back session: ${keyError.message}`
+    );
+    await admin.from("quiz_sessions").delete().eq("id", id);
+    return null;
+  }
   return id;
+}
+
+/**
+ * Read a session's answer key. SERVER-ONLY — pass the admin client.
+ *
+ * `quiz_session_keys` has no SELECT policy for authenticated users, so this
+ * returns [] rather than an error if it is ever called with a non-service-role
+ * client. Callers must treat an empty key as "cannot grade", never as "nothing
+ * to grade" — the two are indistinguishable at the row level and only one of
+ * them is safe to proceed on.
+ */
+export async function loadSessionKey(
+  admin: AdminClient,
+  sessionId: string
+): Promise<SessionAnswerKey[]> {
+  const { data, error } = await admin
+    .from("quiz_session_keys")
+    .select("key")
+    .eq("session_id", sessionId)
+    .maybeSingle();
+  if (error) {
+    console.warn(`[loadSessionKey] ${sessionId}: ${error.message}`);
+    return [];
+  }
+  const key = (data as { key?: unknown } | null)?.key;
+  return Array.isArray(key) ? (key as SessionAnswerKey[]) : [];
 }
 
 /** The question as a student may see it — no answer, no explanation. */
