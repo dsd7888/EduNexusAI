@@ -96,6 +96,40 @@ async function main() {
   // Original state, restored in the finally block.
   let original: QuantCols[] = [];
 
+  const restore = async (): Promise<number> => {
+    let restored = 0;
+    for (const m of original) {
+      const { error } = await admin
+        .from("modules")
+        .update({
+          quant_profile: m.quant_profile,
+          quant_confidence: m.quant_confidence,
+          quant_source: m.quant_source,
+          quant_classified_at: m.quant_classified_at,
+        })
+        .eq("id", m.id);
+      if (!error) restored++;
+    }
+    return restored;
+  };
+
+  // A `finally` block does NOT run when the process is signalled — and piping
+  // this harness through `head` does exactly that (SIGPIPE once head exits),
+  // leaving the subject in a half-mutated state that the NEXT run then
+  // snapshots as its "original". That happened once; hence these handlers.
+  // Do not pipe this script through head/sed — redirect to a file instead.
+  let cleaning = false;
+  for (const sig of ["SIGINT", "SIGTERM", "SIGPIPE", "SIGHUP"] as const) {
+    process.on(sig, () => {
+      if (cleaning) return;
+      cleaning = true;
+      void restore().then((n) => {
+        console.error(`\n[${sig}] restored ${n}/${original.length} module row(s)`);
+        process.exit(130);
+      });
+    });
+  }
+
   try {
     hr("PREFLIGHT");
     const { error: colErr } = await admin
@@ -244,12 +278,21 @@ async function main() {
     console.log(
       `  warnings: ${planC.warnings.length === 0 ? "(none)" : planC.warnings.join(" | ")}`
     );
+    // NOTE: the GATE preset always injects msq, so this plan is nat/msq
+    // alternating and byType.nat is 2 of 4 BY DESIGN — not a degradation. The
+    // claim under test is narrower: the faculty_verified module refused
+    // nothing. That is exactly requested === delivered with reason null and no
+    // degradation warning (the "GATE preset requires msq" line is preset
+    // normalisation, not a NAT outcome).
+    const deg = planC.sourcing.natDegraded;
+    const natWarnings = planC.warnings.filter((w) => /NAT|numerical/i.test(w));
     console.log(
       `  → NAT allowed through unchanged: ${
-        planC.sourcing.byType.nat === 4 && planC.warnings.length === 0
+        deg && deg.requested === deg.delivered && deg.reason === null &&
+        deg.affectedModules.length === 0 && natWarnings.length === 0
           ? "YES"
           : "NO"
-      }`
+      }  (requested=${deg?.requested} delivered=${deg?.delivered} refusals=${deg?.affectedModules.length} nat-warnings=${natWarnings.length})`
     );
 
     // ── (d) re-run ────────────────────────────────────────────────────────
@@ -295,19 +338,7 @@ async function main() {
     );
   } finally {
     hr("CLEANUP — restoring original quant_* values");
-    let restored = 0;
-    for (const m of original) {
-      const { error } = await admin
-        .from("modules")
-        .update({
-          quant_profile: m.quant_profile,
-          quant_confidence: m.quant_confidence,
-          quant_source: m.quant_source,
-          quant_classified_at: m.quant_classified_at,
-        })
-        .eq("id", m.id);
-      if (!error) restored++;
-    }
+    const restored = await restore();
     console.log(`  restored ${restored}/${original.length} module row(s)`);
   }
 
