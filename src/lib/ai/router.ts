@@ -41,6 +41,9 @@ const TASK_TO_MODEL: Record<string, "flash" | "pro"> = {
   qbank_generate: "flash",
   qbank_tag: "flash",
   module_co_classify: "flash",
+  // Module → quantitative/conceptual classification (CP-Q1.5). Dual-pass, one
+  // call per pass per subject, narrow responseSchema. Gate 1 of NAT integrity.
+  module_quant_classify: "flash",
   qbank_image_question: "flash",
   lesson_plan_gen: "flash",
   lab_manual_gen: "flash", // per-practical lab manual section

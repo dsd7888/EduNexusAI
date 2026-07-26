@@ -28,7 +28,9 @@ import {
   type AssessmentDifficulty,
   type AssessmentPlan,
   type AssessmentPlanInput,
+  type AssessmentPreset,
   type AssessmentQuestionType,
+  type NatDegradation,
   type QuestionSlot,
   type SourcingSummary,
 } from "./types";
@@ -47,6 +49,8 @@ interface ModuleRow {
   module_number: number;
   name: string;
   weightage_percent: number | null;
+  /** 'quantitative' | 'conceptual' | null (unclassified → NAT allowed). */
+  quant_profile: string | null;
 }
 
 // ─── Hamilton apportionment ────────────────────────────────────────────────
@@ -167,8 +171,12 @@ function makeCoPicker(coByModule: Map<string, string[]>) {
  *     per-slot lookup of student_topic_mastery.current_difficulty for that
  *     (subject, module), defaulting to 'easy'.
  *  3. TYPE — deterministic cycle by slot index over questionTypes.
- *  4. MARKS — from mode config (GATE preset overrides; see marksForSlot).
- *  5. CO — most under-served CO available to the slot's module.
+ *  4. CO — most under-served CO available to the slot's module.
+ *  5. NAT GATE — NAT slots on modules classified 'conceptual' are relocated to
+ *     eligible modules, or degraded to MCQ when there is no eligible capacity
+ *     (CP-Q1.5, gate 1; see applyNatGate and CP_Q2_NAT_INTEGRITY.md).
+ *  6. MARKS — from mode config, applied AFTER the gate so a degraded slot is
+ *     priced as what it became (GATE preset overrides; see marksForSlot).
  *
  * @param admin injectable for tests/harnesses; defaults to the admin client.
  */
@@ -211,7 +219,9 @@ export async function planAssessment(
   // ── 1. Modules ────────────────────────────────────────────────────────────
   const { data: moduleRows, error: moduleErr } = await admin
     .from("modules")
-    .select("id, subject_id, module_number, name, weightage_percent")
+    .select(
+      "id, subject_id, module_number, name, weightage_percent, quant_profile"
+    )
     .in("subject_id", subjectIds)
     .order("module_number");
   if (moduleErr) {
@@ -362,23 +372,130 @@ export async function planAssessment(
   );
   const targetCoFor = makeCoPicker(coByModule);
 
-  const slots: QuestionSlot[] = seeds.map((seed, i) => {
-    const questionType = questionTypes[i % questionTypes.length];
-    const difficulty = difficultyPerSlot[i] ?? ADAPTIVE_DEFAULT;
-    return {
-      slotId: `S${i + 1}`,
-      subjectId: seed.subjectId,
-      moduleId: seed.module?.id ?? null,
-      questionType,
-      difficulty,
-      marks: marksForSlot(input.mode, questionType, input.preset),
-      targetCo: targetCoFor(seed.module?.id ?? null),
-      moduleNumber: seed.module?.module_number,
-      moduleName: seed.module?.name,
-    };
-  });
+  const slots: QuestionSlot[] = seeds.map((seed, i) => ({
+    slotId: `S${i + 1}`,
+    subjectId: seed.subjectId,
+    moduleId: seed.module?.id ?? null,
+    questionType: questionTypes[i % questionTypes.length],
+    difficulty: difficultyPerSlot[i] ?? ADAPTIVE_DEFAULT,
+    // marks are assigned AFTER the NAT gate below — a degraded nat→mcq slot
+    // must be re-priced (GATE: NAT is 2 marks, MCQ is 1), and pricing it here
+    // would leave a 1-mark question carrying 2 marks.
+    marks: 0,
+    targetCo: targetCoFor(seed.module?.id ?? null),
+    moduleNumber: seed.module?.module_number,
+    moduleName: seed.module?.name,
+  }));
 
-  return { slots, sourcing: summarise(slots, adaptiveApplied, warnings) };
+  // ── 6. NAT gate (CP-Q1.5, gate 1) ─────────────────────────────────────────
+  const natDegraded = applyNatGate(slots, modules, warnings, input.preset);
+
+  for (const s of slots) {
+    s.marks = marksForSlot(input.mode, s.questionType, input.preset);
+  }
+
+  const sourcing = summarise(slots, adaptiveApplied, warnings);
+  if (natDegraded) sourcing.natDegraded = natDegraded;
+
+  return { slots, sourcing, warnings };
+}
+
+/**
+ * Refuse NAT slots on modules classified 'conceptual', preserving the NAT count
+ * wherever the subject has the capacity to carry it (CP_Q2_NAT_INTEGRITY.md,
+ * gate 1).
+ *
+ * The order matters and is the whole point:
+ *
+ *  1. RELOCATE first. A NAT slot sitting on a conceptual module is swapped with
+ *     a non-NAT slot on an eligible module — the two slots trade TYPES, never
+ *     modules. Module assignment came from syllabus weightage and is the one
+ *     thing that must not move (§12); swapping types leaves every module's slot
+ *     count untouched, so weightage compliance is unaffected and the student
+ *     still gets the NAT count they asked for.
+ *  2. DEGRADE only what relocation cannot place. If eligible modules cannot
+ *     absorb the NAT demand, the excess becomes MCQ.
+ *
+ * Eligible = quant_profile is 'quantitative' OR NULL. Unclassified is
+ * deliberately permissive: blocking NAT until a backfill runs would silently
+ * disable GATE mode platform-wide, and CP-Q2's per-item verifier is the backstop
+ * for a module that turns out to be a bad NAT host.
+ *
+ * Returns undefined when the plan asked for no NAT at all.
+ */
+function applyNatGate(
+  slots: QuestionSlot[],
+  modules: ModuleRow[],
+  warnings: string[],
+  preset?: AssessmentPreset
+): NatDegradation | undefined {
+  const requested = slots.filter((s) => s.questionType === "nat").length;
+  if (requested === 0) return undefined;
+
+  const profileById = new Map(modules.map((m) => [m.id, m.quant_profile]));
+  const nameById = new Map(modules.map((m) => [m.id, m.name]));
+  // A module-less slot has no classification to consult, so it stays eligible.
+  const refuses = (moduleId: string | null): boolean =>
+    moduleId != null && profileById.get(moduleId) === "conceptual";
+
+  const affected = new Map<string, string>();
+  const blocked = slots.filter(
+    (s) => s.questionType === "nat" && refuses(s.moduleId)
+  );
+  for (const s of blocked) {
+    if (s.moduleId) {
+      affected.set(s.moduleId, nameById.get(s.moduleId) ?? s.moduleId);
+    }
+  }
+
+  if (blocked.length === 0) {
+    return { requested, delivered: requested, reason: null, affectedModules: [] };
+  }
+
+  // 1. Relocate: donors are non-NAT slots on eligible modules.
+  const donors = slots.filter(
+    (s) => s.questionType !== "nat" && !refuses(s.moduleId)
+  );
+  let donorIdx = 0;
+  let degraded = 0;
+  for (const s of blocked) {
+    const donor = donors[donorIdx];
+    if (donor) {
+      donorIdx += 1;
+      s.questionType = donor.questionType;
+      donor.questionType = "nat";
+    } else {
+      // 2. Degrade: no eligible home left for this NAT slot.
+      s.questionType = "mcq";
+      degraded += 1;
+    }
+  }
+
+  const delivered = requested - degraded;
+  const affectedModules = Array.from(affected.entries()).map(
+    ([moduleId, moduleName]) => ({ moduleId, moduleName })
+  );
+  const reason: NatDegradation["reason"] =
+    degraded > 0 ? "insufficient_quantitative_modules" : "conceptual_module_refusal";
+
+  if (degraded > 0) {
+    warnings.push(
+      `${degraded} NAT slot(s) degraded to MCQ — the selected modules do not have enough quantitative capacity to carry ${requested} numerical question(s).`
+    );
+  } else {
+    warnings.push(
+      `${blocked.length} NAT slot(s) moved off conceptual module(s) (${affectedModules
+        .map((m) => m.moduleName)
+        .join(", ")}); the requested NAT count is unchanged.`
+    );
+  }
+  if (preset === "gate" && delivered < requested) {
+    warnings.push(
+      `GATE preset: only ${delivered} of ${requested} numerical (NAT) questions could be placed. A GATE-style paper under-weighted on NAT is not representative — consider adding quantitative modules to the scope.`
+    );
+  }
+
+  return { requested, delivered, reason, affectedModules };
 }
 
 async function loadModuleCoMap(

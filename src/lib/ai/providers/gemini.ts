@@ -136,6 +136,11 @@ function createGeminiProvider(): AIProvider {
       "pyq_extract",
       "qbank_generate",
       "qbank_tag",
+      // Module quant classification (CP-Q1.5): dual-pass Flash with a narrow
+      // responseSchema. thinkingBudget:0 per §19 — a truncated array here drops
+      // modules off the end, which reads as "unclassified" (NAT-allowed) rather
+      // than as an error, so the failure would be silent and permissive.
+      "module_quant_classify",
       // Answer-key blocks emit a strict JSON array. The MCQ block runs on
       // Flash, where leaving thinking uncapped silently consumes the
       // maxOutputTokens budget and truncates the JSON → parse failure.

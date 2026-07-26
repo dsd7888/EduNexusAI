@@ -123,3 +123,72 @@ The engine deliberately stops at "here are the questions". CP-Q2 adds:
 
 CP-Q3 then swaps `/api/quiz/generate` onto the engine and retires the truncating
 path. Until then the old route keeps serving the current UI, untouched.
+
+---
+
+# Addendum — CP-Q1.5: the NAT gate
+
+*Landed after CP-Q1, ahead of CP-Q2. Full decision record in
+`CP_Q2_NAT_INTEGRITY.md`.*
+
+## What changed in the engine's contract
+
+`planAssessment` gained a sixth allocation step, and marks moved behind it. The
+plan is still pure allocation — no AI, no generation — but a slot's question type
+is no longer decided solely by the requested type cycle: a NAT slot must also be
+*admissible on its module*.
+
+Two contract additions callers can rely on:
+
+- `SourcingSummary.natDegraded` — present whenever the request produced at least
+  one NAT slot, so `requested` vs `delivered` is always comparable without a null
+  check changing meaning.
+- `AssessmentPlan.warnings` — the same strings as `sourcing.warnings`, promoted to
+  the top level so a mode router or route handler surfaces them without reaching
+  through the allocation summary.
+
+**Marks are now assigned after the gate, not during slot construction.** Under the
+GATE preset NAT is worth 2 marks and MCQ 1, so a slot that degrades from NAT to MCQ
+must be re-priced; pricing at construction time left 1-mark questions carrying 2
+marks. Any future step that can change a slot's type must run before the marks pass.
+
+## `quant_profile` lifecycle
+
+```
+NULL (unclassified)  ──classifier──▶  ai_classified{quantitative|conceptual}
+        │                                      │
+        │                                      └──faculty edit (CP-Q4)──▶ faculty_verified
+        │                                                                        │
+        └── NAT ALLOWED (gate 2 is the backstop)          re-running the classifier SKIPS this row
+```
+
+Three properties worth stating explicitly, because each is a decision rather than an
+implementation detail:
+
+1. **NULL is permissive.** An unclassified module accepts NAT. Blocking it would
+   silently disable GATE mode platform-wide until a backfill ran — a worse failure
+   than the one gate 1 fixes, and an invisible one.
+2. **`faculty_verified` is terminal for the classifier.** A re-run never overwrites
+   it, matching `module_co_mapping`. The write additionally filters
+   `quant_source is null OR quant_source <> 'faculty_verified'` at the database, so
+   a faculty edit landing mid-run cannot be clobbered by an in-flight verdict.
+3. **`quant_classified_at` means "when this judgement last CHANGED", not "when the
+   classifier last ran".** An unchanged verdict is not rewritten, so the timestamp
+   stays a useful signal of drift rather than a run log.
+
+## Refusal semantics, in one line
+
+Relocate NAT off conceptual modules by swapping *types* with eligible slots (module
+assignment never moves — weightage compliance is the invariant); degrade to MCQ only
+what relocation cannot place; report both cases distinctly via `natDegraded.reason`.
+
+## What gate 2 layers on top in CP-Q2
+
+Gate 1 answers "may a NAT question be posed from this module?" It cannot answer "is
+*this* NAT question's answer correct" — the Vigenère item that motivated all of this
+would still have been generated had the module been classified quantitative. CP-Q2
+adds the `nat_verify` per-item pass: an independent Flash call that solves before it
+judges (schema field order is load-bearing — see the decision record), discarding
+mismatches into `failed[]` rather than correcting them, at ~₹0.03 per NAT item.
+
+Until that exists, Mastery and Exam-Sim must not ship with the GATE preset enabled.

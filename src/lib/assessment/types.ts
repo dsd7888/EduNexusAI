@@ -123,6 +123,31 @@ export interface AssessmentPlanInput {
  * reported separately by fillFromBank() and generateFreshQuestions(), and the
  * three are combined by the mode router in CP-Q2.
  */
+/**
+ * NAT refusal/degradation report (CP-Q1.5, gate 1 — see CP_Q2_NAT_INTEGRITY.md).
+ *
+ * Present whenever a plan asked for at least one NAT slot, whether or not any
+ * were refused, so a caller can always compare requested vs delivered without
+ * a null check deciding meaning.
+ *
+ *  - `conceptual_module_refusal` — NAT was refused on a module classified
+ *    'conceptual', but the count was preserved by moving those slots onto
+ *    eligible modules. requested === delivered.
+ *  - `insufficient_quantitative_modules` — there were not enough eligible
+ *    modules to carry the NAT demand, so the excess became MCQ.
+ *    delivered < requested.
+ */
+export interface NatDegradation {
+  requested: number;
+  delivered: number;
+  reason:
+    | "conceptual_module_refusal"
+    | "insufficient_quantitative_modules"
+    | null;
+  /** Modules that refused NAT, i.e. quant_profile='conceptual'. */
+  affectedModules: Array<{ moduleId: string; moduleName: string }>;
+}
+
 export interface SourcingSummary {
   totalSlots: number;
   /** subjectId → slot count. */
@@ -134,6 +159,8 @@ export interface SourcingSummary {
   /** True when difficulty:'adaptive' resolved at least one module from
    *  student_topic_mastery rather than falling back to the 'easy' default. */
   adaptiveApplied: boolean;
+  /** Set whenever the request asked for ≥1 NAT slot. */
+  natDegraded?: NatDegradation;
   /** Non-fatal notes (missing weightages, preset coercions, empty subjects). */
   warnings: string[];
 }
@@ -141,6 +168,13 @@ export interface SourcingSummary {
 export interface AssessmentPlan {
   slots: QuestionSlot[];
   sourcing: SourcingSummary;
+  /**
+   * Caller-facing warnings. Same content as `sourcing.warnings`, promoted to
+   * the top level so a mode router (CP-Q2) or a route handler can surface them
+   * without reaching through the allocation summary. Includes the GATE-preset
+   * NAT shortfall warning.
+   */
+  warnings: string[];
 }
 
 // ─── Bank type mapping ─────────────────────────────────────────────────────
