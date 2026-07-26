@@ -3,6 +3,11 @@ import { createAdminClient } from "@/lib/db/supabase-server";
 export const RATE_LIMITS = {
   chat: 50,
   quiz: 20,
+  // Exam simulations are the most expensive student-triggered action in the
+  // product: up to 100 questions of batched generation PLUS one verifier call
+  // per NAT item (~₹5 for a full GATE mock). 3/day is a COST guard, not a UX
+  // choice — quick+mastery keep the 20/day quiz allowance for daily practice.
+  examSim: 3,
   hint: 30,
   // Research tier is search-grounded (Flash + googleSearch) and pricier per
   // call than standard chat — capped tighter than the 50/day chat allowance.

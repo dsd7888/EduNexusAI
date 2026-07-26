@@ -62,7 +62,16 @@ export interface AssessmentQuestion {
   difficulty: AssessmentDifficulty;
   /** NAT only — the numeric value of `correctAnswer`. */
   numericAnswer?: number;
-  /** NAT only — tolerance as a PERCENTAGE of the expected value. */
+  /**
+   * NAT only — tolerance as a PERCENTAGE of the expected value.
+   *
+   * ⚠ NOT the same thing as NAT_FP_TOLERANCE in natVerify.ts. This one is
+   * PEDAGOGICAL: how much rounding a STUDENT may do and still be marked
+   * correct. That one is NUMERICAL: whether the generator and the verifier
+   * computed the same quantity at all. A question may legitimately allow a
+   * student ±2% while a 2% generator/verifier gap means they solved different
+   * problems. Do not merge them.
+   */
   numericTolerance?: number;
 
   // ── provenance (engine-side; the quiz UI ignores these) ──
@@ -114,6 +123,18 @@ export interface AssessmentPlanInput {
   questionTypes: AssessmentQuestionType[];
   mode: AssessmentMode;
   preset?: AssessmentPreset;
+  /**
+   * EXACT per-type counts, overriding the default index cycle. Used by presets
+   * whose section counts are mandated rather than proportional (GATE:
+   * 35 MCQ / 15 MSQ / 15 NAT). When the counts do not sum to questionCount they
+   * are Hamilton-scaled and a warning is raised.
+   */
+  typeDistribution?: Partial<Record<AssessmentQuestionType, number>>;
+  /**
+   * 'gate_standard' prices by POSITION (Q1–25 = 1 mark, Q26–65 = 2), which is
+   * how GATE actually works. Omit for mode-derived per-type marks.
+   */
+  marksRule?: "gate_standard";
 }
 
 /**

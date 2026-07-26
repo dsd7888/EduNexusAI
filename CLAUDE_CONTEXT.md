@@ -1371,6 +1371,19 @@ API routes:
   every code path. A hard format-validate-or-null gate (`validateCoOrNull`) closed it in
   one pass. Prefer a gate over ever-smarter guessing.
 
+- **Verifiers verify; they never repair.** An AI judge that is allowed to correct
+  what it is checking becomes a second unaudited generator — and its output then
+  carries the authority of a check it never actually received. The NAT verifier
+  (CP-Q2) is forbidden by its system prompt from improving, rewriting, or
+  replacing the question it grades: it returns a verdict and its own computed
+  answer, and a mismatch DISCARDS the item rather than fixing it. Two corollaries
+  for any future AI-judge pattern: (a) "could not check" and "checked, correct"
+  must never collapse into the same outcome — a judge that errors, times out, or
+  returns unparseable output must fail closed; (b) when the judge emits both a
+  boolean verdict and a checkable quantity, the QUANTITY is authoritative and the
+  boolean is advisory, because the boolean is the field an anchored model gets
+  wrong. Track their agreement rate rather than assuming it (CP_Q2_MODES_AND_VERIFIER.md).
+
 - **Deterministic apportionment across two dimensions must decorrelate — matched
   periods produce perfect coupling.** The Assessment Engine (CP-Q1) cycled question
   type by slot index (`i % types.length`) and laid the mixed-difficulty sequence down

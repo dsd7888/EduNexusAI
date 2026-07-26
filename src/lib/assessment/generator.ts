@@ -490,8 +490,13 @@ export async function generateFreshQuestions(
   }
 
   // ── write-through ─────────────────────────────────────────────────────────
-  const writtenToBank = await writeThroughToBank(
-    generated,
+  // NAT items are DELIBERATELY EXCLUDED here. Their write-through is gated on
+  // gate 2 (natVerify.ts): a NAT question whose answer is wrong must never
+  // reach the bank, because a bad bank row is then served free to every future
+  // student, forever. The verification pipeline calls writeQuestionsToBank()
+  // itself for the NAT items that pass. See CP_Q2_MODES_AND_VERIFIER.md.
+  const writtenToBank = await writeQuestionsToBank(
+    generated.filter((q) => q.type !== "nat"),
     subjectContexts,
     admin
   );
@@ -750,12 +755,17 @@ function parseAnswerLetters(answer: string, options: string[]): string[] {
  * ai_generated rows, so the next student's fillFromBank can serve them for
  * free. Mutates each question's `bankQuestionId` on success.
  *
+ * EXPORTED because NAT items take a different route to this function: they are
+ * held back from the batch write above and only passed here once gate 2 has
+ * verified them (natVerify.ts). Everything written here is still
+ * `is_verified=false` — AI-verified is not faculty-verified.
+ *
  * Skipped for subjects with no faculty assignment: faculty_question_bank
  * requires a NOT NULL faculty_id, and attributing a question to an arbitrary
  * profile would put it in someone's personal bank UI. The question is still
  * returned and still served — write-through is a cache-warm, never a gate.
  */
-async function writeThroughToBank(
+export async function writeQuestionsToBank(
   questions: AssessmentQuestion[],
   subjectContexts: Map<string, AssessmentSubjectContext>,
   admin: AdminClient

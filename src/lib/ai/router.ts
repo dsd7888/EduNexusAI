@@ -25,6 +25,10 @@ const TASK_TO_MODEL: Record<string, "flash" | "pro"> = {
   // quiz_gen so the old single-call route keeps its own budget and its cost is
   // still distinguishable in ai_call_logs after CP-Q3 swaps the route.
   quiz_gen_v2: "flash",
+  // Gate 2 of NAT integrity (CP-Q2): one independent solve-then-compare pass
+  // per generated NAT item. Small prompt (question + module excerpt, never the
+  // full syllabus), small output — hence the 1024 ceiling below.
+  nat_verify: "flash",
   placement_prep: "flash",
   ppt_gen: "flash",
   ppt_diagram: "pro", // diagram-only PPT batches — Pro produces better SVG/diagram code
@@ -148,6 +152,10 @@ function resolveChatParams(task: string, params: ChatParams): ChatParams {
                 // applies if a caller ever omits it.
                 task === "quiz_gen_v2"
                 ? 4096
+              : // nat_verify: ≤60-word working + one number + ≤25-word reason.
+                // 1024 is generous for that and caps a runaway verifier.
+                task === "nat_verify"
+                ? 1024
               : task === "placement_prep"
                 ? 6000
                 : task === "qpaper_gen"

@@ -302,7 +302,36 @@ export async function planAssessment(
 
   const total = seeds.length;
 
-  // ── 2. Difficulty ─────────────────────────────────────────────────────────
+  // ── 2. Question type ──────────────────────────────────────────────────────
+  // Two paths. The default CYCLES the requested types by slot index. A preset
+  // that carries a typeDistribution (GATE) instead gets EXACT counts — GATE has
+  // fixed section counts (35 MCQ / 15 MSQ / 15 NAT), and "approximately 15 NAT"
+  // is not a GATE mock. Hamilton is the right tool for a proportional target and
+  // the wrong one for a mandated one.
+  let typePerSlot: AssessmentQuestionType[];
+  if (input.typeDistribution) {
+    const labels = (
+      Object.keys(input.typeDistribution) as AssessmentQuestionType[]
+    ).filter((t) => (input.typeDistribution?.[t] ?? 0) > 0);
+    const wanted = labels.map((t) => input.typeDistribution?.[t] ?? 0);
+    const wantedTotal = wanted.reduce((a, b) => a + b, 0);
+    if (wantedTotal !== total) {
+      // The distribution and the question count disagree — scale rather than
+      // silently truncate, and say so.
+      warnings.push(
+        `Type distribution sums to ${wantedTotal} but ${total} question(s) were requested — distribution scaled proportionally.`
+      );
+    }
+    const counts =
+      wantedTotal === total ? wanted : apportion(total, wanted);
+    typePerSlot = spreadEvenly(total, labels, counts);
+  } else {
+    typePerSlot = seeds.map((_, i) => questionTypes[i % questionTypes.length]);
+  }
+  // Distinct types in first-appearance order — the deal key for difficulty.
+  const typeOrder = Array.from(new Set(typePerSlot));
+
+  // ── 3. Difficulty ─────────────────────────────────────────────────────────
   let difficultyPerSlot: AssessmentDifficulty[];
   let adaptiveApplied = false;
 
@@ -312,19 +341,17 @@ export async function planAssessment(
       DIFFICULTIES,
       apportion(total, [1, 1, 1])
     );
-    // DEAL, don't lay down in order. Question type cycles by slot index, so
-    // handing out an easy/medium/hard sequence positionally makes the two
-    // cycles resonate whenever the type count divides 3 — with
-    // [mcq, msq, nat] every MCQ comes out easy and every NAT hard, which is
-    // both a worse quiz and a false difficulty signal. Dealing round-robin
-    // ACROSS the type cycle (all slots of type 0, then type 1, …) keeps both
-    // distributions exact while decorrelating them.
-    const dealOrder = seeds
-      .map((_, i) => i)
-      .sort(
-        (a, b) =>
-          (a % questionTypes.length) - (b % questionTypes.length) || a - b
-      );
+    // DEAL, don't lay down in order (§17: "deterministic apportionment across
+    // two dimensions must decorrelate"). Laying the easy/medium/hard sequence
+    // down positionally resonates with the type pattern whenever their periods
+    // share a factor — with [mcq, msq, nat] every MCQ came out easy and every
+    // NAT hard. Dealing ACROSS the type groups keeps both distributions exact
+    // while decorrelating them. Keyed on the ASSIGNED type, so it holds for the
+    // exact-distribution path too, not just the cycling one.
+    const dealOrder = typePerSlot
+      .map((t, i) => ({ i, t: typeOrder.indexOf(t) }))
+      .sort((a, b) => a.t - b.t || a.i - b.i)
+      .map((x) => x.i);
     difficultyPerSlot = new Array<AssessmentDifficulty>(total);
     dealOrder.forEach((slotIndex, k) => {
       difficultyPerSlot[slotIndex] = sequence[k] ?? ADAPTIVE_DEFAULT;
@@ -376,7 +403,7 @@ export async function planAssessment(
     slotId: `S${i + 1}`,
     subjectId: seed.subjectId,
     moduleId: seed.module?.id ?? null,
-    questionType: questionTypes[i % questionTypes.length],
+    questionType: typePerSlot[i],
     difficulty: difficultyPerSlot[i] ?? ADAPTIVE_DEFAULT,
     // marks are assigned AFTER the NAT gate below — a degraded nat→mcq slot
     // must be re-priced (GATE: NAT is 2 marks, MCQ is 1), and pricing it here
@@ -390,9 +417,18 @@ export async function planAssessment(
   // ── 6. NAT gate (CP-Q1.5, gate 1) ─────────────────────────────────────────
   const natDegraded = applyNatGate(slots, modules, warnings, input.preset);
 
-  for (const s of slots) {
-    s.marks = marksForSlot(input.mode, s.questionType, input.preset);
-  }
+  // ── 7. Marks — AFTER the gate, so a degraded slot is priced as what it
+  // became. 'gate_standard' prices by POSITION, not type: GATE's Q1–25 are
+  // 1 mark and Q26–65 are 2, regardless of whether a given question is MCQ,
+  // MSQ or NAT.
+  slots.forEach((s, i) => {
+    s.marks =
+      input.marksRule === "gate_standard"
+        ? i < 25
+          ? 1
+          : 2
+        : marksForSlot(input.mode, s.questionType, input.preset);
+  });
 
   const sourcing = summarise(slots, adaptiveApplied, warnings);
   if (natDegraded) sourcing.natDegraded = natDegraded;
@@ -490,8 +526,10 @@ function applyNatGate(
     );
   }
   if (preset === "gate" && delivered < requested) {
+    // Actionable, not a silent degrade: a GATE mock under-weighted on NAT is
+    // not a GATE mock, and the student should be told which lever to pull.
     warnings.push(
-      `GATE preset: only ${delivered} of ${requested} numerical (NAT) questions could be placed. A GATE-style paper under-weighted on NAT is not representative — consider adding quantitative modules to the scope.`
+      `This subject has limited quantitative coverage; only ${delivered} NAT items generated (a full GATE mock needs ${requested}). Consider a different subject for full GATE mock.`
     );
   }
 

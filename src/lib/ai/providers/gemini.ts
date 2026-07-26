@@ -128,6 +128,11 @@ function createGeminiProvider(): AIProvider {
       // array mid-object, which reads as "the AI produced 3 of 5" rather than
       // as an error. The call site sets it explicitly too; this is the default.
       "quiz_gen_v2",
+      // NAT verification (CP-Q2). Narrow responseSchema whose FIELD ORDER is
+      // the anti-anchoring mechanism; thinkingBudget:0 per §19 so nothing eats
+      // the output budget before `verified` is emitted — a truncated verdict is
+      // an unparseable verdict, which discards a possibly-good question.
+      "nat_verify",
       "placement_prep",
       "qpaper_gen",
       "refine",
