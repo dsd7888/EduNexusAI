@@ -79,13 +79,20 @@ const FLAG_MS = 200;
 const HALT_MS = 400;
 
 /**
- * Sequential Supabase round trips inside POST /api/assessment/answer, counted
- * from the handler + requireRole:
- *   1 auth.getUser · 2 profiles select · 3 quiz_sessions select
- *   4 quiz_session_keys select · 5 computePeerStat (uncached) · 6 attempt insert
- * Used only to explain the floor, never to excuse it.
+ * SEQUENTIAL Supabase round trips inside POST /api/assessment/answer — the
+ * depth of the dependency chain, not the number of queries. Counted from the
+ * handler + requireRole:
+ *
+ *   1 auth.getUser
+ *   2 profiles select              (needs user.id from 1)
+ *   3 quiz_sessions ∥ session key  (independent of each other — one trip, not two)
+ *   4 computePeerStat (uncached)   (needs bankQuestionId/subjectId from the key)
+ *   5 attempt insert               (must follow the peer stat, deliberately)
+ *
+ * Was 6 before the session/key reads were parallelised. Used only to explain
+ * the floor, never to excuse it.
  */
-const HANDLER_ROUND_TRIPS = 6;
+const HANDLER_ROUND_TRIPS = 5;
 const RTT_SAMPLES = 12;
 
 /** Set HARNESS_PROD=1 when the server under test is `npm run start`. */

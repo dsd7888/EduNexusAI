@@ -76,11 +76,34 @@ export async function POST(request: NextRequest) {
         : null;
     const silent = body.silent === true;
 
-    const { data: sessionData, error: sessionErr } = await adminClient
-      .from("quiz_sessions")
-      .select("id, student_id, mode, status, config, started_at")
-      .eq("id", sessionId)
-      .maybeSingle();
+    // ── the session row and the answer key, concurrently ───────────────────
+    // Both are keyed by sessionId alone and neither reads the other's data, so
+    // the sequential shape was costing a full round trip for nothing. On a
+    // student's mobile connection every serialised trip is amplified, so the
+    // independent ones are issued together.
+    //
+    // WHAT IS *NOT* PARALLELISABLE HERE, and why — do not "finish the job":
+    //   - the peer stat needs `entry.bankQuestionId` / `entry.subjectId`, which
+    //     come OUT of the key. It is data-dependent on this pair, not a third
+    //     sibling, so it cannot join this Promise.all.
+    //   - the peer stat must also stay BEFORE the attempt insert. That ordering
+    //     is load-bearing (see the comment at its call site): parallelising the
+    //     two would race the student's own answer into the statistic they are
+    //     shown.
+    // Fetching the key before ownership/status/timer checks have run only ever
+    // costs one wasted read on a rejected request; the key is not returned, and
+    // every guard below still fires in exactly the same order with exactly the
+    // same status codes.
+    const [sessionResult, key] = await Promise.all([
+      adminClient
+        .from("quiz_sessions")
+        .select("id, student_id, mode, status, config, started_at")
+        .eq("id", sessionId)
+        .maybeSingle(),
+      loadSessionKey(adminClient, sessionId),
+    ]);
+
+    const { data: sessionData, error: sessionErr } = sessionResult;
     if (sessionErr) return apiError(sessionErr.message, 500);
     const session = sessionData as SessionRow | null;
     if (!session) return apiError("Session not found", 404);
@@ -110,7 +133,7 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    const key = await loadSessionKey(adminClient, sessionId);
+    // `key` was fetched above, concurrently with the session row.
     const entry = key.find((k) => k.slotId === slotId);
     if (!entry) return apiError("Unknown slotId for this session", 400);
 
