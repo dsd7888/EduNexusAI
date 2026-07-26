@@ -67,6 +67,25 @@ verification that would catch a missing one must be run before calling the work
 done. **If an unhappy-path case was not exercised, the completion report must say
 so explicitly** rather than implying full coverage.
 
+### Checkpoint verification harnesses (`_cp_*_verify/`)
+
+Backend checkpoints ship a standalone harness (`npx tsx _cp_q2_verify/verify.ts`)
+rather than a manual click-through. Three rules, each learned by breaking it:
+
+- **Execute `after()`, do not discard it.** `routeAI` logs every call to
+  `ai_call_logs` via `after()`. A harness whose `workAsyncStorage` shim
+  swallows the callback makes any "which AI tasks ran?" assertion pass over an
+  empty table — vacuously. The CP-Q2 shim invokes it; real spend then lands in
+  `ai_call_logs`, which is where it belongs. Copy that shim, not the CP-Q1 one.
+- **Clean up on signals, not just in `finally`.** A `finally` block does not run
+  when the process is signalled, and piping a harness through `head` SIGPIPE-kills
+  it mid-run. That left a subject half-mutated once, and the *next* run
+  snapshotted the contaminated state as its "original" and faithfully restored
+  the wrong thing. Register `SIGINT/SIGTERM/SIGPIPE/SIGHUP` handlers that run the
+  same cleanup, and redirect harness output to a file instead of piping it.
+- **Verify the cleanup, don't assume it.** After a run, query the touched tables
+  for residue and say so in the report.
+
 ## Stack
 
 Next.js 16 (App Router, React 19) · TypeScript (strict) · Tailwind v4 · shadcn/ui

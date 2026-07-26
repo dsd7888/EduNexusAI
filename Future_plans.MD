@@ -201,6 +201,30 @@ consciously deferred with Dhruv's sign-off — none blocks the pilot.
 
 ---
 
+## `routeAI` cannot run outside a Next request scope (two motivations now)
+
+`routeAI` logs every call via `after()` from `next/server`, which throws unless a
+request scope exists. Every checkpoint harness works around this by entering a
+fake scope through `workAsyncStorage` — a shim that has now been copied into four
+scripts and documented as a pattern in CLAUDE.md.
+
+Already listed once, from the chat side, as "Chat — carried forward" item 2
+(`scheduleLog` request-scope guard) — this is the same defect, re-surfaced from a
+second direction. Keep ONE fix, not two.
+
+Originally flagged as harness-only friction. It now has a **second,
+non-test motivation**: any background worker or cron that wants to make an AI
+call hits the identical wall. `/api/cron/abandon-stale-assessments` does not
+(pure DB sweep), but the obvious next crons — nightly quant-classification
+backfill, bank health top-up, pre-generating a GATE mock — all would.
+
+**Fix shape:** make the cost-logging call scope-optional — try `after()`, fall
+back to a direct `await logAICall(...)` when no scope exists — rather than
+requiring callers to fake one. Small, contained in `router.ts`'s `scheduleLog`.
+Not urgent; the case for it grows with every background feature.
+
+---
+
 ## Faculty Q Bank surfaces need MSQ/NAT support (opened Jul 25, 2026 — CP-Q1)
 
 **Blocking for: the moment the Assessment Engine's write-through starts producing

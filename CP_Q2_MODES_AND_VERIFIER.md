@@ -129,7 +129,7 @@ questionCount    65          timeLimit  180 min
 typeDistribution mcq 35 / msq 15 / nat 15   ← EXACT, not Hamilton
 difficulty       mixed
 marksRule        gate_standard  → Q1–25 = 1 mark, Q26–65 = 2 marks (105 total)
-negativeMarking  gate_standard  → −1/3 of the question's marks on MCQ/MSQ, 0 on NAT
+negativeMarking  gate_standard  → −1/3 on MCQ, 0 on MSQ, 0 on NAT (GATE-authentic)
 mode             exam_sim
 ```
 
@@ -146,11 +146,17 @@ When a subject cannot sustain 15 NAT slots the plan returns
 Consider a different subject for full GATE mock."` — actionable, not a silent
 degrade.
 
-**⚠ One deliberate deviation from real GATE:** actual GATE applies **no** negative
-marking to MSQ (that is why MSQ exists — the all-or-nothing key is the penalty).
-The CP-Q2 spec called for −1/3 on MCQ *and* MSQ, so that is what ships. If
-GATE-authentic scoring was the intent, `negativeMarksFor` in `presets.ts` is a
-one-line change (MSQ returns 0) and nothing else moves.
+**Negative marking is GATE-authentic, and the MSQ exemption is the rule, not an
+omission.** Real GATE applies no negative marking to multiple-select questions:
+the all-or-nothing key IS the penalty, since partial credit is denied and a
+student who knows two of three correct options scores zero rather than most of
+the marks. Adding −1/3 on top would double-penalise the same partial knowledge.
+NAT carries no penalty either — there is no option set to guess from.
+
+*(History: CP-Q2 originally shipped −1/3 on MSQ per spec, corrected immediately
+after in a follow-up commit. A product called "GATE Mock" that does not score
+like GATE is a credibility bug the first time a student who has sat the real exam
+uses it.)*
 
 ---
 
@@ -272,3 +278,10 @@ Verifier cost came in at **₹0.041 per NAT item** against the ₹0.03 estimate 
 `CP_Q2_NAT_INTEGRITY.md` — 37% over, still ~17% of what generating the item cost,
 and ~₹0.6 on a full 15-NAT GATE mock. The estimate was close enough that no
 budget decision changes.
+
+`quiz_gen_v2` at **₹0.24/call** is materially above the CP-Q1.5 figures
+(₹0.11–0.13), as expected: GATE batches carry the full syllabus against longer
+per-batch output. The ceiling that matters is the exam-sim cap — **3/day means
+roughly ₹15/student/month at full utilisation even if every session is
+GATE-scale**, which is comfortably inside budget. Recorded here as the observed
+baseline; no action.

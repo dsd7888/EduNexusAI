@@ -1371,6 +1371,21 @@ API routes:
   every code path. A hard format-validate-or-null gate (`validateCoOrNull`) closed it in
   one pass. Prefer a gate over ever-smarter guessing.
 
+- **Two probe points are the minimum to distinguish a target-specific failure from
+  a general failure mode.** CP-Q2 verified the NAT verifier against the Vigenère
+  module that motivated it (10% discard) AND a second, structurally different
+  borderline module (30%). One probe could not have separated "gate 2 catches a
+  Vigenère-specific bug" from "gate 2 catches a general NAT-on-marginal-content
+  failure" — and the answer turned out to be the second, which is the more
+  serious reading and would have been missed. The same structure is why CP4's
+  Visualize testing used interactive + plot + diagram rather than one form. When
+  a fix is validated against the case that motivated it, that case is a
+  REGRESSION TEST, not evidence the fix generalises; add at least one
+  structurally different target before believing a rate. Also read the
+  BREAKDOWN, not just the rate: CP-Q2's 30% resolved into one genuine error, one
+  ambiguous question, and one over-strict tolerance call — three findings with
+  three different dispositions, invisible in the headline number.
+
 - **Verifiers verify; they never repair.** An AI judge that is allowed to correct
   what it is checking becomes a second unaudited generator — and its output then
   carries the authority of a check it never actually received. The NAT verifier

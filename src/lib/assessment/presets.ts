@@ -120,12 +120,19 @@ export const PRESETS = { gate: GATE_PRESET } as const;
 /**
  * Negative marks for ONE wrong answer. Returns a NEGATIVE number, or 0.
  *
- * ⚠ DEVIATION FROM REAL GATE, DELIBERATE AND SPEC'D: real GATE applies no
- * negative marking to MSQ (that is why MSQ exists as a type — partial-knowledge
- * guessing is penalised by the all-or-nothing key instead). The CP-Q2 spec
- * calls for −1/3 on MCQ *and* MSQ, so that is what ships. If the intent was
- * GATE-authentic scoring, this is the line to change — MSQ returns 0 — and
- * nothing else moves.
+ * GATE-AUTHENTIC, and every exemption below is a real GATE rule rather than a
+ * simplification:
+ *
+ *  - MCQ (and its single-select cousins) → −1/3 of the question's marks.
+ *  - MSQ → 0. This is the one that looks like an oversight and is not. Real
+ *    GATE applies NO negative marking to multiple-select questions, because the
+ *    all-or-nothing key IS the penalty: partial credit is denied, so a student
+ *    who knows two of three correct options scores zero rather than most of the
+ *    marks. Adding −1/3 on top would double-penalise the same partial knowledge.
+ *  - NAT → 0. The student types a number; there is no option set to guess from.
+ *
+ * A product called "GATE Mock" that does not score like GATE is a credibility
+ * bug the first time a student who has sat the real exam uses it.
  */
 export function negativeMarksFor(
   rule: NegativeMarkingRule,
@@ -133,13 +140,15 @@ export function negativeMarksFor(
   marks: number
 ): number {
   if (rule !== "gate_standard") return 0;
-  // NAT is never negatively marked — the student types a number, there is no
-  // option set to guess from. This part IS GATE-authentic.
-  if (questionType === "nat") return 0;
+  if (
+    questionType === "nat" ||
+    questionType === "msq" ||
+    questionType === "multiple_correct"
+  ) {
+    return 0;
+  }
   if (
     questionType === "mcq" ||
-    questionType === "msq" ||
-    questionType === "multiple_correct" ||
     questionType === "true_false" ||
     questionType === "match"
   ) {
