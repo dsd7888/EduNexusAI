@@ -1186,6 +1186,36 @@ API routes:
 ## 17. Active Feature Roadmap
 
 ### Recently Shipped (July 2026)
+- **CP-Q3 Part 5 — results view + mastery hub (student), complete, on `dev`.**
+  Closes the 404 both mode runners already `router.replace()`d to on finish.
+  Full architecture, rationale, and the explicit-rejections list in
+  `CP_Q3_STUDENT_UX.md` (single source of truth for all of CP-Q3, Parts 1–5) —
+  summary here:
+  - **`GET /api/assessment/results/[sessionId]`** (`/student/quiz/results/[sessionId]`)
+    reconstructs the graded view server-side from durable state (`quiz_sessions`
+    + `quiz_session_keys`, server-only + `student_question_attempts`) rather than
+    trusting `/submit`'s transient response, so the page survives a refresh.
+    `masteryDeltas` (mastery mode) reads a before-snapshot written to
+    `quiz_sessions.config.masterySnapshot` at session-creation time (jsonb key,
+    no migration) against the current `student_topic_mastery` row; legacy
+    pre-Part-5 mastery sessions omit the field with `warnings:["no_snapshot"]`.
+    `sectionalBreakdown`/`negativeMarkingImpact` (exam_sim only) group by
+    subject (there is no real per-section time budget — GATE mock is one
+    180-minute clock) and recompute the GATE-authentic penalty independently
+    rather than trusting a persisted field that doesn't exist.
+  - **`GET /api/assessment/mastery`** (new handler alongside the existing
+    mode-start `POST` on the same route file) serves the mastery hub
+    (`/student/quiz/mastery`): per-subject attempt-weighted aggregate, inline
+    (not navigated) per-module expansion, `promotionProgress` sharing
+    `landingSignals.ts`'s thresholds with the landing card so the two can never
+    call a different module "ready".
+  - Landing page (`/student/quiz`) now also absorbs `?modules=` (mastery-mode
+    weak-area CTA), passed straight through to `/student/quiz/start`'s existing
+    `moduleIds` param — no new module-picker UI was built.
+  - Verified by three HTTP harnesses under `_cp_q3_verify/` (`results_view.ts`,
+    `mastery_hub.ts`, `results_view_privacy.ts` — the Part 5 addition to the
+    RLS/ownership four-assertion template), 84 assertions total, all passing
+    against real HTTP + a real database. No schema changes, no new npm deps.
 - **Syllabus Health Audit (faculty + oversight) — complete, shipped to main
   (Jul 23).** A second tab on `/faculty/syllabus` (NOT a new page — the editor
   stays the primary view). Two layers: (1) a DETERMINISTIC audit — seven pure
