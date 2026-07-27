@@ -26,6 +26,7 @@ import {
 } from "./generator";
 import { verifyNatQuestions, type NatVerifyAgreementStats } from "./natVerify";
 import { MODE_CONFIG } from "./presets";
+import type { MasterySnapshotEntry } from "./masterySnapshot";
 import type {
   AssessmentPlanInput,
   AssessmentQuestion,
@@ -42,6 +43,14 @@ export interface RunAssessmentOptions extends AssessmentPlanInput {
   negativeMarkingRule?: string | null;
   /** Skip the DB session row (harness/dry-run use). */
   persistSession?: boolean;
+  /**
+   * Mode='mastery' only (CP-Q3 Part 5A) — the pre-session mastery state for
+   * every module in scope, written to config.masterySnapshot so the results
+   * page can show before→after movement without a schema change. See
+   * masterySnapshot.ts for why this can't just be read back from
+   * student_topic_mastery at results time.
+   */
+  masterySnapshot?: MasterySnapshotEntry[] | null;
 }
 
 export interface FailedSlot {
@@ -86,6 +95,7 @@ export async function runAssessment(
     negativeMarking = false,
     negativeMarkingRule = null,
     persistSession = true,
+    masterySnapshot = null,
     ...planInput
   } = options;
 
@@ -180,6 +190,7 @@ export async function runAssessment(
           timeLimitMinutes,
           negativeMarking,
           negativeMarkingRule,
+          masterySnapshot,
         },
         totalMarks
       )
@@ -238,6 +249,7 @@ async function createSession(
     timeLimitMinutes: number | null;
     negativeMarking: boolean;
     negativeMarkingRule: string | null;
+    masterySnapshot?: MasterySnapshotEntry[] | null;
   },
   totalMarks: number
 ): Promise<string | null> {
@@ -259,6 +271,10 @@ async function createSession(
       immediate_feedback: MODE_CONFIG[planInput.mode].immediateFeedback,
       // Student-safe projection ONLY. The key goes to quiz_session_keys.
       questions: questions.map(studentSafe),
+      // Mode='mastery' only. See masterySnapshot.ts.
+      ...(sessionConfig.masterySnapshot && sessionConfig.masterySnapshot.length > 0
+        ? { masterySnapshot: sessionConfig.masterySnapshot }
+        : {}),
     },
     status: "in_progress",
     total_marks: totalMarks,

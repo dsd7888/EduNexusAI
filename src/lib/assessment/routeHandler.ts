@@ -13,6 +13,7 @@ import type { NextRequest } from "next/server";
 import { apiError, apiSuccess, requireRole } from "@/lib/api/helpers";
 import { checkRateLimit, RATE_LIMITS } from "@/lib/utils/rate-limit";
 import { runAssessment, studentSafe, describeFailed } from "./runner";
+import { buildMasterySnapshot } from "./masterySnapshot";
 import {
   MODE_CONFIG,
   PRESETS,
@@ -139,6 +140,20 @@ export async function handleAssessmentRequest(
       );
     }
 
+    // ── mastery snapshot (mastery mode only, CP-Q3 Part 5A) ──────────────────
+    // Captured BEFORE runAssessment/planAssessment touch anything, so it is a
+    // true "before" — see masterySnapshot.ts for why this can't be
+    // reconstructed later from student_topic_mastery alone.
+    const masterySnapshot =
+      mode === "mastery"
+        ? await buildMasterySnapshot(
+            adminClient,
+            user.id,
+            subjectIds,
+            moduleIds.length > 0 ? moduleIds : undefined
+          )
+        : null;
+
     // ── run ────────────────────────────────────────────────────────────────
     const result = await runAssessment(
       {
@@ -155,6 +170,7 @@ export async function handleAssessmentRequest(
         timeLimitMinutes,
         negativeMarking: preset?.negativeMarking ?? false,
         negativeMarkingRule: preset?.negativeMarkingRule ?? null,
+        masterySnapshot,
       },
       adminClient,
       {

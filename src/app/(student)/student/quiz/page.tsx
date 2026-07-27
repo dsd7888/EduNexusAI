@@ -104,6 +104,15 @@ function AssessmentLanding() {
   // `?mode=` preselects a card's accent — used by the results page's "Try
   // another" CTA (Part 5) to bring the student back to the mode they just ran.
   const presetMode = searchParams.get("mode") as ModeKey | null;
+  // `?modules=` (mastery mode only) — the results page's "Practice your weak
+  // areas" CTA. Passed straight through to /student/quiz/start's moduleIds,
+  // which already scopes mastery-session generation to specific modules
+  // (CP-Q2) — no module-picker UI is needed for this handoff, the CTA already
+  // knows exactly which modules it wants.
+  const presetModules = (searchParams.get("modules") ?? "")
+    .split(",")
+    .map((m) => m.trim())
+    .filter(Boolean);
 
   const [selected, setSelected] = useState<SubjectRow[]>([]);
   const [signals, setSignals] = useState<LandingSignals | null>(null);
@@ -155,6 +164,9 @@ function AssessmentLanding() {
       : selected.slice(0, 1).map((s) => s.id);
     const params = new URLSearchParams({ mode: mode.key });
     if (ids.length > 0) params.set("subjectIds", ids.join(","));
+    if (mode.key === "mastery" && presetModules.length > 0) {
+      params.set("moduleIds", presetModules.join(","));
+    }
     return `/student/quiz/start?${params.toString()}`;
   };
 
