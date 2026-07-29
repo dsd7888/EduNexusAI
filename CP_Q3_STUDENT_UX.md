@@ -219,6 +219,8 @@ between, the same assumption every "your last session" surface in this
 product already makes. Legacy mastery sessions created before this shipped
 have no snapshot; their results omit `masteryDeltas` and set
 `warnings: ["no_snapshot"]` rather than showing a wrong or empty delta.
+`masterySnapshot` is intentionally student-readable via `config` — student's
+own before-state, not grading material (privacy check, CP-Q4 Part 0).
 
 **Sectional breakdown groups by subject, not a real "section".** GATE mock
 is one 180-minute clock for the whole 65-question paper — there is no

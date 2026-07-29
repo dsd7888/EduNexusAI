@@ -17,6 +17,7 @@
  */
 
 import { apiError, apiSuccess, requireRole } from "@/lib/api/helpers";
+import { attemptWeightedAccuracyPct } from "@/lib/assessment/aggregation";
 import { computeStreak } from "@/lib/assessment/streak";
 import {
   LEVEL_UP_MIN_ACCURACY,
@@ -105,13 +106,15 @@ export async function GET() {
       .reverse();
 
     // ── Mastery: aggregate % and the level-up counter ──────────────────────
-    // Aggregate is attempt-weighted, not a mean of per-module percentages: a
-    // module with 40 attempts should not carry the same weight as one with 3,
-    // or a single lucky 3-question module inflates the headline number.
-    const totalAttempts = mastery.reduce((n, m) => n + (m.attempts_count ?? 0), 0);
-    const totalCorrect = mastery.reduce((n, m) => n + (m.correct_count ?? 0), 0);
-    const masteryPct =
-      totalAttempts > 0 ? Math.round((totalCorrect / totalAttempts) * 100) : null;
+    // Attempt-weighted, and shared with the faculty cohort aggregate — the
+    // reasoning and the worked counter-example now live at the one definition
+    // in aggregation.ts. Null (not 0) when nothing has been practised.
+    const masteryPct = attemptWeightedAccuracyPct(
+      mastery.map((m) => ({
+        attempts: m.attempts_count ?? 0,
+        correct: m.correct_count ?? 0,
+      }))
+    );
 
     // "Ready to level up": meets the accuracy bar and is one short of the
     // attempt threshold that would promote it (§16 promotes at ≥70% with ≥10

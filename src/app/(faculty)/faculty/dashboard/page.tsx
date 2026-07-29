@@ -291,14 +291,17 @@ export default function FacultyDashboard() {
         ) : (
           <div className="flex gap-2 overflow-x-auto pb-1">
             {assignedSubjects.map((s) => (
-              <Card
-                key={s.id}
-                className="min-w-[220px] cursor-default px-4 py-3"
-              >
+              <Card key={s.id} className="min-w-[220px] px-4 py-3">
                 <p className="text-xs font-medium text-muted-foreground">
                   {s.code}
                 </p>
                 <p className="truncate text-sm font-semibold">{s.name}</p>
+                <Link
+                  href={`/faculty/analytics/subject/${s.id}`}
+                  className="mt-1 inline-block text-xs font-medium text-muted-foreground underline underline-offset-2 hover:text-foreground"
+                >
+                  Analytics
+                </Link>
               </Card>
             ))}
           </div>

@@ -324,6 +324,97 @@ already permit it — `stm_select_faculty_assigned` — so this is UI only), and
 
 ---
 
+## CP-Q4 deferrals (logged Jul 28, 2026 — faculty analytics)
+
+### Still open from CP-Q3, re-confirmed not done
+
+- **`/student/quiz/legacy` removal** — still a CP-Q5 task. Precondition
+  unchanged: one full pilot week on the new UX with no rollback, and
+  `usage_analytics` showing zero legacy page loads. See the CP-Q3 section above
+  for the three deletions that must happen together.
+- **Vercel preview latency measurement** — never run. CP-Q3 measured latency
+  against local dev only. The numbers that matter are cold-start numbers on
+  Vercel, and CP-Q4 adds a route whose inline recompute is a full scan per
+  subject (`/api/faculty/analytics/subject/[subjectId]`, `maxDuration` 60,
+  `memory` 1024). That route is now the most likely first candidate to blow a
+  timeout on a real cohort, and it has never been timed anywhere but localhost.
+- **Pilot verification pass** — Dhruv-owned, cross-checkpoint. Unchanged.
+- **`routeAI` cannot run outside a Next request scope** — unchanged, and
+  untouched by CP-Q4: this checkpoint makes zero AI calls, so nothing here
+  needed `routeAI` at all.
+
+### Dean/HOD provisioning — `role_scope` has no UI
+
+**The first real dean or HOD created MUST get a `role_scope` row, or faculty
+analytics will correctly show them nothing.** There is currently **no
+provisioning UI** — a superadmin has to insert the row directly:
+
+```sql
+INSERT INTO role_scope (user_id, school, department)
+VALUES ('<profile id>', 'School of Engineering', NULL);  -- NULL = entire school
+```
+
+`role_scope` is empty on the live DB and CP-Q4 is its first consumer in code, so
+this is a genuine footgun rather than a theoretical one — the failure looks like
+a permissions bug, not like missing setup. Cross-reference the **Dean/HOD
+provisioning UI** item in §17 Tier 5: whenever that is built, creating a
+dean/hod must write the `role_scope` row in the same flow, and the onboarding
+docs must say so.
+
+### Schema-drift audit — `module_co_mapping.source` vocabulary
+
+`CLAUDE_CONTEXT.md` §5 documents `source` as `'ai_classified' | 'faculty_verified'`.
+The actual CHECK constraint
+(`20260628000000_module_co_mapping.sql`) permits only
+`('ai_inferred','superadmin_verified')`, and all 135 live rows are
+`ai_inferred`. The documented values **cannot exist**.
+
+Audit, not an urgent fix — CO attainment is correct under either vocabulary
+because `src/lib/analytics/coWeighting.ts` maps both the real values and the
+documented ones. What the audit should decide is which vocabulary is intended,
+and in particular whether **faculty** should ever be able to verify a CO mapping:
+today the table's RLS grants write to superadmin/dept_admin only, so
+"faculty-verified" is not a thing the system can represent. If the answer is
+"yes, faculty should verify", that is a policy change plus a `source` value, not
+a rename.
+
+Same drift class as §14's RLS warning, seen from the column side. Also captured
+this checkpoint: `subjects.school` / `subjects.created_by` existed live with no
+migration — now recorded retroactively in
+`20260727120000_retro_subjects_school_created_by.sql`. **A broader sweep
+comparing live schema against the migration history is worth one focused
+session** — these were found by accident, twice, while building on top of them.
+
+### Cross-feature analytics — explicit NON-GOAL
+
+Chat, placement and content-consumption data stay out of faculty analytics.
+Recorded here as a deliberate rejection rather than a backlog item, so a future
+"faculty want the full picture" request has to argue against the reasoning in
+`CP_Q4_FACULTY_ANALYTICS.md` (a student talking to the AI tutor is thinking out
+loud; a readable transcript makes it a worse tutor for the students who most
+need it). Enforced by `_cp_q4_verify/cross_feature_scoping.ts` with canary
+strings, so it cannot regress silently.
+
+If it is ever revisited, the honest version is **student-initiated sharing**, not
+faculty-initiated surveillance — a student choosing to show a faculty member a
+chat thread they are stuck on. That is a different feature with a different
+consent model, not a widening of this one.
+
+### Smaller CP-Q4 items
+
+- **Analytics nav is one link per subject card** on the faculty dashboard. There
+  is no top-level analytics entry point that lists subjects, and no cross-subject
+  rollup for a dean holding many. A dean today reaches each subject's analytics
+  through its card.
+- **`per_question` renders the worst 10 discriminators**, with no pagination or
+  "show all". Fine at pilot bank size (38 questions); revisit when a subject's
+  bank is large enough that the tail matters.
+- **Lint debt baseline check (§CP-Q3 lint debt).** CP-Q4 added no new lint
+  errors — every new file is clean under `npx eslint`. The repo-wide number is
+  unchanged by this checkpoint.
+
+---
+
 1. Practice Q based on quiz feedbacks -- just like placement prep
 2. Medical oriented-- adaptable to fields
 3. Placement—text box based answers too, with yt reference… &/ same such reference sources in AI chat.

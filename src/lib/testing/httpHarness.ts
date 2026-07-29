@@ -205,6 +205,17 @@ export interface SignInOptions {
   templateEmail?: string;
   branch?: string;
   semester?: number;
+  /**
+   * Role written to the ephemeral user's profile. Defaults to "student".
+   *
+   * CP-Q4 needs faculty/dean/hod sessions to verify the analytics access
+   * invariant — a harness that can only mint students can assert that students
+   * are blocked, but not that the right faculty is allowed and the wrong one
+   * is not, which is the half that actually distinguishes a working policy
+   * from one that denies everybody.
+   */
+  role?: "student" | "faculty" | "dean" | "hod" | "superadmin";
+  fullName?: string;
 }
 
 /**
@@ -318,8 +329,8 @@ export async function signInAsStudent(
     const row = {
       id: userId,
       email: targetEmail,
-      full_name: "CP Harness Student",
-      role: "student",
+      full_name: options.fullName ?? "CP Harness Student",
+      role: options.role ?? "student",
       ...scope,
     };
     const { error: upErr } = profileSeen
@@ -464,6 +475,12 @@ export async function signInAsStudent(
     await sweep("quiz_sessions", "student_id");
     await sweep("student_topic_mastery", "student_id");
     await sweep("usage_analytics", "user_id");
+    // Faculty/dean sessions (CP-Q4): the access-scope rows a non-student
+    // harness user acquires. Swept unconditionally — they are keyed by this
+    // user id, so there is nothing to sweep for a student and nothing left
+    // behind for a faculty member.
+    await sweep("faculty_assignments", "faculty_id");
+    await sweep("role_scope", "user_id");
 
     if (owned) {
       await sweep("profiles", "id");

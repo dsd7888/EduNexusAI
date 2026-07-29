@@ -49,7 +49,9 @@
     "src/app/api/assessment/quick/route.ts": { "maxDuration": 120, "memory": 1024 },
     "src/app/api/assessment/mastery/route.ts": { "maxDuration": 180, "memory": 1024 },
     "src/app/api/assessment/exam-sim/route.ts": { "maxDuration": 300, "memory": 1024 },
-    "src/app/api/assessment/submit/route.ts": { "maxDuration": 60, "memory": 1024 }
+    "src/app/api/assessment/submit/route.ts": { "maxDuration": 60, "memory": 1024 },
+    "src/app/api/cron/refresh-analytics-snapshots/route.ts": { "maxDuration": 300, "memory": 1024 },
+    "src/app/api/faculty/analytics/subject/[subjectId]/route.ts": { "maxDuration": 60, "memory": 1024 }
   },
   "crons": [
     {
@@ -63,6 +65,10 @@
     {
       "path": "/api/cron/abandon-stale-assessments",
       "schedule": "0 */6 * * *"
+    },
+    {
+      "path": "/api/cron/refresh-analytics-snapshots",
+      "schedule": "0 3 * * *"
     }
   ]
 }

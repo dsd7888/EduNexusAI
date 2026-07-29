@@ -1612,6 +1612,31 @@ API routes:
   `change_summary` states as the single source of truth for both server and client —
   see §10's label taxonomy table.
 
+- **Named constraints over inline for any table written by upsert.** The constraint
+  name IS the upsert target (`ON CONFLICT ON CONSTRAINT <name>` / PostgREST's
+  `onConflict`), and `DROP CONSTRAINT IF EXISTS` → `ADD CONSTRAINT` is the idempotent
+  shape a re-runnable migration needs — an inline `UNIQUE (col)` gets an
+  implementation-chosen name that a later migration cannot reliably drop. Reference:
+  `faculty_analytics_snapshots_subject_id_key` in
+  `20260728000000_faculty_analytics_snapshots.sql` (CP-Q4).
+
+- **Access-check masking applies to authorization outcomes only, never to
+  infrastructure failures.** Surfaces that must not leak existence (CP-Q4's
+  per-student analytics route: a faculty probing student ids must not enumerate
+  students by reading status codes) collapse 403 → 404. That masking must be bounded
+  to 4xx — a 500 reported as 404 sends everyone debugging a routing problem that
+  doesn't exist. `analyticsAccessResponse()` in `src/lib/analytics/access.ts` is the
+  reference shape. Periodically grep for masking logic that silently promotes 5xx
+  into 4xx.
+
+- **A cohort/aggregate metric over zero data is NULL, not 0.** CP-Q3's rule that a
+  student is never shown a failure they didn't earn applies unchanged at cohort scale:
+  a fresh subject rendering "0% cohort accuracy" reads as a catastrophic result and
+  triggers faculty intervention on data that does not exist.
+  `faculty_analytics_snapshots.aggregate_accuracy` is nullable for exactly this
+  reason, and every consumer branches on null before formatting. A future "fix the
+  null handling" refactor has to argue with this, not discover it.
+
 - **Concurrent-session hygiene** — see §22 for the working-tree mitigation this cycle
   surfaced repeatedly (large, vaguely-titled commits bundling unrelated work).
 
