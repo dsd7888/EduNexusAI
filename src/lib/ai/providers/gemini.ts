@@ -119,6 +119,14 @@ function createGeminiProvider(): AIProvider {
     // Thinking tokens eat into maxOutputTokens on gemini-2.5-flash
     const isStructuredTask = [
       "ppt_gen",
+      // ppt_diagram (diagram batches) also uses a responseSchema
+      // (DIAGRAM_BATCH_SCHEMA in the batch route). On Flash-tier diagram batches
+      // — which now happen via the escalation-first path even for slides that
+      // will end up on Pro — thinking tokens left uncapped consume the 8192
+      // maxOutputTokens budget and truncate SVG JSON mid-object, forcing an
+      // otherwise-avoidable Pro escalation (and, on the Vercel 60s cap, a 504).
+      // thinkingBudget:0 here mirrors the ppt_gen guarantee (CLAUDE_CONTEXT §19).
+      "ppt_diagram",
       "ppt_extract",
       "ppt_refine",
       "quiz_gen",

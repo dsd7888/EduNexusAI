@@ -46,6 +46,12 @@ type OutlineItem = {
   type: string;
   title: string;
   renderHint?: "svg" | "mermaid" | "imagen" | "illustration" | "dual" | null;
+  // The outline route assigns this per diagram slide (see OUTLINE_SCHEMA); the
+  // batch route routes intricate SVG/dual straight to Pro when it sees it.
+  // Missing from this type previously → page.tsx dropped it before the batch
+  // fetch → every diagram collapsed to "standard" → Flash-first-then-escalate
+  // → wasted 25-40s attempt that could trip the Vercel timeout.
+  diagramComplexity?: "standard" | "intricate" | null;
   leftVisual?: string;
   rightVisual?: string;
   leftPrompt?: string;
@@ -706,31 +712,66 @@ export default function FacultyGeneratePage() {
         status: "generating_content" | "generating_diagrams"
       ): Promise<void> {
         try {
-          const batchRes = await fetch("/api/generate/ppt/batch", {
+          const body = JSON.stringify({
+            subjectId: cfg.subjectId,
+            contentId,
+            moduleId: cfg.moduleId,
+            customTopic: cfg.moduleId ? undefined : cfg.customTopic,
+            slides: batch.map((s) => ({
+              index: s.index,
+              type: s.type,
+              title: s.title,
+              renderHint: s.renderHint ?? null,
+              // Forward the outline's diagramComplexity so the batch route's
+              // routeDiagramBatchModel actually sees "intricate" and routes the
+              // slide straight to Pro. Omitting it collapsed every diagram to
+              // "standard" → Flash-first → Pro-escalation, which on Vercel free
+              // tier's 60s cap trips the timeout that becomes an !ok response
+              // (and then this placeholder text).
+              diagramComplexity: s.diagramComplexity ?? null,
+              ...(s.type === "dual_visual"
+                ? {
+                    leftVisual: s.leftVisual,
+                    rightVisual: s.rightVisual,
+                    leftPrompt: s.leftPrompt,
+                    rightPrompt: s.rightPrompt,
+                  }
+                : {}),
+            })),
+            depth: cfg.depth,
+          });
+          // One retry on !ok. Transient Gemini 5xx and Vercel 504s recover
+          // routinely on a second HTTP attempt (runBatchOnModel's internal
+          // retries are SAME-model within the SAME request; they cannot escape
+          // a Vercel timeout or a single-request rate-limit window). Without
+          // this, one flaky call becomes an unrecoverable "Content could not
+          // be generated" line in the final .pptx.
+          let batchRes = await fetch("/api/generate/ppt/batch", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              subjectId: cfg.subjectId,
-              contentId,
-              moduleId: cfg.moduleId,
-              customTopic: cfg.moduleId ? undefined : cfg.customTopic,
-              slides: batch.map((s) => ({
-                index: s.index,
-                type: s.type,
-                title: s.title,
-                renderHint: s.renderHint ?? null,
-                ...(s.type === "dual_visual"
-                  ? {
-                      leftVisual: s.leftVisual,
-                      rightVisual: s.rightVisual,
-                      leftPrompt: s.leftPrompt,
-                      rightPrompt: s.rightPrompt,
-                    }
-                  : {}),
-              })),
-              depth: cfg.depth,
-            }),
+            body,
           });
+          if (!batchRes.ok) {
+            const firstStatus = batchRes.status;
+            console.warn(
+              `[generate] ${batchLabel} first attempt failed with HTTP ${firstStatus} — retrying once after 2s`
+            );
+            await new Promise((r) => setTimeout(r, 2000));
+            batchRes = await fetch("/api/generate/ppt/batch", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body,
+            });
+            if (batchRes.ok) {
+              console.log(
+                `[generate] ${batchLabel} retry recovered (was HTTP ${firstStatus})`
+              );
+            } else {
+              console.warn(
+                `[generate] ${batchLabel} retry also failed (HTTP ${batchRes.status}) — falling to placeholders`
+              );
+            }
+          }
 
           let batchCostInr = 0;
           if (batchRes.ok) {
@@ -823,6 +864,104 @@ export default function FacultyGeneratePage() {
 
       // Make sure every checkpoint write has flushed before finalizing.
       await checkpointChainRef.current;
+
+      // ── Recovery pass ────────────────────────────────────────────────────
+      // Any slide still carrying `_failed: true` (either the batch route's own
+      // "Content generation failed for this slide." placeholder OR the
+      // frontend's own "Content could not be generated…" placeholder for a
+      // batch that ultimately failed after the one-shot retry) gets ONE more
+      // isolated single-slide regeneration attempt before the deck is built.
+      // Serial, not concurrent — a batch that just failed may have been
+      // quota-limited, and hammering with N concurrent recovery calls is the
+      // fastest way to keep it 429'd. If a recovery call comes back non-_failed
+      // we swap it into allSlides[]; if it fails again we leave the placeholder
+      // in place so build/route.ts's title-slide abort can still fire.
+      const failedForRepair = allSlides
+        .map((s, i) => ({ s, i }))
+        .filter(({ s }) => s && (s as { _failed?: boolean })._failed === true);
+
+      if (failedForRepair.length > 0) {
+        setStage("diagrams", "active");
+        console.warn(
+          `[generate] ${failedForRepair.length} slide(s) still flagged _failed after batches — attempting single-slide recovery serially`
+        );
+        const recoveredIndices: number[] = [];
+        for (const { i } of failedForRepair) {
+          const outlineSlide = outline.outline.find((o) => o.index === i);
+          if (!outlineSlide) continue;
+          const repairBody = JSON.stringify({
+            subjectId: cfg.subjectId,
+            contentId,
+            moduleId: cfg.moduleId,
+            customTopic: cfg.moduleId ? undefined : cfg.customTopic,
+            slides: [
+              {
+                index: outlineSlide.index,
+                type: outlineSlide.type,
+                title: outlineSlide.title,
+                renderHint: outlineSlide.renderHint ?? null,
+                diagramComplexity: outlineSlide.diagramComplexity ?? null,
+                ...(outlineSlide.type === "dual_visual"
+                  ? {
+                      leftVisual: outlineSlide.leftVisual,
+                      rightVisual: outlineSlide.rightVisual,
+                      leftPrompt: outlineSlide.leftPrompt,
+                      rightPrompt: outlineSlide.rightPrompt,
+                    }
+                  : {}),
+              },
+            ],
+            depth: cfg.depth,
+          });
+          try {
+            const repairRes = await fetch("/api/generate/ppt/batch", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: repairBody,
+            });
+            if (!repairRes.ok) {
+              console.warn(
+                `[generate][repair] slide #${i} HTTP ${repairRes.status} — leaving placeholder`
+              );
+              continue;
+            }
+            const { slides: repairedSlides = [], costInr = 0 } =
+              await repairRes.json();
+            const candidate = repairedSlides[0] as
+              | (SlideContent & { _failed?: boolean })
+              | undefined;
+            if (candidate && candidate._failed !== true) {
+              allSlides[i] = candidate;
+              totalFlashCostInr += Number(costInr) || 0;
+              recoveredIndices.push(i);
+              console.log(`[generate][repair] slide #${i} recovered`);
+            } else {
+              console.warn(
+                `[generate][repair] slide #${i} came back still _failed — leaving placeholder`
+              );
+            }
+          } catch (err) {
+            console.warn(`[generate][repair] slide #${i} threw:`, err);
+          }
+        }
+
+        // Checkpoint anything we recovered so an interrupted build can resume
+        // with the repaired content rather than the placeholders.
+        if (recoveredIndices.length > 0 && contentId) {
+          await queueCheckpoint(
+            contentId,
+            recoveredIndices,
+            recoveredIndices.map((i) => allSlides[i]),
+            0,
+            "generating_diagrams"
+          );
+          await checkpointChainRef.current;
+        }
+        setStage("diagrams", "done");
+        console.log(
+          `[generate] recovery pass: ${recoveredIndices.length}/${failedForRepair.length} slide(s) recovered`
+        );
+      }
 
       const validSlides = allSlides.filter(
         (s): s is SlideContent => Boolean(s)

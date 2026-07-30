@@ -683,7 +683,29 @@ export async function POST(request: NextRequest) {
       return flash.kind === "fail" ? null : flash.slides;
     }
 
-    const batchContent = await generateBatch(batchPrompt);
+    // generateBatch can THROW when the last runBatchOnModel attempt propagates
+    // an API error (Gemini 5xx, transient network fail, exhausted 429 retries).
+    // Left unhandled, that throw exits through the outer POST catch as a bare
+    // 500 — and the frontend, seeing !batchRes.ok, silently stamps its own
+    // "Content could not be generated for this slide." placeholder into the
+    // deck WITHOUT the _failed flag. That flag is what build/route.ts's
+    // title-slide abort keys on, so a thrown-batch title slide bypassed the
+    // abort and shipped a broken deck. Convert every thrown-batch outcome into
+    // the SAME flagged-placeholder 200 that a null generateBatch already
+    // returns, so build/route.ts can enforce the title-slide invariant and the
+    // frontend never has to invent unflagged placeholders of its own.
+    let batchContent: SlideContent[] | null = null;
+    let generateThrewMessage: string | null = null;
+    try {
+      batchContent = await generateBatch(batchPrompt);
+    } catch (genErr) {
+      generateThrewMessage =
+        genErr instanceof Error ? genErr.message : String(genErr);
+      console.error(
+        `[ppt/batch][batch-throw] ${isDiagramBatch ? "diagram" : "content"} batch threw before returning: ${generateThrewMessage}`
+      );
+      batchContent = null;
+    }
 
     if (!batchContent) {
       const failedIndices = slides.map((s) => s.index);
@@ -696,7 +718,8 @@ export async function POST(request: NextRequest) {
       );
       console.error(
         `[ppt/batch][batch-fail] ${isDiagramBatch ? "diagram" : "content"} batch produced ZERO parseable slides after all retries` +
-          `${contentParseFailed ? " + whole-batch regenerate" : ""}. ` +
+          `${contentParseFailed ? " + whole-batch regenerate" : ""}` +
+          `${generateThrewMessage ? ` (threw: ${generateThrewMessage.slice(0, 200)})` : ""}. ` +
           `affectedIndices=[${failedIndices.join(",")}] types=[${failedTypes.join(",")}] ` +
           `criticalSlidePresent=${hasCriticalSlide} — returning flagged placeholders.`
       );
@@ -714,6 +737,9 @@ export async function POST(request: NextRequest) {
         parseFailed: true,
         failedSlideIndices: failedIndices,
         hasCriticalSlide,
+        ...(generateThrewMessage
+          ? { threw: generateThrewMessage.slice(0, 500) }
+          : {}),
       });
     }
 
