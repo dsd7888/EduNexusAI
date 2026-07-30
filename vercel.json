@@ -1,8 +1,8 @@
 {
   "functions": {
-    "src/app/api/generate/ppt/outline/route.ts": { "maxDuration": 60, "memory": 1024 },
-    "src/app/api/generate/ppt/batch/route.ts": { "maxDuration": 60, "memory": 1024 },
-    "src/app/api/generate/ppt/build/route.ts": { "maxDuration": 60, "memory": 1024 },
+    "src/app/api/generate/ppt/outline/route.ts": { "maxDuration": 300, "memory": 1024 },
+    "src/app/api/generate/ppt/batch/route.ts": { "maxDuration": 300, "memory": 1024 },
+    "src/app/api/generate/ppt/build/route.ts": { "maxDuration": 300, "memory": 1024 },
     "src/app/api/generate/ppt/checkpoint/[contentId]/route.ts": { "maxDuration": 30, "memory": 1024 },
     "src/app/api/generate/ppt/resumable/route.ts": { "maxDuration": 15, "memory": 1024 },
     "src/app/api/cron/abandon-stale-generations/route.ts": { "maxDuration": 30, "memory": 1024 },
