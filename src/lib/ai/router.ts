@@ -223,8 +223,17 @@ function resolveChatParams(task: string, params: ChatParams): ChatParams {
                                               // example is the largest of the
                                               // three, so budget for a full set
                                               // of them.
+                                              //
+                                              // 16384, not 8192: measured. The
+                                              // outer array carries no maxItems
+                                              // (it blows Gemini's constraint
+                                              // state limit — see
+                                              // MODULE_NOTES_RESPONSE_SCHEMA),
+                                              // so a dense module like
+                                              // SOEEC1010 M1 ran to 8182 output
+                                              // tokens and truncated mid-JSON.
                                               task === "notes_gen_module"
-                                              ? 8192
+                                              ? 16384
                                               : 4096),
   };
 }

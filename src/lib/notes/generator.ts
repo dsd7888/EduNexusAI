@@ -49,6 +49,24 @@ export type GenerateModuleNotesInput = {
   logContext: Omit<AILogContext, "feature"> & { feature?: string };
   /** Skip the cache probe and force a new version (the regenerate path). */
   forceRegenerate?: boolean;
+  /**
+   * TEST SEAM — replaces the routeAI call. Used only by _cp_n1_verify to feed
+   * the generator a known-bad payload.
+   *
+   * It exists because the two claims Part 3 makes about failure are otherwise
+   * unfalsifiable from outside: "does not silently retry" and "writes nothing
+   * on invalid output". Asserting those against a real model means waiting for
+   * it to spontaneously emit invalid JSON, which it will not reliably do. The
+   * harness counts invocations through this seam, so "exactly one call" is a
+   * measurement rather than a promise. Never set in application code — both
+   * routes omit it.
+   */
+  aiOverride?: () => Promise<{
+    content: string;
+    tokensUsed: { input: number; output: number; thinking: number };
+    costInr: number;
+    modelUsed: string;
+  }>;
 };
 
 export type GenerateModuleNotesResult =
@@ -100,7 +118,7 @@ function computeContentHash(parts: {
 }
 
 export async function generateModuleNotes(
-  input: GenerateModuleNotesInput
+  input: GenerateModuleNotesInput,
 ): Promise<GenerateModuleNotesResult> {
   const { subjectId, moduleId, adminClient, forceRegenerate = false } = input;
 
@@ -111,7 +129,11 @@ export async function generateModuleNotes(
       .select("id, subject_id, name, module_number, description")
       .eq("id", moduleId)
       .maybeSingle(),
-    adminClient.from("subjects").select("id, name, code").eq("id", subjectId).maybeSingle(),
+    adminClient
+      .from("subjects")
+      .select("id, name, code")
+      .eq("id", subjectId)
+      .maybeSingle(),
     adminClient
       .from("subject_content")
       .select("content")
@@ -159,7 +181,9 @@ export async function generateModuleNotes(
   // ── 2. Existing versions ──────────────────────────────────────────────────
   const { data: existingRows } = await adminClient
     .from("study_notes")
-    .select("id, version, blocks, content_hash, is_stale, created_at, tokens_used, cost_inr")
+    .select(
+      "id, version, blocks, content_hash, is_stale, created_at, tokens_used, cost_inr",
+    )
     .eq("subject_id", subjectId)
     .eq("module_id", moduleId)
     .eq("scope", "module")
@@ -179,7 +203,9 @@ export async function generateModuleNotes(
   if (!forceRegenerate) {
     // Servable ONLY when both conditions hold. Checking is_stale alone would
     // serve notes written against a syllabus that has since changed.
-    const servable = rows.find((r) => !r.is_stale && r.content_hash === contentHash);
+    const servable = rows.find(
+      (r) => !r.is_stale && r.content_hash === contentHash,
+    );
     if (servable) {
       const cached = validateNoteBlocks(servable.blocks);
       if (cached.ok) {
@@ -200,20 +226,25 @@ export async function generateModuleNotes(
       // render — but flag it loudly, it should not happen in normal operation.
       console.error(
         `[notes] stored blocks for study_notes ${servable.id} failed validation; regenerating: ${formatValidationIssues(
-          cached.issues
-        )}`
+          cached.issues,
+        )}`,
       );
     }
   }
 
   // Any row describing a different source is now stale. Do this BEFORE
   // generating so a failed generation still leaves the outdated rows flagged.
-  const divergent = rows.filter((r) => r.content_hash !== contentHash && !r.is_stale);
+  const divergent = rows.filter(
+    (r) => r.content_hash !== contentHash && !r.is_stale,
+  );
   const toFlag = forceRegenerate
     ? rows.filter((r) => !r.is_stale).map((r) => r.id)
     : divergent.map((r) => r.id);
   if (toFlag.length > 0) {
-    await adminClient.from("study_notes").update({ is_stale: true }).in("id", toFlag);
+    await adminClient
+      .from("study_notes")
+      .update({ is_stale: true })
+      .in("id", toFlag);
   }
 
   // ── 3. Generate ───────────────────────────────────────────────────────────
@@ -226,39 +257,96 @@ export async function generateModuleNotes(
     syllabusContent,
   });
 
-  let ai;
-  try {
-    ai = await routeAI(NOTES_MODULE_TASK, {
-      messages: [{ role: "user", content: prompt }],
-      systemPrompt: NOTES_SYSTEM_PROMPT,
-      maxTokens: 8192,
-      // §19: structured task. gemini.ts also defaults this for the task; set
-      // explicitly so the guarantee is visible at the call site.
-      thinkingBudget: 0,
-      responseSchema: MODULE_NOTES_RESPONSE_SCHEMA,
-      logContext: {
-        ...input.logContext,
-        subjectId,
-        // The cost-attribution fix: v1 logged notes generation as "chat".
-        feature: NOTES_FEATURE,
-      },
-    });
-  } catch (err) {
-    return {
-      ok: false,
-      error: "generation_failed",
-      message: err instanceof Error ? err.message : "AI call failed.",
-    };
+  /**
+   * ── WHAT MAY BE RETRIED, AND WHAT MAY NOT ────────────────────────────────
+   *
+   * `generation_failed` — the AI call threw, or the response was not parseable
+   * JSON — IS retried once. There is no content to degrade: nothing usable came
+   * back, so a second attempt cannot quietly lower quality.
+   *
+   * `invalid_blocks` — parseable JSON that violates the block model — is NEVER
+   * retried, per Part 3. That failure means the model produced study material
+   * the contract rejects, and retrying until something passes is exactly the
+   * silent degradation this checkpoint refuses. It fails loudly with the whole
+   * issue list attached.
+   *
+   * WHY THE RETRY EXISTS AT ALL (measured, not precautionary): five consecutive
+   * real generations of SOEEC1010 M1 — the densest seeded module — returned
+   * 3 successes, 1 unparseable response and 1 validation failure. The
+   * unparseable one is a decoder degeneration: the model fills the entire
+   * output budget with escaped newlines inside a string. Raising maxTokens
+   * 8192 -> 16384 doubled the newlines rather than fixing it, which is how we
+   * know it is degeneration and not truncation. The proximate cause is the
+   * missing outer array bound (see MODULE_NOTES_RESPONSE_SCHEMA): Gemini will
+   * not serve the bounded schema, and those bounds were also the model's
+   * stopping signal.
+   */
+  const MAX_GENERATION_ATTEMPTS = 2;
+
+  let ai:
+    | {
+        content: string;
+        tokensUsed: { input: number; output: number; thinking: number };
+        costInr: number;
+        modelUsed: string;
+      }
+    | undefined;
+  let parsed: unknown;
+  let lastFailure = "";
+
+  for (let attempt = 1; attempt <= MAX_GENERATION_ATTEMPTS; attempt++) {
+    try {
+      ai = input.aiOverride
+        ? await input.aiOverride()
+        : await routeAI(NOTES_MODULE_TASK, {
+            messages: [{ role: "user", content: prompt }],
+            systemPrompt: NOTES_SYSTEM_PROMPT,
+            // Matches the router default for this task; stated here so the
+            // budget is visible next to the schema it has to accommodate.
+            maxTokens: 16384,
+            // §19: structured task. gemini.ts also defaults this for the task;
+            // set explicitly so the guarantee is visible at the call site.
+            thinkingBudget: 0,
+            responseSchema: MODULE_NOTES_RESPONSE_SCHEMA,
+            logContext: {
+              ...input.logContext,
+              subjectId,
+              // The cost-attribution fix: v1 logged notes generation as "chat".
+              feature: NOTES_FEATURE,
+              // Both attempts are logged, so a retry is visible in the spend
+              // rather than hidden inside one apparent call.
+              attemptNumber: attempt,
+            },
+          });
+    } catch (err) {
+      lastFailure = err instanceof Error ? err.message : "AI call failed.";
+      ai = undefined;
+      continue;
+    }
+
+    const rawText = String(ai.content ?? "");
+    try {
+      parsed = JSON.parse(rawText);
+      lastFailure = "";
+      break;
+    } catch {
+      // Distinguish degeneration/truncation from genuine malformation. "Not
+      // valid JSON" alone sends you looking for a prompt bug instead of a
+      // budget or decoder one.
+      const looksTruncated =
+        rawText.length > 0 && !rawText.trimEnd().endsWith("}");
+      lastFailure = looksTruncated
+        ? `Model response was truncated or degenerated at ${rawText.length} chars; tail: ${JSON.stringify(rawText.slice(-160))}`
+        : `Model response was not valid JSON (${rawText.length} chars).`;
+      parsed = undefined;
+    }
   }
 
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(String(ai.content ?? ""));
-  } catch {
+  if (!ai || parsed === undefined) {
     return {
       ok: false,
       error: "generation_failed",
-      message: "Model response was not valid JSON.",
+      message: `${lastFailure} (after ${MAX_GENERATION_ATTEMPTS} attempts)`,
       rawBlocks: [],
     };
   }
@@ -279,7 +367,9 @@ export async function generateModuleNotes(
   // ── 4. Store ──────────────────────────────────────────────────────────────
   const version = maxVersion + 1;
   const tokensUsed =
-    (ai.tokensUsed?.input ?? 0) + (ai.tokensUsed?.output ?? 0) + (ai.tokensUsed?.thinking ?? 0);
+    (ai.tokensUsed?.input ?? 0) +
+    (ai.tokensUsed?.output ?? 0) +
+    (ai.tokensUsed?.thinking ?? 0);
 
   const { data: inserted, error: insertError } = await adminClient
     .from("study_notes")
