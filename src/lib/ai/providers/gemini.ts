@@ -183,6 +183,12 @@ function createGeminiProvider(): AIProvider {
       // deliberately NOT listed — they want the creative default.
       "chat_viz_classify",
       "chat_viz_diagram",
+      // Notes v2 module generation (CP-N1): narrow anyOf responseSchema over
+      // the three NoteBlock kinds. thinkingBudget:0 is MANDATORY (§19) — a
+      // truncated blocks array silently drops the last blocks, which reads as
+      // "this module only had 5 ideas" rather than as an error. The call site
+      // sets it explicitly too; this is the default.
+      "notes_gen_module",
     ].includes(taskName);
 
     const temperature =

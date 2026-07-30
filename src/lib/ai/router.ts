@@ -53,6 +53,10 @@ const TASK_TO_MODEL: Record<string, "flash" | "pro"> = {
   lab_manual_gen: "flash", // per-practical lab manual section
   lab_path_gen: "flash", // lab manual learning-path proposal
   syllabus_audit: "flash", // ONE call per subject: fix proposals + AI-only findings
+  // Notes v2 (CP-N1): ONE call per module producing 4-12 typed content blocks
+  // against a narrow anyOf responseSchema. Flash — the work is structuring
+  // syllabus content the prompt already supplies, not reasoning about it.
+  notes_gen_module: "flash",
 };
 
 const DEFAULT_MODEL: "flash" | "pro" = "flash";
@@ -212,7 +216,16 @@ function resolveChatParams(task: string, params: ChatParams): ChatParams {
                                             // string maxLength-capped in the schema.
                                             task === "syllabus_audit"
                                             ? 4096
-                                            : 4096),
+                                            : // Notes v2 module notes: up to 12
+                                              // blocks, every string
+                                              // maxLength-capped in the schema.
+                                              // A formula block with a worked
+                                              // example is the largest of the
+                                              // three, so budget for a full set
+                                              // of them.
+                                              task === "notes_gen_module"
+                                              ? 8192
+                                              : 4096),
   };
 }
 
