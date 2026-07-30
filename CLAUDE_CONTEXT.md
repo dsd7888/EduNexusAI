@@ -220,6 +220,7 @@ role_scope: id, user_id, school, department (null = entire school), created_at
 
 ### Generation Tables
 - `generated_content`: id, subject_id, module_id, type, title, file_path, metadata (jsonb), generated_by, tokens_used, cost_inr, status, answer_key_path, answer_key_generated_at
+- `study_notes` (Notes v2, CP-N1): id, subject_id, module_id (NULL for subject scope), scope ('module'/'subject'), version, content_hash, blocks (jsonb — typed NoteBlock[]), source_metadata (jsonb), is_stale, generated_by, tokens_used, cost_inr, created_at — versioned typed study material. A row is servable ONLY when `is_stale = false` AND `content_hash` matches the current source hash; the flag alone is never sufficient. Uniqueness is TWO PARTIAL indexes, not one constraint (a plain UNIQUE leaves `module_id IS NULL` rows unconstrained — SQL treats NULLs as distinct). RLS: superadmin all; students read via `subject_offerings` on branch; faculty read via `faculty_assignments`; dean/hod via `role_scope`; faculty-tier UPDATE is restricted to `is_stale` by a column GRANT, since RLS cannot restrict columns. See CP_N1_NOTES_ENGINE.md.
 
 ### Placement Tables
 - `placement_companies`, `placement_question_bank`, `practice_question_bank`, `student_question_history`, `placement_attempts`
@@ -293,7 +294,7 @@ edunexus-ai/
 │   │       ├── syllabus/extract/ + save/ + load/   ✅
 │   │       ├── chat/ + chat/session/ + suggestions/ + export/ ✅
 │   │       ├── quiz/generate/ + submit/ + hint/ + export/ ✅
-│   │       ├── notes/ + notes/export/              ✅
+│   │       ├── notes/module/[moduleId]/ + regenerate/  ✅ (Notes v2, CP-N1)
 │   │       ├── generate/ppt/outline/ + batch/ + build/ + content/[id]/ + image/[id]/[idx]/  ✅
 │   │       │   + rebuild/ + refine/ + checkpoint/[contentId]/ + download/[contentId]/       ✅
 │   │       │   + history/ + resumable/                                                      ✅
@@ -402,6 +403,17 @@ edunexus-ai/
 - Quiz: multi-type, Socratic hints, persistence, resume
 - Placement prep: company tests, practice drills, history
 - Semantic score system: slate/amber/emerald (no red), strengths-first, target-framing
+- **Notes v2 (CP-N1 — engine + storage + route; NO UI until CP-N4).** Typed
+  content blocks (concept / formula / comparison) generated per module from the
+  syllabus and stored versioned in `study_notes`. Replaces the v1 "Quick Notes"
+  path, which was deleted outright in CP-N1 Part 0 — it stored markdown in
+  `semantic_cache` (a query cache), logged its spend as `feature='chat'`, and
+  had no version or regenerate story. The student subjects-grid modal that
+  consumed it is now a "coming soon" placeholder. Full rationale, the schema
+  constraint budget, the retry policy and the PYQ frequency contract preview:
+  **CP_N1_NOTES_ENGINE.md**.
+  - NOTE for cost analysis: historical `feature='chat'` spend is overstated by
+    however much v1 quick-notes generation ran. Not separable retroactively.
 
 ### Faculty Features
 
@@ -1824,3 +1836,6 @@ logs/screenshots, you verify before proceeding.
 - PPT-refine visual embedding always drops the visual before ever touching refined text — never the reverse (§10)
 - The post-gen refine flow and the standalone Content Refinement Tab intentionally use different data models (`SlideContent[]`+regenerate vs. `ExtractedSlide`/`RefinedSlide`+XML-patch) — don't try to unify them (§10)
 - Before starting a parallel/concurrent session on this repo, use a separate git worktree — see §22 for why
+- Notes v2's `blocks` responseSchema carries NO `minItems`/`maxItems` on the outer array — the three-way `anyOf` union blows Gemini's constraint-state limit with them and every call 400s. Block count is enforced in the prompt and `validateNoteBlocks` instead (CP_N1_NOTES_ENGINE.md §5)
+- Notes v2 retries `generation_failed` once but NEVER `invalid_blocks` — an unparseable response has no content to degrade; retrying rejected-but-parseable blocks until something passes is silent degradation
+- `study_notes` freshness is a `content_hash` match, never `is_stale = false` alone
