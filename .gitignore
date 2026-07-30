@@ -45,3 +45,6 @@ next-env.d.ts
 
 # Local compliance-report renders (scripts/test-syllabus-audit-export.ts)
 .reports/
+
+# Supabase CLI version-check artifact (re-dirties the tree on every CLI run)
+supabase/.temp/
