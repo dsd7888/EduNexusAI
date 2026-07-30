@@ -1,6 +1,5 @@
 "use client";
 
-import MarkdownRenderer from "@/components/chat/MarkdownRenderer";
 import { createBrowserClient } from "@/lib/db/supabase-browser";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -99,17 +98,13 @@ export default function StudentSubjectsPage() {
   // should get the student to that card, not past it.
   const [focusedSubjectId, setFocusedSubjectId] = useState<string | null>(null);
 
-  // Quick Notes modal state
+  // Notes modal state. The v1 "Quick Notes" generator (GET /api/notes +
+  // /api/notes/export) was retired in CP-N1 — it stored study material in
+  // `semantic_cache` and logged its spend as the `chat` feature. Notes v2
+  // (typed content blocks out of `study_notes`) lands the student-facing UI in
+  // CP-N4; until then this dialog is a placeholder so the entry point and the
+  // page shell stay discoverable.
   const [notesSubjectId, setNotesSubjectId] = useState<string | null>(null);
-  const [notesMode, setNotesMode] = useState<"subject" | "module">("subject");
-  const [selectedModuleId, setSelectedModuleId] = useState("");
-  const [modules, setModules] = useState<
-    { id: string; name: string; module_number: number }[]
-  >([]);
-  const [notesContent, setNotesContent] = useState("");
-  const [notesLoading, setNotesLoading] = useState(false);
-  const [notesFromCache, setNotesFromCache] = useState(false);
-  const [copied, setCopied] = useState(false);
 
   const fetchProfile = useCallback(async () => {
     setLoadingProfile(true);
@@ -183,126 +178,10 @@ export default function StudentSubjectsPage() {
 
   const handleOpenNotes = (subjectId: string) => {
     setNotesSubjectId(subjectId);
-    setNotesMode("subject");
-    setSelectedModuleId("");
-    setModules([]);
-    setNotesContent("");
-    setNotesFromCache(false);
-    setNotesLoading(false);
-    setCopied(false);
-  };
-
-  useEffect(() => {
-    if (!notesSubjectId || notesMode !== "module") return;
-    if (modules.length > 0) return;
-    const run = async () => {
-      try {
-        const supabase = createBrowserClient();
-        const { data, error } = await supabase
-          .from("modules")
-          .select("id, name, module_number")
-          .eq("subject_id", notesSubjectId)
-          .order("module_number");
-        if (!error && data) {
-          setModules(
-            (data as any[]).map((m) => ({
-              id: m.id as string,
-              name: m.name as string,
-              module_number: m.module_number as number,
-            }))
-          );
-        }
-      } catch (err) {
-        console.error("[subjects/notes] module load error:", err);
-      }
-    };
-    run();
-  }, [notesSubjectId, notesMode, modules.length]);
-
-  const handleGenerateNotes = async () => {
-    if (!notesSubjectId) return;
-    setNotesLoading(true);
-    try {
-      const params = new URLSearchParams();
-      params.set("subjectId", notesSubjectId);
-      if (notesMode === "module" && selectedModuleId) {
-        params.set("moduleId", selectedModuleId);
-      }
-      const res = await fetch(`/api/notes?${params.toString()}`);
-      const json = await res.json().catch(() => null);
-      if (!res.ok || !json) {
-        throw new Error(json?.error ?? "Failed to load notes");
-      }
-      setNotesContent(String(json.notes ?? ""));
-      setNotesFromCache(Boolean(json.fromCache));
-    } catch (err) {
-      console.error(err);
-      alert(
-        err instanceof Error ? err.message : "Failed to load quick notes"
-      );
-    } finally {
-      setNotesLoading(false);
-    }
-  };
-
-  const handleExportNotesPDF = async () => {
-    if (!activeSubject || !notesContent) return;
-    const topicName =
-      notesMode === "module"
-        ? modules.find((m) => m.id === selectedModuleId)?.name ??
-          activeSubject.name
-        : activeSubject.name;
-    try {
-      const res = await fetch("/api/notes/export", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          notesContent,
-          subjectName: activeSubject.name,
-          topicName,
-        }),
-      });
-      if (!res.ok) {
-        const json = await res.json().catch(() => null);
-        throw new Error(json?.error ?? "Failed to export PDF");
-      }
-      const blob = await res.blob();
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = "quick-notes.pdf";
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      URL.revokeObjectURL(url);
-    } catch (err) {
-      console.error(err);
-      alert(
-        err instanceof Error ? err.message : "Failed to export quick notes"
-      );
-    }
-  };
-
-  const handleCopyNotes = async () => {
-    if (!notesContent) return;
-    try {
-      await navigator.clipboard.writeText(notesContent);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    } catch {
-      // ignore
-    }
   };
 
   const handleCloseNotes = () => {
     setNotesSubjectId(null);
-    setNotesMode("subject");
-    setSelectedModuleId("");
-    setModules([]);
-    setNotesContent("");
-    setNotesFromCache(false);
-    setNotesLoading(false);
-    setCopied(false);
   };
 
   return (
@@ -438,112 +317,32 @@ export default function StudentSubjectsPage() {
       <Dialog open={notesSubjectId !== null} onOpenChange={(open) => {
         if (!open) handleCloseNotes();
       }}>
-        <DialogContent className="max-w-3xl">
+        <DialogContent className="max-w-lg">
           <DialogHeader>
             <DialogTitle>
               {activeSubject
-                ? `Quick Notes — ${activeSubject.name} (${activeSubject.code})`
-                : "Quick Notes"}
+                ? `Notes — ${activeSubject.name} (${activeSubject.code})`
+                : "Notes"}
             </DialogTitle>
           </DialogHeader>
           <div className="mt-2 space-y-4">
-            <div className="flex items-center gap-2">
-              <Button
-                type="button"
-                size="sm"
-                variant={notesMode === "subject" ? "default" : "outline"}
-                onClick={() => {
-                  setNotesMode("subject");
-                  setSelectedModuleId("");
-                }}
-              >
-                📖 Full Subject
-              </Button>
-              <Button
-                type="button"
-                size="sm"
-                variant={notesMode === "module" ? "default" : "outline"}
-                onClick={() => setNotesMode("module")}
-              >
-                📑 By Module
-              </Button>
+            <div className="rounded-md border border-dashed p-6 text-center">
+              <BookOpen className="mx-auto size-6 text-muted-foreground" />
+              <p className="mt-3 text-sm font-medium">Notes v2 coming soon</p>
+              <p className="mt-1 text-sm text-muted-foreground">
+                Notes are being rebuilt as structured study blocks — concepts,
+                formulas with worked examples, and comparison tables — generated
+                per module from your syllabus. Use Chat for now.
+              </p>
             </div>
-
-            {notesMode === "module" && (
-              <div className="space-y-2">
-                <label className="text-xs font-medium text-muted-foreground">
-                  Module
-                </label>
-                <select
-                  className="w-full rounded-md border bg-background px-2 py-1 text-sm"
-                  value={selectedModuleId}
-                  onChange={(e) => setSelectedModuleId(e.target.value)}
-                >
-                  <option value="">Select a module</option>
-                  {modules.map((m) => (
-                    <option key={m.id} value={m.id}>
-                      Module {m.module_number}: {m.name}
-                    </option>
-                  ))}
-                </select>
-              </div>
-            )}
-
-            <div className="space-y-2">
-              <Button
-                type="button"
-                className="w-full"
-                onClick={handleGenerateNotes}
-                disabled={
-                  notesLoading ||
-                  !notesSubjectId ||
-                  (notesMode === "module" && !selectedModuleId)
-                }
-              >
-                {notesLoading ? "Generating notes..." : "Generate Notes"}
-              </Button>
-              {notesLoading && (
-                <p className="text-xs text-muted-foreground">
-                  {notesFromCache
-                    ? "⚡ Loading from cache..."
-                    : "Please wait while notes are generated..."}
-                </p>
-              )}
-            </div>
-
-            {notesContent && (
-              <div className="space-y-3">
-                <div className="flex items-center justify-between gap-2">
-                  <Badge
-                    variant={notesFromCache ? "secondary" : "default"}
-                    className="text-xs"
-                  >
-                    {notesFromCache ? "⚡ Cached" : "✨ Freshly Generated"}
-                  </Badge>
-                  <div className="flex gap-2">
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      onClick={handleCopyNotes}
-                    >
-                      {copied ? "Copied!" : "Copy Text"}
-                    </Button>
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      onClick={handleExportNotesPDF}
-                    >
-                      Export PDF
-                    </Button>
-                  </div>
-                </div>
-                <div className="max-h-[60vh] overflow-y-auto rounded-md border p-3 text-sm">
-                  <MarkdownRenderer content={notesContent} />
-                </div>
-              </div>
-            )}
+            <Button
+              type="button"
+              variant="outline"
+              className="w-full"
+              onClick={handleCloseNotes}
+            >
+              Close
+            </Button>
           </div>
         </DialogContent>
       </Dialog>
