@@ -265,6 +265,31 @@ export async function POST(request: NextRequest) {
       }
     }
 
+    // ── Dense-index normalization ────────────────────────────────────────────
+    // The whole downstream pipeline (page.tsx allSlides[], checkpoint route's
+    // metadata.slides array, recovery pass's `o.index === i` lookup) assumes
+    // outline indices are exactly 0..N-1 mapped to array positions. The
+    // responseSchema requires `.index` but does not constrain it to be dense
+    // or 0-based; Gemini has been reliable in practice, but a 1-based or
+    // gapped response would overflow the pre-sized allSlides array, silently
+    // ship a short deck, and misalign the recovery pass with no error surfaced.
+    // Reassigning .index to each slide's array position turns this from a
+    // model-behavioral convention into a code-enforced guarantee. Runs AFTER
+    // the label-heavy→svg loop so that loop's iteration is unaffected.
+    let renumbered = 0;
+    for (let i = 0; i < outline.outline.length; i++) {
+      const slide = outline.outline[i];
+      if (slide.index !== i) {
+        renumbered++;
+        slide.index = i;
+      }
+    }
+    if (renumbered > 0) {
+      console.log(
+        `[ppt/outline] renumbered ${renumbered} slide(s) whose Gemini-assigned indices were non-dense`
+      );
+    }
+
     console.log(`[ppt/outline] Done. Slides planned: ${outline.outline.length}`);
 
     // ── Checkpoint immediately (Task 1) ───────────────────────────────────
