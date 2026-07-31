@@ -245,6 +245,18 @@ export async function generateModuleNotes(
       .from("study_notes")
       .update({ is_stale: true })
       .in("id", toFlag);
+
+    // CP-N2 — STALENESS PROPAGATION. A subject-scope row is a stored join of the
+    // module rows beneath it, so a module going stale necessarily invalidates it.
+    // This runs INLINE (not in after(), not a background job) because the subject
+    // GET treats is_stale=false as servable without re-checking the hash: if the
+    // flag landed after the caller returned, a GET racing this write would serve
+    // a subject assembly that no longer matches its constituent modules.
+    await adminClient
+      .from("study_notes")
+      .update({ is_stale: true })
+      .eq("subject_id", subjectId)
+      .eq("scope", "subject");
   }
 
   // ── 3. Generate ───────────────────────────────────────────────────────────

@@ -23,6 +23,8 @@
     "src/app/api/syllabus/audit/apply/route.ts": { "maxDuration": 30, "memory": 1024 },
     "src/app/api/notes/module/[moduleId]/route.ts": { "maxDuration": 60, "memory": 1024 },
     "src/app/api/notes/module/[moduleId]/regenerate/route.ts": { "maxDuration": 60, "memory": 1024 },
+    "src/app/api/notes/subject/[subjectId]/route.ts": { "maxDuration": 60, "memory": 1024 },
+    "src/app/api/notes/subject/[subjectId]/regenerate/route.ts": { "maxDuration": 300, "memory": 1024 },
     "src/app/api/chat/route.ts": { "maxDuration": 60, "memory": 1024 },
     "src/app/api/chat/visualize/route.ts": { "maxDuration": 120, "memory": 1024 },
     "src/app/api/refine/route.ts": { "maxDuration": 30, "memory": 1024 },

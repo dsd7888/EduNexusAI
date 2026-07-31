@@ -12,6 +12,10 @@ export const RATE_LIMITS = {
   // Research tier is search-grounded (Flash + googleSearch) and pricier per
   // call than standard chat — capped tighter than the 50/day chat allowance.
   research: 10,
+  // Notes v2 subject-scope reads. Checked only on a cache MISS (the assembly
+  // path), never on a hit — same ordering as chat's rate-check-after-cache, so
+  // reading notes the platform has already built costs a student nothing.
+  notes_view: 20,
 } as const;
 
 type RateLimitedEvent = keyof typeof RATE_LIMITS;
