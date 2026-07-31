@@ -268,7 +268,7 @@ live. It goes live with CP-Q3.
 
 ## CP-Q3 deferrals (logged Jul 26, 2026 — student assessment UX)
 
-### `/student/quiz/legacy` removal — CP-Q5 cleanup task
+### `/student/quiz/legacy` removal — deletion 1 DONE (CP-N4 Part 0); 2 and 3 still open
 
 The 1,766-line quiz setup/taking/results page moved to `/student/quiz/legacy` in
 CP-Q3 Part 2 as a **pure `git mv`, no code change**, so the pilot has a one-week
@@ -276,10 +276,11 @@ fallback if the new assessment UX hits a problem. It still talks to the old
 `/api/quiz/generate` + `/api/quiz/submit` routes, which also remain live and
 untouched.
 
-**Removal is a CP-Q5 task, not a CP-Q4 one**, and it is three deletions that must
-happen together or not at all:
+**Status:** the page and its two inbound links were hard-deleted in CP-N4 Part 0
+(pilot window closed). The API routes and tables below were explicitly OUT of
+CP-N4's scope and remain live — they are still a CP-Q5 task:
 
-1. `src/app/(student)/student/quiz/legacy/page.tsx`
+1. ~~`src/app/(student)/student/quiz/legacy/page.tsx`~~ — DONE, CP-N4 Part 0.
 2. `/api/quiz/generate`, `/api/quiz/submit`, `/api/quiz/hint`, `/api/quiz/export`
    — but ONLY after confirming nothing else calls them (the chat struggle nudge
    and `/student/subjects`' Quiz button link to `/student/quiz?subjectId=`, which
@@ -328,10 +329,10 @@ already permit it — `stm_select_faculty_assigned` — so this is UI only), and
 
 ### Still open from CP-Q3, re-confirmed not done
 
-- **`/student/quiz/legacy` removal** — still a CP-Q5 task. Precondition
-  unchanged: one full pilot week on the new UX with no rollback, and
-  `usage_analytics` showing zero legacy page loads. See the CP-Q3 section above
-  for the three deletions that must happen together.
+- **`/student/quiz/legacy` removal** — the PAGE was deleted in CP-N4 Part 0
+  (Jul 31, 2026). The old `/api/quiz/*` routes and the `quizzes` /
+  `quiz_attempts` tables were not touched and are still a CP-Q5 task; see the
+  CP-Q3 section above, deletions 2 and 3.
 - **Vercel preview latency measurement** — never run. CP-Q3 measured latency
   against local dev only. The numbers that matter are cold-start numbers on
   Vercel, and CP-Q4 adds a route whose inline recompute is a full scan per

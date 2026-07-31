@@ -14,8 +14,6 @@
  * at plan time, so a refresh mid-quiz costs no generation and burns no bank
  * questions (CP-Q2 §4). Answers already persisted by /api/assessment/answer are
  * NOT rehydrated into the UI — see the note in the load effect.
- *
- * The legacy taking-a-quiz path (/student/quiz/legacy) is untouched.
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";

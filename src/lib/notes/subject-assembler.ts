@@ -42,6 +42,33 @@ type AdminClient = {
 const SUBJECT_SCOPE = "subject";
 const MODULE_SCOPE = "module";
 
+/**
+ * Where one module's blocks begin and end inside the flat subject-scope array.
+ *
+ * CP-N4's reading view renders a section header per module, but the blocks it
+ * receives carry no per-block module marker: `_moduleId` is internal routing
+ * metadata that pyq-frequency.ts strips from every response (see the comment in
+ * step 6 below). Rather than leak that field to the client, the assembler
+ * publishes the module boundaries as INDEX RANGES over the array it just built.
+ * The client needs `moduleName`/`moduleNumber` for the header text anyway, which
+ * a bare `_moduleId` would not have supplied.
+ *
+ * Invariant the CP-N4 harness asserts: entries are ordered by moduleNumber ASC,
+ * they tile the array without gaps or overlap, and the counts sum to
+ * blocks.length. Only modules that actually CONTRIBUTED blocks appear — a module
+ * skipped for failing validation is absent rather than present with count 0, so
+ * that the sum invariant holds.
+ */
+export type ModuleBreakpoint = {
+  moduleId: string;
+  moduleName: string;
+  moduleNumber: number;
+  /** Index in the flat blocks array where this module's run begins. */
+  startIndex: number;
+  /** How many consecutive blocks belong to this module. Always ≥ 1. */
+  count: number;
+};
+
 export type SubjectSourceMetadata = {
   generatedAt: string;
   /** Module ids that contributed blocks — never the full module list. */
@@ -50,6 +77,8 @@ export type SubjectSourceMetadata = {
   modulesTotal: number;
   aggregateTokensUsed: number;
   aggregateCostInr: number;
+  /** Module section boundaries over `blocks`. See {@link ModuleBreakpoint}. */
+  moduleBreakpoints: ModuleBreakpoint[];
 };
 
 export type AssembleSubjectResult = {
@@ -104,6 +133,8 @@ export function computeSubjectHash(
 type CoveredModule = {
   moduleId: string;
   moduleNumber: number;
+  /** Carried purely so moduleBreakpoints can name the section header. */
+  moduleName: string;
   contentHash: string;
   blocks: unknown;
   tokensUsed: number;
@@ -132,7 +163,12 @@ async function loadCoverage(
   const modules: Array<{ id: string; module_number: number; name: string }> =
     moduleRowsRaw ?? [];
   const modulesTotal = modules.length;
-  const moduleNumberById = new Map(modules.map((m) => [m.id, m.module_number]));
+  const moduleMetaById = new Map(
+    modules.map((m) => [
+      m.id,
+      { moduleNumber: m.module_number, moduleName: m.name ?? "" },
+    ]),
+  );
 
   // One query ordered version DESC, then first-wins per module_id: the latest
   // version is the only one that can contribute, and a per-module query would
@@ -160,19 +196,26 @@ async function loadCoverage(
     if (!row.module_id) continue;
     // Only modules that still exist on the subject may contribute — a note row
     // orphaned by a deleted module must not leak into the assembly.
-    if (!moduleNumberById.has(row.module_id)) continue;
+    if (!moduleMetaById.has(row.module_id)) continue;
     if (!latestByModule.has(row.module_id)) latestByModule.set(row.module_id, row);
   }
 
   const covered: CoveredModule[] = [...latestByModule.entries()]
-    .map(([moduleId, row]) => ({
-      moduleId,
-      moduleNumber: moduleNumberById.get(moduleId) as number,
-      contentHash: row.content_hash,
-      blocks: row.blocks,
-      tokensUsed: row.tokens_used ?? 0,
-      costInr: row.cost_inr ?? 0,
-    }))
+    .map(([moduleId, row]) => {
+      const meta = moduleMetaById.get(moduleId) as {
+        moduleNumber: number;
+        moduleName: string;
+      };
+      return {
+        moduleId,
+        moduleNumber: meta.moduleNumber,
+        moduleName: meta.moduleName,
+        contentHash: row.content_hash,
+        blocks: row.blocks,
+        tokensUsed: row.tokens_used ?? 0,
+        costInr: row.cost_inr ?? 0,
+      };
+    })
     .sort((a, b) => a.moduleNumber - b.moduleNumber);
 
   const contentHash = computeSubjectHash(
@@ -184,6 +227,96 @@ async function loadCoverage(
   );
 
   return { covered, modulesTotal, contentHash };
+}
+
+/**
+ * Recovers moduleBreakpoints from a STORED block array by reading each block's
+ * `_moduleId` tag and grouping the consecutive runs.
+ *
+ * WHY THIS EXISTS AT ALL. Breakpoints are computed during assembly (step 6) and
+ * written into source_metadata, so a row written by this version of the code
+ * already carries them. But every subject row written before CP-N4 does not, and
+ * those rows are servable indefinitely — freshness is a hash match against the
+ * constituent modules, and nothing about adding a metadata field moves that hash.
+ * Without this fallback the reading view would silently lose its section headers
+ * on exactly the subjects that have been stable longest.
+ *
+ * Grouping consecutive runs (rather than bucketing by id) is what makes the
+ * output tile the array: assembly concatenates whole modules in module_number
+ * order, so a module's blocks are contiguous by construction. Should a stored row
+ * ever violate that — hand-edited jsonb, a future interleaving assembler — each
+ * run is emitted as its own entry, which keeps the "counts sum to blocks.length"
+ * invariant true rather than quietly producing overlapping ranges.
+ *
+ * Returns [] for pre-CP-N3 rows whose blocks carry no `_moduleId` at all. The
+ * reading view treats an empty array as "no section headers, all-modules only",
+ * which degrades the surface rather than breaking it.
+ */
+function deriveModuleBreakpoints(
+  blocks: unknown[],
+  moduleMeta: Map<string, { moduleName: string; moduleNumber: number }>,
+): ModuleBreakpoint[] {
+  const out: ModuleBreakpoint[] = [];
+
+  for (let i = 0; i < blocks.length; i++) {
+    const moduleId = (blocks[i] as { _moduleId?: unknown } | null)?._moduleId;
+    if (typeof moduleId !== "string") continue;
+
+    const prev = out[out.length - 1];
+    if (prev && prev.moduleId === moduleId && prev.startIndex + prev.count === i) {
+      prev.count += 1;
+      continue;
+    }
+    const meta = moduleMeta.get(moduleId);
+    out.push({
+      moduleId,
+      moduleName: meta?.moduleName ?? "",
+      moduleNumber: meta?.moduleNumber ?? out.length + 1,
+      startIndex: i,
+      count: 1,
+    });
+  }
+
+  return out;
+}
+
+/** Meta lookup for {@link deriveModuleBreakpoints}, built from loadCoverage output. */
+function moduleMetaFromCovered(
+  covered: CoveredModule[],
+): Map<string, { moduleName: string; moduleNumber: number }> {
+  return new Map(
+    covered.map((c) => [
+      c.moduleId,
+      { moduleName: c.moduleName, moduleNumber: c.moduleNumber },
+    ]),
+  );
+}
+
+/**
+ * source_metadata as stored, upgraded to the current shape.
+ *
+ * Shared by the two cache-hit paths so "what a cached row's metadata means" has
+ * one definition. Stored breakpoints win when present; otherwise they are
+ * derived from the blocks themselves.
+ */
+function hydrateStoredMetadata(input: {
+  storedMeta: Partial<SubjectSourceMetadata>;
+  storedBlocks: unknown[];
+  covered: CoveredModule[];
+  modulesTotal: number;
+  createdAt: string;
+}): SubjectSourceMetadata {
+  const { storedMeta, storedBlocks, covered, modulesTotal, createdAt } = input;
+  return {
+    generatedAt: storedMeta.generatedAt ?? createdAt,
+    modulesCovered: storedMeta.modulesCovered ?? covered.map((c) => c.moduleId),
+    modulesTotal: storedMeta.modulesTotal ?? modulesTotal,
+    aggregateTokensUsed: storedMeta.aggregateTokensUsed ?? 0,
+    aggregateCostInr: storedMeta.aggregateCostInr ?? 0,
+    moduleBreakpoints:
+      storedMeta.moduleBreakpoints ??
+      deriveModuleBreakpoints(storedBlocks, moduleMetaFromCovered(covered)),
+  };
 }
 
 /**
@@ -238,13 +371,13 @@ export async function probeSubjectNotesCache(input: {
     version: fresh.version,
     fromCache: true,
     generatedAt: fresh.created_at,
-    sourceMetadata: {
-      generatedAt: storedMeta.generatedAt ?? fresh.created_at,
-      modulesCovered: storedMeta.modulesCovered ?? covered.map((c) => c.moduleId),
-      modulesTotal: storedMeta.modulesTotal ?? modulesTotal,
-      aggregateTokensUsed: storedMeta.aggregateTokensUsed ?? 0,
-      aggregateCostInr: storedMeta.aggregateCostInr ?? 0,
-    },
+    sourceMetadata: hydrateStoredMetadata({
+      storedMeta,
+      storedBlocks: cached.blocks,
+      covered,
+      modulesTotal,
+      createdAt: fresh.created_at,
+    }),
   };
 }
 
@@ -316,13 +449,13 @@ export async function assembleSubjectNotes(input: {
           contentHash,
           version: fresh.version,
           fromCache: true,
-          sourceMetadata: {
-            generatedAt: storedMeta.generatedAt ?? fresh.created_at,
-            modulesCovered: storedMeta.modulesCovered ?? covered.map((c) => c.moduleId),
-            modulesTotal: storedMeta.modulesTotal ?? modulesTotal,
-            aggregateTokensUsed: storedMeta.aggregateTokensUsed ?? 0,
-            aggregateCostInr: storedMeta.aggregateCostInr ?? 0,
-          },
+          sourceMetadata: hydrateStoredMetadata({
+            storedMeta,
+            storedBlocks: cached.blocks,
+            covered,
+            modulesTotal,
+            createdAt: fresh.created_at,
+          }),
         };
       }
       // Stored blocks that no longer validate mean the block model moved on.
@@ -349,6 +482,10 @@ export async function assembleSubjectNotes(input: {
   // this re-validates shape only (expectCount:false, as above) rather than
   // trusting jsonb round-tripping blindly.
   const assembled: NoteBlock[] = [];
+  // Recorded as the array is built, so startIndex is the real offset rather than
+  // a re-derivation. A module skipped below contributes NO entry (not a zero-count
+  // one) — see ModuleBreakpoint for why the sum invariant depends on that.
+  const moduleBreakpoints: ModuleBreakpoint[] = [];
   for (const c of covered) {
     const v = validateNoteBlocks(c.blocks, { expectCount: false });
     if (!v.ok) {
@@ -359,6 +496,15 @@ export async function assembleSubjectNotes(input: {
       );
       continue;
     }
+    if (v.blocks.length === 0) continue;
+
+    moduleBreakpoints.push({
+      moduleId: c.moduleId,
+      moduleName: c.moduleName,
+      moduleNumber: c.moduleNumber,
+      startIndex: assembled.length,
+      count: v.blocks.length,
+    });
     // _moduleId is internal routing metadata for CP-N3's PYQ-frequency
     // enrichment (pyq-frequency.ts) — it lets serve-time enrichment
     // re-attribute a flat, concatenated subject-scope row back to the module
@@ -392,6 +538,7 @@ export async function assembleSubjectNotes(input: {
     modulesTotal,
     aggregateTokensUsed,
     aggregateCostInr,
+    moduleBreakpoints,
   };
 
   // ── 8/9. Version and insert ───────────────────────────────────────────────

@@ -10,9 +10,9 @@
  * All per-student data comes from ONE request to /api/assessment/landing —
  * see that route for why it isn't four client queries.
  *
- * The previous 1,766-line quiz page lives at /student/quiz/legacy (a pure
- * `git mv`, no code change) as the one-week pilot fallback. Its removal is
- * logged as a CP-Q5 task in Future_plans.MD.
+ * The previous 1,766-line quiz page lived at /student/quiz/legacy as the
+ * one-week pilot fallback. The pilot window closed and the route was deleted
+ * in CP-N4 Part 0 — this landing is now the only quiz entry point.
  */
 
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -279,20 +279,13 @@ function AssessmentLanding() {
         >
           Your mastery by module
         </Link>
-        <Link
-          href="/student/quiz/legacy"
-          className="underline underline-offset-2 hover:text-foreground"
-        >
-          Old quiz page
-        </Link>
       </div>
     </div>
   );
 }
 
 export default function StudentQuizLandingPage() {
-  // useSearchParams needs a Suspense boundary in the App Router — same pattern
-  // the legacy page uses.
+  // useSearchParams needs a Suspense boundary in the App Router.
   return (
     <Suspense fallback={null}>
       <AssessmentLanding />
