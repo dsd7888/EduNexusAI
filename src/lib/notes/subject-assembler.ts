@@ -359,7 +359,16 @@ export async function assembleSubjectNotes(input: {
       );
       continue;
     }
-    assembled.push(...v.blocks);
+    // _moduleId is internal routing metadata for CP-N3's PYQ-frequency
+    // enrichment (pyq-frequency.ts) — it lets serve-time enrichment
+    // re-attribute a flat, concatenated subject-scope row back to the module
+    // each block came from. It is not PYQ data, so storing it does not
+    // violate "PYQ signal is never stored" — it never goes stale. Stripped
+    // from every response by enrichBlocksWithPyqFrequency.
+    assembled.push(
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      ...v.blocks.map((b) => ({ ...b, _moduleId: c.moduleId }) as any),
+    );
   }
 
   if (assembled.length === 0) {

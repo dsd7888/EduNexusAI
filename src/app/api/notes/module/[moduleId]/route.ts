@@ -14,6 +14,7 @@ import { createAdminClient } from "@/lib/db/supabase-server";
 import { checkRateLimit, RATE_LIMITS } from "@/lib/utils/rate-limit";
 import { assertNotesSubjectAccess } from "@/lib/notes/access";
 import { generateModuleNotes } from "@/lib/notes/generator";
+import { enrichBlocksWithPyqFrequency } from "@/lib/notes/pyq-frequency";
 
 export async function GET(
   request: NextRequest,
@@ -119,11 +120,23 @@ export async function GET(
       await recordUsage(adminClient, user.id, moduleRow.subject_id);
     }
 
+    // CP-N3: PYQ exam-frequency enrichment, computed fresh against current
+    // pyq_questions/module_co_mapping on every request — never cached, so it
+    // runs on both the cache-hit and fresh-generation paths. On enrichment
+    // error the function returns blocks unchanged; no try/catch needed here.
+    const enriched = await enrichBlocksWithPyqFrequency(
+      result.blocks,
+      moduleRow.subject_id,
+      moduleId,
+      adminClient,
+    );
+
     return Response.json({
-      blocks: result.blocks,
+      blocks: enriched,
       version: result.version,
       generatedAt: result.generatedAt,
       source: result.source,
+      pyqEnriched: true,
     });
   } catch (err) {
     console.error("[notes/module] GET error:", err);

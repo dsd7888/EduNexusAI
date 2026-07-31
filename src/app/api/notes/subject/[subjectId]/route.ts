@@ -23,6 +23,7 @@ import {
   assembleSubjectNotes,
   probeSubjectNotesCache,
 } from "@/lib/notes/subject-assembler";
+import { enrichBlocksWithPyqFrequency } from "@/lib/notes/pyq-frequency";
 
 /** logContext task tag for the subject-scope path. Deterministic, not a routeAI task. */
 const SUBJECT_ASSEMBLE_TASK = "notes_assemble_subject";
@@ -69,12 +70,21 @@ export async function GET(
     // the flag alone (§19). See probeSubjectNotesCache for why both exist.
     const cached = await probeSubjectNotesCache({ subjectId, adminClient });
     if (cached) {
+      // CP-N3: enriched fresh against current PYQ data every request — never
+      // cached, so a cache-hit notes row still gets a current-day signal.
+      const enrichedCached = await enrichBlocksWithPyqFrequency(
+        cached.blocks,
+        subjectId,
+        null,
+        adminClient,
+      );
       return Response.json({
-        blocks: cached.blocks,
+        blocks: enrichedCached,
         version: cached.version,
         generatedAt: cached.generatedAt,
         source: "cache",
         sourceMetadata: cached.sourceMetadata,
+        pyqEnriched: true,
       });
     }
 
@@ -129,12 +139,20 @@ export async function GET(
     // notes spend — the exact class of bug v1's feature='chat' mislabelling was.
     await recordUsage(adminClient, user.id, subjectId);
 
+    const enriched = await enrichBlocksWithPyqFrequency(
+      result.blocks,
+      subjectId,
+      null,
+      adminClient,
+    );
+
     return Response.json({
-      blocks: result.blocks,
+      blocks: enriched,
       version: result.version,
       generatedAt: new Date().toISOString(),
       source: "fresh",
       sourceMetadata: result.sourceMetadata,
+      pyqEnriched: true,
     });
   } catch (err) {
     console.error("[notes/subject] GET error:", err);
