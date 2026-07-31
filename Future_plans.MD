@@ -416,6 +416,50 @@ consent model, not a widening of this one.
 
 ---
 
+## CP-N4 deferrals (logged Jul 31, 2026 — student notes UI)
+
+### Notes generation prompt must require `$…$` on `unit` — CP-N6 prompt patch
+
+**This is a scheduled patch, not a maybe.** It is a known gap on a production
+path.
+
+The notes generator honours §13's authoring convention (`$…$` for math, bare
+`\ce{…}` for chemistry) in `formula`, `meaning`, `formalStatement` and worked-
+example `solution` — but NOT in `symbols[].unit`, which comes back as bare
+`\Omega` / `\mu F` with no delimiters. Confirmed against the first real formula
+blocks generated for SOEEC1010 M1 (Jul 31, 2026); before that no formula block
+existed anywhere in the dev DB, which is why CP-N1–N3 never surfaced it.
+
+`hasLatex()` is delimiter-driven and correctly reports false for an undelimited
+control sequence, so the Unit column renders the literal string `\Omega` unless
+something repairs it.
+
+The fix is in the generation prompt (`src/lib/notes/prompts.ts`) and/or
+`MATH_CHEM_NOTATION_GUIDE` (`src/lib/text/latexSegments.ts`, the single exported
+notation constant every prompt consumes): state that unit fields carry the same
+`$…$` requirement as every other field. Note the blast radius before editing the
+guide — it is consumed by generation prompts, CSV import docs and in-app help
+alike, so a change there is not scoped to notes.
+
+**The render-layer fix stays regardless.** `withMathDelimiters` in
+`src/components/notes/FormulaBlockCard.tsx` is defensive rendering, and defensive
+rendering remains correct after the producer is fixed — old `study_notes` rows
+keep their undelimited units indefinitely, since freshness is a hash match and
+fixing a prompt does not move any existing row's hash.
+
+### PYQ chip cannot be verified end-to-end until PYQs are seeded
+
+`pyq_questions` holds ZERO rows in dev (`module_co_mapping` has 135). CP-N3
+enrichment is therefore correctly emitting no signal anywhere, and no amount of
+UI work can make a real chip appear. CP-N4's harness verifies the chip's
+rendering by code inspection and against a synthetic signal shaped exactly as
+`buildModuleSignal` emits; the live path needs one seeded subject with PYQ
+documents before it can be asserted for real. Same class of gap as §13's
+"no chemistry subject is seeded" item — synthetic verification only, and it
+should be recorded as such rather than reported as covered.
+
+---
+
 1. Practice Q based on quiz feedbacks -- just like placement prep
 2. Medical oriented-- adaptable to fields
 3. Placement—text box based answers too, with yt reference… &/ same such reference sources in AI chat.
