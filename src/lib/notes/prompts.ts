@@ -194,7 +194,54 @@ COMPARISON — GOOD (axes are shared dimensions; every item answers every axis):
 COMPARISON — BAD (axes are not shared dimensions; values do not line up):
 {"kind":"comparison","id":"comparison-resistors","title":"Resistors",
  "axes":["Series","Parallel"],
- "items":[{"name":"Description","values":["Resistors in a line"]}]}`;
+ "items":[{"name":"Description","values":["Resistors in a line"]}]}
+
+whyItMatters LENGTH — BAD (52 words; over the 45-word ceiling):
+"Thevenin's theorem is extremely important because it appears in almost every single network-analysis examination paper that is set, and it allows you to reduce a complicated network containing many different sources and resistances down to just one equivalent voltage source together with one single equivalent series resistance value when solving load problems."
+
+whyItMatters LENGTH — GOOD (40 words; the SAME content with words cut, not a different summary):
+"Thevenin's theorem appears in almost every network-analysis paper. It reduces a complex network of many sources and resistors to one voltage source and one series resistance, which is the standard first step when solving load current and power transfer problems."`;
+
+/**
+ * PROMPT-LEVEL word ceilings for the four fields that actually overshoot.
+ *
+ * These are NOT validator bounds — LIMITS in ./types.ts remains the single
+ * source of truth for what is accepted, and it is unchanged. This is the third
+ * independent axis from §19: a schema `maxLength` is a validation bound, not a
+ * generation budget, and the model blows through it because constrained
+ * decoding gives it no stopping pressure on a free-text field.
+ *
+ * WHY WORDS AND NOT CHARACTERS. The prompt previously led with characters and
+ * put words in parentheses. A model has no reliable character counter but does
+ * have word sense, so a character-anchored ceiling is an instruction it cannot
+ * follow even when it is trying to. Measured over 35 real generations against
+ * seeded content, 20 (57%) were rejected for length alone, and every overshoot
+ * was modest — the model was aiming at roughly the right size and missing:
+ *
+ *   whyItMatters          300 chars   26 violations   301–382 observed
+ *   comparison values[]    80 chars   13 violations    81–137 observed
+ *   plainExplanation      600 chars    7 violations   604–689 observed
+ *   formalStatement       400 chars    1 violation          412 observed
+ *
+ * The word figures below are the character ceilings converted at ~6.6 chars per
+ * word including the trailing space, which is English prose average.
+ *
+ * THEY ARE NOT A SAFE UPPER BOUND ON THEIR OWN, and the prompt says so. Dense
+ * engineering prose runs longer than average — hyphenated compounds like
+ * "maximum-power-transfer" push it past 7.5 chars/word, at which point 45 words
+ * is ~338 characters and still fails the 300-character validator bound. That is
+ * why every entry ends with "Stop at whichever comes first": the word count is
+ * the anchor the model can actually act on, and the character count remains a
+ * genuine second ceiling rather than a restatement of the first. If a follow-up
+ * measurement still shows whyItMatters overshooting, cut this to 40 rather than
+ * dropping the character figure.
+ */
+const WORD_CEILINGS = {
+  whyItMatters: 45,
+  plainExplanation: 90,
+  formalStatement: 60,
+  comparisonValue: 12,
+} as const;
 
 export function buildModuleNotesPrompt(input: {
   subjectName: string;
@@ -215,6 +262,7 @@ export function buildModuleNotesPrompt(input: {
   } = input;
 
   const L = LIMITS;
+  const W = WORD_CEILINGS;
 
   return `Produce exam-preparation study notes for ONE module of a university engineering subject.
 
@@ -257,10 +305,30 @@ drop the marginal ones. Comprehensive is worse than focused for exam prep.
 
 <length_ceilings>
 These are hard ceilings, not targets. Shorter is better everywhere.
+
+COUNT WORDS, NOT CHARACTERS. For the four fields below, the WORD count is the
+hard stop. The character figure is a secondary check for when you are counting.
+Stop at whichever comes first.
+
+- concept.whyItMatters       ${W.whyItMatters} words MAXIMUM. That is your hard stop, not a
+                             target. ${L.concept.whyItMatters} characters is the character ceiling if
+                             you are counting. Stop at whichever comes first.
+- concept.plainExplanation   ${W.plainExplanation} words MAXIMUM. That is your hard stop, not a
+                             target. ${L.concept.plainExplanation} characters is the character ceiling if
+                             you are counting. Stop at whichever comes first.
+- concept.formalStatement    ${W.formalStatement} words MAXIMUM. That is your hard stop, not a
+                             target. ${L.concept.formalStatement} characters is the character ceiling if
+                             you are counting. Stop at whichever comes first.
+                             Omit the field entirely if the concept has no
+                             formal form.
+- comparison item value      ${W.comparisonValue} words MAXIMUM per cell. That is your hard stop,
+                             not a target. ${L.comparison.items.value} characters is the character
+                             ceiling if you are counting. Stop at whichever
+                             comes first. A comparison cell is a phrase, never
+                             a sentence.
+
+The remaining fields are short enough that a character ceiling is sufficient:
 - concept.title              ≤ ${L.concept.title} characters
-- concept.plainExplanation   ≤ ${L.concept.plainExplanation} characters (about 90 words)
-- concept.formalStatement    ≤ ${L.concept.formalStatement} characters (omit if the concept has no formal form)
-- concept.whyItMatters       ≤ ${L.concept.whyItMatters} characters (about 45 words)
 - concept.relatedTerms       ≤ ${L.concept.relatedTerms.maxItems} terms, each ≤ ${L.concept.relatedTerms.maxLength} characters
 - formula.name               ≤ ${L.formula.name} characters
 - formula.formula            ≤ ${L.formula.formula} characters
@@ -269,8 +337,16 @@ These are hard ceilings, not targets. Shorter is better everywhere.
 - formula.conditions         ≤ ${L.formula.conditions} characters
 - comparison.title           ≤ ${L.comparison.title} characters
 - comparison.axes            ≤ ${L.comparison.axes.maxItems} axes, each ≤ ${L.comparison.axes.maxLength} characters
-- comparison.items           ${L.comparison.items.minItems}–${L.comparison.items.maxItems} items, name ≤ ${L.comparison.items.name}, each value ≤ ${L.comparison.items.value} characters
+- comparison.items           ${L.comparison.items.minItems}–${L.comparison.items.maxItems} items, name ≤ ${L.comparison.items.name} characters
 </length_ceilings>
+
+<length_self_check>
+Before finalising each block, count the words in whyItMatters and each
+comparison cell value. If either exceeds the limit, cut — do not summarise
+differently, cut words. Remove qualifiers, intensifiers and restatements first
+("extremely", "it is important that", "one of the most"). A block that is one
+word over is rejected outright, so cutting is never optional.
+</length_self_check>
 
 <comparison_rule>
 axes are the SHARED DIMENSIONS being compared (e.g. "Key count", "Speed",
