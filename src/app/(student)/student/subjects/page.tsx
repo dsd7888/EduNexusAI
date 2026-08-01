@@ -11,12 +11,6 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { CardSkeleton } from "@/components/layout/PageSkeleton";
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
 import { ArrowUpDown, BookOpen, MessageSquare } from "lucide-react";
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
@@ -28,11 +22,9 @@ import SubjectSearchPicker from "@/components/SubjectSearchPicker";
 function SubjectCard({
   subject,
   isCurrent,
-  onOpenNotes,
 }: {
   subject: SubjectRow;
   isCurrent: boolean;
-  onOpenNotes: (id: string) => void;
 }) {
   return (
     <Card
@@ -59,15 +51,14 @@ function SubjectCard({
               Chat
             </Link>
           </Button>
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            className="min-w-[80px] flex-1"
-            onClick={() => onOpenNotes(subject.id)}
-          >
-            <BookOpen className="mr-1 size-4" />
-            Notes
+          {/* Link + asChild, matching Chat and Quiz beside it — a real anchor
+              a student can middle-click or open in a new tab, which an
+              onClick handler is not. */}
+          <Button asChild variant="outline" size="sm" className="min-w-[80px] flex-1">
+            <Link href={`/student/notes/${subject.id}`}>
+              <BookOpen className="mr-1 size-4" />
+              Notes
+            </Link>
           </Button>
           <Button asChild variant="outline" size="sm" className="min-w-[80px] flex-1">
             <Link href={`/student/quiz?subjectId=${subject.id}`}>Quiz</Link>
@@ -97,14 +88,6 @@ export default function StudentSubjectsPage() {
   // value is the three actions on the card (Chat / Notes / Quiz), so search
   // should get the student to that card, not past it.
   const [focusedSubjectId, setFocusedSubjectId] = useState<string | null>(null);
-
-  // Notes modal state. The v1 "Quick Notes" generator (GET /api/notes +
-  // /api/notes/export) was retired in CP-N1 — it stored study material in
-  // `semantic_cache` and logged its spend as the `chat` feature. Notes v2
-  // (typed content blocks out of `study_notes`) lands the student-facing UI in
-  // CP-N4; until then this dialog is a placeholder so the entry point and the
-  // page shell stay discoverable.
-  const [notesSubjectId, setNotesSubjectId] = useState<string | null>(null);
 
   const fetchProfile = useCallback(async () => {
     setLoadingProfile(true);
@@ -170,19 +153,6 @@ export default function StudentSubjectsPage() {
     focusedSubjectId != null
       ? subjects.find((s) => s.id === focusedSubjectId) ?? null
       : null;
-
-  const activeSubject =
-    notesSubjectId != null
-      ? subjects.find((s) => s.id === notesSubjectId) ?? null
-      : null;
-
-  const handleOpenNotes = (subjectId: string) => {
-    setNotesSubjectId(subjectId);
-  };
-
-  const handleCloseNotes = () => {
-    setNotesSubjectId(null);
-  };
 
   return (
     <div className="space-y-8">
@@ -306,7 +276,6 @@ export default function StudentSubjectsPage() {
                     key={s.id}
                     subject={s}
                     isCurrent={(s.semester ?? 0) === (profile?.semester ?? 0)}
-                    onOpenNotes={handleOpenNotes}
                   />
                 ))}
               </div>
@@ -314,38 +283,6 @@ export default function StudentSubjectsPage() {
           ))}
         </div>
       )}
-      <Dialog open={notesSubjectId !== null} onOpenChange={(open) => {
-        if (!open) handleCloseNotes();
-      }}>
-        <DialogContent className="max-w-lg">
-          <DialogHeader>
-            <DialogTitle>
-              {activeSubject
-                ? `Notes — ${activeSubject.name} (${activeSubject.code})`
-                : "Notes"}
-            </DialogTitle>
-          </DialogHeader>
-          <div className="mt-2 space-y-4">
-            <div className="rounded-md border border-dashed p-6 text-center">
-              <BookOpen className="mx-auto size-6 text-muted-foreground" />
-              <p className="mt-3 text-sm font-medium">Notes v2 coming soon</p>
-              <p className="mt-1 text-sm text-muted-foreground">
-                Notes are being rebuilt as structured study blocks — concepts,
-                formulas with worked examples, and comparison tables — generated
-                per module from your syllabus. Use Chat for now.
-              </p>
-            </div>
-            <Button
-              type="button"
-              variant="outline"
-              className="w-full"
-              onClick={handleCloseNotes}
-            >
-              Close
-            </Button>
-          </div>
-        </DialogContent>
-      </Dialog>
     </div>
   );
 }

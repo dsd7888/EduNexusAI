@@ -21,6 +21,11 @@ import {
   sweepQuizPrefills,
   takeQuizPrefill,
 } from "@/lib/assessment/chatHandoff";
+import {
+  buildNotesPrefillMessage,
+  sweepNotesHandoffs,
+  takeNotesHandoff,
+} from "@/lib/notes/chat-handoff";
 
 const QUOTA_LIMITS = { chat: 50, research: 10 } as const;
 
@@ -478,6 +483,39 @@ export default function StudentSubjectChatPage() {
     runExchange(text, mode);
     setInputValue("");
   }, [sessionId, hasSyllabus, mode, runExchange]);
+
+  // ── "Ask about this" handoff from a notes block (CP-N4 Part 5) ──────────
+  // Same token-in-URL, payload-in-sessionStorage shape as the quiz handoff
+  // above, and read-and-DELETE for the same reason.
+  //
+  // BUT IT PREFILLS WITHOUT SENDING, which is the one deliberate difference.
+  // "Explain why I got this wrong" is a closed question with one answer, so
+  // auto-sending it is doing the student a favour. "Explain this concept
+  // further" is open — they may want to narrow it, redirect it, or add what
+  // they already understand first. Sending it for them spends a chat quota
+  // unit on a question they did not finish asking.
+  //
+  // Consequently this does NOT need the session to exist yet (nothing is being
+  // attributed to a turn) and does NOT need a fired-once ref to protect quota.
+  // The destructive read is what makes it idempotent: React's double-invoked
+  // development effect finds nothing on its second pass.
+  useEffect(() => {
+    if (!hasSyllabus) return;
+
+    sweepNotesHandoffs();
+    const key = new URLSearchParams(window.location.search).get("notesHandoff");
+    if (!key) return;
+
+    const payload = takeNotesHandoff(key);
+    // Strip the key either way — a spent token in the address bar invites a
+    // refresh that silently does nothing.
+    const url = new URL(window.location.href);
+    url.searchParams.delete("notesHandoff");
+    window.history.replaceState({}, "", url.toString());
+
+    if (!payload) return;
+    setInputValue(buildNotesPrefillMessage(payload));
+  }, [hasSyllabus]);
 
   const onSuggestionSelect = (text: string) => runExchange(text, mode);
 
