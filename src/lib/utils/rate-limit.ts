@@ -16,6 +16,13 @@ export const RATE_LIMITS = {
   // path), never on a hit — same ordering as chat's rate-check-after-cache, so
   // reading notes the platform has already built costs a student nothing.
   notes_view: 20,
+  // Notes v2 PDF export (CP-N5). Checked after the notes-row lookup, same
+  // ordering as notes_view — but never waived on a "cache hit" the way
+  // notes_view is, because there is no PDF-bytes cache (see the export route):
+  // every export re-runs the math pre-pass, which is real CPU, so every
+  // export counts against this allowance regardless of whether the source
+  // blocks were freshly assembled or already stored.
+  notes_export: 5,
 } as const;
 
 type RateLimitedEvent = keyof typeof RATE_LIMITS;

@@ -19,6 +19,7 @@
 import RichQuestionText from "@/components/RichQuestionText";
 import type { FormulaBlock } from "@/lib/notes/types";
 import type { EnrichedNoteBlock, PyqSignal } from "@/lib/notes/pyq-frequency";
+import { withMathDelimiters } from "@/lib/notes/math-helpers";
 import PyqChip from "./PyqChip";
 import {
   AskAboutThisButton,
@@ -27,28 +28,6 @@ import {
   TapToRevealHint,
 } from "./shell";
 import type { BlockHandlers, RenderMode } from "./types";
-
-/**
- * Wrap a bare TeX control sequence in `$…$` so the shared renderer sees it.
- *
- * FOUND IN REAL OUTPUT, NOT ANTICIPATED. §13's authoring convention is `$…$` for
- * math, and the generator honours it in `formula`, `meaning` and `solution` — but
- * NOT in `unit`, which comes back as bare `\Omega` / `\mu F`. `hasLatex()` is
- * delimiter-driven and correctly reports false for those, so they would render as
- * the literal string "\Omega" in the Unit column. Verified against the first real
- * formula blocks generated for SOEEC1010.
- *
- * The repair is deliberately narrow: only when the value carries a control
- * sequence AND no `$` already. Plain units ("V", "A", "m/s") are returned
- * untouched and take RichQuestionText's no-math fast path exactly as before, so
- * this cannot disturb the common case. Fixing it here rather than in the prompt is
- * the right layer — this is a rendering concern, and CP-N4 makes no AI calls and
- * does not touch generation.
- */
-function withMathDelimiters(text: string): string {
-  if (text.includes("$")) return text;
-  return /\\[a-zA-Z]+/.test(text) ? `$${text}$` : text;
-}
 
 /** symbol | meaning | unit. The unit column disappears when nothing has a unit. */
 function SymbolTable({ symbols }: { symbols: FormulaBlock["symbols"] }) {

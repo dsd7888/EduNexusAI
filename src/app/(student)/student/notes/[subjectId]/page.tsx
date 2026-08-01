@@ -20,10 +20,10 @@
  * module filter. That is a supported state, not an error.
  */
 
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
-import { ArrowLeft, Layers, Search, X } from "lucide-react";
+import { ArrowLeft, Download, Layers, Search, X } from "lucide-react";
 
 import { renderBlock } from "@/components/notes/BlockRenderer";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -109,6 +109,88 @@ export default function StudentNotesReadingPage() {
       ? `/student/notes/${subjectId}/flashcards`
       : `/student/notes/${subjectId}/flashcards?moduleId=${encodeURIComponent(activeModuleId)}`;
 
+  // PDF download. `downloadingRef` (not the `isDownloading` state) is the
+  // re-entrancy guard: a state read only reflects the LAST commit, so two
+  // click events dispatched before React re-renders between them would both
+  // see `isDownloading === false` and both fire a fetch — the same class of
+  // same-tick double-invocation bug CP-N4's flashcard "Space skips a card"
+  // bug was (§19). A ref is synchronous and closes that window; `isDownloading`
+  // exists purely to drive the disabled/label UI.
+  const downloadingRef = useRef(false);
+  const [isDownloading, setIsDownloading] = useState(false);
+  const [downloadError, setDownloadError] = useState<string | null>(null);
+  const mountedRef = useRef(true);
+  const errorTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    return () => {
+      mountedRef.current = false;
+      if (errorTimeoutRef.current) clearTimeout(errorTimeoutRef.current);
+    };
+  }, []);
+
+  // A fresh error replaces any pending auto-clear rather than racing it — two
+  // downloads failing within 4s of each other would otherwise let the FIRST
+  // error's timer wipe the SECOND error's message early.
+  const showDownloadError = useCallback((message: string) => {
+    if (errorTimeoutRef.current) clearTimeout(errorTimeoutRef.current);
+    setDownloadError(message);
+    errorTimeoutRef.current = setTimeout(() => {
+      if (mountedRef.current) setDownloadError(null);
+      errorTimeoutRef.current = null;
+    }, 4000);
+  }, []);
+
+  const handleDownloadPdf = useCallback(async () => {
+    if (downloadingRef.current) return;
+    downloadingRef.current = true;
+    setIsDownloading(true);
+    setDownloadError(null);
+    try {
+      const url =
+        activeModuleId === ALL_MODULES
+          ? `/api/notes/subject/${subjectId}/export`
+          : `/api/notes/subject/${subjectId}/export?moduleId=${encodeURIComponent(activeModuleId)}`;
+      const res = await fetch(url);
+      if (!res.ok) {
+        const message =
+          res.status === 404
+            ? "Generate notes first before downloading."
+            : res.status === 429
+              ? "Download limit reached for today."
+              : "Couldn't download the PDF. Try again.";
+        if (mountedRef.current) showDownloadError(message);
+        return;
+      }
+      // A blob: URL carries none of the original response's headers, so the
+      // filename has to be read off Content-Disposition here and handed to
+      // `download` explicitly — an empty `download=""` attribute still forces
+      // a save-as, but the browser then falls back to a name derived from the
+      // (meaningless) blob: URL itself, e.g. a raw UUID.
+      const disposition = res.headers.get("content-disposition") ?? "";
+      const filenameMatch = /filename="?([^";]+)"?/i.exec(disposition);
+      const filename = filenameMatch?.[1] ?? "notes.pdf";
+
+      const blob = await res.blob();
+      // The download itself is not gated on the component still being
+      // mounted — a student who navigates away mid-fetch should still get
+      // the file the browser already committed to fetching.
+      const objectUrl = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = objectUrl;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(objectUrl);
+    } catch {
+      if (mountedRef.current) showDownloadError("Couldn't download the PDF. Try again.");
+    } finally {
+      downloadingRef.current = false;
+      if (mountedRef.current) setIsDownloading(false);
+    }
+  }, [activeModuleId, subjectId, showDownloadError]);
+
   // Headers are drawn at the first VISIBLE block of each module rather than
   // strictly at breakpoint.startIndex. With no search active those are the same
   // block, so the unfiltered view is exactly the specified behaviour; under
@@ -128,18 +210,35 @@ export default function StudentNotesReadingPage() {
           Subjects
         </Link>
 
-        {/* Desktop entry to flashcards. The mobile one is the fixed bar below —
-            a top-right control is the least thumb-reachable spot on a phone. */}
+        {/* Desktop entries. The mobile ones are the fixed bar below — a
+            top-right control is the least thumb-reachable spot on a phone. */}
         {blocks.length > 0 ? (
-          <Link
-            href={flashcardHref}
-            className="hidden min-h-11 items-center gap-2 rounded-lg border px-4 text-sm font-medium transition-colors hover:bg-accent hover:text-accent-foreground sm:inline-flex"
-          >
-            <Layers className="size-4" />
-            Flashcard mode
-          </Link>
+          <div className="hidden items-center gap-2 sm:flex">
+            <button
+              type="button"
+              onClick={handleDownloadPdf}
+              disabled={isDownloading}
+              className="inline-flex min-h-11 items-center gap-2 rounded-lg border px-4 text-sm font-medium transition-colors hover:bg-accent hover:text-accent-foreground disabled:pointer-events-none disabled:opacity-60"
+            >
+              <Download className="size-4" />
+              {isDownloading ? "Preparing…" : "Download PDF"}
+            </button>
+            <Link
+              href={flashcardHref}
+              className="inline-flex min-h-11 items-center gap-2 rounded-lg border px-4 text-sm font-medium transition-colors hover:bg-accent hover:text-accent-foreground"
+            >
+              <Layers className="size-4" />
+              Flashcard mode
+            </Link>
+          </div>
         ) : null}
       </div>
+
+      {downloadError ? (
+        <p className="mt-2 hidden text-sm text-amber-700 sm:block dark:text-amber-300">
+          {downloadError}
+        </p>
+      ) : null}
 
       <h1 className="mt-3 text-2xl font-semibold tracking-tight">Notes</h1>
       {metadata && metadata.modulesTotal > 0 ? (
@@ -241,13 +340,29 @@ export default function StudentNotesReadingPage() {
           it clears the iOS home indicator. */}
       {!isLoading && !error && blocks.length > 0 ? (
         <div className="fixed inset-x-0 bottom-0 z-20 border-t bg-background/95 p-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] backdrop-blur sm:hidden">
-          <Link
-            href={flashcardHref}
-            className="flex min-h-11 w-full items-center justify-center gap-2 rounded-lg bg-primary px-4 text-sm font-medium text-primary-foreground"
-          >
-            <Layers className="size-4" />
-            Flashcard mode
-          </Link>
+          {downloadError ? (
+            <p className="mb-2 text-center text-xs text-amber-700 dark:text-amber-300">
+              {downloadError}
+            </p>
+          ) : null}
+          <div className="flex gap-2">
+            <Link
+              href={flashcardHref}
+              className="flex min-h-11 flex-1 items-center justify-center gap-2 rounded-lg bg-primary px-4 text-sm font-medium text-primary-foreground"
+            >
+              <Layers className="size-4" />
+              Flashcard mode
+            </Link>
+            <button
+              type="button"
+              onClick={handleDownloadPdf}
+              disabled={isDownloading}
+              className="flex min-h-11 flex-1 items-center justify-center gap-2 rounded-lg border bg-background px-4 text-sm font-medium transition-colors hover:bg-accent disabled:pointer-events-none disabled:opacity-60"
+            >
+              <Download className="size-4" />
+              {isDownloading ? "Preparing…" : "Download"}
+            </button>
+          </div>
         </div>
       ) : null}
     </div>
