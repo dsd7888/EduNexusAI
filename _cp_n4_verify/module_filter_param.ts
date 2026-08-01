@@ -20,6 +20,20 @@
  * Also asserts `_moduleId` never reaches the client — it is internal routing
  * metadata, and CP-N4 exists partly so it never has to.
  *
+ * ── NEVER COMPARE jsonb ROUND-TRIPS WITH JSON.stringify ──────────────────────
+ * Postgres `jsonb` does not preserve object key order — it stores keys in its
+ * own normalised order — so a value written as {moduleId, moduleName, …} comes
+ * back as {count, moduleId, …} with IDENTICAL contents. `JSON.stringify` is
+ * key-order sensitive, so comparing a stored payload against the one that
+ * produced it fails on ordering alone. That happened while writing this file:
+ * the fresh-vs-cache assertion failed and looked exactly like a product bug.
+ *
+ * Compare field-by-field, or map to a canonical string, as `canon()` does below.
+ * The same applies to `makeChecker`'s `eq()`, which is stringify-based and is
+ * therefore safe only for scalars, arrays of scalars, and objects that never
+ * went through Postgres. This applies to EVERY jsonb column in this codebase —
+ * study_notes.blocks, study_notes.source_metadata, qpaper_templates.structure.
+ *
  * Requires `npm run dev`.
  * Run: npx tsx _cp_n4_verify/module_filter_param.ts > /tmp/cpn4_bp.log 2>&1
  */

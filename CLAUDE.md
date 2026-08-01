@@ -172,7 +172,8 @@ via the `srcDoc` attribute (the chat page component, `InteractiveHtmlViewer`).
 ## Load-bearing constraints (do not "fix" these)
 
 Each was discovered through debugging; changing it reintroduces a known bug. Full table
-with reasons is §17 of `CLAUDE_CONTEXT.md`.
+with reasons is **§19 (Architectural Decisions)** of `CLAUDE_CONTEXT.md`. (This cite read
+§17 until CP-N4 — §17 is the Active Feature Roadmap, a different section entirely.)
 
 - Auth middleware is `src/proxy.ts`, **never** `middleware.ts` (Next.js 16).
 - Layout files are pure UI — no auth checks (prevents redirect loops).
