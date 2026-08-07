@@ -9,6 +9,44 @@
   --color-foreground: var(--foreground);
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
+
+  /* --- DESIGN.md tokens (CP-D0, tokens-only checkpoint) ---
+     Distinct `--font-plex-*` / `--color-*` keys, deliberately not
+     reusing `sans`/`mono`/`serif` or Tailwind's built-in `amber-*`
+     scale, so nothing outside /superadmin/dev/design-tokens repaints. */
+  --font-plex-serif: var(--font-plex-serif);
+  --font-plex-sans: var(--font-plex-sans);
+  --font-plex-mono: var(--font-plex-mono);
+
+  --color-ink: var(--ink);
+  --color-ink-50: var(--ink-50);
+  --color-ink-100: var(--ink-100);
+  --color-ink-200: var(--ink-200);
+  --color-ink-300: var(--ink-300);
+  --color-ink-400: var(--ink-400);
+  --color-ink-500: var(--ink-500);
+  --color-ink-600: var(--ink-600);
+  --color-ink-700: var(--ink-700);
+  --color-ink-800: var(--ink-800);
+  --color-ink-900: var(--ink-900);
+  --color-paper: var(--paper);
+  --color-ochre: var(--ochre);
+  --color-mastery-green: var(--mastery-green);
+  --color-amber: var(--amber);
+  --color-brick-red: var(--brick-red);
+  --color-night: var(--night);
+
+  --text-display-lg: 2.5rem;
+  --text-display-sm: 1.75rem;
+  --text-body-lg: 1.125rem;
+  --text-body: 1rem;
+  --text-body-sm: 0.875rem;
+  --text-label: 0.75rem;
+  --text-mono-tag: 0.75rem;
+
+  --radius-4: 4px;
+  --radius-8: 8px;
+  --radius-12: 12px;
   --color-sidebar-ring: var(--sidebar-ring);
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
@@ -80,6 +118,32 @@
   --sidebar-accent-foreground: oklch(0.208 0.042 265.755);
   --sidebar-border: oklch(0.929 0.013 255.508);
   --sidebar-ring: oklch(0.704 0.04 256.788);
+
+  /* DESIGN.md tokens — hex source of truth in DESIGN.md, converted to
+     OKLCH programmatically (Björn Ottosson sRGB->OKLab->OKLCH formulas)
+     to match this file's existing convention; verify visually against
+     the hex swatches on /superadmin/dev/design-tokens. */
+  --ink: oklch(0.274 0.046 248.760); /* #14293D */
+  --paper: oklch(0.972 0.003 128.493); /* #F5F6F4 */
+  --ochre: oklch(0.671 0.123 76.489); /* #C08A2E */
+  --mastery-green: oklch(0.527 0.090 163.356); /* #2F7B5C */
+  --amber: oklch(0.666 0.157 58.318); /* #D97706 — existing amber-600, src/lib/ui/score.ts */
+  --brick-red: oklch(0.533 0.149 25.044); /* #B3413E */
+  --night: oklch(0.208 0.040 265.755); /* #0F172A — existing viz/explainer dark bg */
+
+  /* ink-50..900: interpolated in OKLCH between `paper` (light) and
+     `ink` (dark, ink-900 === ink) so the scale reads warm-neutral at
+     light steps instead of cold blue-gray. See DESIGN.md. */
+  --ink-50: oklch(0.951 0.004 132.101);
+  --ink-100: oklch(0.909 0.007 139.317);
+  --ink-200: oklch(0.818 0.012 154.952);
+  --ink-300: oklch(0.707 0.019 174.194);
+  --ink-400: oklch(0.588 0.027 194.640);
+  --ink-500: oklch(0.497 0.032 210.275);
+  --ink-600: oklch(0.421 0.037 223.504);
+  --ink-700: oklch(0.358 0.041 234.328);
+  --ink-800: oklch(0.309 0.044 242.747);
+  --ink-900: oklch(0.274 0.046 248.760);
 }
 
 .dark {
