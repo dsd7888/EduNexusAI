@@ -48,3 +48,6 @@ next-env.d.ts
 
 # Supabase CLI version-check artifact (re-dirties the tree on every CLI run)
 supabase/.temp/
+
+# CP-N6 render-check output — regenerate with `npx tsx _cp_n6_verify/render_check.ts`
+_cp_n6_verify/shots/

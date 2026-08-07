@@ -458,6 +458,25 @@ documents before it can be asserted for real. Same class of gap as §13's
 "no chemistry subject is seeded" item — synthetic verification only, and it
 should be recorded as such rather than reported as covered.
 
+### CP-N2 harness cleanup debt (`purgeNotes` scope) — LOW priority
+
+`_cp_n2_verify` leaves `study_notes` rows behind: a CP-N6 verification run
+produced 4 residual rows for IDME3532 (M1-M4, `v1`, `is_stale=false`,
+2026-08-07 07:10-07:11) that its own cleanup did not remove. They are harmless
+— real, valid notes generated through the post-CP-N6 pipeline, and they scan
+clean for escape corruption — so they were deliberately left in place rather
+than deleted.
+
+The related sharp edge, which matters more than the residue: **CP-N1's
+`purgeNotes(moduleId)` deletes ALL `study_notes` rows for a fixture module**,
+and SOEEC1010 M1 is a fixture. During CP-N6 that destroyed a row which was
+queued for `is_stale` remediation — harmless there (delete and stale both mean
+"regenerate on next request"), but it means **any data-remediation pass must run
+BEFORE the harness suite, not after**, or the harnesses will silently eat the
+rows being remediated and the remediation counts will be wrong.
+
+---
+
 ---
 
 1. Practice Q based on quiz feedbacks -- just like placement prep

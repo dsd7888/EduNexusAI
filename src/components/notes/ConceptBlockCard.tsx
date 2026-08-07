@@ -82,7 +82,9 @@ export default function ConceptBlockCard({
   return (
     <ReadingCard>
       <div className="flex flex-wrap items-start justify-between gap-2">
-        <h3 className="text-lg font-semibold leading-snug">{block.title}</h3>
+        <h3 className="text-lg font-semibold leading-snug">
+          <RichQuestionText text={block.title} />
+        </h3>
         {block.pyqSignal ? <PyqChip signal={block.pyqSignal} /> : null}
       </div>
 

@@ -40,12 +40,14 @@ function StackedItems({ block }: { block: ComparisonBlock }) {
     <div className="space-y-3 min-[480px]:hidden">
       {block.items.map((item) => (
         <div key={item.name} className="rounded-lg border bg-muted/30 p-3">
-          <p className="text-sm font-semibold">{item.name}</p>
+          <p className="text-sm font-semibold">
+            <RichQuestionText text={item.name} />
+          </p>
           <dl className="mt-2 space-y-2">
             {block.axes.map((axis, ai) => (
               <div key={axis}>
                 <dt className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-                  {axis}
+                  <RichQuestionText text={axis} />
                 </dt>
                 <dd className="mt-0.5 text-sm leading-relaxed">
                   <RichQuestionText text={item.values[ai] ?? "—"} />
@@ -73,7 +75,7 @@ function ComparisonTable({ block }: { block: ComparisonBlock }) {
                 scope="col"
                 className="border-b px-2 py-1.5 font-medium"
               >
-                {axis}
+                <RichQuestionText text={axis} />
               </th>
             ))}
           </tr>
@@ -85,7 +87,7 @@ function ComparisonTable({ block }: { block: ComparisonBlock }) {
                 scope="row"
                 className="whitespace-nowrap px-2 py-2 text-left text-sm font-semibold"
               >
-                {item.name}
+                <RichQuestionText text={item.name} />
               </th>
               {block.axes.map((axis, ai) => (
                 <td key={axis} className="px-2 py-2 leading-relaxed">
@@ -139,7 +141,9 @@ export default function ComparisonBlockCard({
   return (
     <ReadingCard>
       <div className="flex flex-wrap items-start justify-between gap-2">
-        <h3 className="text-lg font-semibold leading-snug">{block.title}</h3>
+        <h3 className="text-lg font-semibold leading-snug">
+          <RichQuestionText text={block.title} />
+        </h3>
         {block.pyqSignal ? <PyqChip signal={block.pyqSignal} /> : null}
       </div>
 
