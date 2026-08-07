@@ -14,9 +14,9 @@ EduNexus AI is a **syllabus-locked, role-aware institutional intelligence platfo
 **Current deployment:** `edu-nexus-ai-two.vercel.app`
 **Repo:** `https://github.com/dsd7888/EduNexusAI`
 
-**Deployment scope:** P. P. Savani University (PPSU) — Engineering (CSE fully seeded Sem 1–7, Chemical + Mechanical active). Student accounts are manually provisioned by Dhruv (Supabase self-signup disabled).
+**Deployment scope:** P. P. Savani University (PPSU) — Engineering, faculty-submitted-syllabus pilot model (see §8 for current live-content state). Student accounts are manually provisioned by Dhruv (Supabase self-signup disabled).
 
-**Content state (June 2026):** CSE syllabus fully seeded for Semesters 1–7: 52 subjects, 285 modules, 228 COs, full CO-PO/PSO mappings, BTL levels, exam schemes. Seeded via two SQL scripts (`seed_cse_sem1_4.sql` + `seed_cse_sem5_7.sql`). CSE is the first branch with complete structured-syllabus coverage.
+**Content state (verified Aug 2026 via live DB query — CP-N6 Part 1):** The June 2026 CSE bulk seed (52 subjects across Sem 1–7; see §17's changelog) was deliberately removed for the PPSU faculty pilot. Content is now **faculty-submitted per subject**, not pre-seeded: **17 subjects live, 106 modules, 77 course outcomes**, spanning **Semester 1 (12 subjects) and Semester 3 (5 subjects) only** — Sem 2 and Sem 4–7 have zero live subjects. Branches represented: CSE (9), ECE (3), CEIT (2), DS (1), IT (1), CE (1). All 17 `subject_content` rows carry a non-null `created_by` (genuinely faculty-submitted; zero seed-backed rows remain). Anyone generating content against Sem 2 or Sem 4–7 will find nothing to generate from.
 
 **The three institutional lock-in factors:**
 1. Syllabus lock — content is their RAG; can't replicate without their PDFs
@@ -377,8 +377,9 @@ edunexus-ai/
 │   ├── 20260628000000_qpaper_templates_personal_shared.sql ✅ applied — is_snapshot, is_preset, 4 RLS policies
 │   ├── 20260628000000_question_images.sql          ✅ applied — image_path on faculty_question_bank + question-images bucket
 │   └── 20260706000000_faculty_co_edit.sql           ✅ applied — faculty_verified source value + faculty write policy on module_co_mapping
-├── supabase/seed_cse_sem1_4.sql                    ✅ 22 subjects Sem 1–4
-├── supabase/seed_cse_sem5_7.sql                    ✅ 30 subjects Sem 5–7
+├── supabase/seed_cse_sem1_4.sql                    ⚠️  present on disk but NOT applied to the live DB —
+│                                                       pre-pilot seed, superseded by faculty-submitted
+│                                                       content (§1, §8). seed_cse_sem5_7.sql no longer exists.
 ├── vercel.json                                     ✅ maxDuration per route; all heavy generation routes also set memory: 1024
 ├── CLAUDE_CONTEXT.md                               ← This file
 ├── .env.local
@@ -626,11 +627,16 @@ ConceptExplainers component hidden from PPT generation result page (July 2026) �
 - No chunking/pgvector for chat — full syllabus fits in context
 - Semantic cache prevents repeated API calls
 
-### Seeded Content
-- CSE Sem 1–4: 22 subjects, 127 modules, 96 COs
-- CSE Sem 5–7: 30 subjects, 158 modules, 132 COs
-- Total: 52 subjects, 285 modules, 228 COs across 7 semesters
-- Caveat: CO-PO/PSO strengths for Sem 1–4 have column alignment issue. Sem 5–7 electives missing CO-PO/PSO mappings. Fix via superadmin UI before accreditation use.
+### Live Content (verified Aug 2026 — CP-N6 Part 1 live DB query)
+Supersedes the June 2026 bulk-seed numbers in §17's changelog, which no longer
+reflect live state — that seed was deliberately removed for the PPSU faculty
+pilot. Content is faculty-submitted per subject now, not pre-seeded.
+- 17 subjects, 106 modules, 77 course outcomes; zero seed-backed rows (every
+  `subject_content` row has a non-null `created_by`)
+- Semester 1: 12 subjects. Semester 3: 5 subjects. Sem 2, 4–7: zero live subjects.
+- Branches: CSE (9), ECE (3), CEIT (2), DS (1), IT (1), CE (1)
+- `supabase/seed_cse_sem1_4.sql` still exists on disk but is not applied;
+  `seed_cse_sem5_7.sql` no longer exists at all
 
 ---
 
@@ -1336,7 +1342,9 @@ API routes:
 - 15-table RLS audit — fixed tables with RLS enabled but zero policies (see §14).
 
 ### Recently Shipped (June 2026)
-- CSE Sem 1–7 fully seeded (52 subjects, 285 modules, 228 COs)
+- CSE Sem 1–7 fully seeded (52 subjects, 285 modules, 228 COs) — **since deliberately
+  removed for the PPSU faculty pilot; no longer live state. See §1/§8 for the
+  current, faculty-submitted content (17 subjects, Sem 1 & 3 only).**
 - RLS fully enabled, 5-tier role hierarchy (superadmin/dean/hod/faculty/student)
 - Dean/HOD as first-class roles — all 30 faculty-tier API routes updated
 - PPT Refinement — full pipeline with XML patching; HTML-tag stripping, empty-title INSERT, and normAutofit overflow fix all shipped
