@@ -404,15 +404,29 @@ edunexus-ai/
 - Quiz: multi-type, Socratic hints, persistence, resume
 - Placement prep: company tests, practice drills, history
 - Semantic score system: slate/amber/emerald (no red), strengths-first, target-framing
-- **Notes v2 (CP-N1 — engine + storage + route; NO UI until CP-N4).** Typed
-  content blocks (concept / formula / comparison) generated per module from the
-  syllabus and stored versioned in `study_notes`. Replaces the v1 "Quick Notes"
-  path, which was deleted outright in CP-N1 Part 0 — it stored markdown in
-  `semantic_cache` (a query cache), logged its spend as `feature='chat'`, and
-  had no version or regenerate story. The student subjects-grid modal that
-  consumed it is now a "coming soon" placeholder. Full rationale, the schema
-  constraint budget, the retry policy and the PYQ frequency contract preview:
-  **CP_N1_NOTES_ENGINE.md**.
+- **Notes v2 (CP-N1–CP-N6, complete — engine, UI, PDF export, hotfix; design
+  system applied CP-D0).** Typed content blocks (concept / formula /
+  comparison) generated per module from the syllabus and stored versioned in
+  `study_notes`. Replaces the v1 "Quick Notes" path, which was deleted
+  outright in CP-N1 Part 0 — it stored markdown in `semantic_cache` (a query
+  cache), logged its spend as `feature='chat'`, and had no version or
+  regenerate story. The student subjects-grid modal that consumed it is now a
+  "coming soon" placeholder. Full rationale, the schema constraint budget, the
+  retry policy and the PYQ frequency contract: **CP_N1_NOTES_ENGINE.md**.
+  Checkpoint summary (full detail in §17's Aug 2026 "Recently Shipped"):
+  CP-N1 typed block engine + storage; CP-N2 subject-scope assembly + hash
+  invalidation + versioning + regen; CP-N3 PYQ frequency signal (three-state:
+  rich/weak/absent — no explicit "none" member, see below); CP-N4 student
+  reading view + flashcard mode; CP-N5 PDF export; CP-N6 the pre-parse
+  JSON-escape hotfix (rolled out platform-wide, not Notes-only — see Key
+  Learnings) plus a browser-only raw-LaTeX-in-labels bug it caught. Reading
+  view and flashcard mode restyled to DESIGN.md's token system in CP-D0
+  (§17 Aug 2026, new "Design System" entry).
+  - PYQ three-state contract: `{kind:"rich"}` / `{kind:"weak"}` are the only
+    variants — absence of the `pyqSignal` field on a block IS the "no signal"
+    case, enforced by caller-side `block.pyqSignal ? <PyqChip/> : null` guards,
+    never inside the chip itself. `pyq_questions` is currently 0 rows for every
+    live subject (verified directly, Aug 2026) — see §17/§18 for status.
   - NOTE for cost analysis: historical `feature='chat'` spend is overstated by
     however much v1 quick-notes generation ran. Not separable retroactively.
 
@@ -1203,6 +1217,102 @@ API routes:
 
 ## 17. Active Feature Roadmap
 
+### Recently Shipped (Aug 2026)
+
+- **Notes v2 — complete, CP-N1 through CP-N6, all on `dev`.** Commit SHAs
+  verified via `git log` (not carried over from memory): CP-N1
+  `5b617d2` (Part 6, final — engine, storage, typed block model,
+  generator/prompt/schema, GET+regenerate routes, 6 HTTP harnesses under
+  `_cp_n1_verify/`), CP-N2 `7c1c7f1` (subject-scope assembly, hash
+  invalidation, versioning, regen), CP-N3 `89d0ca2` (PYQ frequency signal,
+  serve-time, three-state — see §7), CP-N4 `3c3b971` (final of six parts —
+  typed block renderers, reading view, flashcard mode, notes→chat handoff,
+  entry points + harnesses; retired `/student/quiz/legacy` in the same
+  checkpoint), CP-N5 `b2cde64` (PDF export via the shared `PDFBuilder`, three
+  deterministic block renderers, math pre-pass mirroring `paperMath.ts`),
+  CP-N6 `9149a10` (the JSON-escape pre-parse hotfix, rolled out
+  platform-wide — see below) + `ee89f71` (Part 5.1, the real-browser render
+  check that caught a separate raw-LaTeX-in-labels bug, fixed same commit).
+  Full architecture: `CP_N1_NOTES_ENGINE.md`. Student surfaces restyled to
+  DESIGN.md's token system in CP-D0 (below).
+
+- **JSON-escape corruption fix (CP-N6) — platform-wide, not Notes-specific.**
+  Under a `responseSchema`, Gemini sometimes emits a single backslash before a
+  LaTeX command whose first letter collides with a JSON short escape (`\frac`
+  `\theta` `\nabla` `\rho` `\beta` `\vec`) — `JSON.parse` does not throw (those
+  are valid escapes), so the formula silently decodes to a control character
+  plus the command remainder, with no error anywhere. Fix: `repairGeminiJsonEscapes`
+  (pre-parse, whitelist-gated, needs no `$…$`/delimiter reasoning) +
+  `repairGeminiMathEscapes` (kept — the earlier post-parse fix, now scoped to
+  its one remaining real job, lab-manual math spans) + `findEscapeCorruption`
+  (shared detection, same whitelist as the repair so scanner and repair can
+  never disagree). All three live in `src/lib/text/latexSegments.ts`. Verified
+  by direct grep (Aug 2026) — `repairGeminiJsonEscapes` is called from:
+  `src/lib/notes/generator.ts`, `src/lib/qpaper/generator.ts`,
+  `src/lib/qpaper/sectionGen.ts`, `src/lib/qpaper/answerKeyGen.ts`,
+  `src/lib/qpaper/validateTags.ts`, `src/app/api/generate/qpaper/regenerate-question/route.ts`,
+  `src/lib/ppt/generator.ts`, `src/lib/qbank/generator.ts`,
+  `src/app/api/qbank/draft-image/route.ts`, `src/lib/labmanual/generator.ts`,
+  `src/lib/labmanual/pathGenerator.ts`, `src/lib/assessment/generator.ts`,
+  `src/lib/assessment/natVerify.ts`. Detection-only sweep:
+  `scripts/scan-escape-corruption.ts` (read-only report; `--mark-stale` for
+  Part 4 remediation).
+  **Open verification item, stated plainly: Quiz/Assessment
+  (`assessment/generator.ts`, `natVerify.ts`) has the fix in its code path,
+  but — checked directly, Aug 2026 — no `_cp_q*_verify` harness and no
+  browser render-check exercises it the way `_cp_n6_verify/render_check.ts`
+  does for Notes. Nobody has taken a real quiz session with LaTeX-bearing
+  content and watched it render correctly end-to-end. Logged in
+  Future_plans.MD; do a real quiz-session browser pass next time
+  Quiz/Assessment is touched.**
+
+- **PYQ data status — blocked on content, not engineering.** `pyq_questions`
+  holds 0 rows for every live subject (verified directly against the DB, Aug
+  2026). The ingestion path exists and is fully wired — `POST /api/upload`
+  (when `type === "pyq"`) → `extractAndSavePyqQuestions` → `routeAI("pyq_extract")`
+  → `pyq_questions`, confirmed by reading the route — but is unused: no source
+  PDFs have been uploaded for any of the 17 pilot subjects. This means CP-N3's
+  PYQ frequency signal, the PYQ badge/chip UI, and CP-D0's `<MonoTag>`
+  amber-fill variant are all correctly implemented but have never been
+  exercised against real data — every verification of them to date has used a
+  synthetic signal shaped like `buildModuleSignal`'s real output, not real
+  PYQs. Decision on activation (manual superadmin upload of source PDFs vs. a
+  faculty-facing upload flow) has **not** been made — this is an open product
+  decision, not a resolved one. See §18.
+
+- **Design System (CP-D0) — token system defined and applied to Notes v2
+  student surfaces.** `DESIGN.md` (repo root) is the source of truth: color
+  tokens (ink/paper/ochre/mastery-green/amber/brick-red/night + an ink-50…900
+  neutral scale), type scale (IBM Plex Serif/Sans/Mono), a 4px/8px/12px radius
+  scale, 180ms/240ms motion tokens, the "signature mono tag" spec, and
+  accessibility rules (WCAG AA, visible focus rings, ≥44px touch targets).
+  Applied so far: Notes v2's reading view (all three block types — concept,
+  formula, comparison) and flashcard mode, both verified via real-browser
+  passes at desktop and 390px, including WCAG AA contrast audits against real
+  rendered pairings (zero failures) and a touch-target audit. `<MonoTag>`
+  (`src/components/ui/mono-tag.tsx`) was built generically — default/active/
+  mastery-fill/amber-fill variants, no Notes-specific coupling — intended for
+  reuse across Quiz, Chat, Dashboard, and Placement, but **not yet applied
+  anywhere outside Notes**. Two accessibility/design findings from this pass
+  are now written into DESIGN.md itself, not just this changelog: (a) ochre
+  fails the 3:1 WCAG 1.4.11 floor as a lone focus-ring/state-indicator color
+  (~2.8:1 against paper) — never use it for a ring standing alone as the only
+  indicator of state; on a night/dark surface, the corollary is `ring-ink-900`
+  is itself illegible (~1.2:1), so use `ring-paper` there instead — same
+  principle, surface-appropriate color. (b) On a single-surface dark context
+  with no surrounding whitespace (e.g. flashcard mode), nested content should
+  differentiate by shape/border rather than by stacking tonal fills — adjacent
+  dark-surface lightness steps run out of perceptible separation fast (~1.2–1.7:1
+  measured between three graded fills), well below anything reliably
+  perceptible; varying the *kind* of treatment (bordered outline / borderless
+  table / accent-colored callout) reads as distinct layers at identical
+  background lightness where a lightness ramp alone cannot.
+
+- **Dead route removed:** `POST /api/subjects/content` (`afe3ef2`) — unused,
+  bypassed the structured syllabus tables in favor of a raw-text path nothing
+  else used. `GET` on the same route is untouched and still serves
+  `subject_content.content`/`reference_books`.
+
 ### Recently Shipped (July 2026)
 - **CP-Q3 Part 5 — results view + mastery hub (student), complete, on `dev`.**
   Closes the 404 both mode runners already `router.replace()`d to on finish.
@@ -1688,6 +1798,8 @@ API routes:
 | Rate limiting on AI routes | Known gap | Cache mitigates at pilot scale; revisit at multi-institution. The syllabus-audit, lesson-plan and lab-manual `/suggest`/`generate` routes have no per-user rate limit — the fingerprint caches make repeat calls free, which holds at 27 pilot faculty. This becomes a real conversation at 200+ faculty, or the moment any student-facing AI route ships without caching. Cross-cutting, not per-feature |
 | Syllabus-audit `findingIds` targeted re-suggest — UI not wired | Deferred (Jul 23) | `/api/syllabus/audit/suggest` accepts `findingIds?` and re-rolls just those (cache-bypassed both ways); the front end never sends it. UX = "dismiss → re-suggest just this one." Nice-to-have; one button + one field, no server change. FUTURE_PLANS.md |
 | Syllabus-audit CO×Module matrix overflows past ~20 modules in the PDF | Deferred (Jul 23) | Cell width `min(34,(515−46−40)/n)`; below ~15pt usable the header/marks crowd. Widest real subject is 8 modules, AICTE rarely >10 — theoretical. If a 15+-module subject appears, rotate headers 90° or switch to a heatmap. Degrades by crowding, not by dropping data. FUTURE_PLANS.md |
+| `pyq_questions` is 0 rows for all 17 live subjects | Blocked on content, not engineering | Ingestion path fully wired (`POST /api/upload` type=`pyq` → `extractAndSavePyqQuestions` → `pyq_extract` → `pyq_questions`) but unused — no source PDFs uploaded for any pilot subject. CP-N3's frequency signal and CP-D0's PYQ badge are implemented and verified only against a synthetic signal. Decision on activation (manual superadmin upload vs. faculty-facing upload flow) not yet made — open product decision |
+| Quiz/Assessment LaTeX-escape fix (`repairGeminiJsonEscapes`) unverified via real browser session | Open verification item | Wired into `assessment/generator.ts` and `natVerify.ts` (confirmed by grep), but no `_cp_q*_verify` harness or browser render-check exercises it the way `_cp_n6_verify/render_check.ts` does for Notes. Do a real quiz-session browser pass next time Quiz/Assessment is touched. FUTURE_PLANS.md |
 
 ---
 
@@ -1748,7 +1860,11 @@ API routes:
 | `paperMath.ts` pre-renders all math spans before PDF/Word build | PDF/Word builders are synchronous — all rasterized image bytes must exist up front; dedupe rasterizes each unique span once per paper |
 | responseSchema narrowed to only the fields a call needs (CONTENT_BATCH_SCHEMA text-only, svgCode maxLength-bounded) | Irrelevant optional fields in a schema remove the model's natural stopping pressure under constrained decoding → runaway token cost (~18× slower/~12× costlier observed). Distinct from the thinkingBudget failure mode |
 | Any responseSchema'd call with a narrative field carries an explicit word/token ceiling IN THE PROMPT, not only in the schema | Schema `maxLength` does NOT reliably constrain free-text under constrained decoding — it is a validation bound, not a generation budget, and Gemini blows through it. Third confirmed instance (Jul 2026): `chat_visualize` and `chat_viz_plot` needed `VIZ_SIZE_CONTRACT` because freeform HTML carries no schema at all; `quiz_gen_v2` NAT explanations blew a 2048-token batch budget writing 2037 tokens of duplicate arithmetic **while the schema said `maxLength: 700`**. The prompt ceiling ("explanation is at most 60 words — state the steps and stop") fixed it in one pass. Note the blast radius: one over-long field truncates the WHOLE batch, losing every question in it, not just the long one. This is a THIRD axis, independent of the narrow-schema rule (below) and of `thinkingBudget` — a narrow schema removes irrelevant fields, this bounds the relevant ones. Any new task emitting explanations, rationales, summaries, or model answers under a responseSchema needs one |
-| Gemini escape collision is repaired PRE-parse (`repairGeminiJsonEscapes`), never post-parse | Under a responseSchema Gemini sometimes emits a SINGLE backslash before a LaTeX command whose first letter is a JSON short escape (`\frac` `\theta` `\nabla` `\rho` `\beta` `\vec`). `JSON.parse` does NOT throw — those are valid escapes — so `\frac{dQ}{dt}` silently decodes to form-feed + "rac{dQ}{dt}" and the formula is destroyed with no error anywhere. The earlier post-parse `repairGeminiMathEscapes` walked `$…$` spans to decide what was safe to touch, and a model-emitted `$` NESTED inside `\text{…}` desynced that walk, so tab-corrupted `\text` landed "outside" every span and survived even with an EVEN `$` count (observed in lab_manual_cache, Aug 2026). Pre-parse needs no span or delimiter reasoning at all. `\f`/`\b`/`\v` + letter is always repaired (never legitimate); `\t`/`\n`/`\r` are whitelist-gated with a word-boundary check so a real newline before "under" is not mistaken for `\nu`. Detection (`findEscapeCorruption`) shares the SAME whitelist so scanner and repair cannot disagree. Scanner: `scripts/scan-escape-corruption.ts` |
+| Gemini escape collision is repaired PRE-parse (`repairGeminiJsonEscapes`), never post-parse | Under a responseSchema Gemini sometimes emits a SINGLE backslash before a LaTeX command whose first letter is a JSON short escape (`\frac` `\theta` `\nabla` `\rho` `\beta` `\vec`). `JSON.parse` does NOT throw — those are valid escapes — so `\frac{dQ}{dt}` silently decodes to form-feed + "rac{dQ}{dt}" and the formula is destroyed with no error anywhere. The earlier post-parse `repairGeminiMathEscapes` walked `$…$` spans to decide what was safe to touch, and a model-emitted `$` NESTED inside `\text{…}` desynced that walk, so tab-corrupted `\text` landed "outside" every span and survived even with an EVEN `$` count (observed in lab_manual_cache, Aug 2026). Pre-parse needs no span or delimiter reasoning at all. `\f`/`\b`/`\v` + letter is always repaired (never legitimate); `\t`/`\n`/`\r` are whitelist-gated with a word-boundary check so a real newline before "under" is not mistaken for `\nu`. Detection (`findEscapeCorruption`) shares the SAME whitelist so scanner and repair cannot disagree. Scanner: `scripts/scan-escape-corruption.ts`. **CP-N6 rolled the pre-parse repair out platform-wide, not just Notes** — confirmed by grep, it is called from notes, qpaper (generator/sectionGen/answerKeyGen/validateTags/regenerate-question), PPT content batches, Q Bank (generator + draft-image), lab manual (generator + pathGenerator), and assessment (generator + natVerify). Quiz/Assessment has the fix in its code path but no harness or browser check exercises it yet — see §17 Aug 2026 and §18 |
+| JSON-mode structured output can corrupt content in a way `JSON.parse`, schema validation, and `tsc` all miss | The escape collision above passes `JSON.parse` cleanly (the corrupted form is still valid JSON) and satisfies any `responseSchema`/type check, because the corruption is inside a string value, not the JSON structure. Only a targeted pre-parse repair (content-aware, not structure-aware) or a real-rendered-output check can catch this class of bug — static validation of the JSON shape is structurally blind to it |
+| A shared repair/utility function is not verified just because it exists and is named correctly | `repairGeminiMathEscapes` existed, was named appropriately, and was wired in — and still didn't cover the real corruption pattern (a `$` nested inside `\text{…}` desynced its span-walk, so tab-corrupted `\text` survived even with an even `$` count). "There's already a fix for this" is a claim to verify against the actual failure mode, not a fact to trust because a function with the right name is in the call path |
+| Real-browser verification catches rendering bugs invisible to tsc/lint/build/harness — necessary but not sufficient, automated checks still are | Two confirmed this session, both structurally undetectable any other way: (1) CP-N5's PDF download used a `blob:` URL, which carries none of the original response's headers — the filename silently fell back to a meaningless blob-URL-derived name unless `Content-Disposition` was read explicitly and handed to the `download` attribute. (2) CP-N6's render check found notes rendered LaTeX in block *content* but not block *labels* — coverage had been wired per-field, so axis headers/row labels/`<h3>` headings displayed raw `$I_L$`-style source because nobody had added a new field type to the routed-through-RichQuestionText list. Same class of gap as the MCQ-option-text case §13 already records. Both shipped past tsc/lint/build and a happy-path click-through; only a person looking at the rendered page caught them |
+| On a single-surface dark UI context (e.g. flashcard mode), differentiate nested content by shape/border, not by stacking tonal fills | Lightness differences that read fine on a light, multi-card page (reading view) collapse below perceptible contrast when there's no surrounding whitespace to separate layers — measured ~1.2–1.7:1 between three graded dark fills in CP-D0's flashcard restyle, well under anything reliably visible. Vary the *kind* of treatment instead (bordered outline next to a borderless table next to an accent-colored callout) — shape and border carry the grouping signal tone can't once a surface is this dark and this dense. Written into DESIGN.md's "Shape, spacing, motion" section, not just here, so the next dark/dense surface doesn't rediscover it |
 | Notes: a validation-floor failure consumes one of the 2 generation attempts — but NEVER lowers the bar | CP-N1's original rule was "validation failures are not retried", protecting against a silently-degraded generation. What it was actually protecting against is an UNOBSERVED retry or a PARTIAL accept — both still forbidden. A real SOEEC1010 regeneration failed the gate on attempt 1 and passed on a fresh attempt 2 (measured again in CP-N6: 4 of 14 runs needed the retry, one attributed to an 80-char field overflow), so the retry is a whole fresh generation re-judged by the IDENTICAL all-or-nothing gate, logged with its own attemptNumber plus a console warning naming the failed gate. Never retry-of-retry. `_cp_n1_verify/validation_failure.ts` asserts the call count is exactly 2 |
 | responseSchema array `maxItems` has a hard SERVING ceiling, separate from `maxLength` | Gemini compiles a responseSchema into a constraint state machine, and array `maxItems` multiplies the states of everything nested inside it. Past a threshold the API rejects the request outright with `400 "The specified schema produces a constraint that has too many states for serving"` — BEFORE generating a token, so it fails 100% of the time, not intermittently. Probed empirically for the syllabus-audit call (Jul 2026): `fixes: maxItems 12 / discoveries: maxItems 8` serves; 14/8 and 12/10 are both rejected. `maxItems` drives this, NOT `maxLength` (24/12 is rejected even with every length bound removed), so the "narrow schema, maxLength everywhere" rule (above) is fully compatible — this is a DIFFERENT axis. Keep per-array `maxItems` small and cap the prompt-side input to match; never raise `maxItems` to "allow more" without re-probing, or the whole call 400s |
 

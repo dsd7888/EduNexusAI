@@ -473,7 +473,70 @@ produced 4 residual rows for IDME3532 (M1-M4, `v1`, `is_stale=false`,
 2026-08-07 07:10-07:11) that its own cleanup did not remove. They are harmless
 — real, valid notes generated through the post-CP-N6 pipeline, and they scan
 clean for escape corruption — so they were deliberately left in place rather
-than deleted.
+than deleted. Confirmed still present, unchanged, as of this write-up.
+
+### CP-N1 `purgeNotes()` ordering trap — PROCEDURAL, not yet an incident
+
+`purgeNotes(admin, moduleIds)` (`_cp_n1_verify/shared.ts`) is an unconditional
+`DELETE ... WHERE module_id IN (...)` against `study_notes` — it does not
+scope to rows the harness itself created. CP-N1's fixture subjects are
+IDSH2020 and SOEEC1010. `scripts/scan-escape-corruption.ts --mark-stale`
+(the escape-corruption remediation path) marks real rows `is_stale=true` for
+manual review before regeneration, keyed by whatever subjects/modules the
+scan actually finds corruption in. If a future remediation pass happens to
+touch a module that overlaps a CP-N1 fixture, and a CP-N1 harness suite runs
+afterward against that same module, `purgeNotes` will delete the
+marked-for-review rows before anyone looks at them — silently, since the
+harness has no way to know they weren't its own fixture data. Rule: run
+remediation review to completion (or snapshot the affected rows) before
+running any `_cp_n1_verify` suite that touches the same fixture subject.
+Not observed to have happened; logged because the mechanism makes it
+possible, not because it has occurred.
+
+### Admin (superadmin) shell sidebar has no responsive breakpoint
+
+`src/app/(superadmin)/layout.tsx`: `<aside className="fixed inset-y-0 left-0
+flex w-64 flex-col ...">` paired with `<main className="ml-64 ...">` — a
+fixed 256px sidebar and a fixed-margin main area, with zero `sm:`/`md:`/`lg:`
+classes anywhere in the file. Confirmed by direct read, not assumption: at
+390px viewport this overflows/crowds badly (the sidebar alone is 65% of the
+viewport width before content starts). Pre-existing, unrelated to CP-N/CP-D0
+— superadmin is a desktop-first internal tool and this was never exercised at
+mobile widths. Needs its own responsive pass (collapse-to-drawer or similar)
+whenever superadmin mobile use becomes a real requirement.
+
+### `faculty_question_bank` math-content coverage is effectively zero — re-audit later
+
+Checked directly against live data (38 rows total): **0 of 38** rows contain
+`$...$`, `\ce{...}`, or any common LaTeX macro, in `question_text`,
+`model_answer`, or `options`. Several rows are quantitatively rich (circuits,
+resistors, Ω) but written in plain Unicode symbols, not authored LaTeX — so
+they were never candidates for the Gemini escape-corruption bug (§13/§17 of
+CLAUDE_CONTEXT.md) in the first place. Net effect: the escape-fix's real-world
+protection for this table is currently unexercised, not lightly-exercised —
+there is no faculty-authored math content here yet for it to have protected.
+Re-check once faculty generate/import questions with real LaTeX math, since
+that's the point at which this fix actually gets a live test on this table.
+
+### Quiz/Assessment: LaTeX-escape fix unverified via real browser session
+
+`repairGeminiJsonEscapes` is wired into `src/lib/assessment/generator.ts` and
+`src/lib/assessment/natVerify.ts` (confirmed via grep), but — checked directly
+— no `_cp_q*_verify` harness and no browser render-check exercises it the way
+`_cp_n6_verify/render_check.ts` does for Notes. The backend code path has the
+fix; nobody has taken a real quiz session containing LaTeX-bearing content and
+watched it render correctly end-to-end. Open verification item, not a known
+bug — do a real quiz-session browser pass (mirroring CP-N6's render_check
+pattern) the next time Quiz/Assessment is touched.
+
+### Empty/error/skeleton states across Notes v2 — deferred design-system scope
+
+CP-D0 (Notes v2 design-system restyle, Parts 0–3) explicitly did not restyle
+`EmptyState`/`ErrorState`/loading-skeleton components on the reading view or
+flashcard mode — the brief scoped each part to named surfaces only, and these
+weren't named. Candidate for a future checkpoint (provisionally CP-D3) once
+more of the app has moved onto DESIGN.md's token system and the pattern can
+be applied consistently across surfaces rather than piecemeal per-feature.
 
 The related sharp edge, which matters more than the residue: **CP-N1's
 `purgeNotes(moduleId)` deletes ALL `study_notes` rows for a fixture module**,
