@@ -2,7 +2,7 @@ import {
   createAdminClient,
   createServerClientForRequestResponse,
 } from "@/lib/db/supabase-server";
-import { requireAuth, requireRole, apiError, apiSuccess } from "@/lib/api/helpers";
+import { requireAuth, apiError, apiSuccess } from "@/lib/api/helpers";
 import { type NextRequest, NextResponse } from "next/server";
 
 export async function GET(request: NextRequest) {
@@ -42,95 +42,6 @@ export async function GET(request: NextRequest) {
   } catch (err) {
     console.error("[subjects/content] GET error:", err);
     const message = err instanceof Error ? err.message : "Failed to fetch content";
-    return apiError(message, 500);
-  }
-}
-
-export async function POST(request: NextRequest) {
-  try {
-    const response = NextResponse.next();
-    void response;
-    const authResult = await requireRole(["superadmin"]);
-    if (authResult instanceof Response) return authResult;
-    const { user, adminClient } = authResult;
-
-    const body = await request.json();
-    const subjectId = String(body?.subjectId ?? "").trim();
-    const content = String(body?.content ?? "");
-    const referenceBooks = String(body?.referenceBooks ?? "");
-
-    if (!subjectId) {
-      return NextResponse.json(
-        { error: "subjectId is required" },
-        { status: 400 }
-      );
-    }
-
-    if (!content.trim()) {
-      return NextResponse.json(
-        { error: "content is required and cannot be empty" },
-        { status: 400 }
-      );
-    }
-
-    const { data: subject, error: subjError } = await adminClient
-      .from("subjects")
-      .select("id")
-      .eq("id", subjectId)
-      .single();
-
-    if (subjError || !subject) {
-      return NextResponse.json({ error: "Subject not found" }, { status: 404 });
-    }
-
-    const { data: existing } = await adminClient
-      .from("subject_content")
-      .select("subject_id")
-      .eq("subject_id", subjectId)
-      .maybeSingle();
-
-    if (existing) {
-      const { error: updateError } = await adminClient
-        .from("subject_content")
-        .update({
-          content: content.trim(),
-          reference_books: referenceBooks.trim(),
-        })
-        .eq("subject_id", subjectId);
-
-      if (updateError) {
-        console.error("[subjects/content] POST update error:", updateError);
-        return NextResponse.json(
-          { error: updateError.message },
-          { status: 500 }
-        );
-      }
-    } else {
-      const { error: insertError } = await adminClient
-        .from("subject_content")
-        .insert({
-          subject_id: subjectId,
-          content: content.trim(),
-          reference_books: referenceBooks.trim(),
-          created_by: user.id,
-        });
-
-      if (insertError) {
-        console.error("[subjects/content] POST insert error:", insertError);
-        return NextResponse.json(
-          { error: insertError.message },
-          { status: 500 }
-        );
-      }
-    }
-
-    return NextResponse.json({
-      success: true,
-      message: "Syllabus content saved",
-    });
-  } catch (err) {
-    console.error("[subjects/content] POST error:", err);
-    const message = err instanceof Error ? err.message : "Failed to save content";
     return apiError(message, 500);
   }
 }
