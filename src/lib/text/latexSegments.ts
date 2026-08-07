@@ -244,6 +244,205 @@ function isAsciiLetter(code: number): boolean {
   return (code >= 65 && code <= 90) || (code >= 97 && code <= 122);
 }
 
+function isLowerAsciiLetter(code: number): boolean {
+  return code >= 97 && code <= 122;
+}
+
+// ── The PRE-parse escape repair (single source of truth) ─────────────────────
+//
+// HEURISTIC REPAIR FOR A KNOWN MODEL-DECODING FAILURE MODE — NOT a general JSON
+// sanitizer. Do not extend it into one, and do not reach for it to "clean up"
+// arbitrary malformed JSON.
+//
+// `\f` `\b` `\v` are never legitimate in generated prose or formulae, so a letter
+// after one is always a LaTeX command that lost its escaping backslash.
+const NEVER_LEGIT_ESCAPE = new Set(["f", "b", "v"]);
+
+// `\t` `\n` `\r` ARE legitimate whitespace, so they are whitelist-gated: the
+// escape is only treated as a broken command when the text right after it
+// completes a real LaTeX/mhchem command. Keys are the escape letter; values are
+// the command MINUS that first letter (`\theta` → "heta"). Longest-first so
+// `\rightarrow` wins over `\right` and `\textbf` over `\text`.
+const LATEX_COMMAND_REMAINDERS: Record<string, string[]> = {
+  t: ["extbf", "extit", "extrm", "hicksim", "heta", "imes", "ilde", "race",
+      "anh", "frac", "ext", "an", "au", "op", "o"],
+  n: ["ormalsize", "onumber", "ewline", "olimits", "earrow", "abla", "otin",
+      "eq", "ot", "eg", "u", "e"],
+  r: ["ightleftharpoons", "ightharpoonup", "ightarrow", "angle", "ight",
+      "floor", "vert", "ceil", "ho", "ad", "m", "e"],
+};
+for (const k of Object.keys(LATEX_COMMAND_REMAINDERS)) {
+  LATEX_COMMAND_REMAINDERS[k].sort((a, b) => b.length - a.length);
+}
+
+// The complete set of characters JSON allows after a backslash. A backslash
+// followed by ANYTHING else is not valid JSON at all, so `JSON.parse` throws —
+// that is the LOUD twin of the silent corruption this module repairs, and it has
+// exactly one cause here: an unescaped LaTeX command (`\cdot`, `\end`, `\ce`,
+// `\Omega`, `\alpha`, …). Escaping those is unambiguously correct: it can only
+// turn a guaranteed parse failure into a correct parse, never alter a string
+// that would otherwise have parsed.
+const VALID_JSON_ESCAPES = new Set(['"', "\\", "/", "b", "f", "n", "r", "t", "u"]);
+
+/**
+ * Would `\<letter>` here be a LaTeX command rather than a real escape?
+ * `after` is the index just past the escape letter.
+ */
+function looksLikeLatexCommand(letter: string, raw: string, after: number): boolean {
+  // Not a legal JSON escape → cannot be anything but a stray LaTeX backslash.
+  if (!VALID_JSON_ESCAPES.has(letter)) return true;
+  if (NEVER_LEGIT_ESCAPE.has(letter)) return isAsciiLetter(raw.charCodeAt(after));
+  const remainders = LATEX_COMMAND_REMAINDERS[letter];
+  if (!remainders) return false;
+  for (const rem of remainders) {
+    if (!raw.startsWith(rem, after)) continue;
+    // Word boundary: the command must END here. Without this, a REAL newline
+    // before the word "under" would match `\nu` + "nder", and a real carriage
+    // return before "hot" would match `\rho` + "t". Requiring a non-lowercase
+    // char after the remainder rejects both while still matching `\nu $`,
+    // `\rho}`, `\text{`, `\times `.
+    if (isLowerAsciiLetter(raw.charCodeAt(after + rem.length))) continue;
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Repair the Gemini JSON-escape collision BEFORE `JSON.parse`.
+ *
+ * Under a responseSchema, Gemini sometimes emits a SINGLE backslash before a
+ * LaTeX command whose first letter is also a JSON short escape:
+ *
+ *     "$\frac{dQ}{dt}$"   ← one backslash, not two
+ *
+ * `JSON.parse` does NOT throw on this — `\f` is a valid JSON escape — so it
+ * silently decodes to form-feed + "rac{dQ}{dt}" and the formula is destroyed
+ * with no error anywhere. Same for \b \n \r \t (and \v, which is not even legal
+ * JSON and so throws instead).
+ *
+ * Running this on the RAW response first turns `\frac` into `\\frac`, so the
+ * parse yields the backslash the model meant. Pre-parse is deliberate: the
+ * earlier post-parse repair had to walk `$…$` spans to decide what was safe to
+ * touch, and a model-emitted `$` NESTED inside `\text{…}` desynced that walk,
+ * leaving real corruption unrepaired (observed in lab_manual_cache). Operating
+ * on the raw string needs no span or delimiter reasoning at all.
+ *
+ * Output is still valid JSON — this only ever INSERTS a backslash, never removes
+ * one, and never looks inside an already-escaped `\\` pair.
+ */
+export function repairGeminiJsonEscapes(raw: string): string {
+  if (!raw || !raw.includes("\\")) return raw;
+  let out = "";
+  let i = 0;
+  const n = raw.length;
+  while (i < n) {
+    if (raw[i] !== "\\") {
+      out += raw[i];
+      i += 1;
+      continue;
+    }
+    const next = raw[i + 1];
+    // An escaped backslash consumes BOTH chars — never inspect what follows it,
+    // or `\\frac` (already correct) would gain a third backslash.
+    if (next === "\\") {
+      out += "\\\\";
+      i += 2;
+      continue;
+    }
+    if (next && looksLikeLatexCommand(next, raw, i + 2)) {
+      out += "\\\\" + next; // `\f` → `\\f`, which parses back to a literal `\f`
+      i += 2;
+      continue;
+    }
+    out += raw[i];
+    i += 1;
+  }
+  return out;
+}
+
+/**
+ * DETECTION half, sharing the one whitelist above so the scanner and the repair
+ * can never disagree about what counts as corruption.
+ *
+ * Finds text where the collision ALREADY happened — i.e. a decoded control
+ * character followed by a LaTeX command remainder. Used by the corruption
+ * scanner (`scripts/scan-escape-corruption.ts`) against stored rows, and by the
+ * post-generation regression harness.
+ *
+ * Severity mirrors how plausibly the control character could be real content:
+ *  - `certain`: 0x08 / 0x0B / 0x0C, which never legitimately appear.
+ *  - `likely` : 0x09 / 0x0A / 0x0D followed by a whitelisted command remainder,
+ *               word-boundary checked so a real newline before "under" or a real
+ *               tab before "total" is NOT flagged.
+ */
+const CTRL_CODE_TO_ESCAPE_LETTER: Record<number, string> = {
+  8: "b", 9: "t", 10: "n", 11: "v", 12: "f", 13: "r",
+};
+
+export interface EscapeCorruptionHit {
+  severity: "certain" | "likely";
+  index: number;
+  /** Best reconstruction of what the model meant, e.g. `\frac`. */
+  command: string;
+}
+
+export function findEscapeCorruption(text: string): EscapeCorruptionHit[] {
+  if (!text) return [];
+  const hits: EscapeCorruptionHit[] = [];
+  for (let i = 0; i < text.length; i++) {
+    const letter = CTRL_CODE_TO_ESCAPE_LETTER[text.charCodeAt(i)];
+    if (!letter) continue;
+    if (!isAsciiLetter(text.charCodeAt(i + 1))) continue;
+    if (NEVER_LEGIT_ESCAPE.has(letter)) {
+      hits.push({
+        severity: "certain",
+        index: i,
+        command: `\\${letter}${text.slice(i + 1, i + 11)}`,
+      });
+      continue;
+    }
+    // Same whitelist + boundary rule the repair uses, applied one char later
+    // (the control char has replaced the `\` + letter pair).
+    const remainders = LATEX_COMMAND_REMAINDERS[letter] ?? [];
+    for (const rem of remainders) {
+      if (!text.startsWith(rem, i + 1)) continue;
+      if (isLowerAsciiLetter(text.charCodeAt(i + 1 + rem.length))) continue;
+      hits.push({ severity: "likely", index: i, command: `\\${letter}${rem}` });
+      break;
+    }
+  }
+  return hits;
+}
+
+// Control characters that have NO legitimate reason to appear in a formula or a
+// plain-explanation field. Tab (9), newline (10) and carriage return (13) are
+// excluded — those are real formatting in worked examples and code scaffolds.
+// Anything else in \x00-\x1F is a residue of the escape collision above.
+function isIllegalControlChar(code: number): boolean {
+  return (code >= 0 && code <= 8) || code === 11 || code === 12 ||
+    (code >= 14 && code <= 31);
+}
+
+/**
+ * Post-parse guard (layer 2). After `repairGeminiJsonEscapes` + `JSON.parse`,
+ * any surviving illegal control character means the repair did not catch a
+ * corruption variant. Callers treat a true result as a validation failure and
+ * reject the item rather than storing silently-broken math.
+ */
+export function hasResidualControlChars(value: unknown): boolean {
+  if (typeof value === "string") {
+    for (let i = 0; i < value.length; i++) {
+      if (isIllegalControlChar(value.charCodeAt(i))) return true;
+    }
+    return false;
+  }
+  if (Array.isArray(value)) return value.some(hasResidualControlChars);
+  if (value && typeof value === "object") {
+    return Object.values(value as Record<string, unknown>).some(hasResidualControlChars);
+  }
+  return false;
+}
+
 // Symbol commands Gemini Flash sometimes mis-writes with a `\text` prefix — it
 // emits `\textDelta` / `\text{\textapprox}` where it means `\Delta` / `\approx`,
 // producing an undefined command that KaTeX can't render. A CLOSED list (not a

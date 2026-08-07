@@ -9,10 +9,17 @@
  * updating in place, so the previous version stays readable while the new one
  * is produced and a bad regeneration can be rolled back.
  *
- * VALIDATION FAILURES ARE NOT RETRIED. A silently-retried notes generation is a
- * silently-degraded one — the second attempt's quality is unobserved and the
- * cost is invisible. On invalid model output this returns an error surface
- * carrying every issue and the raw blocks, and writes NOTHING to study_notes.
+ * VALIDATION NEVER LOWERS ITS BAR. A silently-degraded notes generation is the
+ * thing this module refuses to produce: no partial block acceptance, no relaxed
+ * floor, nothing written to study_notes unless the WHOLE set passes.
+ *
+ * A validation failure does, however, consume one of the two generation attempts
+ * (CP-N6): the same all-or-nothing gate is re-applied to a wholly fresh
+ * generation, and both attempts are logged with their own attemptNumber and
+ * cost. That keeps the retry observable, which is what the original "do not
+ * retry" rule was actually protecting — an unobserved retry or a partial accept.
+ * After both attempts fail, this returns an error surface carrying every issue
+ * and the raw blocks, and writes NOTHING.
  */
 
 import { createHash } from "node:crypto";
@@ -29,7 +36,12 @@ import {
   validateNoteBlocks,
   type BlockValidationIssue,
   type NoteBlock,
+  type NoteBlocksValidation,
 } from "./types";
+import {
+  hasResidualControlChars,
+  repairGeminiJsonEscapes,
+} from "@/lib/text/latexSegments";
 
 /** The ai_call_logs bucket for every Notes v2 call. Never "chat" (the v1 bug). */
 export const NOTES_FEATURE = "notes";
@@ -305,6 +317,7 @@ export async function generateModuleNotes(
     | undefined;
   let parsed: unknown;
   let lastFailure = "";
+  let validation: NoteBlocksValidation | undefined;
 
   for (let attempt = 1; attempt <= MAX_GENERATION_ATTEMPTS; attempt++) {
     try {
@@ -338,9 +351,10 @@ export async function generateModuleNotes(
 
     const rawText = String(ai.content ?? "");
     try {
-      parsed = JSON.parse(rawText);
-      lastFailure = "";
-      break;
+      // §13: repair the Gemini escape collision BEFORE parsing, or `\frac`
+      // silently decodes to form-feed + "rac" and the formula is destroyed
+      // with no error raised anywhere.
+      parsed = JSON.parse(repairGeminiJsonEscapes(rawText));
     } catch {
       // Distinguish degeneration/truncation from genuine malformation. "Not
       // valid JSON" alone sends you looking for a prompt bug instead of a
@@ -351,7 +365,58 @@ export async function generateModuleNotes(
         ? `Model response was truncated or degenerated at ${rawText.length} chars; tail: ${JSON.stringify(rawText.slice(-160))}`
         : `Model response was not valid JSON (${rawText.length} chars).`;
       parsed = undefined;
+      continue;
     }
+
+    // Validation runs INSIDE the attempt loop so a floor failure consumes an
+    // attempt like any other failure mode (CP-N6). This does NOT lower the bar:
+    // the same all-or-nothing gate is re-applied to a wholly fresh generation,
+    // and nothing partial is ever accepted. That distinction is the whole point
+    // of the file-header rule — a second full attempt is observable (both are
+    // logged with their own attemptNumber and cost); a partial accept would be
+    // the silent degradation the rule forbids.
+    const blocksRaw = (parsed as { blocks?: unknown })?.blocks;
+    validation = validateNoteBlocks(blocksRaw);
+
+    // Layer 2 of the escape fix: if a corruption variant slipped past the
+    // pre-parse repair, the decoded control character survives into the block.
+    // Treat it as a validation failure rather than storing broken math.
+    if (validation.ok) {
+      const corrupted = validation.blocks.reduce<BlockValidationIssue[]>(
+        (acc, block, index) => {
+          if (hasResidualControlChars(block)) {
+            acc.push({
+              index,
+              field: "",
+              message:
+                "contains raw control characters — Gemini escape corruption survived the pre-parse repair",
+            });
+          }
+          return acc;
+        },
+        [],
+      );
+      if (corrupted.length > 0) {
+        validation = {
+          ok: false,
+          rawBlocks: validation.blocks as unknown[],
+          issues: corrupted,
+        };
+      }
+    }
+
+    if (validation.ok) {
+      lastFailure = "";
+      break;
+    }
+    lastFailure = `Generated blocks failed validation: ${formatValidationIssues(validation.issues)}`;
+    // Make the retry OBSERVABLE. The CP-N1 rule this loop now bends was really
+    // protecting against an *unseen* second attempt, so a validation-triggered
+    // retry must say so in the logs — otherwise the quality of what shipped is
+    // once again unobserved, which is the thing that was actually forbidden.
+    console.warn(
+      `[notes] module ${moduleId} attempt ${attempt}/${MAX_GENERATION_ATTEMPTS} failed the validation gate: ${lastFailure}`,
+    );
   }
 
   if (!ai || parsed === undefined) {
@@ -363,16 +428,14 @@ export async function generateModuleNotes(
     };
   }
 
-  const blocksRaw = (parsed as { blocks?: unknown })?.blocks;
-  const validation = validateNoteBlocks(blocksRaw);
-  if (!validation.ok) {
-    // No retry, no partial insert. Surface everything.
+  if (!validation || !validation.ok) {
+    // Both attempts failed the gate. No partial insert, ever. Surface everything.
     return {
       ok: false,
       error: "invalid_blocks",
-      message: `Generated blocks failed validation: ${formatValidationIssues(validation.issues)}`,
-      issues: validation.issues,
-      rawBlocks: validation.rawBlocks,
+      message: `${validation ? validation.issues.length : 0} issue(s) after ${MAX_GENERATION_ATTEMPTS} attempts: ${validation ? formatValidationIssues(validation.issues) : "no validation ran"}`,
+      issues: validation?.issues ?? [],
+      rawBlocks: validation?.rawBlocks ?? [],
     };
   }
 

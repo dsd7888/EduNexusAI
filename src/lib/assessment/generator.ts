@@ -38,7 +38,11 @@
 import { routeAI } from "@/lib/ai/router";
 import { estimateMaxOutputTokens } from "@/lib/ai/tokenBudget";
 import { classifySubjectFamily } from "@/lib/qpaper/archetypes";
-import { MATH_CHEM_NOTATION_GUIDE, hasLatex } from "@/lib/text/latexSegments";
+import {
+  MATH_CHEM_NOTATION_GUIDE,
+  hasLatex,
+  repairGeminiJsonEscapes,
+} from "@/lib/text/latexSegments";
 import type { createAdminClient } from "@/lib/db/supabase-server";
 import type { AILogContext } from "@/lib/ai/providers/types";
 import {
@@ -608,10 +612,14 @@ async function runBatch(
 /** responseSchema guarantees the shape, but a 429-retry or a future schema-less
  *  path could still hand us fenced text — so parse defensively. */
 function parseBatch(rawText: string): RawQuestion[] | null {
-  const cleaned = rawText
-    .replace(/```json\s*/gi, "")
-    .replace(/```\s*/gi, "")
-    .trim();
+  // §13: repair the Gemini escape collision before both parse attempts —
+  // quiz stems and NAT explanations carry `$\frac{…}$` / `\theta` routinely.
+  const cleaned = repairGeminiJsonEscapes(
+    rawText
+      .replace(/```json\s*/gi, "")
+      .replace(/```\s*/gi, "")
+      .trim(),
+  );
   try {
     const parsed = JSON.parse(cleaned) as unknown;
     if (Array.isArray(parsed)) return parsed as RawQuestion[];

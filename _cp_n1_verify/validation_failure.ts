@@ -2,11 +2,19 @@
  * CP-N1 harness 5 — invalid model output fails loudly and writes nothing.
  *
  * Part 3 makes two claims about failure that are unfalsifiable from outside:
- * the generator does NOT silently retry, and it inserts NOTHING when
- * validation fails. Waiting for a real model to spontaneously emit an invalid
- * block is not a test, so this feeds a known-bad payload through the
- * `aiOverride` seam and COUNTS the invocations — "exactly one call" is then a
- * measurement, not a promise.
+ * the generator RETRIES A VALIDATION FAILURE EXACTLY ONCE (never more, and
+ * never by lowering the bar), and it inserts NOTHING when both attempts fail.
+ * Waiting for a real model to spontaneously emit an invalid block is not a
+ * test, so this feeds a known-bad payload through the `aiOverride` seam and
+ * COUNTS the invocations — the call count is then a measurement, not a promise.
+ *
+ * CP-N6 UPDATED THE EXPECTED COUNT FROM 1 TO 2. The original rule was "no
+ * silent retry"; a real SOEEC1010 regeneration then failed the gate on attempt
+ * 1 and passed on a fresh attempt 2, so the retry was added — but ONLY as a
+ * whole fresh generation re-judged by the identical gate, and it is logged with
+ * its own attemptNumber plus a console warning naming the failed gate. What the
+ * original rule forbade (an UNOBSERVED retry, or accepting partial blocks) is
+ * still forbidden and still asserted below: nothing is inserted, ever.
  *
  * Run: npx tsx _cp_n1_verify/validation_failure.ts > /tmp/cpn1_valfail.log 2>&1
  */
@@ -156,8 +164,11 @@ async function main() {
           `${res.rawBlocks?.length ?? 0} raw block(s)`
         );
       }
-      // The two load-bearing assertions.
-      eq("the AI was called EXACTLY once (no silent retry)", calls, 1);
+      // The three load-bearing assertions.
+      // Exactly TWO: one retry, then hard failure. Three would mean the
+      // retry-of-retry the rule forbids; one would mean the CP-N6 retry
+      // silently stopped firing.
+      eq("the AI was called EXACTLY twice (one retry, no retry-of-retry)", calls, 2);
       eq("no study_notes row was inserted", after, before);
     }
 

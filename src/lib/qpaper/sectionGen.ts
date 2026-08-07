@@ -18,6 +18,8 @@ import { estimateMaxOutputTokens } from "@/lib/ai/tokenBudget";
 import {
   MATH_CHEM_NOTATION_GUIDE,
   findUnsupportedNotation,
+  hasResidualControlChars,
+  repairGeminiJsonEscapes,
 } from "@/lib/text/latexSegments";
 import {
   archetypeHintForSubject,
@@ -879,10 +881,15 @@ function pyqCoverageIsThin(input: SectionGenInput): boolean {
 // ─── JSON parsing ──────────────────────────────────────────────────────────
 
 function parseQuestionArray(raw: string): unknown[] | null {
-  const cleaned = raw
-    .replace(/```json\s*/gi, "")
-    .replace(/```\s*/gi, "")
-    .trim();
+  // §13: repair the Gemini escape collision BEFORE parsing. Applied to the
+  // whole cleaned body so the salvage path below inherits it too — question
+  // stems and model answers here are dense with `\frac` / `\theta`.
+  const cleaned = repairGeminiJsonEscapes(
+    raw
+      .replace(/```json\s*/gi, "")
+      .replace(/```\s*/gi, "")
+      .trim(),
+  );
   const first = cleaned.indexOf("[");
   const last = cleaned.lastIndexOf("]");
   const slice = first !== -1 && last > first ? cleaned.slice(first, last + 1) : cleaned;
@@ -1574,6 +1581,18 @@ export function validateGeneratedSection(
 ): ValidationResult {
   const errors: string[] = [];
   const warnings: string[] = [];
+
+  // §13 layer 2: a question still carrying raw control characters survived a
+  // Gemini escape collision the pre-parse repair did not cover. Raised as a
+  // validation ERROR so it consumes the existing attempt-1/attempt-2 retry
+  // rather than being persisted as garbled literal math.
+  questions.forEach((q, i) => {
+    if (hasResidualControlChars(q)) {
+      errors.push(
+        `Escape corruption in question ${i + 1}: raw control characters in generated text`
+      );
+    }
+  });
 
   const slotMap = new Map(slots.map((s) => [s.slotKey, s]));
   const validCoNormalized = new Set(validCoCodes.map(normalizeCoCode));

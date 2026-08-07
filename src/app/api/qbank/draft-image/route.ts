@@ -4,6 +4,7 @@ import {
   resolveImageExt,
 } from "@/lib/qbank/image-storage";
 import { routeAI } from "@/lib/ai/router";
+import { repairGeminiJsonEscapes } from "@/lib/text/latexSegments";
 import type { MCQOption } from "@/lib/qbank/types";
 import type { NextRequest } from "next/server";
 
@@ -312,7 +313,11 @@ export async function POST(request: NextRequest) {
       suggested_type?: string;
     };
     try {
-      aiQuestion = JSON.parse(aiResult.content) as typeof aiQuestion;
+      // §13: repair the Gemini escape collision before parsing — an OCR'd
+      // question stem is exactly the formula-dense case.
+      aiQuestion = JSON.parse(
+        repairGeminiJsonEscapes(aiResult.content),
+      ) as typeof aiQuestion;
     } catch {
       const recovered = extractQuestionTextFromAiContent(aiResult.content);
       if (!recovered) {

@@ -9,7 +9,11 @@
 
 import { routeAI } from "@/lib/ai/router";
 import { estimateMaxOutputTokens } from "@/lib/ai/tokenBudget";
-import { hasUnsupportedNotation } from "@/lib/text/latexSegments";
+import {
+  hasResidualControlChars,
+  hasUnsupportedNotation,
+  repairGeminiJsonEscapes,
+} from "@/lib/text/latexSegments";
 import {
   archetypeHintForSubject,
   classifySubjectFamily,
@@ -151,10 +155,14 @@ interface RawGen {
 }
 
 function parseJsonArray(raw: string): RawGen[] | null {
-  const cleaned = raw
-    .replace(/```json\s*/gi, "")
-    .replace(/```\s*/gi, "")
-    .trim();
+  // §13: repair the Gemini escape collision before parsing (and before the
+  // brace-salvage path below) — generated stems and model answers carry LaTeX.
+  const cleaned = repairGeminiJsonEscapes(
+    raw
+      .replace(/```json\s*/gi, "")
+      .replace(/```\s*/gi, "")
+      .trim(),
+  );
   const first = cleaned.indexOf("[");
   const last = cleaned.lastIndexOf("]");
   const slice =
@@ -298,7 +306,23 @@ async function generateSlot(
       }
     }
 
-    return questions;
+    // §13 layer 2: this generator has no all-or-nothing validation floor to
+    // fall back on, so the per-ITEM equivalent lives here — a question whose
+    // text still carries raw control characters survived a Gemini escape
+    // collision that the pre-parse repair did not cover, and is DROPPED rather
+    // than persisted as silently-broken math. Unlike the notation warning
+    // above (a visibility flag), this is a hard reject: the stored string
+    // would render as garbled literal text with no way for faculty to tell
+    // what the formula was meant to be.
+    const clean = questions.filter((q) => {
+      if (!hasResidualControlChars(q)) return true;
+      console.error(
+        `[qbank generate] REJECTED — residual control chars (escape corruption) — slot type=${slot.question_type} marks=${slot.marks}: ${JSON.stringify(q.question_text.slice(0, 120))}`
+      );
+      return false;
+    });
+
+    return clean;
   } catch (err) {
     const message = err instanceof Error ? err.message : "unknown error";
     console.warn(`[qbank generate] slot call failed: ${message}`);

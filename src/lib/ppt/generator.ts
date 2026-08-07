@@ -22,7 +22,10 @@ import {
   hasLatex,
   renderPptTextImage,
 } from "./pptMath";
-import { MATH_CHEM_NOTATION_GUIDE } from "@/lib/text/latexSegments";
+import {
+  MATH_CHEM_NOTATION_GUIDE,
+  repairGeminiJsonEscapes,
+} from "@/lib/text/latexSegments";
 import { classifySubjectFamily } from "@/lib/qpaper/archetypes";
 
 // ── TYPES ──────────────────────────────────────────────────
@@ -2816,6 +2819,12 @@ export function parseBatchContent(
     cleaned = cleaned.replace(/^```\s*/i, "");
     cleaned = cleaned.replace(/\s*```$/i, "");
     cleaned = cleaned.trim();
+
+    // §13: repair the Gemini escape collision before ANY of the three parse
+    // attempts below — content batches carry dense LaTeX in bullets/example/
+    // question, and `\frac` decoding to form-feed + "rac" is silent (no throw),
+    // so none of the existing recovery passes would ever notice it.
+    cleaned = repairGeminiJsonEscapes(cleaned);
 
     // Find the JSON array boundaries
     const firstBracket = cleaned.indexOf("[");

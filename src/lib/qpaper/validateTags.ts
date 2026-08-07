@@ -11,6 +11,7 @@
 import { routeAI } from "@/lib/ai/router";
 import { BLOOMS_LEGEND } from "./templates";
 import { validateCoOrNull } from "./sectionGen";
+import { repairGeminiJsonEscapes } from "@/lib/text/latexSegments";
 import type {
   CourseOutcomeRow,
   GeneratedSection,
@@ -225,8 +226,10 @@ Set matches=false ONLY when the CO or the BTL is clearly wrong and your confiden
       logContext,
     });
 
+    // §13: repair the Gemini escape collision — `reasoning` quotes the
+    // question stem back, LaTeX and all.
     const parsed = JSON.parse(
-      String(result.content ?? "")
+      repairGeminiJsonEscapes(String(result.content ?? ""))
     ) as Partial<TagValidation>;
     const matches = parsed.matches !== false; // default to pass if absent
     const rawConfidence = Number(parsed.confidence);

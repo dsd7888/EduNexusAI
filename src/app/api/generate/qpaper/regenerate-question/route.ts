@@ -1,5 +1,6 @@
 import { requireRole, apiError } from "@/lib/api/helpers";
 import { routeAI } from "@/lib/ai/router";
+import { repairGeminiJsonEscapes } from "@/lib/text/latexSegments";
 import { normaliseQuestion, sanitizeQuestionCoCodes } from "@/lib/qpaper/sectionGen";
 import type { AILogContext } from "@/lib/ai/providers/types";
 import type { TemplateQuestion } from "@/lib/qpaper/templates";
@@ -151,7 +152,8 @@ Output a SINGLE JSON object (not an array) with the same structure as the templa
     }
     let parsed: unknown;
     try {
-      parsed = JSON.parse(raw.slice(first, last + 1));
+      // §13: repair the Gemini escape collision before parsing.
+      parsed = JSON.parse(repairGeminiJsonEscapes(raw.slice(first, last + 1)));
     } catch (err) {
       console.error("[regenerate-question] JSON parse error:", err);
       return apiError("Failed to parse regenerated question", 500);

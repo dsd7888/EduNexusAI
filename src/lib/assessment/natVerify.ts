@@ -39,7 +39,11 @@
  */
 
 import { routeAI } from "@/lib/ai/router";
-import { MATH_CHEM_NOTATION_GUIDE, hasLatex } from "@/lib/text/latexSegments";
+import {
+  MATH_CHEM_NOTATION_GUIDE,
+  hasLatex,
+  repairGeminiJsonEscapes,
+} from "@/lib/text/latexSegments";
 import { classifySubjectFamily } from "@/lib/qpaper/archetypes";
 import type { AILogContext } from "@/lib/ai/providers/types";
 import type { AssessmentQuestion } from "./types";
@@ -320,7 +324,11 @@ export async function verifyNatQuestion(
         },
       },
     });
-    const parsed = JSON.parse(String(res.content ?? "")) as unknown;
+    // §13: repair the Gemini escape collision before parsing — the verifier
+    // echoes the question's own LaTeX back in its reasoning field.
+    const parsed = JSON.parse(
+      repairGeminiJsonEscapes(String(res.content ?? "")),
+    ) as unknown;
     if (!parsed || typeof parsed !== "object") {
       throw new Error("verdict was not an object");
     }
