@@ -172,11 +172,17 @@ function FlashcardsInner() {
   const reducedMotion = usePrefersReducedMotion();
 
   return (
-    <div className="fixed inset-0 z-30 flex h-dvh flex-col bg-background">
-      <header className="flex shrink-0 items-center gap-2 border-b px-2 py-1">
+    // `bg-night`, not `bg-background`: this is the one surface in the product
+    // that stays dark regardless of the system/app light-dark toggle — the
+    // existing header comment calls it "the night-before-the-exam surface"
+    // and that's deliberate, not a `.dark`-class concern. See globals.css's
+    // `night-surface` variant for how the shared table/box sub-components
+    // below pick up night-safe styling without themselves knowing about it.
+    <div className="fixed inset-0 z-30 flex h-dvh flex-col bg-night text-paper">
+      <header className="flex shrink-0 items-center gap-2 border-b border-paper/15 px-2 py-1">
         <Link
           href={backHref}
-          className="inline-flex min-h-11 items-center gap-1.5 rounded-lg px-3 text-sm text-muted-foreground transition-colors hover:text-foreground"
+          className="inline-flex min-h-11 items-center gap-1.5 rounded-8 px-3 font-plex-sans text-body-sm text-paper/70 transition-colors duration-180 ease-out hover:text-paper focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-paper focus-visible:ring-offset-2 focus-visible:ring-offset-night"
         >
           <ArrowLeft className="size-4" />
           Back to notes
@@ -184,7 +190,7 @@ function FlashcardsInner() {
 
         <div className="flex flex-1 flex-wrap items-center justify-center gap-2">
           {cards.length > 0 ? (
-            <span className="text-xs tabular-nums text-muted-foreground">
+            <span className="font-plex-mono text-mono-tag text-paper/70">
               Card {safeIndex + 1} of {cards.length}
             </span>
           ) : null}
@@ -199,27 +205,27 @@ function FlashcardsInner() {
 
       {isLoading ? (
         <div className="flex flex-1 items-center justify-center p-6">
-          <Skeleton className="h-64 w-full max-w-xl rounded-xl" />
+          <Skeleton className="h-64 w-full max-w-xl rounded-8 bg-paper/10" />
         </div>
       ) : error ? (
         <Centered>
-          <p className="text-sm text-amber-700 dark:text-amber-400">{error}</p>
+          <p className="font-plex-sans text-body-sm text-amber">{error}</p>
           <Link
             href={backHref}
-            className="mt-4 inline-flex min-h-11 items-center rounded-lg border px-5 text-sm font-medium"
+            className="mt-4 inline-flex min-h-11 items-center rounded-8 border border-paper/20 px-5 font-plex-sans text-body font-medium text-paper transition-colors duration-180 ease-out hover:border-ochre focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-paper focus-visible:ring-offset-2 focus-visible:ring-offset-night"
           >
             Back to notes
           </Link>
         </Centered>
       ) : cards.length === 0 ? (
         <Centered>
-          <p className="text-sm font-medium">No cards here</p>
-          <p className="mt-1 text-sm text-muted-foreground">
+          <p className="font-plex-sans text-body font-medium text-paper">No cards here</p>
+          <p className="mt-1 font-plex-sans text-body-sm text-paper/70">
             There are no note blocks to revise for this selection.
           </p>
           <Link
             href={backHref}
-            className="mt-4 inline-flex min-h-11 items-center rounded-lg border px-5 text-sm font-medium"
+            className="mt-4 inline-flex min-h-11 items-center rounded-8 border border-paper/20 px-5 font-plex-sans text-body font-medium text-paper transition-colors duration-180 ease-out hover:border-ochre focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-paper focus-visible:ring-offset-2 focus-visible:ring-offset-night"
           >
             Back to notes
           </Link>
@@ -243,7 +249,9 @@ function FlashcardsInner() {
             <div
               className={cn(
                 "relative h-full w-full",
-                !reducedMotion && "transition-transform duration-200"
+                // 240ms, not 180ms: DESIGN.md buckets a full 3D flip as a
+                // "larger" transition, not a hover/border micro-interaction.
+                !reducedMotion && "transition-transform duration-240 ease-out"
               )}
               style={{
                 transformStyle: reducedMotion ? undefined : "preserve-3d",
@@ -267,20 +275,20 @@ function FlashcardsInner() {
           {/* Visible, thumb-reachable prev/next. The swipe is the primary
               gesture; these exist because a swipe is undiscoverable and because
               a mouse user has nothing to swipe with. */}
-          <footer className="flex shrink-0 items-center justify-between gap-3 border-t px-3 py-2 pb-[max(0.5rem,env(safe-area-inset-bottom))]">
+          <footer className="flex shrink-0 items-center justify-between gap-3 border-t border-paper/15 px-3 py-2 pb-[max(0.5rem,env(safe-area-inset-bottom))]">
             <button
               type="button"
               onClick={() => go(-1)}
               disabled={safeIndex === 0}
               aria-label="Previous card"
-              className="inline-flex min-h-11 min-w-11 items-center justify-center rounded-lg border px-4 text-sm disabled:opacity-40"
+              className="inline-flex min-h-11 min-w-11 items-center justify-center rounded-8 border border-paper/20 px-4 font-plex-sans text-body text-paper transition-colors duration-180 ease-out hover:border-ochre focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-paper focus-visible:ring-offset-2 focus-visible:ring-offset-night disabled:opacity-40 disabled:hover:border-paper/20"
             >
               <ChevronLeft className="size-4" />
             </button>
             <button
               type="button"
               onClick={() => setRevealed((r) => !r)}
-              className="inline-flex min-h-11 flex-1 items-center justify-center rounded-lg border px-4 text-sm font-medium"
+              className="inline-flex min-h-11 flex-1 items-center justify-center rounded-8 border border-paper/20 px-4 font-plex-sans text-body font-medium text-paper transition-colors duration-180 ease-out hover:border-ochre focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-paper focus-visible:ring-offset-2 focus-visible:ring-offset-night"
             >
               {revealed ? "Hide answer" : "Reveal"}
             </button>
@@ -289,7 +297,7 @@ function FlashcardsInner() {
               onClick={() => go(1)}
               disabled={safeIndex >= cards.length - 1}
               aria-label="Next card"
-              className="inline-flex min-h-11 min-w-11 items-center justify-center rounded-lg border px-4 text-sm disabled:opacity-40"
+              className="inline-flex min-h-11 min-w-11 items-center justify-center rounded-8 border border-paper/20 px-4 font-plex-sans text-body text-paper transition-colors duration-180 ease-out hover:border-ochre focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-paper focus-visible:ring-offset-2 focus-visible:ring-offset-night disabled:opacity-40 disabled:hover:border-paper/20"
             >
               <ChevronRight className="size-4" />
             </button>
@@ -327,7 +335,11 @@ function Face({
   if (reducedMotion && hidden) return null;
   return (
     <div
-      className="absolute inset-0 overflow-y-auto rounded-xl border bg-card"
+      // `night-surface` is the scope declared in globals.css — it's what
+      // makes the shared SymbolTable/WorkedExample/StackedItems/
+      // ComparisonTable/TermPills below render night-safe here while
+      // staying untouched for the reading view's `ReadingCard`.
+      className="night-surface absolute inset-0 overflow-y-auto rounded-8 border border-paper/10 bg-ink"
       style={
         reducedMotion
           ? undefined

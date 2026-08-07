@@ -204,7 +204,7 @@ export default function StudentNotesReadingPage() {
       <div className="flex flex-wrap items-center justify-between gap-3">
         <Link
           href="/student/subjects"
-          className="inline-flex min-h-11 items-center gap-1.5 text-sm text-muted-foreground transition-colors hover:text-foreground"
+          className="inline-flex min-h-11 items-center gap-1.5 font-plex-sans text-body-sm text-ink-500 transition-colors duration-180 ease-out hover:text-ink-900"
         >
           <ArrowLeft className="size-4" />
           Subjects
@@ -218,14 +218,14 @@ export default function StudentNotesReadingPage() {
               type="button"
               onClick={handleDownloadPdf}
               disabled={isDownloading}
-              className="inline-flex min-h-11 items-center gap-2 rounded-lg border px-4 text-sm font-medium transition-colors hover:bg-accent hover:text-accent-foreground disabled:pointer-events-none disabled:opacity-60"
+              className="inline-flex min-h-11 items-center gap-2 rounded-8 border border-ink-200 px-4 font-plex-sans text-body text-ink transition-colors duration-180 ease-out hover:border-ochre hover:text-ink-900 disabled:pointer-events-none disabled:opacity-60"
             >
               <Download className="size-4" />
               {isDownloading ? "Preparing…" : "Download PDF"}
             </button>
             <Link
               href={flashcardHref}
-              className="inline-flex min-h-11 items-center gap-2 rounded-lg border px-4 text-sm font-medium transition-colors hover:bg-accent hover:text-accent-foreground"
+              className="inline-flex min-h-11 items-center gap-2 rounded-8 border border-ink-200 px-4 font-plex-sans text-body text-ink transition-colors duration-180 ease-out hover:border-ochre hover:text-ink-900"
             >
               <Layers className="size-4" />
               Flashcard mode
@@ -235,14 +235,14 @@ export default function StudentNotesReadingPage() {
       </div>
 
       {downloadError ? (
-        <p className="mt-2 hidden text-sm text-amber-700 sm:block dark:text-amber-300">
+        <p className="mt-2 hidden font-plex-sans text-body-sm text-amber-700 sm:block dark:text-amber-300">
           {downloadError}
         </p>
       ) : null}
 
-      <h1 className="mt-3 text-2xl font-semibold tracking-tight">Notes</h1>
+      <h1 className="mt-3 font-plex-serif text-display-lg font-bold text-ink">Notes</h1>
       {metadata && metadata.modulesTotal > 0 ? (
-        <p className="mt-1 text-sm text-muted-foreground">
+        <p className="mt-1 font-plex-sans text-body-sm text-ink-500">
           {metadata.modulesCovered.length} of {metadata.modulesTotal} modules
           covered
         </p>
@@ -262,7 +262,7 @@ export default function StudentNotesReadingPage() {
         <>
           <div className="mt-5 space-y-3">
             <div className="relative">
-              <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+              <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-ink-400" />
               <input
                 type="search"
                 value={search}
@@ -272,14 +272,14 @@ export default function StudentNotesReadingPage() {
                 // The webkit cancel button is suppressed because this input
                 // already renders its own clear control — WebKit's native ✕ sat
                 // right beside ours, two affordances for one action.
-                className="min-h-11 w-full rounded-lg border bg-background pl-9 pr-9 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring [&::-webkit-search-cancel-button]:appearance-none"
+                className="min-h-11 w-full rounded-4 border border-ink-200 bg-paper pl-9 pr-9 font-plex-sans text-body text-ink outline-none focus-visible:ring-2 focus-visible:ring-ink-900 [&::-webkit-search-cancel-button]:appearance-none"
               />
               {search ? (
                 <button
                   type="button"
                   onClick={() => setSearch("")}
                   aria-label="Clear search"
-                  className="absolute right-1 top-1/2 flex size-11 -translate-y-1/2 items-center justify-center text-muted-foreground transition-colors hover:text-foreground"
+                  className="absolute right-1 top-1/2 flex size-11 -translate-y-1/2 items-center justify-center text-ink-500 transition-colors duration-180 ease-out hover:text-ink-900"
                 >
                   <X className="size-4" />
                 </button>
@@ -317,7 +317,7 @@ export default function StudentNotesReadingPage() {
                   header = (
                     <h2
                       key={`h-${bp.moduleId}`}
-                      className="pt-3 text-sm font-semibold uppercase tracking-wide text-muted-foreground first:pt-0"
+                      className="pt-3 font-plex-sans text-label font-semibold uppercase tracking-[0.04em] text-ink-500 first:pt-0"
                     >
                       {bp.moduleNumber}. {bp.moduleName}
                     </h2>
@@ -406,10 +406,10 @@ function ModuleFilter({
           onClick={() => onChange(opt.id)}
           aria-pressed={value === opt.id}
           className={cn(
-            "min-h-11 shrink-0 rounded-full border px-4 text-sm transition-colors",
+            "min-h-11 shrink-0 rounded-8 border px-4 font-plex-sans text-body-sm transition-colors duration-180 ease-out",
             value === opt.id
-              ? "border-primary bg-primary text-primary-foreground"
-              : "text-muted-foreground hover:bg-accent hover:text-accent-foreground"
+              ? "border-ochre bg-ochre text-ink-900"
+              : "border-ink-200 text-ink-600 hover:border-ochre hover:text-ink-900"
           )}
         >
           {opt.label}

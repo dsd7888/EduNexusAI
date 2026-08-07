@@ -41,7 +41,7 @@ export function ReadingCard({
   return (
     <article
       className={cn(
-        "rounded-xl border bg-card p-5 shadow-sm sm:p-6",
+        "rounded-8 border border-ink-200 bg-paper p-5 sm:p-6",
         className
       )}
     >
@@ -93,8 +93,13 @@ export function TapToRevealHint({ className }: { className?: string }) {
   return (
     <div
       aria-hidden
+      // Only ever rendered inside flashcard-front, which only ever renders
+      // on the always-night flashcard surface — safe to hardcode a
+      // night-safe tone directly rather than route it through the
+      // `night-surface` variant used by the components shared with the
+      // (light) reading view.
       className={cn(
-        "absolute inset-x-0 bottom-6 flex flex-col items-center gap-1 text-muted-foreground",
+        "absolute inset-x-0 bottom-6 flex flex-col items-center gap-1 text-paper/60",
         className
       )}
     >
@@ -111,7 +116,7 @@ export function TapToRevealHint({ className }: { className?: string }) {
       >
         <path d="m18 15-6-6-6 6" />
       </svg>
-      <span className="text-xs">Tap anywhere to reveal</span>
+      <span className="font-plex-sans text-body-sm">Tap anywhere to reveal</span>
     </div>
   );
 }
@@ -139,7 +144,7 @@ export function AskAboutThisButton({
   if (!onAsk) return null;
 
   return (
-    <div className="mt-4 border-t pt-3">
+    <div className="mt-4 border-t border-ink-100 pt-3">
       <button
         type="button"
         onClick={() => onAsk(block)}
@@ -147,9 +152,12 @@ export function AskAboutThisButton({
           TOUCH_TARGET,
           // Tap-friendly on touch, hover-responsive on pointer — but never
           // hover-ONLY: the visible affordance (border + label) is always there.
-          "inline-flex w-full items-center justify-center gap-2 rounded-lg border px-4 text-sm font-medium",
-          "transition-colors hover:bg-accent hover:text-accent-foreground",
-          "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2",
+          "inline-flex w-full items-center justify-center gap-2 rounded-8 border border-ink-200 px-4 font-plex-sans text-body text-ink",
+          "transition-colors duration-180 ease-out hover:border-ochre hover:text-ink-900",
+          // ink-900, not ochre: ochre-on-paper measures ~2.8:1, short of the
+          // 3:1 WCAG 1.4.11 floor for a UI-state indicator. ink-900 clears it
+          // outright without giving up the ochre hover cue above.
+          "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ink-900 focus-visible:ring-offset-2",
           "sm:w-auto"
         )}
       >
@@ -172,7 +180,21 @@ export function AskAboutThisButton({
   );
 }
 
-/** Small pill list — concept `relatedTerms`. Non-interactive, so no touch floor. */
+/**
+ * Small pill list — concept `relatedTerms`. Non-interactive, so no touch floor.
+ *
+ * Deliberately NOT <MonoTag>: related terms are vocabulary, not the compact
+ * exam-artifact metadata (marks, CO/BTL, PYQ frequency) the mono tag exists
+ * for. Reusing it here is exactly the "generic pill" drift DESIGN.md warns
+ * against for that component.
+ *
+ * `rounded-4` — same 4px tier as tags/inputs, NOT rounded-full. At this
+ * element's ~25px height a 4px corner reads rounder than it does on a
+ * 44px button (proportionally larger arc relative to the box), which can
+ * look like a stadium/pill shape in a screenshot even though the computed
+ * border-radius is exactly 4px. Verified via getComputedStyle, not eyeballed —
+ * don't "fix" this by reaching for a smaller radius on a visual read alone.
+ */
 export function TermPills({ terms }: { terms: string[] }) {
   if (terms.length === 0) return null;
   return (
@@ -180,7 +202,7 @@ export function TermPills({ terms }: { terms: string[] }) {
       {terms.map((term) => (
         <li
           key={term}
-          className="rounded-md bg-muted px-2 py-0.5 text-xs text-muted-foreground"
+          className="rounded-4 bg-ink-50 px-2 py-0.5 font-plex-sans text-body-sm text-ink-600 night-surface:border night-surface:border-paper/20 night-surface:bg-transparent night-surface:text-paper/80"
         >
           {term}
         </li>

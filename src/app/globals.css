@@ -4,6 +4,15 @@
 
 @custom-variant dark (&:is(.dark *));
 
+/* Scopes ink-scale overrides for content that must render on a permanently
+   dark surface regardless of the system/app light-dark toggle (`.dark` is
+   tied to that toggle; this isn't — see Notes flashcard mode, CP-D0 Part 2).
+   SymbolTable/WorkedExample/StackedItems/ComparisonTable/TermPills are
+   shared verbatim between the light-mode reading view and the always-night
+   flashcard view; `night-surface:` variants let them pick up night-safe
+   borders/text there without any of those components branching on mode. */
+@custom-variant night-surface (&:is(.night-surface *));
+
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);

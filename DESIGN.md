@@ -91,12 +91,39 @@ unrelated purposes.
   everywhere, no exceptions.
 - Dividers: hairline (1px, ink-100), used deliberately at real content
   boundaries, never as dense repeating structure across a whole page.
+- When several grouped elements stack with no surrounding whitespace to
+  separate them (e.g. a flashcard face, not a scrollable reading page),
+  don't lean on a lightness ramp to keep them visually distinct —
+  adjacent dark-surface tones run out of perceptible separation fast
+  (found during CP-D0's flashcard restyle: three graded dark fills only
+  reached ~1.2–1.7:1 against each other, well below anything reliably
+  perceptible). Vary the *kind* of treatment instead — a bordered
+  outline next to a borderless table next to an accent-colored callout
+  reads as distinct layers even at identical background lightness. Shape
+  and border carry the grouping signal that tone can't, once a surface
+  is this dark and this dense.
 
 ## Accessibility (non-negotiable, part of the identity not an afterthought)
 
 - WCAG AA contrast minimum on all text against its actual background.
 - Visible focus ring on every interactive element — never suppressed
   with outline:none without a replacement.
+- Ochre fails as a focus-ring / lone-outline color: measured ~2.8:1
+  against paper, short of the 3:1 WCAG 1.4.11 floor for a UI-state
+  indicator (found during CP-D0's Notes restyle). Use ink-900 for
+  focus rings instead — it clears the floor outright (~13.7:1) and
+  still reads as the calm anchor color. This does NOT change the mono
+  tag's ochre active-state border (Signature section above): there the
+  border is a secondary cue and the primary one is the text-color
+  change to ink-900, which is already high-contrast on its own. The
+  rule above is specifically for a ring/outline standing alone as the
+  ONLY indicator of state.
+- On night/dark surfaces, use ring-paper; ring-ink-900 is illegible
+  there (~1.2:1 — ink-900 and night sit at nearly the same lightness).
+  Same principle as the rule above (visible, non-suppressed focus
+  indication), surface-appropriate color: pick the ring color that
+  actually clears 3:1 against the surface it's drawn on, not a fixed
+  token regardless of surface.
 - Touch targets ≥44px on every interactive element, not just mobile
   Notes surfaces (extend the existing CP-N4 rule platform-wide).
 - Icon-only controls always paired with a visible or aria-label text

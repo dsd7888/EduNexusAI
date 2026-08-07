@@ -458,6 +458,14 @@ documents before it can be asserted for real. Same class of gap as §13's
 "no chemistry subject is seeded" item — synthetic verification only, and it
 should be recorded as such rather than reported as covered.
 
+Same gap applies to CP-D0 Part 2 (flashcard mode's design-system restyle):
+the header's `<PyqChip>` in `flashcards/page.tsx` renders through the same
+unmodified `MonoTag`/`PyqChip` verified in Part 0/1, so there's no new
+component risk, but its actual appearance at flashcard scale (size, spacing
+against the card counter) has not been seen against real data for the same
+reason — still zero `pyq_questions` rows anywhere in dev. Check it whenever
+this item is resolved, alongside the reading-view chip above.
+
 ### CP-N2 harness cleanup debt (`purgeNotes` scope) — LOW priority
 
 `_cp_n2_verify` leaves `study_notes` rows behind: a CP-N6 verification run

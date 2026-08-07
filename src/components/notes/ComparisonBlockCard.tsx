@@ -39,17 +39,20 @@ function StackedItems({ block }: { block: ComparisonBlock }) {
   return (
     <div className="space-y-3 min-[480px]:hidden">
       {block.items.map((item) => (
-        <div key={item.name} className="rounded-lg border bg-muted/30 p-3">
-          <p className="text-sm font-semibold">
+        <div
+          key={item.name}
+          className="rounded-8 border border-ink-200 bg-ink-50 p-3 night-surface:border-paper/20 night-surface:bg-transparent"
+        >
+          <p className="font-plex-sans text-body-sm font-semibold text-ink night-surface:text-paper">
             <RichQuestionText text={item.name} />
           </p>
           <dl className="mt-2 space-y-2">
             {block.axes.map((axis, ai) => (
               <div key={axis}>
-                <dt className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                <dt className="font-plex-sans text-label font-semibold uppercase tracking-[0.04em] text-ink-500 night-surface:text-paper/70">
                   <RichQuestionText text={axis} />
                 </dt>
-                <dd className="mt-0.5 text-sm leading-relaxed">
+                <dd className="mt-0.5 font-plex-sans text-body-sm leading-relaxed text-ink night-surface:text-paper">
                   <RichQuestionText text={item.values[ai] ?? "—"} />
                 </dd>
               </div>
@@ -65,15 +68,15 @@ function StackedItems({ block }: { block: ComparisonBlock }) {
 function ComparisonTable({ block }: { block: ComparisonBlock }) {
   return (
     <div className="hidden overflow-x-auto min-[480px]:block">
-      <table className="w-full border-collapse text-left text-sm">
+      <table className="w-full border-collapse text-left font-plex-sans text-body-sm text-ink night-surface:text-paper">
         <thead>
-          <tr className="text-xs uppercase tracking-wide text-muted-foreground">
-            <th scope="col" className="border-b px-2 py-1.5 font-medium" />
+          <tr className="text-label uppercase tracking-[0.04em] text-ink-500 night-surface:text-paper/70">
+            <th scope="col" className="border-b border-ink-100 px-2 py-1.5 font-semibold night-surface:border-paper/15" />
             {block.axes.map((axis) => (
               <th
                 key={axis}
                 scope="col"
-                className="border-b px-2 py-1.5 font-medium"
+                className="border-b border-ink-100 px-2 py-1.5 font-semibold night-surface:border-paper/15"
               >
                 <RichQuestionText text={axis} />
               </th>
@@ -82,10 +85,10 @@ function ComparisonTable({ block }: { block: ComparisonBlock }) {
         </thead>
         <tbody>
           {block.items.map((item) => (
-            <tr key={item.name} className="border-b align-top last:border-b-0">
+            <tr key={item.name} className="border-b border-ink-100 align-top last:border-b-0 night-surface:border-paper/15">
               <th
                 scope="row"
-                className="whitespace-nowrap px-2 py-2 text-left text-sm font-semibold"
+                className="whitespace-nowrap px-2 py-2 text-left font-semibold text-ink night-surface:text-paper"
               >
                 <RichQuestionText text={item.name} />
               </th>
@@ -114,12 +117,12 @@ export default function ComparisonBlockCard({
   if (mode === "flashcard-front") {
     return (
       <FlashcardFace>
-        <h2 className="text-2xl font-semibold leading-snug sm:text-3xl">
+        <h2 className="font-plex-serif text-display-sm font-semibold leading-snug text-paper">
           {block.title}
         </h2>
         {/* The dimensions, not the answers — this is the prompt the student
             answers in their head before flipping. */}
-        <p className="max-w-prose text-sm leading-relaxed text-muted-foreground">
+        <p className="max-w-prose font-plex-sans text-body-sm leading-relaxed text-paper/70">
           Compare on: {block.axes.join(", ")}
         </p>
         <TapToRevealHint />
@@ -141,7 +144,7 @@ export default function ComparisonBlockCard({
   return (
     <ReadingCard>
       <div className="flex flex-wrap items-start justify-between gap-2">
-        <h3 className="text-lg font-semibold leading-snug">
+        <h3 className="font-plex-serif text-display-sm font-semibold leading-snug text-ink">
           <RichQuestionText text={block.title} />
         </h3>
         {block.pyqSignal ? <PyqChip signal={block.pyqSignal} /> : null}

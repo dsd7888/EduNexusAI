@@ -40,10 +40,10 @@ export default function ConceptBlockCard({
   if (mode === "flashcard-front") {
     return (
       <FlashcardFace>
-        <h2 className="text-2xl font-semibold leading-snug sm:text-3xl">
+        <h2 className="font-plex-serif text-display-sm font-semibold leading-snug text-paper">
           {block.title}
         </h2>
-        <p className="max-w-prose text-sm italic leading-relaxed text-muted-foreground">
+        <p className="max-w-prose font-plex-sans text-body-sm italic leading-relaxed text-paper/70">
           <RichQuestionText text={block.whyItMatters} />
         </p>
         <TapToRevealHint />
@@ -55,12 +55,17 @@ export default function ConceptBlockCard({
     return (
       <FlashcardFace className="justify-start text-left">
         <div className="w-full max-w-prose space-y-4">
-          <div className="text-base leading-relaxed">
+          <div className="font-plex-sans text-body-lg leading-relaxed text-paper">
             <RichQuestionText text={block.plainExplanation} />
           </div>
 
           {block.formalStatement ? (
-            <div className="rounded-lg border-l-2 border-primary/40 bg-muted/50 px-3 py-2 text-sm leading-relaxed">
+            // No bg fill here, deliberately — this face already sits on the
+            // `night-surface` card fill (`bg-ink`). A second flat dark wash
+            // behind it would read as the same box repeated, not a distinct
+            // one; the ochre border carries the "set apart" signal on its
+            // own at this contrast (verified 4.89:1 against `bg-ink`).
+            <div className="rounded-4 border-l-2 border-ochre px-3 py-2 font-plex-sans text-body-sm leading-relaxed text-paper/90">
               <RichQuestionText text={block.formalStatement} />
             </div>
           ) : null}
@@ -82,23 +87,23 @@ export default function ConceptBlockCard({
   return (
     <ReadingCard>
       <div className="flex flex-wrap items-start justify-between gap-2">
-        <h3 className="text-lg font-semibold leading-snug">
+        <h3 className="font-plex-serif text-display-sm font-semibold leading-snug text-ink">
           <RichQuestionText text={block.title} />
         </h3>
         {block.pyqSignal ? <PyqChip signal={block.pyqSignal} /> : null}
       </div>
 
-      <div className="mt-3 text-[15px] leading-relaxed">
+      <div className="mt-3 font-plex-sans text-body-lg leading-relaxed text-ink">
         <RichQuestionText text={block.plainExplanation} />
       </div>
 
       {block.formalStatement ? (
-        <div className="mt-3 rounded-lg border-l-2 border-primary/40 bg-muted/50 px-3 py-2 text-sm leading-relaxed">
+        <div className="mt-3 rounded-4 border-l-2 border-ochre bg-ink-50 px-3 py-2 font-plex-sans text-body-sm leading-relaxed text-ink-800">
           <RichQuestionText text={block.formalStatement} />
         </div>
       ) : null}
 
-      <p className="mt-3 text-sm italic leading-relaxed text-muted-foreground">
+      <p className="mt-3 font-plex-sans text-body-sm italic leading-relaxed text-ink-500">
         <RichQuestionText text={block.whyItMatters} />
       </p>
 

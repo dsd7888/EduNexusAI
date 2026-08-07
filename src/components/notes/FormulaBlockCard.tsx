@@ -35,17 +35,17 @@ function SymbolTable({ symbols }: { symbols: FormulaBlock["symbols"] }) {
 
   return (
     <div className="mt-3 overflow-x-auto">
-      <table className="w-full border-collapse text-left text-sm">
+      <table className="w-full border-collapse text-left font-plex-sans text-body-sm text-ink night-surface:text-paper">
         <thead>
-          <tr className="text-xs uppercase tracking-wide text-muted-foreground">
-            <th scope="col" className="border-b px-2 py-1.5 font-medium">
+          <tr className="text-label uppercase tracking-[0.04em] text-ink-500 night-surface:text-paper/70">
+            <th scope="col" className="border-b border-ink-100 px-2 py-1.5 font-semibold night-surface:border-paper/15">
               Symbol
             </th>
-            <th scope="col" className="border-b px-2 py-1.5 font-medium">
+            <th scope="col" className="border-b border-ink-100 px-2 py-1.5 font-semibold night-surface:border-paper/15">
               Meaning
             </th>
             {showUnits ? (
-              <th scope="col" className="border-b px-2 py-1.5 font-medium">
+              <th scope="col" className="border-b border-ink-100 px-2 py-1.5 font-semibold night-surface:border-paper/15">
                 Unit
               </th>
             ) : null}
@@ -53,7 +53,7 @@ function SymbolTable({ symbols }: { symbols: FormulaBlock["symbols"] }) {
         </thead>
         <tbody>
           {symbols.map((s, i) => (
-            <tr key={`${s.symbol}-${i}`} className="border-b align-top last:border-b-0">
+            <tr key={`${s.symbol}-${i}`} className="border-b border-ink-100 align-top last:border-b-0 night-surface:border-paper/15">
               <td className="whitespace-nowrap px-2 py-1.5 font-medium">
                 <RichQuestionText text={withMathDelimiters(s.symbol)} />
               </td>
@@ -61,7 +61,7 @@ function SymbolTable({ symbols }: { symbols: FormulaBlock["symbols"] }) {
                 <RichQuestionText text={s.meaning} />
               </td>
               {showUnits ? (
-                <td className="whitespace-nowrap px-2 py-1.5 text-muted-foreground">
+                <td className="whitespace-nowrap px-2 py-1.5 text-ink-500 night-surface:text-paper/70">
                   {s.unit ? (
                     <RichQuestionText text={withMathDelimiters(s.unit)} />
                   ) : (
@@ -90,14 +90,18 @@ function WorkedExample({
   example: NonNullable<FormulaBlock["workedExample"]>;
 }) {
   return (
-    <div className="mt-4 rounded-lg bg-muted/50 px-3 py-2.5">
-      <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+    // `night-surface:bg-transparent` + a border, not a second filled tint —
+    // on the flashcard's `bg-ink` card, another flat `ink-50`-equivalent
+    // wash reads as the same box stacked twice rather than a distinct one.
+    // A bordered outline groups the content without adding a layer.
+    <div className="mt-4 rounded-4 bg-ink-50 px-3 py-2.5 night-surface:border night-surface:border-paper/20 night-surface:bg-transparent">
+      <p className="font-plex-sans text-label font-semibold uppercase tracking-[0.04em] text-ink-500 night-surface:text-paper/70">
         Worked example
       </p>
-      <p className="mt-1.5 text-sm italic leading-relaxed text-muted-foreground">
+      <p className="mt-1.5 font-plex-sans text-body-sm italic leading-relaxed text-ink-500 night-surface:text-paper/70">
         <RichQuestionText text={example.problem} />
       </p>
-      <div className="mt-2 whitespace-pre-line text-sm leading-relaxed">
+      <div className="mt-2 whitespace-pre-line font-plex-sans text-body-sm leading-relaxed text-ink night-surface:text-paper">
         <RichQuestionText text={example.solution} />
       </div>
     </div>
@@ -116,10 +120,12 @@ export default function FormulaBlockCard({
   if (mode === "flashcard-front") {
     return (
       <FlashcardFace>
-        <h2 className="text-2xl font-semibold leading-snug sm:text-3xl">
+        <h2 className="font-plex-serif text-display-sm font-semibold leading-snug text-paper">
           {block.name}
         </h2>
-        <div className="w-full max-w-full overflow-x-auto text-xl sm:text-2xl">
+        {/* text-xl/sm:text-2xl is KaTeX's own display size, untouched — only
+            the color is new, since nothing set one before. */}
+        <div className="w-full max-w-full overflow-x-auto text-xl text-paper sm:text-2xl">
           <RichQuestionText text={block.formula} />
         </div>
         <TapToRevealHint />
@@ -146,13 +152,13 @@ export default function FormulaBlockCard({
   return (
     <ReadingCard>
       <div className="flex flex-wrap items-start justify-between gap-2">
-        <h3 className="text-lg font-semibold leading-snug">
+        <h3 className="font-plex-serif text-display-sm font-semibold leading-snug text-ink">
           <RichQuestionText text={block.name} />
         </h3>
         {block.pyqSignal ? <PyqChip signal={block.pyqSignal} /> : null}
       </div>
 
-      <div className="mt-3 overflow-x-auto rounded-lg bg-muted/40 px-3 py-3 text-center text-lg">
+      <div className="mt-3 overflow-x-auto rounded-8 bg-ink-50 px-3 py-3 text-center font-plex-sans text-body-lg text-ink">
         <RichQuestionText text={block.formula} />
       </div>
 
@@ -163,8 +169,8 @@ export default function FormulaBlockCard({
       ) : null}
 
       {block.conditions ? (
-        <p className="mt-3 text-xs leading-relaxed text-muted-foreground">
-          <span className="font-medium">Applies when: </span>
+        <p className="mt-3 font-plex-sans text-body-sm leading-relaxed text-ink-500">
+          <span className="font-semibold text-ink-600">Applies when: </span>
           <RichQuestionText text={block.conditions} />
         </p>
       ) : null}
