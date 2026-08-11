@@ -624,6 +624,26 @@ export async function POST(request: NextRequest) {
       }
 
       const responseText = String(ai.content ?? "");
+
+      // Hard gate: never persist or return a blank assistant turn. Empty content
+      // from chat_research is the budget-exhaustion failure mode (thinking tokens
+      // eating the whole output budget before any answer is written). The Step 2
+      // thinkingConfig fix makes this rare, but a silent empty-success would still
+      // render a blank bubble and burn the student's research quota — surface it as
+      // a real failure instead. retryable: true because this mode is transient (a
+      // re-run typically produces content), unlike a hard provider error. Logged
+      // distinctly so it is greppable and separable from other generation_failed
+      // rows in ai_call_logs. NO fallback/retry-with-different-budget and NO
+      // regex scaffold-stripping here — that is coercion; the config fix is the
+      // real cure (project principle: hard gates over ever-smarter fallbacks).
+      if (responseText.trim().length === 0) {
+        console.error("[chat] research returned empty content");
+        return Response.json(
+          { error: "generation_failed", retryable: true },
+          { status: 500 }
+        );
+      }
+
       const citations = ai.citations ?? null;
 
       const { messageId, struggle } = await persistTurn({

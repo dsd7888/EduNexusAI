@@ -364,11 +364,52 @@ function createGeminiProvider(): AIProvider {
       if (params.maxTokens !== undefined)
         config.maxOutputTokens = params.maxTokens;
 
+      // THINKING BUDGET — the fix for the two chat_research production failures
+      // (empty content, and raw scaffolding leaking into visible text). Unlike
+      // chat()/chatStream() (which go through prepareChatCall and always set a
+      // thinkingConfig), this path historically set NONE, so gemini-2.5-flash
+      // ran with its default dynamic (uncapped) thinking. On a heavy multi-query
+      // research turn that let thinking consume the whole maxOutputTokens budget
+      // before any answer was written → the empty-response failure; it also
+      // correlated with the model emitting its own reasoning/tool scaffolding as
+      // ordinary (unflagged) visible text → the leaked-scaffolding failure.
+      //
+      // Cap thinking at a bounded budget rather than disabling it (mirrors the
+      // explainer_ideate "thinking on but bounded" precedent): multi-query search
+      // orchestration benefits from some reasoning, and a 2048 cap against the
+      // 16384 output budget still leaves ~14k tokens of headroom for the answer,
+      // which structurally prevents the budget-exhaustion empty response.
+      // includeThoughts:false is defence-in-depth: the API must not fold thought
+      // parts into the returned content. Honour an explicit per-call budget if a
+      // future caller sets one.
+      config.thinkingConfig = {
+        thinkingBudget: params.thinkingBudget ?? 2048,
+        includeThoughts: false,
+      };
+
       const result = await ai.models.generateContent({
         model: RESEARCH_MODEL,
         contents,
         config,
       });
+
+      // Gated raw-payload diagnostic (off by default; set DEBUG_RESEARCH_RAW=1).
+      // Dumps the full-fidelity parts array (thought/thoughtSignature/functionCall/
+      // text) BEFORE the .text getter and citation extraction run, so a recurrence
+      // of either failure can be root-caused from real payloads. Never fires in
+      // production unless the env var is explicitly set.
+      if (process.env.DEBUG_RESEARCH_RAW === "1") {
+        console.log(
+          "[chat_research][DEBUG_RESEARCH_RAW] raw parts:",
+          JSON.stringify(result.candidates?.[0]?.content?.parts ?? null)
+        );
+        console.log(
+          "[chat_research][DEBUG_RESEARCH_RAW] finishReason:",
+          result.candidates?.[0]?.finishReason,
+          "usageMetadata:",
+          JSON.stringify(result.usageMetadata ?? null)
+        );
+      }
 
       const content = result.text ?? "";
 
