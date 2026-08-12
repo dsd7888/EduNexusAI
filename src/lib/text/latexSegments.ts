@@ -587,6 +587,18 @@ function findClosing(text: string, from: number, delimiter: "$" | "$$"): number 
  *   3. A simple relation between symbols — an algebraic operator (`= < > + * / |`)
  *      together with a letter: "a = b", "x > 0", "a+b". The letter requirement is
  *      what keeps digit-only currency fragments ("5 + ", "1,400,") literal.
+ *   4. A hyphen-chain of short tokens — a graph-cycle or edge notation such as
+ *      "A-B-C-D-E-A" or "u-v": the WHOLE span is two or more ≤3-char alphanumeric
+ *      tokens joined by single hyphens, with at least one token containing a
+ *      letter. This is deliberately its OWN rule, not a widened rule 3 — rule 3
+ *      only requires an operator character and a letter to appear anywhere in
+ *      the span, so adding "-" to its operator class would also match a digit
+ *      range followed by a unit word ("3-5 kg", "10-15 students"), which must
+ *      stay literal. Anchoring the whole span to the hyphen-chain shape (no
+ *      whitespace, only short tokens) is what keeps those out — "3-5 kg" has a
+ *      space before "kg" and never matches. A pure numeric range like "5-10" is
+ *      excluded by the at-least-one-letter requirement, the same currency/range
+ *      guard rule 3 already relies on.
  *
  * Anything else — spans that are just digits, commas, spaces and prose words —
  * is rejected, so the dollars stay literal text.
@@ -605,6 +617,16 @@ function isInlineMathContent(inner: string): boolean {
 
   // 3. A simple relation/operation between symbols (e.g. "$a = b$", "$x > 0$").
   if (/[=<>+*/|]/.test(s) && /[a-zA-Z]/.test(s)) return true;
+
+  // 4. A hyphen-chain of short tokens (e.g. "$A-B-C-D-E-A$", "$u-v$"). See the
+  // doc comment above for why this is a separate, anchored-shape rule rather
+  // than adding "-" to rule 3's operator class.
+  if (
+    /^[A-Za-z0-9]{1,3}(?:-[A-Za-z0-9]{1,3})+$/.test(s) &&
+    s.split("-").some((tok) => /[a-zA-Z]/.test(tok))
+  ) {
+    return true;
+  }
 
   return false;
 }
