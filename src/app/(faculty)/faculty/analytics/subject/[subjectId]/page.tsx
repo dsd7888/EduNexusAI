@@ -26,6 +26,7 @@ import { RefreshCw, Search, TriangleAlert } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { MonoTag } from "@/components/ui/mono-tag";
 import { PageSkeleton } from "@/components/layout/PageSkeleton";
 import { scoreStyles } from "@/lib/ui/score";
 import { cn } from "@/lib/utils";
@@ -328,7 +329,7 @@ export default function SubjectAnalyticsPage() {
                   return (
                     <div key={co.co_code} className="space-y-1">
                       <div className="flex items-baseline justify-between text-sm">
-                        <span className="font-medium">{co.co_code}</span>
+                        <MonoTag variant="default">{co.co_code}</MonoTag>
                         <span className={cn("tabular-nums", s.text)}>
                           {p == null ? "—" : `${p}%`}
                           <span className="ml-2 text-xs text-muted-foreground">
