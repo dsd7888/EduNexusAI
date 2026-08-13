@@ -37,10 +37,8 @@
 
 import { routeAI } from "@/lib/ai/router";
 import { estimateMaxOutputTokens } from "@/lib/ai/tokenBudget";
-import { classifySubjectFamily } from "@/lib/qpaper/archetypes";
 import {
   MATH_CHEM_NOTATION_GUIDE,
-  hasLatex,
   repairGeminiJsonEscapes,
 } from "@/lib/text/latexSegments";
 import type { createAdminClient } from "@/lib/db/supabase-server";
@@ -91,9 +89,6 @@ export interface AssessmentSubjectContext {
   /** Past questions for style flavour, best-effort (pyq_questions has no
    *  module_id, so these are subject-level). */
   pyqs: string[];
-  /** True when the subject's name/code or content carries math/chem notation —
-   *  gates the MATH_CHEM_NOTATION_GUIDE block (§13). */
-  mathChem: boolean;
   /** faculty_question_bank.faculty_id to attribute write-through rows to.
    *  Null when no faculty is assigned to the subject — write-through is then
    *  skipped (the questions are still served; see writeThroughToBank). */
@@ -193,9 +188,6 @@ export async function loadSubjectContexts(
       )
         .filter((p) => p.subject_id === s.id)
         .map((p) => p.question_text),
-      mathChem:
-        classifySubjectFamily(s.name, s.code ?? undefined) !== null ||
-        hasLatex(syllabus),
       facultyId:
         (
           (assignments.data ?? []) as Array<{
@@ -353,11 +345,12 @@ ${ctx.pyqs
 </past_paper_style_reference>\n`
       : "";
 
-  const mathBlock = ctx.mathChem
-    ? `\n<notation>
+  // Injected for every subject, never gated on subject family — see the header
+  // on MATH_CHEM_NOTATION_GUIDE in latexSegments.ts for the measurement behind
+  // that (the old gate reached 2 of 17 live subjects).
+  const mathBlock = `\n<notation>
 ${MATH_CHEM_NOTATION_GUIDE}
-</notation>\n`
-    : "";
+</notation>\n`;
 
   return `<subject>
 ${ctx.subjectName}${ctx.subjectCode ? ` (${ctx.subjectCode})` : ""}
@@ -540,7 +533,9 @@ async function runBatch(
       maxTokens: estimateMaxOutputTokens(
         [{ type: questionType, count: batch.length }],
         "assessment",
-        { latexVerbose: ctx.mathChem }
+        // Lockstep with the unconditional notation guide above: the guide tells
+        // every subject to emit LaTeX, so every subject needs the headroom.
+        { latexVerbose: true }
       ),
       logContext: {
         ...logContext,

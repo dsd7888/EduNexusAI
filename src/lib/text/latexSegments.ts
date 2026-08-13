@@ -724,6 +724,46 @@ export function hasUnsupportedNotation(
  * Import this into: AI prompt fragments, the CSV template documentation, and any
  * in-app help text. Keeping it a single exported constant guarantees "what we
  * tell faculty" can never drift from "what we tell the AI".
+ *
+ * ── INJECT IT UNCONDITIONALLY. DO NOT GATE IT ON SUBJECT FAMILY. ────────────
+ *
+ * Every generation site injects this guide for EVERY subject. It is written as
+ * conditional instruction ("when the content contains mathematics or
+ * chemistry, write it this way"), so a subject with no math simply never
+ * triggers it — the model does not invent formulae to use it.
+ *
+ * This was measured, not assumed (Aug 2026). Notes, Q Paper sections, answer
+ * keys and lab manuals had always injected it unconditionally; Quiz/Assessment,
+ * `natVerify` and PPT gated it on `classifySubjectFamily(...) !== null ||
+ * hasLatex(syllabus)`, and Q Bank omitted it entirely. Against the live pilot
+ * DB that gate passed for 2 of 17 subjects:
+ *
+ *   - `hasLatex(syllabus)` was TRUE for 0 of 17 subjects and 0 of 106 module
+ *     descriptions. Syllabus text is reconstructed prose from the structured
+ *     tables and contains no LaTeX, so that OR-clause could never fire.
+ *   - Only subject NAMES matching the keyword regex passed — "mathematics iii"
+ *     and one "chemical process" subject. Electrical, Electronics, Network
+ *     Analysis, Electrical Machines and Data Structures all failed it.
+ *   - The cost was measured on SOEEC1010 (Basics of Electrical & Electronics),
+ *     one subject across two surfaces: Notes, which injects unconditionally,
+ *     produced 477 correct math spans ($\\frac{V_P}{V_S} = \\frac{N_P}{N_S}$,
+ *     $I^2R$); Q Bank, which injected nothing, produced 0 across 17 questions
+ *     and wrote "R1 = 10 Ω" as plain text. Across every AI-generated Q Bank row
+ *     for a subject the regex missed: 0 of 92 carried LaTeX.
+ *   - The feared downside did not appear. Automobile Engineering, a low-formula
+ *     subject, produced only 4 math spans across 4 note rows under
+ *     unconditional injection — all of them real formulae. Output scales to the
+ *     content, not to the presence of the guide.
+ *
+ * A broader keyword list would have re-introduced the same fragility one rung
+ * up. If you are tempted to re-add a gate, you need new evidence that beats the
+ * measurement above. `classifySubjectFamily()` stays scoped to archetype-hint
+ * gating (`qpaper/archetypes.ts`), which is a genuinely family-specific concern.
+ *
+ * Whatever budget knob accompanies this guide (`latexVerbose` in
+ * `tokenBudget.ts`) must be set on the SAME terms — instructing a subject to
+ * emit LaTeX on a non-LaTeX output budget is the truncation failure that knob
+ * exists to prevent.
  */
 export const MATH_CHEM_NOTATION_GUIDE = `MATH & CHEMISTRY NOTATION
 

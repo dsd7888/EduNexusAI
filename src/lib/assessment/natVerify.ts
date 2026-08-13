@@ -41,10 +41,8 @@
 import { routeAI } from "@/lib/ai/router";
 import {
   MATH_CHEM_NOTATION_GUIDE,
-  hasLatex,
   repairGeminiJsonEscapes,
 } from "@/lib/text/latexSegments";
-import { classifySubjectFamily } from "@/lib/qpaper/archetypes";
 import type { AILogContext } from "@/lib/ai/providers/types";
 import type { AssessmentQuestion } from "./types";
 import type { AssessmentSubjectContext } from "./generator";
@@ -136,8 +134,6 @@ export interface NatVerifyInput {
   moduleName: string | null;
   /** Module-scoped syllabus excerpt — NOT the full syllabus (cost bound). */
   moduleContext: string;
-  /** Include the notation guide (math/chem subjects only). */
-  mathChem: boolean;
 }
 
 /**
@@ -154,14 +150,14 @@ export function buildNatVerifyPrompt(input: NatVerifyInput): string {
     subjectName,
     moduleName,
     moduleContext,
-    mathChem,
   } = input;
 
-  const notation = mathChem
-    ? `\n<notation>
+  // Injected for every subject — see the MATH_CHEM_NOTATION_GUIDE header in
+  // latexSegments.ts. The verifier must read the same notation the generator
+  // was told to write, or it grades LaTeX it was never taught to parse.
+  const notation = `\n<notation>
 ${MATH_CHEM_NOTATION_GUIDE}
-</notation>\n`
-    : "";
+</notation>\n`;
 
   return `<context>
 Subject: ${subjectName}
@@ -295,11 +291,6 @@ export async function verifyNatQuestion(
     subjectName: ctx.subjectName,
     moduleName: mod?.name ?? null,
     moduleContext: moduleContextFor(ctx, question.moduleId),
-    mathChem:
-      ctx.mathChem ||
-      classifySubjectFamily(ctx.subjectName, ctx.subjectCode ?? undefined) !==
-        null ||
-      hasLatex(mod?.description ?? ""),
   });
 
   let raw: RawVerdict;

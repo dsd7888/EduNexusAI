@@ -13,11 +13,9 @@ import {
   hasResidualControlChars,
   hasUnsupportedNotation,
   repairGeminiJsonEscapes,
+  MATH_CHEM_NOTATION_GUIDE,
 } from "@/lib/text/latexSegments";
-import {
-  archetypeHintForSubject,
-  classifySubjectFamily,
-} from "@/lib/qpaper/archetypes";
+import { archetypeHintForSubject } from "@/lib/qpaper/archetypes";
 import type {
   Difficulty,
   GenerationSlot,
@@ -63,7 +61,20 @@ export interface GeneratedBankQuestion {
   module_id: string | null;
 }
 
-const SYSTEM_PROMPT = `You are an expert question setter for Indian engineering university examinations. Generate questions that test genuine understanding, not just memorization. Questions must be unambiguous, self-contained, and academically rigorous.`;
+// The notation guide was missing here entirely — not gated, absent. Q Bank both
+// generates math-bearing questions AND polices their notation on the way out
+// (`hasUnsupportedNotation` below flags malformed math as needs-review), so
+// without this it was marking work against a convention it never taught. Every
+// sibling generator (Q Paper sections, answer keys, Notes, lab manuals) states
+// it; see the MATH_CHEM_NOTATION_GUIDE header in latexSegments.ts.
+const SYSTEM_PROMPT = `You are an expert question setter for Indian engineering university examinations. Generate questions that test genuine understanding, not just memorization. Questions must be unambiguous, self-contained, and academically rigorous.
+
+When a question, option, or model answer contains mathematics or chemistry, write
+the notation using this exact convention so it renders correctly in the Q Bank UI
+and in every exported paper (these math/chemistry delimiters are required and are
+NOT considered "markdown"):
+
+${MATH_CHEM_NOTATION_GUIDE}`;
 
 // ─── Prompt assembly ───────────────────────────────────────────────────────
 
@@ -249,7 +260,9 @@ async function generateSlot(
       maxTokens: estimateMaxOutputTokens(
         [{ type: slot.question_type, count: slot.count }],
         "generation",
-        { latexVerbose: classifySubjectFamily(ctx.subject_name) !== null }
+        // Lockstep with the notation guide in SYSTEM_PROMPT: every subject is
+        // now told to emit LaTeX, so every subject needs the output headroom.
+        { latexVerbose: true }
       ),
       logContext: {
         ...logContext,

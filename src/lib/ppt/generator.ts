@@ -26,7 +26,6 @@ import {
   MATH_CHEM_NOTATION_GUIDE,
   repairGeminiJsonEscapes,
 } from "@/lib/text/latexSegments";
-import { classifySubjectFamily } from "@/lib/qpaper/archetypes";
 
 // ── TYPES ──────────────────────────────────────────────────
 
@@ -401,7 +400,8 @@ Rules:
 
 export function buildBatchContentPrompt(options: {
   subjectName: string;
-  /** Optional subject code — gates math/chemistry notation injection via classifySubjectFamily. */
+  /** Optional subject code — carried for logging/context; the notation guide is
+   *  no longer gated on it (see MATH_CHEM_NOTATION_GUIDE in latexSegments.ts). */
   subjectCode?: string;
   /** Full subject syllabus; first 3000 chars used for batch context. */
   fullSyllabus: string;
@@ -425,7 +425,6 @@ export function buildBatchContentPrompt(options: {
 }): string {
   const {
     subjectName,
-    subjectCode,
     fullSyllabus,
     depth,
     slides,
@@ -438,9 +437,11 @@ export function buildBatchContentPrompt(options: {
   const focusLabel = moduleName ?? customTopic ?? "";
   const syllabusContext = fullSyllabus.slice(0, 3000);
 
-  const notationBlock =
-    classifySubjectFamily(subjectName, subjectCode) !== null
-      ? `
+  // Injected for every subject, never gated on subject family — see the header
+  // on MATH_CHEM_NOTATION_GUIDE in latexSegments.ts. The block is already
+  // phrased conditionally ("when this slide's content contains…"), so a slide
+  // with no math simply never triggers it.
+  const notationBlock = `
 <math_chemistry_notation>
 When this slide's content contains mathematics or chemistry, write the
 notation using this exact convention so it renders correctly on the slide
@@ -448,8 +449,7 @@ notation using this exact convention so it renders correctly on the slide
 
 ${MATH_CHEM_NOTATION_GUIDE}
 </math_chemistry_notation>
-`
-      : "";
+`;
 
   const referenceBlock =
     referenceBooks.trim().length > 0

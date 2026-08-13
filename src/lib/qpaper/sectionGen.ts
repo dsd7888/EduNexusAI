@@ -21,10 +21,7 @@ import {
   hasResidualControlChars,
   repairGeminiJsonEscapes,
 } from "@/lib/text/latexSegments";
-import {
-  archetypeHintForSubject,
-  classifySubjectFamily,
-} from "@/lib/qpaper/archetypes";
+import { archetypeHintForSubject } from "@/lib/qpaper/archetypes";
 import type { TemplateSection, TemplateQuestionBlock, TemplatePoolQuestion, PoolItem } from "./templates";
 import {
   attemptAnyCount,
@@ -1830,10 +1827,12 @@ export async function generateSection(
   const templates = input.sectionTemplate.questions;
   const validCoCodes = input.courseOutcomes.map((c) => c.co_code);
 
-  // Math/chemistry subjects emit more LaTeX-heavy, token-verbose output — grow
-  // the output budget so the archetype-hinted shown-step questions don't truncate.
-  const latexVerbose =
-    classifySubjectFamily(input.subjectName, input.subjectCode) !== null;
+  // Grow the output budget for LaTeX-heavy, token-verbose output. Unconditional,
+  // in lockstep with SYSTEM_PROMPT — which has always stated the notation guide
+  // for every subject. Gating only the BUDGET on subject family meant every
+  // non-math-named subject was told to write LaTeX on a plain-prose budget: the
+  // truncation failure this knob exists to prevent.
+  const latexVerbose = true;
   const sectionBudget = estimateMaxOutputTokens(
     buildSectionSlots(templates),
     "generation",
