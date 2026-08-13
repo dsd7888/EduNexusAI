@@ -39,6 +39,8 @@ import QuestionCard from "./QuestionCard";
 import QuestionGrid, { buildSections } from "./QuestionGrid";
 import {
   emptyAnswer,
+  firstUnansweredIndex,
+  hydrateAnswers,
   type AnswerState,
   type SessionPayload,
 } from "./types";
@@ -56,10 +58,22 @@ export default function ExamRunner({
 }) {
   const questions = session.questions;
 
-  const [index, setIndex] = useState(0);
+  // ── resume ────────────────────────────────────────────────────────────────
+  // The autosave below flushes every 30 seconds precisely so that a crash costs
+  // at most 30 seconds of work. That promise was only half-kept until this
+  // hydration existed: the answers were being written and then discarded on
+  // reload, while the server-side clock kept running — so a crash 40 minutes
+  // into a 180-minute paper resumed with 140 minutes and an empty answer sheet.
+  //
+  // `hydrateFeedback: false`, permanently. A resumed exam is still an exam:
+  // nothing about correctness may be restored, and the route does not send it
+  // for this mode either (see AnsweredSlot). Two gates, deliberately.
   const [answers, setAnswers] = useState<Record<string, AnswerState>>(() =>
-    Object.fromEntries(questions.map((q) => [q.slotId, emptyAnswer()]))
+    hydrateAnswers(questions, session.answeredSlots, false)
   );
+  // Open on the first unanswered question — a returning student continues where
+  // they stopped rather than paging back through work they already did.
+  const [index, setIndex] = useState(() => firstUnansweredIndex(questions, answers));
   const [navOpen, setNavOpen] = useState(true);
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [expiring, setExpiring] = useState(false);

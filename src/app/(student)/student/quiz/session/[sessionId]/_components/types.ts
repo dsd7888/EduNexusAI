@@ -27,6 +27,25 @@ export interface SessionQuestion {
   numericTolerance?: number;
 }
 
+/**
+ * One already-answered slot, returned by GET /api/assessment/session/[id] so a
+ * resumed session can be rebuilt instead of restarting at question 1.
+ *
+ * `isCorrect` / `correctAnswer` / `explanation` are OPTIONAL because exam_sim
+ * genuinely does not send them — a deferred-feedback exam that is still in
+ * progress must not carry correctness, and the route omits the properties
+ * rather than nulling them. Do not widen these to required; the optionality is
+ * the client-side shadow of a server invariant.
+ */
+export interface AnsweredSlot {
+  slotId: string;
+  studentAnswer: string | null;
+  timeTakenSeconds: number | null;
+  isCorrect?: boolean;
+  correctAnswer?: string;
+  explanation?: string | null;
+}
+
 export interface SessionPayload {
   sessionId: string;
   mode: "quick" | "mastery" | "exam_sim";
@@ -44,6 +63,68 @@ export interface SessionPayload {
   totalMarks: number | null;
   score: number | null;
   questions: SessionQuestion[];
+  /** Absent on a session that predates the resume-state migration. */
+  answeredSlots?: AnsweredSlot[];
+}
+
+/**
+ * Rebuild per-slot state for a resumed session.
+ *
+ * Shared by both runners so "what does a resumed answer look like" is defined
+ * once. The runners differ in what they do with it, not in how they read it:
+ * PracticeRunner restores the reveal, ExamRunner restores only the answer.
+ *
+ * `hydrateFeedback: false` is what keeps a resumed exam_sim silent. Even if a
+ * future server change started sending correctness for exam_sim, this would not
+ * surface it — two independent gates, which is the point.
+ */
+export function hydrateAnswers(
+  questions: SessionQuestion[],
+  answeredSlots: AnsweredSlot[] | undefined,
+  hydrateFeedback: boolean
+): Record<string, AnswerState> {
+  const base: Record<string, AnswerState> = Object.fromEntries(
+    questions.map((q) => [q.slotId, emptyAnswer()])
+  );
+  for (const a of answeredSlots ?? []) {
+    if (!(a.slotId in base)) continue;
+    base[a.slotId] = {
+      ...emptyAnswer(),
+      value: a.studentAnswer,
+      timeSpent: a.timeTakenSeconds ?? 0,
+      // Already persisted server-side by definition — that is where it came from.
+      saved: true,
+      feedback:
+        hydrateFeedback && a.isCorrect !== undefined
+          ? {
+              slotId: a.slotId,
+              isCorrect: a.isCorrect,
+              correctAnswer: a.correctAnswer ?? "",
+              explanation: a.explanation ?? null,
+              // peerStat is deliberately not restored: it was never persisted,
+              // and it is a live cohort statistic. Showing a stale one would be
+              // worse than showing none.
+            }
+          : null,
+    };
+  }
+  return base;
+}
+
+/**
+ * Where a resumed session should open: the first slot with no answer.
+ *
+ * Returns the LAST index when every slot is answered — reachable in practice
+ * (answer all 10, close the tab before pressing Finish), and landing there
+ * shows the student their final question with the Finish action live, rather
+ * than an index past the end of the array.
+ */
+export function firstUnansweredIndex(
+  questions: SessionQuestion[],
+  answers: Record<string, AnswerState>
+): number {
+  const i = questions.findIndex((q) => answers[q.slotId]?.value == null);
+  return i === -1 ? Math.max(0, questions.length - 1) : i;
 }
 
 /** What /api/assessment/answer returns for an immediate-feedback mode. */

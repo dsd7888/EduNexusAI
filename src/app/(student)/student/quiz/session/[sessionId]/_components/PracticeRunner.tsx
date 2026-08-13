@@ -31,6 +31,8 @@ import QuestionCard from "./QuestionCard";
 import RevealPanel from "./RevealPanel";
 import {
   emptyAnswer,
+  firstUnansweredIndex,
+  hydrateAnswers,
   type AnswerFeedback,
   type AnswerState,
   type SessionPayload,
@@ -46,10 +48,19 @@ export default function PracticeRunner({
   const router = useRouter();
   const questions = session.questions;
 
-  const [index, setIndex] = useState(0);
+  // ── resume ────────────────────────────────────────────────────────────────
+  // Both of these are useState INITIALISERS, not effects. An effect that
+  // setStates to correct a derived value fires after paint and cascades a
+  // second render (§19 — "derive corrective state during render"); it would
+  // also mean a resumed student sees question 1 flash before being moved to
+  // question 4. `session` is fetched before this component mounts and never
+  // changes identity underneath it, so the initialiser sees the real payload.
   const [answers, setAnswers] = useState<Record<string, AnswerState>>(() =>
-    Object.fromEntries(questions.map((q) => [q.slotId, emptyAnswer()]))
+    hydrateAnswers(questions, session.answeredSlots, true)
   );
+  // Reads the hydrated map above — on the first render `answers` IS that map,
+  // and this initialiser only ever runs then.
+  const [index, setIndex] = useState(() => firstUnansweredIndex(questions, answers));
   const [checking, setChecking] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);

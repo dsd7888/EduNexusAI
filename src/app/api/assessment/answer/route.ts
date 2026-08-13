@@ -157,6 +157,30 @@ export async function POST(request: NextRequest) {
     // (autosave, or a student changing their mind) writes another row; the
     // final grade comes from /submit reading the session key against the last
     // submitted answers, so duplicates here are history, not double-counting.
+    //
+    // RESUME STATE (20260813000000). Three columns exist so that
+    // GET /api/assessment/session/[id] can rebuild a half-finished session
+    // WITHOUT reading quiz_session_keys — the invariant that route is built
+    // around (CP-Q3 Part 1). This is the write side of its own doc comment's
+    // prescription: "read them from student_question_attempts — the record of
+    // what the student was already told — never from the key."
+    //
+    //   slot_id — every mode. It is not answer-key data (the client sends it in
+    //     this very request body), and exam_sim needs it MOST: it is the only
+    //     mode where a student can re-answer, so the only one producing several
+    //     rows per slot, and resolving latest-per-slot is exactly its job.
+    //   correct_answer / explanation — immediate-feedback modes ONLY. This is
+    //     the same `entry` data the response below is about to hand this
+    //     student, so persisting it is not new exposure. But exam_sim's
+    //     30-second autosave calls this route (silent:true) purely to persist
+    //     progress, and must never deposit correctness or explanations into
+    //     this table for an in-progress exam, even latently — that would break
+    //     the no-mid-exam-feedback invariant through a side door.
+    //
+    // Gated on the MODE, not on `silent`: `silent` controls what this response
+    // returns, while the mode is what decides whether this student is entitled
+    // to have been told at all.
+    const immediateFeedback = MODE_CONFIG[session.mode].immediateFeedback;
     const { error: insertErr } = await adminClient
       .from("student_question_attempts")
       .insert({
@@ -171,6 +195,9 @@ export async function POST(request: NextRequest) {
         time_taken_seconds: timeTakenSeconds,
         source: entry.source,
         session_id: sessionId,
+        slot_id: slotId,
+        correct_answer: immediateFeedback ? entry.correctAnswer : null,
+        explanation: immediateFeedback ? entry.explanation : null,
       });
     if (insertErr) {
       // Non-fatal, same policy as /submit: losing a history row is bad, losing
