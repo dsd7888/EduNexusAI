@@ -97,7 +97,7 @@ export function recomputeOverall(
  * Check if a student is eligible for a drive.
  */
 export function isDriveEligible(
-  profile: StudentPlacementProfile,
+  profile: Pick<StudentPlacementProfile, "cgpa">,
   drive: { eligible_min_cgpa: number | null; eligible_branches: string[] | null },
   studentBranch: string
 ): { eligible: boolean; reason: string | null } {
