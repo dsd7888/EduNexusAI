@@ -3,6 +3,7 @@ import { createAdminClient } from "@/lib/db/supabase-server";
 import { requireRole, apiError, apiSuccess } from "@/lib/api/helpers";
 import { routeAI } from "@/lib/ai/router";
 import type { AILogContext } from "@/lib/ai/providers/types";
+import { TRACK_SECTIONS } from "@/lib/placement/tracks";
 import type {
   PlacementCompanyProfile,
   PlacementBankQuestion,
@@ -22,15 +23,58 @@ const VALID_TRACKS = new Set<Track>([
   "communication",
 ]);
 
-// Domain topics that produce a mixed 4 MCQ + 4 fill_code session
-const FILL_CODE_TOPICS = new Set([
-  "SQL",
-  "DBMS",
-  "OOP",
-  "OS",
-  "Networks",
-  "DSA",
-]);
+type FillCodeMode = "code" | "step";
+
+interface FillCodeSpec {
+  mode: FillCodeMode;
+  language: string;
+}
+
+// Domain topics that produce a mixed 4 MCQ + 4 fill_code session, keyed by the
+// exact topic label in TRACK_SECTIONS.domain (src/lib/placement/tracks.ts) —
+// NOT by a loose subject name. This used to be a 6-entry Set of short names
+// ("SQL", "DBMS", "OOP", "OS", "Networks", "DSA") that never equalled any real
+// topic string the UI ever sends (topics are full labels like "SQL Queries &
+// Joins"), so the mix silently never fired. Fixed here, and expanded to cover
+// every domain-track topic instead of six unreachable ones. `mode: "step"` is
+// for topics where literal code doesn't fit (a calculation, a normal-form
+// check, a protocol trace) — same fill-the-blank UI, framed as "complete the
+// critical step" rather than a code line.
+const FILL_CODE_TOPICS: Record<string, FillCodeSpec> = {
+  // Operating Systems
+  "Process Management & Scheduling": { mode: "code", language: "Python" },
+  "Memory Management & Paging": { mode: "code", language: "Python" },
+  "Deadlocks & Synchronization": { mode: "code", language: "Python" },
+  "File Systems": { mode: "step", language: "pseudocode" },
+  // DBMS
+  "SQL Queries & Joins": { mode: "code", language: "SQL" },
+  "Normalization (1NF–3NF)": { mode: "step", language: "pseudocode" },
+  "Transactions & ACID": { mode: "code", language: "SQL" },
+  "Indexing & Query Optimization": { mode: "code", language: "SQL" },
+  // Computer Networks
+  "OSI & TCP/IP Model": { mode: "step", language: "pseudocode" },
+  "IP Addressing & Subnetting": { mode: "step", language: "pseudocode" },
+  "DNS, HTTP, FTP Protocols": { mode: "code", language: "Python" },
+  "Routing Algorithms": { mode: "code", language: "Python" },
+  // OOP Concepts
+  "Classes, Objects, Inheritance": { mode: "code", language: "Java" },
+  "Polymorphism & Abstraction": { mode: "code", language: "Java" },
+  "Design Patterns (basic)": { mode: "step", language: "pseudocode" },
+};
+
+// Guards against the exact bug this table replaced: a FILL_CODE_TOPICS key
+// that no longer matches a real TRACK_SECTIONS.domain topic label silently
+// never fires. Dev-only so a stale key surfaces immediately in local testing
+// instead of shipping unreachable.
+if (process.env.NODE_ENV !== "production") {
+  const domainTopics = new Set(TRACK_SECTIONS.domain.flatMap((s) => s.topics));
+  const staleKeys = Object.keys(FILL_CODE_TOPICS).filter((t) => !domainTopics.has(t));
+  if (staleKeys.length > 0) {
+    console.warn(
+      `[placement-prep] FILL_CODE_TOPICS has keys with no matching TRACK_SECTIONS.domain topic: ${staleKeys.join(", ")}`
+    );
+  }
+}
 
 const SYSTEM_PROMPT =
   "You are a placement preparation expert specializing in Indian campus recruitment. " +
@@ -234,13 +278,25 @@ function buildPrompt(
   );
 }
 
-function buildFillCodePrompt(topic: string): string {
+function buildFillCodePrompt(topic: string, spec: FillCodeSpec): string {
+  if (spec.mode === "code") {
+    return (
+      `Generate 4 code completion questions for ${topic}.\n` +
+      `Each question shows a code snippet with ONE line missing.\n` +
+      `The missing line is the most conceptually important line.\n` +
+      `Language: ${spec.language}.\n` +
+      `\nThe blank should test: understanding of the concept, not syntax memorization.`
+    );
+  }
   return (
-    `Generate 4 code completion questions for ${topic}.\n` +
-    `Each question shows a code snippet with ONE line missing.\n` +
-    `The missing line is the most conceptually important line.\n` +
-    `Languages: Python or Java (student's choice — use Python as default for DS/Algo, Java for OOP).\n` +
-    `\nThe blank should test: understanding of the concept, not syntax memorization.`
+    `Generate 4 "complete the critical step" questions for ${topic}.\n` +
+    `Each question shows a worked solution or step-by-step procedure (a formula ` +
+    `application, a subnetting/normalization calculation, a protocol trace) with ` +
+    `ONE step missing, formatted the same way a code completion question is: ` +
+    `lines before the blank, the blank, lines after the blank.\n` +
+    `The missing step must be the most conceptually important one — not a trivial ` +
+    `arithmetic slip.\n` +
+    `\nThe blank should test: understanding of the concept, not rote recall.`
   );
 }
 
@@ -283,8 +339,9 @@ export async function POST(request: NextRequest) {
     const validTrack = track as Track;
     const cleanTopic = topic.trim();
     const adminClient = createAdminClient();
-    const isFillCodeMix =
-      validTrack === "domain" && FILL_CODE_TOPICS.has(cleanTopic);
+    const fillCodeSpec =
+      validTrack === "domain" ? FILL_CODE_TOPICS[cleanTopic] : undefined;
+    const isFillCodeMix = fillCodeSpec !== undefined;
     const companySlugStr =
       company_slug && typeof company_slug === "string" ? company_slug : null;
 
@@ -404,7 +461,7 @@ export async function POST(request: NextRequest) {
       }
 
       // ── Step 5: Generate via AI ────────────────────────────────────────────
-      if (isFillCodeMix) {
+      if (isFillCodeMix && fillCodeSpec) {
         return await generateFillCodeMix(
           adminClient,
           validTrack,
@@ -412,7 +469,8 @@ export async function POST(request: NextRequest) {
           difficultyToServe,
           company,
           companySlugStr,
-          logContext
+          logContext,
+          fillCodeSpec
         );
       }
 
@@ -576,10 +634,11 @@ async function generateFillCodeMix(
   difficulty: Difficulty,
   company: PlacementCompanyProfile | null,
   companySlugStr: string | null,
-  logContext: AILogContext
+  logContext: AILogContext,
+  fillCodeSpec: FillCodeSpec
 ): Promise<Response> {
   const mcqPrompt = buildPrompt(track, topic, difficulty, company, 4);
-  const fcPrompt = buildFillCodePrompt(topic);
+  const fcPrompt = buildFillCodePrompt(topic, fillCodeSpec);
 
   const [mcqResult, fcResult] = await Promise.allSettled([
     routeAI("placement_prep", {

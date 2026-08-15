@@ -3,10 +3,12 @@
 import React, { useEffect, useState, useCallback, useRef, Suspense } from "react";
 import { useParams, useSearchParams, useRouter } from "next/navigation";
 import Link from "next/link";
-import { Check, X, ChevronDown, ChevronRight, Loader2 } from "lucide-react";
+import { Check, X, ChevronDown, ChevronRight, ExternalLink, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { RichQuestionText } from "@/components/RichQuestionText";
+import { MonoTag } from "@/components/ui/mono-tag";
+import { getPracticeRecs } from "@/lib/placement/practiceRecs";
 import type {
   PlacementBankQuestion,
   PlacementTopicMastery,
@@ -647,6 +649,7 @@ function PracticeInner() {
     ).length;
 
     const nextTopic = NEXT_TOPIC[topic];
+    const practiceRecs = getPracticeRecs(rawTrack, topic);
 
     return (
       <div className="space-y-6">
@@ -712,6 +715,31 @@ function PracticeInner() {
                 have harder questions.
               </div>
             )}
+          </div>
+        )}
+
+        {/* External-practice resource strip (CP-C1) */}
+        {practiceRecs.length > 0 && (
+          <div className="rounded-12 border border-ink-200 bg-paper p-4">
+            <p className="mb-2 font-plex-sans text-label font-semibold uppercase tracking-[0.04em] text-ink-500">
+              Practice more
+            </p>
+            <div className="flex flex-wrap gap-2">
+              {practiceRecs.map((r) => (
+                <a
+                  key={r.url}
+                  href={r.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="rounded-4 transition-colors duration-180 hover:opacity-80"
+                >
+                  <MonoTag className="gap-1">
+                    {r.label}
+                    <ExternalLink className="size-3" aria-hidden="true" />
+                  </MonoTag>
+                </a>
+              ))}
+            </div>
           </div>
         )}
 
