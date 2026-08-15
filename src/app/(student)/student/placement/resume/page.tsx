@@ -18,6 +18,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
+import { MonoTag } from "@/components/ui/mono-tag";
 import { cn } from "@/lib/utils";
 import { createBrowserClient } from "@/lib/db/supabase-browser";
 import type {
@@ -314,10 +315,12 @@ function Field({
 
 function VariantCards({
   variants,
+  tailored,
   onUse,
   onKeep,
 }: {
   variants: Array<{ text: string; improvement: string }>;
+  tailored: boolean;
   onUse: (text: string) => void;
   onKeep: () => void;
 }) {
@@ -329,6 +332,9 @@ function VariantCards({
 
   return (
     <div className="mt-2 rounded-lg border border-blue-100 bg-blue-50/40 p-2">
+      {tailored && (
+        <MonoTag className="mb-1.5">Tailored to your JD</MonoTag>
+      )}
       <div className="grid gap-2 md:grid-cols-3">
         {variants.map((v, i) => (
           <div
@@ -400,6 +406,7 @@ function BulletList({
   keyPrefix,
   rewritingBullet,
   bulletVariants,
+  variantsTailored,
   onChangeBullet,
   onAddBullet,
   onRemoveBullet,
@@ -412,6 +419,7 @@ function BulletList({
   keyPrefix: string;
   rewritingBullet: string | null;
   bulletVariants: Array<{ text: string; improvement: string }> | null;
+  variantsTailored: boolean;
   onChangeBullet: (idx: number, text: string) => void;
   onAddBullet: () => void;
   onRemoveBullet: (idx: number) => void;
@@ -466,6 +474,7 @@ function BulletList({
             {isRewriting && bulletVariants && (
               <VariantCards
                 variants={bulletVariants}
+                tailored={variantsTailored}
                 onUse={(text) => onUseVariant(idx, text)}
                 onKeep={onKeepOriginal}
               />
@@ -506,6 +515,7 @@ export default function ResumeBuilderPage() {
   const [bulletVariants, setBulletVariants] = useState<
     Array<{ text: string; improvement: string }> | null
   >(null);
+  const [variantsTailored, setVariantsTailored] = useState(false);
 
   const [jdText, setJdText] = useState("");
   const [jdRoleTitle, setJdRoleTitle] = useState<string>("");
@@ -915,6 +925,7 @@ export default function ResumeBuilderPage() {
     if (!text.trim()) return;
     setRewritingBullet(bulletKey);
     setBulletVariants(null);
+    setVariantsTailored(false);
     try {
       const res = await fetch("/api/placement/resume/rewrite-bullet", {
         method: "POST",
@@ -923,11 +934,13 @@ export default function ResumeBuilderPage() {
           bullet: text,
           context,
           role_context: jdText && jdRoleTitle ? jdRoleTitle : undefined,
+          jd_text: jdText || undefined,
         }),
       });
       const data = await res.json();
       if (res.ok && Array.isArray(data.variants) && data.variants.length > 0) {
         setBulletVariants(data.variants);
+        setVariantsTailored(Boolean(data.tailored));
       } else {
         setRewritingBullet(null);
       }
@@ -939,6 +952,7 @@ export default function ResumeBuilderPage() {
   function closeRewrite() {
     setRewritingBullet(null);
     setBulletVariants(null);
+    setVariantsTailored(false);
   }
 
   // ── Apply an ATS bullet suggestion back into the form ──────────────────────────
@@ -1456,6 +1470,7 @@ export default function ResumeBuilderPage() {
                             keyPrefix={`proj:${p.id}`}
                             rewritingBullet={rewritingBullet}
                             bulletVariants={bulletVariants}
+                            variantsTailored={variantsTailored}
                             onChangeBullet={(idx, text) =>
                               updateProject(p.id, {
                                 bullets: p.bullets.map((b, i) =>
@@ -1607,6 +1622,7 @@ export default function ResumeBuilderPage() {
                             keyPrefix={`intern:${it.id}`}
                             rewritingBullet={rewritingBullet}
                             bulletVariants={bulletVariants}
+                            variantsTailored={variantsTailored}
                             onChangeBullet={(idx, text) =>
                               updateInternship(it.id, {
                                 bullets: it.bullets.map((b, i) =>
@@ -2036,6 +2052,42 @@ function AtsPanel({
                 <button
                   type="button"
                   onClick={() => onApplyBullet(b.original, b.suggested)}
+                  className="mt-2 rounded-md border border-blue-500 px-2 py-1 text-xs font-medium text-blue-600 hover:bg-blue-50"
+                >
+                  Apply
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Interviewer lens — distinct from ATS keyword scoring above: bullets
+          that would sound hollow if said out loud to a human interviewer. */}
+      <div>
+        <div className="flex items-center gap-1.5">
+          <h3 className="text-sm font-semibold text-gray-700">Interviewer Lens</h3>
+          <MonoTag>Human read</MonoTag>
+        </div>
+        {analysis.interviewer_lens.length === 0 ? (
+          <p className="mt-1 text-sm text-emerald-600">
+            ✓ Nothing reads as hollow to an interviewer
+          </p>
+        ) : (
+          <div className="mt-2 space-y-2">
+            {analysis.interviewer_lens.map((h, i) => (
+              <div key={i} className="rounded-lg border border-gray-200 p-3">
+                <p className="truncate text-xs text-gray-500">
+                  {h.original.slice(0, 60)}
+                  {h.original.length > 60 ? "…" : ""}
+                </p>
+                <p className="mt-0.5 text-xs text-amber-600">{h.problem}</p>
+                <p className="mt-1 text-sm font-medium text-gray-800">
+                  {h.suggested}
+                </p>
+                <button
+                  type="button"
+                  onClick={() => onApplyBullet(h.original, h.suggested)}
                   className="mt-2 rounded-md border border-blue-500 px-2 py-1 text-xs font-medium text-blue-600 hover:bg-blue-50"
                 >
                   Apply

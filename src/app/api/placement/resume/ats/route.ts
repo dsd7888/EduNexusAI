@@ -2,6 +2,7 @@ import type { NextRequest } from "next/server";
 import { requireRole, apiError, apiSuccess } from "@/lib/api/helpers";
 import { createAdminClient } from "@/lib/db/supabase-server";
 import { routeAI } from "@/lib/ai/router";
+import { repairGeminiJsonEscapes } from "@/lib/text/latexSegments";
 import type { ResumeData, ATSAnalysis } from "@/types/placement";
 
 export const maxDuration = 60;
@@ -115,6 +116,54 @@ const RESPONSE_SCHEMA = {
   ],
 };
 
+// The ATS pass above scores keyword/skill alignment — it does not judge whether
+// a bullet would survive being said out loud to a human. This second, narrower
+// pass is that check: unlike bullet_issues (vague verb / no outcome / too long,
+// mechanical patterns an ATS-style scan can catch), this flags claims a live
+// interviewer would specifically probe — a strong verb with no scope behind it,
+// a buzzword no follow-up question could be answered from.
+const INTERVIEWER_LENS_SCHEMA = {
+  type: "object",
+  properties: {
+    hollow_bullets: {
+      type: "array",
+      description:
+        "Bullets that would sound hollow, generic, or unverifiable if the " +
+        "candidate said them out loud to a human interviewer — a claim with " +
+        "no metric, an impressive verb with no scope, a buzzword no follow-up " +
+        "question could be answered from. Do not repeat purely mechanical " +
+        "issues (vague verb, missing outcome) already caught elsewhere unless " +
+        "the interviewer angle is genuinely distinct.",
+      items: {
+        type: "object",
+        properties: {
+          section: {
+            type: "string",
+            description: "e.g. projects[0].bullets[1]",
+          },
+          original: { type: "string", description: "Original bullet text" },
+          problem: {
+            type: "string",
+            description:
+              "What a human interviewer would probe or doubt, in one phrase " +
+              "(e.g. 'led a team' with no team size or outcome named)",
+          },
+          suggested: {
+            type: "string",
+            description:
+              "Rewritten bullet: a metric if genuinely inferable from context, " +
+              "otherwise a specific, verifiable claim about what was actually " +
+              "built or done. Under 15 words. Never invent a number the " +
+              "original bullet doesn't support.",
+          },
+        },
+        required: ["section", "original", "problem", "suggested"],
+      },
+    },
+  },
+  required: ["hollow_bullets"],
+};
+
 // ─── Resume text builder ──────────────────────────────────────────────────────
 
 function buildResumeText(resume: ResumeData): string {
@@ -178,6 +227,13 @@ type RawSkillGap = {
   prep_topic: string;
 };
 
+type RawHollowBullet = {
+  section: string;
+  original: string;
+  problem: string;
+  suggested: string;
+};
+
 export async function POST(request: NextRequest) {
   try {
     const authResult = await requireRole(["student"]);
@@ -219,6 +275,7 @@ export async function POST(request: NextRequest) {
           "A resume needs content before it can be ATS-analyzed",
         ],
         missing_high_priority: [],
+        interviewer_lens: [],
         _empty: true,
       });
     }
@@ -327,6 +384,68 @@ export async function POST(request: NextRequest) {
       })
     );
 
+    // Second pass: interviewer lens. Independent of the ATS keyword-match
+    // score above — reuses the same resumeText/jd_text already in scope.
+    // Non-fatal: a failure here must not sink an otherwise-successful ATS
+    // analysis, since the student is waiting on the primary score.
+    let interviewer_lens: ATSAnalysis["interviewer_lens"] = [];
+    try {
+      const lensPrompt =
+        `You are a human technical interviewer, not an ATS scanner, reading ` +
+        `this fresher's resume before a screening call for the role below.\n\n` +
+        `Resume:\n${resumeText}\n\n` +
+        `Job Description (context for what this interviewer would probe hardest):\n${jd_text.slice(0, 1500)}\n\n` +
+        `Flag every bullet that would sound hollow, generic, or unverifiable ` +
+        `if the candidate said it out loud — a strong verb with no scope ` +
+        `behind it, a claim with no metric, a buzzword no follow-up question ` +
+        `could be answered from ("led a team" with no size or outcome, ` +
+        `"worked extensively with X" with nothing built).\n` +
+        `For each, suggest a concrete rewrite:\n` +
+        `- Use a real metric ONLY if genuinely inferable from context given.\n` +
+        `- Otherwise reframe as a specific, verifiable claim about what was ` +
+        `actually built or done — never invent a number.\n` +
+        `- Under 15 words, zero filler adjectives, sound like the student's ` +
+        `own voice, not AI-generated résumé-speak.\n` +
+        `If every bullet already reads as concrete and verifiable, return an ` +
+        `empty list — do not manufacture issues.`;
+
+      const lensResult = await routeAI("placement_prep", {
+        messages: [{ role: "user", content: lensPrompt }],
+        thinkingBudget: 0,
+        maxTokens: 3000,
+        responseSchema: INTERVIEWER_LENS_SCHEMA,
+        logContext: {
+          userId: user.id,
+          userEmail: user.email ?? null,
+          userRole: profile.role,
+          subjectId: null,
+          subjectCode: null,
+          jobId,
+          relatedContentId: null,
+          feature: "placement",
+        },
+      });
+
+      const lensParsed = JSON.parse(
+        repairGeminiJsonEscapes(String(lensResult.content ?? ""))
+      ) as { hollow_bullets?: RawHollowBullet[] };
+
+      interviewer_lens = Array.isArray(lensParsed.hollow_bullets)
+        ? lensParsed.hollow_bullets.map((h) => ({
+            section: h.section,
+            original: h.original,
+            problem: h.problem,
+            suggested: h.suggested,
+          }))
+        : [];
+    } catch (err) {
+      console.error(
+        "[resume/ats] interviewer-lens pass failed (non-fatal, ATS score still returned):",
+        err
+      );
+      interviewer_lens = [];
+    }
+
     const analysis: ATSAnalysis = {
       jd_text,
       overall_score: typeof parsed.overall_score === "number" ? parsed.overall_score : 0,
@@ -339,6 +458,7 @@ export async function POST(request: NextRequest) {
       ats_tips: Array.isArray(parsed.ats_tips)
         ? (parsed.ats_tips as string[])
         : [],
+      interviewer_lens,
     };
 
     return apiSuccess(analysis);

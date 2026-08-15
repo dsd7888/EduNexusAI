@@ -457,6 +457,12 @@ export interface ATSAnalysis {
     prep_topic: string | null
   }>
   ats_tips: string[]         // 3-5 general tips specific to this JD
+  interviewer_lens: Array<{
+    section: string          // "projects[0].bullets[1]"
+    original: string
+    problem: string          // why a human interviewer would find this hollow/probe it
+    suggested: string        // concrete-metric or specific-scope rewrite
+  }>
   _empty?: boolean
 }
 

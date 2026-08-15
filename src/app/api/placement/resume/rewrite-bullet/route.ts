@@ -45,12 +45,18 @@ export async function POST(request: NextRequest) {
       bullet?: string;
       context?: string;
       role_context?: string;
+      jd_text?: string;
     };
 
     const bullet = typeof body.bullet === "string" ? body.bullet.trim() : "";
     const context = typeof body.context === "string" ? body.context : "";
     const role_context =
       typeof body.role_context === "string" ? body.role_context : "";
+    const jdTextRaw = typeof body.jd_text === "string" ? body.jd_text.trim() : "";
+    // Same 50-char floor the ATS route uses — below that a JD snippet isn't
+    // meaningfully "pasted", so don't condition the rewrite on noise.
+    const jdText = jdTextRaw.length >= 50 ? jdTextRaw : "";
+    const tailored = Boolean(jdText);
 
     if (!bullet) return apiError("bullet is required", 400);
 
@@ -59,6 +65,10 @@ export async function POST(request: NextRequest) {
       `Original: "${bullet}"\n` +
       `Context: ${context}\n` +
       (role_context ? `Target role: ${role_context}\n` : "") +
+      (jdText
+        ? `\nTarget Job Description — mirror its language and priorities ` +
+          `where genuinely true of the original bullet:\n${jdText.slice(0, 1500)}\n`
+        : "") +
       `\nRules (non-negotiable):\n` +
       `1. Start with a strong action verb: Built, Reduced, Automated,\n` +
       `   Designed, Implemented, Migrated, Optimized, Achieved, Delivered,\n` +
@@ -69,7 +79,13 @@ export async function POST(request: NextRequest) {
       `4. Zero filler: no "spearheaded", "leveraged", "passionate",\n` +
       `   "results-driven", "worked on", "helped with"\n` +
       `5. Sound like a human engineer wrote it\n` +
-      `6. Do not invent metrics that aren't inferable from context\n\n` +
+      `6. Do not invent metrics that aren't inferable from context\n` +
+      (jdText
+        ? `7. Prefer the JD's own terminology for a skill/technology ONLY ` +
+          `when the original bullet genuinely already describes it — never ` +
+          `introduce a tool, skill, or metric the original bullet doesn't ` +
+          `support just because the JD mentions it\n\n`
+        : `\n`) +
       `Generate exactly 3 variants. Different verbs, different angles.`;
 
     let result;
@@ -107,7 +123,7 @@ export async function POST(request: NextRequest) {
       return apiError("Rewrite failed. Try again.", 500);
     }
 
-    return apiSuccess({ variants: parsed.variants });
+    return apiSuccess({ variants: parsed.variants, tailored });
   } catch (error) {
     console.error(
       "[resume/rewrite-bullet] Error:",
