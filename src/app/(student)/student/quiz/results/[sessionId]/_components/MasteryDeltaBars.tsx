@@ -77,9 +77,14 @@ export default function MasteryDeltaBars({ deltas }: { deltas: MasteryDelta[] })
                 <p
                   className={cn(
                     "flex items-center gap-1 text-xs font-medium",
+                    // amber-700, not the score.ts anchor's amber-600: at this
+                    // text-xs/medium size (not WCAG "large text"), amber-600
+                    // on bg-card measures 3.2:1 — below the 4.5:1 AA floor.
+                    // amber-700 clears it (5.02:1), matching QuestionGrid's
+                    // own already-passing amber-700 badge text.
                     d.promoted
                       ? "text-emerald-600 dark:text-emerald-400"
-                      : "text-amber-600 dark:text-amber-500"
+                      : "text-amber-700 dark:text-amber-500"
                   )}
                 >
                   {d.promoted ? (
