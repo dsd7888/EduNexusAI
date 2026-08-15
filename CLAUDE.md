@@ -204,3 +204,20 @@ with reasons is **§19 (Architectural Decisions)** of `CLAUDE_CONTEXT.md`. (This
 - Env vars: `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`,
   `SUPABASE_SERVICE_ROLE_KEY`, `GOOGLE_GENERATIVE_AI_API_KEY`,
   `PRIMARY_AI_PROVIDER=gemini`. SQL schema changes go in `supabase/migrations/`.
+
+
+
+
+Automated placement-rebuild runs (read every session)
+
+When a session is launched by run-spec.sh to execute a single checkpoint of .claude/SPEC.md, these rules are in force:
+
+Read .claude/PROGRESS.md first, then .claude/SPEC.md (esp. §0), then this file. Do the work for the one named checkpoint only. Do not start the next one.
+Trust the repo, not descriptions. git/grep to verify state before editing. If SPEC.md says "already exists" and the repo disagrees, follow the repo and note it.
+Every new AI call goes through routeAI (so it is cost-logged), with responseSchema, repairGeminiJsonEscapes at the parse site, and an explicit thinkingConfig. No new npm dependencies without a note asking for approval.
+Commits are gated by a hook (.claude/hooks/guard.sh). It will refuse a commit that introduces new TypeScript errors, and refuse to commit a schema migration. Do not fight the hook. If a commit is refused for tsc errors, fix the errors.
+If a checkpoint needs a schema migration: create the migration file, then STOP. Append a note to .claude/PROGRESS.md that a migration awaits manual application. Do not loop trying to commit it — the hook will keep refusing (by design).
+Pushing: only push when told to in the prompt (non-HALT checkpoints). On HALT checkpoints, commit locally and do not push; a human reviews and pushes.
+UI checkpoints must produce screenshots (desktop + mobile, light + dark where supported) and a short DESIGN.md conformance note, per SPEC §0. State measured contrast for any text you introduced.
+Report unhappy-path checks, not just happy path (interrupted flow, empty data, concurrent action, ineligible student, empty bank).
+Last action, always: append a dated entry to .claude/PROGRESS.md in the documented format, including the commit SHA.
