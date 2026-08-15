@@ -15,7 +15,7 @@
 import Link from "next/link";
 import { ChevronRight, Clock } from "lucide-react";
 
-import { Badge } from "@/components/ui/badge";
+import { MonoTag } from "@/components/ui/mono-tag";
 import type { LandingSignals } from "@/lib/assessment/landingSignals";
 
 const MODE_LABEL: Record<string, string> = {
@@ -61,9 +61,10 @@ export default function ContinueStrip({
                   {MODE_LABEL[s.mode] ?? s.mode}
                 </span>
                 {s.preset ? (
-                  <Badge variant="secondary" className="text-[10px] uppercase">
+                  // Structural label, same pattern as Phase 1's CO-code migration.
+                  <MonoTag variant="default" className="uppercase">
                     {s.preset}
-                  </Badge>
+                  </MonoTag>
                 ) : null}
               </div>
               <p className="text-xs text-muted-foreground">

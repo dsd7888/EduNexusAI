@@ -14,7 +14,7 @@
  * rather than showing a section header with nothing to distinguish.
  */
 
-import { Badge } from "@/components/ui/badge";
+import { MonoTag } from "@/components/ui/mono-tag";
 import { cn } from "@/lib/utils";
 import type { AnswerState, SessionQuestion } from "./types";
 
@@ -71,20 +71,14 @@ export default function QuestionGrid({
 
   return (
     <div className="space-y-4">
-      <div className="flex flex-wrap gap-1.5 text-[11px]">
-        <Badge variant="secondary" className="font-normal tabular-nums">
-          {counts.answered} answered
-        </Badge>
-        <Badge variant="outline" className="font-normal tabular-nums">
-          {counts.unanswered} unanswered
-        </Badge>
+      <div className="flex flex-wrap gap-1.5">
+        {/* Structural counts, not performance indicators — default variant. */}
+        <MonoTag variant="default">{counts.answered} answered</MonoTag>
+        <MonoTag variant="default">{counts.unanswered} unanswered</MonoTag>
         {counts.marked > 0 ? (
-          <Badge
-            variant="outline"
-            className="border-amber-300 font-normal tabular-nums text-amber-700 dark:border-amber-800 dark:text-amber-300"
-          >
-            {counts.marked} marked
-          </Badge>
+          // A genuine status/attention indicator — amber-fill is correct here
+          // per DESIGN.md's structural-vs-performance tag rule.
+          <MonoTag variant="amber-fill">{counts.marked} marked</MonoTag>
         ) : null}
       </div>
 
