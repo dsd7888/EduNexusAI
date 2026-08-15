@@ -3,24 +3,29 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { ArrowRight, CheckCircle2, Circle } from "lucide-react";
+import { ArrowRight, ChevronDown } from "lucide-react";
 import { toast } from "sonner";
 
-import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
+import { MonoTag } from "@/components/ui/mono-tag";
+import { ScoreMeter } from "@/components/ui/score-meter";
 import { cn } from "@/lib/utils";
 import { useCurrentUser } from "@/hooks/useSupabaseData";
-import {
-  computeCompanyFit,
-  readinessLabel,
-} from "@/lib/placement/readiness";
+import { computeCompanyFit, readinessLabel } from "@/lib/placement/readiness";
+import { computeNextMoves } from "@/lib/placement/nextMove";
+import type {
+  NextMoveDrive,
+  NextMoveState,
+  NextMoveTopicMastery,
+  RankedMove,
+  StageId,
+} from "@/lib/placement/nextMove";
+import { VALID_TRACKS, type Track } from "@/lib/placement/tracks";
 import {
   TARGET_LABELS,
   type StudentPlacementProfile,
   type PlacementCompanyProfile,
   type PlacementDrive,
-  type PlacementTarget,
   type CompanyFit,
   type PlacementTopicMastery,
 } from "@/types/placement";
@@ -33,82 +38,6 @@ function daysUntil(dateStr: string): number {
   const t = new Date(dateStr);
   t.setHours(0, 0, 0, 0);
   return Math.ceil((t.getTime() - today.getTime()) / 86_400_000);
-}
-
-function barColorClass(score: number): string {
-  if (score >= 75) return "bg-emerald-500";
-  if (score >= 50) return "bg-amber-500";
-  return "bg-amber-400";
-}
-
-function ringStroke(score: number): string {
-  if (score >= 75) return "#10b981";
-  if (score >= 50) return "#f59e0b";
-  return "#9ca3af";
-}
-
-function fitScoreColorClass(score: number): string {
-  if (score >= 75) return "text-emerald-600";
-  if (score >= 50) return "text-amber-600";
-  return "text-gray-400";
-}
-
-// ─── Today's Queue config ─────────────────────────────────────────────────────
-
-interface QueueTask {
-  id: string;
-  title: string;
-  subtitle: string;
-  href: string;
-}
-
-function getTodaysTasks(target: PlacementTarget): QueueTask[] {
-  const aptitude: QueueTask = {
-    id: "apt",
-    title: "Aptitude Drill",
-    subtitle: "20 questions · Quant & Logical",
-    href: "/student/placement/prep/aptitude",
-  };
-  const verbal: QueueTask = {
-    id: "verb",
-    title: "Verbal Practice",
-    subtitle: "15 questions · RC & Grammar",
-    href: "/student/placement/prep/verbal",
-  };
-  if (target === "service_it") {
-    return [
-      aptitude,
-      verbal,
-      {
-        id: "oa",
-        title: "OA Pattern Review",
-        subtitle: "TCS NQT pattern analysis",
-        href: "/student/placement/companies/tcs",
-      },
-    ];
-  }
-  if (target === "product") {
-    return [
-      aptitude,
-      verbal,
-      {
-        id: "dsa",
-        title: "DSA Concepts",
-        subtitle: "Data structures & algorithms",
-        href: "/student/placement/prep/coding",
-      },
-    ];
-  }
-  return [
-    aptitude,
-    verbal,
-    {
-      id: "domain",
-      title: "Core Domain Review",
-      subtitle: "Technical subject concepts",
-      href: "/student/placement/prep/domain",
-    },
-  ];
 }
 
 // ─── Dimension keys ───────────────────────────────────────────────────────────
@@ -131,6 +60,308 @@ const DIMENSIONS: Array<{
   { key: "readiness_communication", label: "Communication" },
 ];
 
+// ─── Stage strip (SPEC §2 — the six-position line) ─────────────────────────────
+
+const STAGE_ORDER: Array<{ id: StageId; label: string; locked: boolean }> = [
+  { id: "foundation", label: "Foundation", locked: true },
+  { id: "active_prep", label: "Active Prep", locked: false },
+  { id: "drive_sprint", label: "Drive Sprint", locked: false },
+  { id: "interview", label: "Interview", locked: false },
+  { id: "post_outcome", label: "Post-Outcome", locked: true },
+  { id: "competitive_exam", label: "Competitive Exam", locked: true },
+];
+
+function StageStrip({ current }: { current: StageId }) {
+  return (
+    <ol className="flex items-center gap-2 overflow-x-auto pb-1">
+      {STAGE_ORDER.map((stage, i) => {
+        const isCurrent = !stage.locked && stage.id === current;
+        return (
+          <li key={stage.id} className="flex shrink-0 items-center gap-2">
+            {i > 0 && <span aria-hidden className="h-px w-4 shrink-0 bg-ink-100" />}
+            <MonoTag variant={isCurrent ? "active" : "default"}>
+              {stage.label}
+              {stage.locked ? " · Locked" : isCurrent ? " · Now" : ""}
+            </MonoTag>
+          </li>
+        );
+      })}
+    </ol>
+  );
+}
+
+// ─── Next Move cards ───────────────────────────────────────────────────────────
+
+function HeroMoveCard({ move }: { move: RankedMove }) {
+  return (
+    <section className="rounded-12 border border-ink-200 bg-paper p-6 sm:p-8">
+      <p className="font-plex-sans text-label font-semibold uppercase tracking-[0.04em] text-ink-500">
+        Next move
+      </p>
+      <h2 className="mt-2 font-plex-serif text-display-sm font-semibold leading-snug text-ink">
+        {move.title}
+      </h2>
+      <p className="mt-2 max-w-2xl font-plex-sans text-body text-ink-600">{move.reason}</p>
+      {move.tags.length > 0 && (
+        <div className="mt-4 flex flex-wrap gap-2">
+          {move.tags.map((tag) => (
+            <MonoTag key={tag}>{tag}</MonoTag>
+          ))}
+        </div>
+      )}
+      <Link
+        href={move.href}
+        className="mt-6 inline-flex h-11 items-center gap-1.5 rounded-8 bg-ink px-5 font-plex-sans text-body font-medium text-paper transition-colors duration-180 ease-out hover:bg-ink-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ink-900 focus-visible:ring-offset-2"
+      >
+        {move.title}
+        <ArrowRight className="size-4" />
+      </Link>
+    </section>
+  );
+}
+
+function SecondaryMoveCard({ move }: { move: RankedMove }) {
+  return (
+    <Link
+      href={move.href}
+      className="group flex flex-col gap-2 rounded-8 border border-ink-200 bg-paper p-4 transition-colors duration-180 ease-out hover:border-ink-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ink-900 focus-visible:ring-offset-2"
+    >
+      <div className="flex items-start justify-between gap-2">
+        <p className="font-plex-sans text-body-sm font-medium text-ink-900">{move.title}</p>
+        <ArrowRight className="size-4 shrink-0 text-ink-300 transition-transform duration-180 ease-out group-hover:translate-x-0.5" />
+      </div>
+      <p className="font-plex-sans text-body-sm text-ink-500">{move.reason}</p>
+      {move.tags.length > 0 && (
+        <div className="mt-1 flex flex-wrap gap-1.5">
+          {move.tags.map((tag) => (
+            <MonoTag key={tag}>{tag}</MonoTag>
+          ))}
+        </div>
+      )}
+    </Link>
+  );
+}
+
+function MoreMovesPanel({ moves }: { moves: RankedMove[] }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div>
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        aria-expanded={open}
+        className="flex h-11 items-center gap-1.5 rounded-4 font-plex-sans text-body-sm font-medium text-ink-600 transition-colors duration-180 ease-out hover:text-ink-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ink-900"
+      >
+        <ChevronDown
+          className={cn(
+            "size-4 transition-transform duration-180 ease-out motion-reduce:transition-none",
+            open && "rotate-180"
+          )}
+        />
+        {open ? "Show fewer moves" : `${moves.length} more move${moves.length === 1 ? "" : "s"}`}
+      </button>
+      <div
+        className={cn(
+          "grid transition-[grid-template-rows] duration-240 ease-out motion-reduce:transition-none",
+          open ? "grid-rows-[1fr]" : "grid-rows-[0fr]"
+        )}
+      >
+        <div className="min-h-0 overflow-hidden">
+          <ul className="mt-2 divide-y divide-ink-100 rounded-8 border border-ink-100">
+            {moves.map((m) => (
+              <li key={`${m.kind}-${m.href}-${m.title}`}>
+                <Link
+                  href={m.href}
+                  className="flex min-h-11 items-center justify-between gap-2 px-3 py-2.5 font-plex-sans text-body-sm text-ink-700 transition-colors duration-180 ease-out hover:bg-ink-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ink-900"
+                >
+                  <span>{m.title}</span>
+                  <ArrowRight className="size-3.5 shrink-0 text-ink-300" />
+                </Link>
+              </li>
+            ))}
+          </ul>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function EmptyMovesCard() {
+  return (
+    <div className="rounded-12 border border-dashed border-ink-200 bg-paper p-6 text-center">
+      <p className="font-plex-sans text-body text-ink-600">
+        No urgent moves right now — your readiness is solid and nothing is due soon.
+      </p>
+      <Link
+        href="/student/placement/prep"
+        className="mt-3 inline-flex font-plex-sans text-body-sm font-medium text-ink underline-offset-2 hover:underline"
+      >
+        Browse prep tracks
+      </Link>
+    </div>
+  );
+}
+
+// ─── Demoted "Your readiness" section (the old dashboard content) ─────────────
+
+function CompanyFitCard({ fit, overall }: { fit: CompanyFit; overall: number }) {
+  return (
+    <div className="flex flex-col gap-3 rounded-8 border border-ink-200 bg-paper p-3.5">
+      <div className="flex items-start justify-between gap-2">
+        <p className="font-plex-sans text-body-sm font-semibold leading-tight text-ink-900">
+          {fit.company.name}
+        </p>
+        <p className="font-plex-mono text-body-sm text-ink-600">
+          {fit.fit_score}
+          <span className="text-ink-500">/100</span>
+        </p>
+      </div>
+      <p className="-mt-1 font-plex-sans text-body-sm text-ink-500">{readinessLabel(fit.fit_score)}</p>
+
+      {!fit.is_eligible ? (
+        <MonoTag variant="amber-fill" className="w-fit">
+          Not eligible — {fit.ineligibility_reason}
+        </MonoTag>
+      ) : fit.fit_level !== "ready" ? (
+        <div className="flex flex-wrap gap-1.5">
+          {overall === 0 ? (
+            <MonoTag className="w-fit">Complete practice to see gaps</MonoTag>
+          ) : (
+            fit.top_gaps.map((gap) => (
+              <MonoTag key={gap} variant="amber-fill">
+                {gap}
+              </MonoTag>
+            ))
+          )}
+        </div>
+      ) : null}
+
+      <Link
+        href={`/student/placement/prep?company=${fit.company.slug}`}
+        className="mt-auto inline-flex h-11 items-center justify-center rounded-8 border border-ink-200 font-plex-sans text-body-sm font-medium text-ink transition-colors duration-180 ease-out hover:border-ink-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ink-900"
+      >
+        Prep for {fit.company.name}
+      </Link>
+    </div>
+  );
+}
+
+function UpcomingDrivesList({
+  drives,
+  companies,
+}: {
+  drives: PlacementDrive[];
+  companies: PlacementCompanyProfile[];
+}) {
+  if (drives.length === 0) {
+    return <p className="font-plex-sans text-body-sm text-ink-600">No upcoming drives scheduled.</p>;
+  }
+  return (
+    <ul className="space-y-3">
+      {drives.slice(0, 4).map((drive) => {
+        const days = daysUntil(drive.drive_date);
+        const company = drive.company ?? companies.find((c) => c.id === drive.company_id);
+        return (
+          <li key={drive.id} className="flex items-center justify-between gap-2">
+            <div className="min-w-0">
+              <p className="truncate font-plex-sans text-body-sm font-medium text-ink-800">
+                {company?.name ?? "Company"}
+              </p>
+              <MonoTag className="mt-1">{days <= 0 ? "Today" : `${days}d away`}</MonoTag>
+            </div>
+            {company?.slug && (
+              <Link
+                href={`/student/placement/companies/${company.slug}`}
+                className="shrink-0 font-plex-sans text-body-sm font-medium text-ink underline-offset-2 hover:underline"
+              >
+                Prepare
+              </Link>
+            )}
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
+function ReadinessDisclosure({
+  profile,
+  overall,
+  companyFits,
+  drives,
+  companies,
+}: {
+  profile: StudentPlacementProfile;
+  overall: number;
+  companyFits: CompanyFit[];
+  drives: PlacementDrive[];
+  companies: PlacementCompanyProfile[];
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <section className="rounded-12 border border-ink-200 bg-paper">
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        aria-expanded={open}
+        className="flex min-h-11 w-full items-center justify-between gap-2 rounded-12 px-5 py-4 font-plex-sans text-body font-medium text-ink-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ink-900"
+      >
+        <span>Your readiness</span>
+        <ChevronDown
+          className={cn(
+            "size-4 text-ink-400 transition-transform duration-180 ease-out motion-reduce:transition-none",
+            open && "rotate-180"
+          )}
+        />
+      </button>
+      <div
+        className={cn(
+          "grid transition-[grid-template-rows] duration-240 ease-out motion-reduce:transition-none",
+          open ? "grid-rows-[1fr]" : "grid-rows-[0fr]"
+        )}
+      >
+        <div className="min-h-0 overflow-hidden">
+          <div className="space-y-6 border-t border-ink-100 px-5 py-5">
+            <div className="flex flex-wrap gap-2">
+              <MonoTag>
+                Overall {overall}/100 · {readinessLabel(overall)}
+              </MonoTag>
+              <MonoTag>Streak {profile.prep_streak_days}d</MonoTag>
+              <MonoTag>Resume {profile.resume_completeness}%</MonoTag>
+            </div>
+
+            <div className="grid gap-4 sm:grid-cols-2">
+              {DIMENSIONS.map(({ key, label }) => (
+                <ScoreMeter key={key} label={label} score={profile[key]} target={70} />
+              ))}
+            </div>
+
+            {companyFits.length > 0 && (
+              <div>
+                <p className="mb-3 font-plex-sans text-label font-semibold uppercase tracking-[0.04em] text-ink-500">
+                  Company fit
+                </p>
+                <div className="grid gap-3 sm:grid-cols-2">
+                  {companyFits.map((fit) => (
+                    <CompanyFitCard key={fit.company.id} fit={fit} overall={overall} />
+                  ))}
+                </div>
+              </div>
+            )}
+
+            <div>
+              <p className="mb-3 font-plex-sans text-label font-semibold uppercase tracking-[0.04em] text-ink-500">
+                Upcoming drives
+              </p>
+              <UpcomingDrivesList drives={drives} companies={companies} />
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+}
+
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
 export default function PlacementDashboardPage() {
@@ -143,8 +374,8 @@ export default function PlacementDashboardPage() {
   const [drives, setDrives] = useState<PlacementDrive[]>([]);
   const [loadingProfile, setLoadingProfile] = useState(true);
   const [loadingCompanies, setLoadingCompanies] = useState(true);
-  const [completedTasks, setCompletedTasks] = useState<Set<string>>(new Set());
   const [allMastery, setAllMastery] = useState<PlacementTopicMastery[]>([]);
+  const [loadingMastery, setLoadingMastery] = useState(true);
   const lastFetchedAt = useRef<number>(0);
 
   useEffect(() => {
@@ -152,7 +383,8 @@ export default function PlacementDashboardPage() {
     fetch("/api/placement/profile")
       .then((r) => r.json())
       .then((d) => {
-        if (!d.profile || !d.profile.setup_complete) {
+        // No profile row at all — genuine first run, nothing to rank yet.
+        if (!d.profile) {
           router.replace("/student/placement/setup");
           return;
         }
@@ -195,12 +427,13 @@ export default function PlacementDashboardPage() {
       .finally(() => setLoadingCompanies(false));
   }, []);
 
-  // Mastery across all tracks — powers Focus Zones. Non-fatal (empty fallback).
+  // Mastery across all tracks — powers drift detection in computeNextMoves.
   useEffect(() => {
     fetch("/api/placement/prep/mastery")
       .then((r) => (r.ok ? r.json() : { mastery: [] }))
       .then((d) => setAllMastery((d.mastery ?? []) as PlacementTopicMastery[]))
-      .catch(() => setAllMastery([]));
+      .catch(() => setAllMastery([]))
+      .finally(() => setLoadingMastery(false));
   }, []);
 
   const companyFits = useMemo((): CompanyFit[] => {
@@ -211,473 +444,115 @@ export default function PlacementDashboardPage() {
       .map((c) => computeCompanyFit(placementProfile, c));
   }, [placementProfile, companies]);
 
-  const todaysTasks = useMemo(
-    () => getTodaysTasks(placementProfile?.primary_target ?? "service_it"),
-    [placementProfile?.primary_target]
-  );
-
-  const focusZones = useMemo(
-    () =>
-      allMastery
-        .filter((m) => m.attempts_count >= 5 && m.recent_accuracy < 50)
-        .sort((a, b) => a.recent_accuracy - b.recent_accuracy)
-        .slice(0, 3),
-    [allMastery]
-  );
-
   const activeDrives = useMemo(() => {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
     return drives.filter((d) => new Date(d.drive_date) >= today);
   }, [drives]);
 
-  function toggleTask(id: string) {
-    setCompletedTasks((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
+  const dataReady = !loadingProfile && !userLoading && !loadingCompanies && !loadingMastery;
+
+  const nextMoveState: NextMoveState | null = useMemo(() => {
+    if (!dataReady || !placementProfile) return null;
+
+    const mappedDrives: NextMoveDrive[] = activeDrives.map((d) => {
+      const company = d.company ?? companies.find((c) => c.id === d.company_id);
+      return {
+        id: d.id,
+        company_name: company?.name ?? "Company",
+        company_type: company?.company_type ?? "service_it",
+        drive_date: d.drive_date,
+        eligible_min_cgpa: d.eligible_min_cgpa,
+        eligible_branches: d.eligible_branches,
+      };
     });
-  }
+
+    const mappedMastery: NextMoveTopicMastery[] = allMastery
+      .filter((m) => VALID_TRACKS.has(m.track))
+      .map((m) => ({
+        track: m.track as Track,
+        topic: m.topic,
+        recent_accuracy: m.recent_accuracy,
+        attempts_count: m.attempts_count,
+        last_practiced_at: m.last_practiced_at,
+      }));
+
+    return {
+      profile: placementProfile,
+      studentBranch: userProfile?.branch ?? "",
+      drives: mappedDrives,
+      topicMastery: mappedMastery,
+    };
+  }, [dataReady, placementProfile, userProfile?.branch, activeDrives, companies, allMastery]);
+
+  const moves = useMemo(
+    () => (nextMoveState ? computeNextMoves(nextMoveState) : []),
+    [nextMoveState]
+  );
+
+  const hero = moves[0];
+  const secondary = moves.slice(1, 3);
+  const more = moves.slice(3);
+  const isSetupMove = hero?.kind === "setup";
+  const currentStage: StageId = hero?.stage ?? "active_prep";
 
   const firstName = userProfile?.full_name?.split(" ")[0] ?? "Student";
   const branch = userProfile?.branch ?? "—";
   const semester = userProfile?.semester ?? "—";
   const overall = placementProfile?.readiness_overall ?? 0;
-  const loading = loadingProfile || userLoading;
-  const profile = placementProfile;
 
-  return (
-    <div className="space-y-6 max-w-6xl">
-      {/* ── Header ── */}
-      <div className="flex items-center gap-5 p-5 bg-white border border-gray-100 rounded-2xl shadow-sm mb-5">
-        {/* Ring — 72×72 */}
-        <div className="shrink-0">
-          {loading ? (
-            <Skeleton className="w-[72px] h-[72px] rounded-full" />
-          ) : (
-            <div className="flex flex-col items-center gap-1">
-              <svg width="72" height="72" viewBox="0 0 72 72">
-                <circle cx="36" cy="36" r="30" fill="none" stroke="#e5e7eb" strokeWidth="6" />
-                <circle
-                  cx="36" cy="36" r="30" fill="none"
-                  stroke={overall >= 75 ? "#10b981" : overall >= 50 ? "#f59e0b" : "#9ca3af"}
-                  strokeWidth="6"
-                  strokeDasharray={`${(overall / 100) * 188.5} 188.5`}
-                  strokeLinecap="round"
-                  transform="rotate(-90 36 36)"
-                />
-                <text x="36" y="34" textAnchor="middle" fontSize="16" fontWeight="700" fill="#111827">{overall}</text>
-                <text x="36" y="46" textAnchor="middle" fontSize="8" fill="#6b7280">/100</text>
-              </svg>
-              <span className="text-xs text-gray-500">{readinessLabel(overall)}</span>
-            </div>
-          )}
-        </div>
-        {/* Title block */}
-        <div>
-          {loading ? (
-            <>
-              <Skeleton className="h-8 w-48 mb-2" />
-              <Skeleton className="h-4 w-64" />
-            </>
-          ) : (
-            <>
-              <h1 className="text-2xl font-bold text-gray-900">Welcome back, {firstName}</h1>
-              <p className="text-sm text-gray-500 mt-1">
-                {branch} · Semester {semester} · Targeting {TARGET_LABELS[profile?.primary_target ?? 'service_it']}
-              </p>
-              <div>
-                <Link
-                  href="/student/placement/prep"
-                  className="mt-3 inline-flex items-center gap-1.5 px-4 py-1.5 bg-blue-600 text-white text-sm font-medium rounded-lg"
-                >
-                  Start practicing →
-                </Link>
-                <Link
-                  href="/student/placement/setup?edit=true"
-                  className="mt-3 ml-2 inline-flex items-center gap-1.5 px-4 py-1.5 border border-gray-200 text-gray-600 text-sm rounded-lg"
-                >
-                  Update profile
-                </Link>
-              </div>
-            </>
-          )}
+  if (!dataReady || !placementProfile) {
+    return (
+      <div className="max-w-5xl space-y-6">
+        <Skeleton className="h-4 w-64" />
+        <Skeleton className="h-8 w-full" />
+        <Skeleton className="h-48 w-full rounded-12" />
+        <div className="grid gap-3 sm:grid-cols-2">
+          <Skeleton className="h-28 rounded-8" />
+          <Skeleton className="h-28 rounded-8" />
         </div>
       </div>
+    );
+  }
 
-      {/* ── Main Grid ── */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* Left col */}
-        <div className="lg:col-span-2 space-y-6">
-          {/* Readiness Breakdown */}
-          <div className="bg-white border border-gray-100 rounded-2xl p-5 shadow-sm">
-            <p className="text-base font-semibold text-gray-900 mb-4">
-              Readiness Breakdown
-            </p>
-            <div className="space-y-4">
-              {loadingProfile ? (
-                Array.from({ length: 5 }).map((_, i) => (
-                  <Skeleton key={i} className="h-6 w-full bg-gray-100" />
-                ))
-              ) : overall === 0 ? (
-                <p className="text-sm text-gray-500 py-6 text-center">
-                  Start practicing to build your score
-                </p>
-              ) : (
-                DIMENSIONS.map(({ key, label }) => {
-                  const score = placementProfile?.[key] ?? 0;
-                  return (
-                    <div key={key} className="space-y-1.5">
-                      <div className="flex items-center justify-between">
-                        <div className="flex items-center gap-2">
-                          <span className="text-sm text-gray-700 w-28">{label}</span>
-                          {score < 40 && (
-                            <span className="flex items-center gap-1 text-xs text-amber-600">
-                              <span className="inline-block size-1.5 rounded-full bg-amber-500" />
-                              Focus area
-                            </span>
-                          )}
-                        </div>
-                        <span className="text-sm text-gray-500 tabular-nums">
-                          {score}/100
-                        </span>
-                      </div>
-                      <div className="h-2 bg-gray-100 rounded-full overflow-hidden">
-                        <div
-                          className={`h-full rounded-full transition-all duration-500 ${barColorClass(score)}`}
-                          style={{ width: `${score}%` }}
-                        />
-                      </div>
-                    </div>
-                  );
-                })
-              )}
-            </div>
-          </div>
-
-          {/* Company Fit */}
-          <div className="bg-white border border-gray-100 rounded-2xl p-5 shadow-sm space-y-3">
-            <div>
-              <h2 className="text-base font-semibold text-gray-900">
-                Your Company Fit
-              </h2>
-              <p className="text-sm text-gray-500">
-                Based on your readiness scores and eligibility
-              </p>
-            </div>
-
-            {loadingProfile || loadingCompanies ? (
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                {Array.from({ length: 3 }).map((_, i) => (
-                  <Skeleton key={i} className="h-44 rounded-xl bg-gray-100" />
-                ))}
-              </div>
-            ) : companyFits.length === 0 ? (
-              <Card className="border-dashed">
-                <CardContent className="py-10 text-center space-y-2">
-                  <p className="text-sm text-gray-500">No companies selected.</p>
-                  <Link
-                    href="/student/placement/setup"
-                    className="text-sm text-blue-600 hover:underline"
-                  >
-                    Update your profile
-                  </Link>
-                </CardContent>
-              </Card>
-            ) : (
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                {companyFits.map((fit) => (
-                  <CompanyFitCard key={fit.company.id} fit={fit} overall={overall} />
-                ))}
-              </div>
-            )}
-          </div>
-
-          {/* Focus Zones */}
-          {focusZones.length > 0 && (
-            <div className="bg-white border border-gray-100 rounded-2xl p-5 shadow-sm space-y-3">
-              <div className="flex items-center justify-between mb-3">
-                <div>
-                  <h2 className="text-base font-semibold text-gray-900">
-                    Focus Zones
-                  </h2>
-                  <p className="text-sm text-gray-500">
-                    Topics needing attention based on your practice history
-                  </p>
-                </div>
-              </div>
-
-              {focusZones.map((zone) => (
-                <div
-                  key={`${zone.track}-${zone.topic}`}
-                  className="flex items-center justify-between p-3 bg-amber-50/40 border border-amber-100 rounded-xl mb-2"
-                >
-                  <div>
-                    <div className="flex items-center gap-2 mb-1">
-                      <span className="text-sm font-medium text-gray-900">
-                        {zone.topic}
-                      </span>
-                      <span className="text-xs px-2 py-0.5 rounded-full bg-amber-100 text-amber-700">
-                        {zone.recent_accuracy.toFixed(0)}% accuracy
-                      </span>
-                    </div>
-                    <p className="text-xs text-gray-500">
-                      {zone.sessions_count}
-                      {zone.sessions_count === 1 ? " session" : " sessions"} ·{" "}
-                      {zone.attempts_count} questions attempted ·{" "}
-                      {zone.track.charAt(0).toUpperCase() + zone.track.slice(1)}
-                    </p>
-                  </div>
-
-                  <Link
-                    href={`/student/placement/prep/${zone.track}/practice?topic=${encodeURIComponent(zone.topic)}`}
-                    className="text-sm font-medium text-blue-600 hover:text-blue-700 whitespace-nowrap ml-4"
-                  >
-                    Practice now →
-                  </Link>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-
-        {/* Right col */}
-        <div className="space-y-4">
-          {/* Quick Stats */}
-          {loadingProfile ? (
-            <Skeleton className="h-20 rounded-xl bg-gray-100" />
-          ) : (
-            <QuickStats profile={placementProfile} />
-          )}
-
-          {/* Today's Focus */}
-          <div className="bg-white border border-gray-100 rounded-2xl p-4 shadow-sm">
-            <p className="text-sm font-medium text-gray-800 mb-3">
-              Today&apos;s Focus
-            </p>
-            <div>
-              {loadingProfile ? (
-                Array.from({ length: 3 }).map((_, i) => (
-                  <Skeleton key={i} className="h-10 w-full bg-gray-100" />
-                ))
-              ) : (
-                todaysTasks.map((task, idx) => {
-                  const done = completedTasks.has(task.id);
-                  return (
-                    <div key={task.id} className={cn("flex items-center gap-3 py-2.5", idx < todaysTasks.length - 1 && "border-b border-gray-50")}>
-                      <button
-                        type="button"
-                        onClick={() => toggleTask(task.id)}
-                        className="shrink-0 text-gray-400 hover:text-emerald-500 transition-colors"
-                        aria-label={done ? "Mark incomplete" : "Mark complete"}
-                      >
-                        {done ? (
-                          <CheckCircle2 className="size-5 text-emerald-500" />
-                        ) : (
-                          <Circle className="size-5" />
-                        )}
-                      </button>
-                      <div className="flex-1 min-w-0">
-                        <p
-                          className={`text-sm font-medium truncate ${
-                            done
-                              ? "line-through text-gray-400"
-                              : "text-gray-800"
-                          }`}
-                        >
-                          {task.title}
-                        </p>
-                        <p className="text-xs text-gray-500 truncate">
-                          {task.subtitle}
-                        </p>
-                      </div>
-                      <Link href={task.href} aria-label={`Open ${task.title}`}>
-                        <ArrowRight className="size-4 text-gray-400 hover:text-gray-600 transition-colors shrink-0" />
-                      </Link>
-                    </div>
-                  );
-                })
-              )}
-            </div>
-          </div>
-
-          {/* Upcoming Drives */}
-          <Card>
-            <CardHeader className="pb-3">
-              <CardTitle className="text-base font-semibold text-gray-900">
-                Upcoming Drives
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-3">
-              {loadingCompanies ? (
-                Array.from({ length: 2 }).map((_, i) => (
-                  <Skeleton key={i} className="h-14 rounded-lg bg-gray-100" />
-                ))
-              ) : activeDrives.length === 0 ? (
-                <p className="text-sm text-gray-400 py-2">
-                  No upcoming drives scheduled
-                </p>
-              ) : (
-                activeDrives.slice(0, 4).map((drive) => {
-                  const days = daysUntil(drive.drive_date);
-                  const company = companies.find((c) => c.id === drive.company_id);
-                  const slug = company?.slug ?? "";
-                  const companyName =
-                    (drive as PlacementDrive & { company?: PlacementCompanyProfile })
-                      .company?.name ??
-                    company?.name ??
-                    "Company";
-                  const daysLabel =
-                    days <= 7
-                      ? `${days} days left`
-                      : days <= 14
-                      ? `${days} days left`
-                      : `${days} days away`;
-                  const daysClass =
-                    days <= 7
-                      ? "text-amber-600 font-bold"
-                      : days <= 14
-                      ? "text-amber-600"
-                      : "text-gray-600";
-                  return (
-                    <div
-                      key={drive.id}
-                      className="flex items-center justify-between gap-2"
-                    >
-                      <div className="min-w-0">
-                        <p className="text-sm font-medium text-gray-800 truncate">
-                          {companyName}
-                        </p>
-                        <p className={`text-xs ${daysClass}`}>{daysLabel}</p>
-                      </div>
-                      {slug && (
-                        <Link href={`/student/placement/companies/${slug}`}>
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            className="shrink-0 text-xs"
-                          >
-                            Prepare Now
-                          </Button>
-                        </Link>
-                      )}
-                    </div>
-                  );
-                })
-              )}
-            </CardContent>
-          </Card>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// ─── Company Fit Card ─────────────────────────────────────────────────────────
-
-function CompanyFitCard({ fit, overall }: { fit: CompanyFit; overall: number }) {
   return (
-    <div className="bg-gray-50 rounded-xl p-3.5 border border-gray-100 flex flex-col gap-3">
-      <div className="flex items-start justify-between gap-2">
-        <p className="text-sm font-semibold text-gray-900 leading-tight">
-          {fit.company.name}
+    <div className="max-w-5xl space-y-6">
+      {/* Header */}
+      <div>
+        <p className="font-plex-sans text-label font-semibold uppercase tracking-[0.04em] text-ink-500">
+          {branch} · Semester {semester} · Targeting {TARGET_LABELS[placementProfile.primary_target]}
         </p>
-        <div className="text-right shrink-0">
-          <span className="text-2xl font-medium text-gray-400">
-            {fit.fit_score}
-          </span>
-          <span className="text-xs text-gray-400">/100</span>
-        </div>
+        <h1 className="mt-1 font-plex-serif text-display-lg font-bold text-ink">
+          Welcome back, {firstName}
+        </h1>
       </div>
 
-      <p className="text-xs text-gray-500 -mt-1">
-        {readinessLabel(fit.fit_score)}
-      </p>
+      {/* Stage strip */}
+      <StageStrip current={currentStage} />
 
-      {!fit.is_eligible ? (
-        <div className="rounded-md bg-amber-50 px-2.5 py-1.5 text-xs text-amber-700">
-          Not eligible — {fit.ineligibility_reason}
+      {/* Next Move */}
+      {hero ? <HeroMoveCard move={hero} /> : <EmptyMovesCard />}
+
+      {!isSetupMove && secondary.length > 0 && (
+        <div className="grid gap-3 sm:grid-cols-2">
+          {secondary.map((m) => (
+            <SecondaryMoveCard key={`${m.kind}-${m.href}-${m.title}`} move={m} />
+          ))}
         </div>
-      ) : fit.fit_level !== "ready" ? (
-        <div className="flex flex-wrap gap-1.5">
-          {overall === 0 ? (
-            <span className="rounded bg-gray-100 px-2 py-0.5 text-xs text-gray-500">
-              Complete practice to see gaps
-            </span>
-          ) : (
-            fit.top_gaps.map((gap) => (
-              <span
-                key={gap}
-                className="text-xs bg-amber-50 text-amber-600 px-2 py-0.5 rounded"
-              >
-                {gap
-                  .replace("Aptitude", "Apt")
-                  .replace("Verbal Ability", "Verbal")
-                  .replace("Core Domain", "Domain")
-                  .replace("Communication", "Comm")
-                  .replace("/100", "")}
-              </span>
-            ))
-          )}
-        </div>
-      ) : null}
+      )}
 
-      <div className="mt-auto pt-2">
-        <Link
-          href={`/student/placement/prep?company=${fit.company.slug}`}
-        >
-          <Button variant="outline" size="sm" className="w-full text-xs">
-            Prep for {fit.company.name}
-          </Button>
-        </Link>
-      </div>
-    </div>
-  );
-}
+      {!isSetupMove && more.length > 0 && <MoreMovesPanel moves={more} />}
 
-// ─── Quick Stats ──────────────────────────────────────────────────────────────
-
-function QuickStats({ profile }: { profile: StudentPlacementProfile | null }) {
-  const stats: Array<{ label: string; value: string; href: string | null }> = [
-    {
-      label: "Prep Streak",
-      value: `${profile?.prep_streak_days ?? 0} days`,
-      href: null,
-    },
-    {
-      label: "Tests Taken",
-      value: "0",
-      href: null,
-    },
-    {
-      label: "Resume",
-      value: `${profile?.resume_completeness ?? 0}%`,
-      href: "/student/placement/resume",
-    },
-  ];
-
-  return (
-    <div className="grid grid-cols-3 gap-2">
-      {stats.map((stat) => {
-        const card = (
-          <div className="bg-gray-50 rounded-xl p-3 text-center">
-            <p className="text-xl font-medium text-gray-800">
-              {stat.value}
-            </p>
-            <p className="text-xs text-gray-400 mt-0.5">
-              {stat.label}
-            </p>
-          </div>
-        );
-        return stat.href ? (
-          <Link key={stat.label} href={stat.href}>
-            {card}
-          </Link>
-        ) : (
-          <div key={stat.label}>{card}</div>
-        );
-      })}
+      {/* Demoted "Your readiness" — the old dashboard, reachable not first */}
+      {!isSetupMove && (
+        <ReadinessDisclosure
+          profile={placementProfile}
+          overall={overall}
+          companyFits={companyFits}
+          drives={activeDrives}
+          companies={companies}
+        />
+      )}
     </div>
   );
 }
