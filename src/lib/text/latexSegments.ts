@@ -575,60 +575,90 @@ function findClosing(text: string, from: number, delimiter: "$" | "$$"): number 
  * signs ("$1,400, $3,000, …"). Only applies to the ambiguous SINGLE-`$` case —
  * `$$…$$` block math and bare `\ce{…}` are unambiguous and never routed here.
  *
+ * ── PHILOSOPHY: accept-by-default (flipped Aug 2026) ──
+ * This function ORIGINALLY did the opposite: it rejected a span unless it matched
+ * one of four positive math signals (structural marker; lone ≤3-char variable;
+ * operator-plus-letter relation; hyphen-chain). That reject-by-default design was
+ * chosen to protect against USD-style currency prose ("$1,400, $3,000, …") being
+ * mis-rendered as italic math. It stopped converging: three genuine math shapes
+ * were found leaking to students as literal `$…$` in a SINGLE session — bare
+ * quantity+unit ("0.48 A", "24 A"), bare variable / prime lists ("A, B, C",
+ * "A', B', C'"), and function/relation/boolean notation ("F(A, B, C)", "A'BC").
+ * Each needed its own new rule, and the reject list kept growing.
+ *
+ * The flip was made on live-DB evidence, not preference:
+ *   • Corpus scan (faculty_question_bank, study_notes, chat_messages,
+ *     generated_content — every table that actually stores generated `$…$` text;
+ *     PPT/Lab-Manual live only as Storage files): 686 single-`$` candidates,
+ *     of which the old classifier rejected 17. Of those 17, ~10 were genuine math
+ *     wrongly rejected and 6 were PROSE fragments that were only ever candidates
+ *     because of a CASCADING mispair — once a real math span like "$A, B, C$" is
+ *     rejected, the segmenter's delimiters shift by one and it swallows the
+ *     following prose plus the next math span into one giant literal run.
+ *   • The currency scenario this function was built to prevent has ZERO real
+ *     occurrences in the corpus: no `N,NNN`/`N.NN` reject, and zero texts with
+ *     two-or-more bare "$<digits>" sequences. Consistent with an INR-based
+ *     (`cost_inr`) Indian-engineering platform — USD-style dollar prose does not
+ *     occur in real generated content.
+ *   • Re-running the scan with an accept-by-default classifier dropped rejects
+ *     17 → 1 (the sole survivor being "$*$", correctly literal). Every prose
+ *     fragment vanished because accepting the real math re-aligns the delimiters
+ *     and the cascade never starts. So the flip does not turn prose into math —
+ *     it removes the misalignment that produced the prose candidates.
+ *
  * `inner` is the already-trimmed text between the two dollars. It counts as math
- * when it carries at least one genuine math signal:
+ * UNLESS it matches a specific enumerated non-math shape:
  *
- *   1. A structural LaTeX marker — a backslash command (`\cup`, `\frac`, `\{`),
- *      a superscript `^`, a subscript `_`, or a brace `{`/`}`. None of these ever
- *      occur inside a currency amount, so their presence is decisive.
- *   2. A lone variable / symbol — a short (≤3 char) token with no whitespace that
- *      contains a letter and isn't purely digits: "x", "n", "ab", "R". This keeps
- *      minimal real formulae like `$x$` and `$n$` rendering as math.
- *   3. A simple relation between symbols — an algebraic operator (`= < > + * / |`)
- *      together with a letter: "a = b", "x > 0", "a+b". The letter requirement is
- *      what keeps digit-only currency fragments ("5 + ", "1,400,") literal.
- *   4. A hyphen-chain of short tokens — a graph-cycle or edge notation such as
- *      "A-B-C-D-E-A" or "u-v": the WHOLE span is two or more ≤3-char alphanumeric
- *      tokens joined by single hyphens, with at least one token containing a
- *      letter. This is deliberately its OWN rule, not a widened rule 3 — rule 3
- *      only requires an operator character and a letter to appear anywhere in
- *      the span, so adding "-" to its operator class would also match a digit
- *      range followed by a unit word ("3-5 kg", "10-15 students"), which must
- *      stay literal. Anchoring the whole span to the hyphen-chain shape (no
- *      whitespace, only short tokens) is what keeps those out — "3-5 kg" has a
- *      space before "kg" and never matches. A pure numeric range like "5-10" is
- *      excluded by the at-least-one-letter requirement, the same currency/range
- *      guard rule 3 already relies on.
+ *   1. (Fast path, always math — unchanged.) A structural LaTeX marker: a
+ *      backslash command (`\cup`, `\frac`, `\,`, `\{`), a superscript `^`, a
+ *      subscript `_`, or a brace `{`/`}`. Unambiguous and correct under either
+ *      philosophy, so it short-circuits first.
+ *   2. (Non-math.) A PURE currency/number fragment — only digits, commas, periods,
+ *      whitespace and `+`/`-`: "1,400", "3,000", "4.50", "5 + ", "5-10". This is the
+ *      whole non-math class and subsumes the old currency/range guards. It is keyed
+ *      on the number shape, NOT on "no letter", on purpose: a lone math SYMBOL span
+ *      like "$*$" (a binary operation) or "$=$" also has no letter but IS math, and
+ *      rejecting it would re-trigger the exact cascade the flip exists to kill — a
+ *      rejected span shifts the delimiters and swallows the following prose plus the
+ *      next math span into one literal run (verified live on the abstract-algebra
+ *      "$G$ … binary operation $*$ … $(G, *)$ …" row).
+ *   3. (Non-math exception among letter-bearing spans.) A numeric RANGE followed by
+ *      a trailing word/unit: "3-5 kg", "10-15 students", "5-10 marks". These carry
+ *      a letter, so only this explicit guard keeps them literal. It is anchored to
+ *      the RANGE shape (`\d+-\d+` then whitespace+word) on purpose: a single
+ *      quantity+unit like "0.48 A" or "24 A" has no hyphen-range and so falls
+ *      through to math. That distinction — range-vs-not — is the ONLY thing
+ *      separating "3-5 kg" (literal) from "0.48 A" (math); a looser "number near a
+ *      word" heuristic would wrongly swallow the quantity+unit case, so do not
+ *      widen this to one.
  *
- * Anything else — spans that are just digits, commas, spaces and prose words —
- * is rejected, so the dollars stay literal text.
+ * Everything else that carries a letter is math. Known, deliberate residuals:
+ * a single number+word with no range ("5 marks") renders as math, and a
+ * hypothetical USD span with a letter between two dollars ("$5 or $10") would too
+ * — both accepted because the range guard is intentionally narrow and neither
+ * shape occurs in the live corpus.
  */
 function isInlineMathContent(inner: string): boolean {
   const s = inner.trim();
   if (!s) return false;
 
-  // 1. Unambiguous structural LaTeX markers.
+  // 1. Unambiguous structural LaTeX markers — always math (fast path, unchanged).
   if (/[\\^_{}]/.test(s)) return true;
 
-  // 2. A lone variable / symbol (e.g. "$x$", "$n$").
-  if (!/\s/.test(s) && s.length <= 3 && /[a-zA-Z]/.test(s) && !/^[\d.,]+$/.test(s)) {
-    return true;
-  }
+  // 2. A pure currency/number fragment (only digits, comma, period, whitespace,
+  //    +/-) → not math. Keyed on the number shape, NOT on "has no letter", so a
+  //    lone math symbol like "$*$" or "$=$" still counts as math (rejecting it
+  //    would re-trigger the cascade). Subsumes the old "$1,400$"/"$5-10$"/"$5 + $".
+  if (/^[\d.,\s+\-]+$/.test(s)) return false;
 
-  // 3. A simple relation/operation between symbols (e.g. "$a = b$", "$x > 0$").
-  if (/[=<>+*/|]/.test(s) && /[a-zA-Z]/.test(s)) return true;
+  // 3. Enumerated non-math exception: a numeric RANGE + trailing word/unit
+  //    ("3-5 kg", "10-15 students"). Anchored to the range shape so a single
+  //    quantity+unit ("0.48 A", "24 A") does NOT match and falls through to math.
+  if (/^\d+(?:\.\d+)?-\d+(?:\.\d+)?\s+[A-Za-z]/.test(s)) return false;
 
-  // 4. A hyphen-chain of short tokens (e.g. "$A-B-C-D-E-A$", "$u-v$"). See the
-  // doc comment above for why this is a separate, anchored-shape rule rather
-  // than adding "-" to rule 3's operator class.
-  if (
-    /^[A-Za-z0-9]{1,3}(?:-[A-Za-z0-9]{1,3})+$/.test(s) &&
-    s.split("-").some((tok) => /[a-zA-Z]/.test(tok))
-  ) {
-    return true;
-  }
-
-  return false;
+  // Accept-by-default: anything left (a letter-bearing span, or a non-number
+  // symbol span like "$*$"/"$=$") is math.
+  return true;
 }
 
 /** Given the index of an opening `{`, return the index of its matching `}`, or -1. */
