@@ -95,10 +95,10 @@ const RESUME_COMPLETENESS_THRESHOLD = 70;
 const ALL_READY_THRESHOLD = 70;
 const RELEVANT_WEIGHT_FLOOR = 0.1;
 
-const DIMENSIONS = ["aptitude", "verbal", "domain", "coding", "communication"] as const;
-type Dimension = (typeof DIMENSIONS)[number];
+export const DIMENSIONS = ["aptitude", "verbal", "domain", "coding", "communication"] as const;
+export type Dimension = (typeof DIMENSIONS)[number];
 
-const DIMENSION_LABELS: Record<Dimension, string> = {
+export const DIMENSION_LABELS: Record<Dimension, string> = {
   aptitude: "Aptitude",
   verbal: "Verbal Ability",
   domain: "Core Domain",
@@ -118,7 +118,10 @@ const DIMENSION_TRACK: Record<Dimension, Track | null> = {
   communication: "communication",
 };
 
-const DIMENSION_HREF: Record<Dimension, string> = {
+// Exported so other read-only surfaces (e.g. the skill-gap map, CP-E1) that
+// need to route a weak readiness dimension into its prep track reuse this
+// exact mapping instead of re-deriving the coding→domain routing quirk above.
+export const DIMENSION_HREF: Record<Dimension, string> = {
   aptitude: "/student/placement/prep/aptitude",
   verbal: "/student/placement/prep/verbal",
   domain: "/student/placement/prep/domain",

@@ -11,6 +11,7 @@ import { cn } from "@/lib/utils";
 const TABS: Array<{ label: string; href: string }> = [
   { label: "Overview", href: "/student/placement" },
   { label: "Prep", href: "/student/placement/prep" },
+  { label: "Skill Map", href: "/student/placement/skill-map" },
   { label: "Resume", href: "/student/placement/resume" },
   { label: "Projects", href: "/student/placement/projects" },
   { label: "Interview", href: "/student/placement/interview" },
