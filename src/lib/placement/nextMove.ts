@@ -135,7 +135,21 @@ function daysBetween(earlier: Date, later: Date): number {
   return Math.floor((later.getTime() - earlier.getTime()) / MS_PER_DAY);
 }
 
-function dimensionScore(profile: NextMoveProfile, dim: Dimension): number {
+// Only the 5 readiness scores are read by dimensionScore/weightedWeakestDimensions
+// — narrowed (rather than requiring the full NextMoveProfile) so callers outside
+// this module (e.g. the CP-G2 cohort-analytics layer, which has its own
+// CohortStudent shape) can reuse this logic without constructing an unrelated
+// setup_complete/resume_completeness/cgpa/active_backlogs shape they don't have.
+export type ReadinessOnlyProfile = Pick<
+  StudentPlacementProfile,
+  | "readiness_aptitude"
+  | "readiness_verbal"
+  | "readiness_domain"
+  | "readiness_coding"
+  | "readiness_communication"
+>;
+
+function dimensionScore(profile: ReadinessOnlyProfile, dim: Dimension): number {
   const scores: Record<Dimension, number> = {
     aptitude: profile.readiness_aptitude,
     verbal: profile.readiness_verbal,
@@ -150,9 +164,13 @@ function dimensionScore(profile: NextMoveProfile, dim: Dimension): number {
  * Dimensions that matter for a company type (weight >= floor), sorted
  * weakest-score-first — the same "weighted-weakest" selection
  * `computeCompanyFit`'s top_gaps uses in readiness.ts, kept independent here
- * since this module must stay a dependency-free pure function.
+ * since this module must stay a dependency-free pure function. Exported so
+ * CP-G2's cohort-analytics module (at-risk-student detection: "weighted-
+ * weakest dimension for a drive's company_type below 60") reuses this exact
+ * selection instead of re-deriving it a third time (readiness.ts's
+ * `computeCompanyFit.top_gaps` is the second).
  */
-function weightedWeakestDimensions(profile: NextMoveProfile, target: PlacementTarget): Dimension[] {
+export function weightedWeakestDimensions(profile: ReadinessOnlyProfile, target: PlacementTarget): Dimension[] {
   const weights = READINESS_WEIGHTS[target];
   return DIMENSIONS.filter((d) => weights[d] >= RELEVANT_WEIGHT_FLOOR).sort(
     (a, b) => dimensionScore(profile, a) - dimensionScore(profile, b)
