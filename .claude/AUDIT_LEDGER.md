@@ -102,6 +102,34 @@ Evidence tags: [RUNTIME] [EXPORT] [UI] [STATIC].
 
 ---
 
+### AU-FLASH — Flashcards generation + dark-surface layering + reveal — 2026-08-16 — findings file: .claude/findings/AU-FLASH.md
+- S1: 0 — no flashcard-specific generation exists to be broken (the page reuses the reading view's
+  `GET /api/notes/subject/:id` verbatim, zero new API surface); the pre-existing AU-NOTES S1 (no
+  reachable path to first-time-generate a subject's notes) applies here too by inheritance, not
+  re-counted as a second S1.
+- S2: 1 — two `go()` calls (Next/Previous button clicks, or ArrowRight keydowns) landing in the same
+  React render batch collapse into a single card advance, silently dropping input. Reproduced 3 ways
+  (2 clicks → 1 advance; 3 clicks → still only 1 advance; 2 synchronous ArrowRight keydowns from an
+  already-revealed card → 1 advance). Root cause: `go()` reads `safeIndex` from the render closure
+  instead of using React's functional `setState` updater form, so concurrent calls all compute the
+  same stale target index. Realistic trigger is key-repeat or a fast double-tap under render jank, not
+  a leisurely double-click — stated with that caveat in the findings file.
+- S3: 0 counted (two noted but not scored): screen-reader announcement of card-position changes has no
+  `aria-live` region (flagged STATIC/unverified, no assistive-tech tooling available this run); the
+  already-logged AU-NOTES S3-2 (formula `symbol` field holding a full phrase) reproduces on this
+  surface's back face too, same root cause, not re-counted.
+- AI spend this run: ₹0.00, 0 real Gemini calls — this feature is a pure client-side re-render of
+  already-generated notes content and makes no AI calls by design; confirmed via `ai_call_logs` (the
+  only rows in the lookback window predate this session).
+- Most important single thing: the S2 double-advance bug is a real, cleanly-reproduced defect in the
+  core reveal/advance loop of the one surface DESIGN.md itself calls out as used "tired, in bed,
+  one-handed" — silent, uncorrected input loss on the primary interaction of a cramming tool actively
+  misleads a student about how much of the deck they've actually reviewed. Everything else audited
+  (dark-surface layering under CP-D0, authorization, error/empty states, touch targets, focus rings,
+  reduced-motion, cost) held up cleanly on direct verification.
+
+---
+
 ## Master punch-list (ranked, filled as features complete)
 
 _(S1 first, then S2, then S3 — this is what the FIX pass consumes)_
@@ -126,6 +154,11 @@ _(S1 first, then S2, then S3 — this is what the FIX pass consumes)_
 6. Concurrent generation requests for the same module double real AI spend and leak a raw Postgres
    constraint-name error to the client instead of failing gracefully or reusing the winner's row.
    [AU-NOTES]
+7. Flashcard deck's `go()` navigation reads the render-closure `safeIndex` instead of using a functional
+   `setState` updater, so two Next/Previous/ArrowRight inputs landing in the same React batch (key-repeat,
+   a fast double-tap, or a rapid double-swipe) collapse into a single card advance with no error or visual
+   indication — silently misleads a student about how much of the deck they've reviewed.
+   [AU-FLASH]
 
 **S3**
 7. Chat PDF export garbles markdown tables into raw pipe-syntax text (diagrams export fine). [AU-CHAT]
