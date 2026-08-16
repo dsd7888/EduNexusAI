@@ -178,6 +178,72 @@ Evidence tags: [RUNTIME] [EXPORT] [UI] [STATIC].
 
 ---
 
+### AU-PLACE-CORE — Placement spine + prep + practice (fill_code, Next-Move) — 2026-08-16 — findings file: .claude/findings/AU-PLACE-CORE.md
+- S1: 3 — (1) `POST /api/placement/prep/submit` performs zero server-side re-grading: it trusts
+  the client's own `is_correct` boolean verbatim and writes it straight into
+  `placement_topic_mastery` and the platform's canonical `readiness_domain`/`readiness_overall`
+  scores — confirmed live by answering all 8 questions of a real session **wrong** while forging
+  `is_correct: true`; `recent_accuracy` landed at 100% and `readiness_domain` rose from 0 to 100.
+  These scores drive company-fit ranking, Next-Move recommendations, and (per CLAUDE_CONTEXT §16)
+  the faculty TPO batch-readiness dashboard — no special tooling needed beyond editing one request;
+  (2) compounding (1): `POST /api/placement/prep/generate` ships the plaintext `correct_answer`
+  (and `explanation`) for every question — MCQ and fill_code alike — in the same payload that
+  renders the un-answered question, confirmed live (8/8 questions leaked their answer key before
+  being answered); (3) a whole parallel legacy company-mock-test + practice-module subsystem
+  (`/placement/test/[companyId]`, `/placement/practice/[moduleId]`, and their six backing API
+  routes) has zero reachable UI entry point anywhere (exhaustive grep of every `Link`/href in
+  `src/app` — the company detail page's only CTA routes into the *new* prep flow, not this one) —
+  same shape as AU-NOTES's/AU-QUIZ's ledgered S1s — AND is additionally broken where still directly
+  reachable: `api/placement/submit` 500s unconditionally because its target table
+  `placement_attempts` does not exist in the live schema (`PGRST205`), confirmed live; the table is
+  referenced by a tracked migration that ALTERs it but never CREATEs it, i.e. untracked legacy-DB
+  state left behind by the placement agentic rebuild.
+- S2: 5 — (1) `api/placement/practice/submit` (and its unreachable twin `api/placement/submit`)
+  score entirely client-fabricated `questions[]`/`answers` against each other — confirmed live by
+  POSTing 2 made-up questions with a self-chosen answer key, with no prior `generate` call, and
+  getting a real 100%-scored `practice_attempts` row back; same "client grades itself" bug as S1-1,
+  scoped lower only because these specific routes are currently unlinked from navigation;
+  (2) concurrent double-submit of one practice session is accepted twice by `prep/submit` but
+  produces a **lost update**, not a duplicate, on `placement_topic_mastery` — confirmed live,
+  `sessions_count` advanced by only 1 despite two accepted 200s (the underlying
+  `placement_question_attempts` audit trail DID get both inserts, so the aggregate now
+  under-represents the log) — same check-then-act race shape as the already-ledgered
+  `checkRateLimit` race, found in a second independent location; (3) a SQL-injection-shaped `topic`
+  string on `prep/submit` (still under the 100-char cap) produces an unhandled 500 whose log entry
+  contains a raw, unbounded upstream HTML error body — same bug class as the ledgered AU-QUIZ
+  `subjectIds` finding; (4) `POST /api/placement/profile` accepts `setup_complete: true`
+  independent of `cgpa`/`primary_target` ever being set, and every downstream consumer
+  (`isDriveEligible`) silently coalesces the missing CGPA to `0`, filtering the student out of
+  every CGPA-gated drive with no signal that their profile — not their qualification — is the
+  cause; (5) `computeNextMoves` returns an **empty** move queue for a fully-prepared student
+  (all 5 dimensions ≥95) with an imminent eligible drive — confirmed via direct exercise of the
+  pure function across 11 edge-case states — because the maintenance/mock-interview fallback is
+  gated on "no eligible drive" and the drive-sprint rule has no positive "you're ready" branch,
+  leaving the dashboard's one always-tell-the-student-what's-next surface with nothing to show in
+  exactly the moment it matters most.
+- S3: 2 — the fill_code+MCQ "mixed" prep session always presents all 4 MCQs before any fill_code
+  question (block-concatenated, never interleaved), confirmed live; the dashboard's stage strip is
+  horizontally scrollable but has zero scroll affordance, so later stages (Drive Sprint, Interview,
+  Post-Outcome) are silently clipped off-screen on mobile with nothing indicating more exists.
+- Notable positives (verified live, not just read): `prep/mastery` and `profile` GET both correctly
+  scope to the session's own user — no cross-student IDOR; all `prep/submit` boundary/malformed
+  cases (>20 attempts, invalid track, empty/huge topic) correctly 400; an injection-flavored topic
+  string produced a clean on-topic question with no system-prompt leak; `computeNextMoves` boundary
+  logic is internally consistent at the exact 70/60 thresholds from both directions, with no
+  off-by-one; fill_code UI (dark code block, highlighted blank, monospace options) renders correctly
+  on desktop and mobile with no layout breakage; every real AI call this run was correctly
+  cost-logged via `routeAI` with `feature="placement"`.
+- AI spend this run: ₹1.1848 (~$0.014), 3 real `placement_prep` Gemini calls. Well under the ≤25
+  soft cap.
+- Most important single thing: S1-1/S1-2 together — the platform ships every question's answer key
+  to the client and then trusts the client's own claim about whether it got the answer right, for
+  the exact readiness/mastery scores that drive company-fit ranking, Next-Move recommendations, and
+  (per CLAUDE_CONTEXT) the faculty-facing TPO dashboard. This is not a theoretical exploit; it
+  requires nothing beyond a browser's own devtools "Edit and Resend," and it silently defeats the
+  entire adaptive-difficulty and readiness-scoring system the placement module is built around.
+
+---
+
 ## Master punch-list (ranked, filled as features complete)
 
 _(S1 first, then S2, then S3 — this is what the FIX pass consumes)_
@@ -228,6 +294,45 @@ _(S1 first, then S2, then S3 — this is what the FIX pass consumes)_
     grade a real quiz for a subject outside their branch/semester offering; Notes already closed
     this exact gap (`src/lib/notes/access.ts`) and flagged chat as having the same one — the
     (newer) assessment engine has it too. [AU-QUIZ]
+13. `POST /api/placement/prep/submit` trusts the client's own `is_correct` claim with zero
+    server-side re-grading, and writes it straight into `placement_topic_mastery` and the
+    platform's canonical `readiness_domain`/`readiness_overall` — confirmed live by forging 100%
+    correctness on a real session where every answer was actually wrong. [AU-PLACE-CORE]
+14. `POST /api/placement/prep/generate` ships every question's plaintext `correct_answer` (and
+    explanation) in the same payload that renders the un-answered question — compounds #13 by
+    making the forgery trivial (the answer is visible in the Network tab before answering) even
+    without editing any request. [AU-PLACE-CORE]
+15. A whole parallel legacy company-mock-test + practice-module subsystem
+    (`/placement/test/[companyId]`, `/placement/practice/[moduleId]`, and 6 backing API routes)
+    has zero reachable UI entry point anywhere — same shape as #1/#2 above — and where still
+    directly reachable, `api/placement/submit` 500s unconditionally because its target table
+    `placement_attempts` does not exist in the live schema (confirmed live, `PGRST205`); a tracked
+    migration ALTERs the table but no tracked migration ever CREATEs it — untracked legacy-DB
+    drift left behind by the placement rebuild. [AU-PLACE-CORE]
+
+**S2**
+13. `api/placement/practice/submit` (and its unreachable twin `api/placement/submit`) score
+    entirely client-fabricated `questions[]`/`answers` against each other with no server-side
+    lookup of a real answer key — confirmed live by fabricating a request that never called
+    `generate` and getting a real 100%-scored DB row back. Same "client grades itself" bug as
+    S1-13, scoped lower only because these specific routes are currently unlinked from navigation.
+    [AU-PLACE-CORE]
+14. Concurrent double-submit of one `prep/submit` session produces a lost update (not a duplicate)
+    on `placement_topic_mastery` — same check-then-act race shape as the ledgered `checkRateLimit`
+    race, found in a second independent location; the `placement_question_attempts` audit trail
+    gets both inserts but the aggregate mastery counter silently drops one submission's
+    contribution. [AU-PLACE-CORE]
+15. A SQL-injection-shaped `topic` string on `prep/submit` (still under the 100-char cap) produces
+    an unhandled 500 whose log entry contains a raw, unbounded upstream HTML error body — same bug
+    class as #12-shape AU-QUIZ `subjectIds` finding. [AU-PLACE-CORE]
+16. `POST /api/placement/profile` accepts `setup_complete: true` independent of `cgpa`/
+    `primary_target` ever being set; every downstream consumer (`isDriveEligible`) silently
+    coalesces the missing CGPA to `0`, filtering the student out of every CGPA-gated drive with no
+    signal that their profile — not their qualification — is the cause. [AU-PLACE-CORE]
+17. `computeNextMoves` returns an empty move queue for a fully-prepared student with an imminent
+    eligible drive — confirmed via direct exercise of the pure function; the dashboard's one
+    always-tell-the-student-what's-next surface has nothing to show in exactly the moment it
+    matters most. [AU-PLACE-CORE]
 
 **S3**
 7. Chat PDF export garbles markdown tables into raw pipe-syntax text (diagrams export fine). [AU-CHAT]
@@ -242,3 +347,8 @@ _(S1 first, then S2, then S3 — this is what the FIX pass consumes)_
 13. A SQL-injection-shaped `subjectIds` value causes an unhandled upstream failure that dumps a raw
     HTML error page into server logs (client response stays a safe generic 500 — no data exposure,
     just missing UUID-shape input validation). [AU-QUIZ]
+14. The fill_code+MCQ "mixed" prep session always presents all 4 MCQs before any fill_code
+    question (block-concatenated, never interleaved). [AU-PLACE-CORE]
+15. The dashboard's stage strip is horizontally scrollable but has zero scroll affordance, so later
+    stages are silently clipped off-screen on mobile with nothing indicating more exists.
+    [AU-PLACE-CORE]
