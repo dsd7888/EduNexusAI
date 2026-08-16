@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import Link from "next/link";
 import { Loader2, X } from "lucide-react";
 import {
   INTERVIEW_QUESTIONS,
@@ -138,14 +139,22 @@ export default function InterviewPrepPage() {
   return (
     <div className="min-h-screen bg-white">
       <div className="mx-auto max-w-6xl px-4 py-6">
-        <div className="mb-6">
-          <h1 className="text-2xl font-bold text-gray-900">
-            Interview Prep Bank
-          </h1>
-          <p className="mt-1 text-sm text-gray-500">
-            Practice common placement interview questions with structured
-            feedback
-          </p>
+        <div className="mb-6 flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h1 className="text-2xl font-bold text-gray-900">
+              Interview Prep Bank
+            </h1>
+            <p className="mt-1 text-sm text-gray-500">
+              Practice common placement interview questions with structured
+              feedback
+            </p>
+          </div>
+          <Link
+            href="/student/placement/interview/mock"
+            className="inline-flex h-11 shrink-0 items-center gap-1.5 rounded-8 bg-ink px-5 font-plex-sans text-body font-medium text-paper transition-colors duration-180 ease-out hover:bg-ink-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ink-900 focus-visible:ring-offset-2"
+          >
+            Run a mock round
+          </Link>
         </div>
 
         {/* JD Context Banner */}

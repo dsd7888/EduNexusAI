@@ -302,7 +302,7 @@ export function computeNextMoves(state: NextMoveState, now: Date = new Date()): 
       kind: "mock_interview",
       title: "Try a mock interview",
       reason: "You're ready to simulate the real thing.",
-      href: "/student/placement/interview",
+      href: "/student/placement/interview/mock",
       urgency: "low",
       tags: ["Stage 3"],
     });
