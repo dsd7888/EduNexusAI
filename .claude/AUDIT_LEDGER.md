@@ -130,6 +130,54 @@ Evidence tags: [RUNTIME] [EXPORT] [UI] [STATIC].
 
 ---
 
+### AU-QUIZ — Quiz/Assessment sessions, timer, mastery rules, NAT, export — 2026-08-16 — findings file: .claude/findings/AU-QUIZ.md
+- S1: 1 — **quiz has no working export path anywhere.** No UI call site exists for the only route
+  that builds a quiz PDF (`api/quiz/export`, grepped zero hits across `src/app`/`src/components`),
+  and even called directly it can never succeed for any real session: it queries the v1
+  `quiz_attempts`/`quizzes` tables, which are 100% empty platform-wide (confirmed live) because the
+  current engine writes exclusively to `quiz_sessions`/`student_question_attempts`. Same shape of
+  bug as AU-NOTES's S1 — a spec-promised feature with zero reachable path, not a rough edge.
+- S2: 5 — (1) same v1/v2 schema split as the S1 above: student AND faculty dashboards, plus
+  `/api/analytics`, read quiz history from the dead `quiz_attempts`/`quizzes` tables, so a real
+  quiz taken today will never appear on the taker's own dashboard (confirmed: 0 rows in
+  `quiz_attempts` platform-wide vs. real completed `quiz_sessions` from this run) — primarily an
+  AU-SHELL-surface symptom, flagged here because the cause is entirely on the AU-QUIZ side;
+  (2) **`/api/assessment/submit` does not enforce the session timer** — `/answer` correctly 409s
+  after expiry (verified with a real 1-minute exam-sim session left to actually expire), but a
+  direct `/submit` call with a full late payload was accepted and graded (200, scored 8/20) with
+  zero rejection — defeats exam-sim's entire timed-benchmark premise, no special tooling needed to
+  exploit; (3) `/api/assessment/submit` is not safe under concurrent double-submission — two
+  simultaneous real calls both returned 200 and duplicated `student_question_attempts` (10 rows
+  for a 5-question session) via the same check-then-act shape as the ledgered rate-limit race, now
+  confirmed on session completion too; (4) the `true_false` question type renders with **zero**
+  answer controls — confirmed via live screenshot (`optionButtons=0` in all four
+  desktop/mobile × light/dark combinations) — because `typeHasOptions()` excludes it but
+  `AnswerInput.tsx` has no other render path for it; currently reachable only via an explicit
+  `questionTypes` request (not any mode's default), so latent rather than hit by default traffic
+  today; (5) the assessment engine has **no subject-enrollment/scope check at all** — a CSE-sem3
+  student successfully generated and could grade a real quiz for a subject offered to a different
+  branch/semester; `src/lib/notes/access.ts` shows this exact check was deliberately added for
+  Notes and explicitly flagged chat's lack of it as a known gap — the (newer) assessment engine has
+  the same gap, undocumented.
+- S3: 1 — a SQL-injection-shaped `subjectIds` string causes an unhandled upstream failure that
+  dumps a raw HTML error page into server logs (client response stays a safe generic 500 — no data
+  exposure, just log noise from missing UUID-shape validation on the input).
+- Notable positives (ran clean, verified live, not just read): cross-student authorization (403) on
+  every quiz route tested; the CP-Q3 resume-lands-on-the-right-question fix genuinely works; NAT
+  dual-gate grading correct on both right and wrong numeric input; exam-sim correctly never mutates
+  mastery; mode-gated feedback withholding correct; boundary clamping on `questionCount` correct;
+  every real AI call this run was correctly cost-logged via `routeAI`.
+- AI spend this run: $0.0445 (~₹3.7), 17 real Gemini calls (`assessment_quick`/`quiz_gen_v2` +
+  `nat_verify`), all correctly tagged in `ai_call_logs`. Well under the ≤25-call cap.
+- Most important single thing: the exam-sim timer bypass at `/submit` (S2-2) — it is a clean,
+  reproducible, no-special-tooling integrity hole in the one mode explicitly designed as a
+  time-bounded benchmark instrument (GATE mock), and it sits right next to a sibling route
+  (`/answer`) that already does this correctly, so the fix is small and the omission is exactly the
+  kind of thing that erodes trust the first time a student who timed themselves notices the mock
+  let them keep going.
+
+---
+
 ## Master punch-list (ranked, filled as features complete)
 
 _(S1 first, then S2, then S3 — this is what the FIX pass consumes)_
@@ -140,6 +188,10 @@ _(S1 first, then S2, then S3 — this is what the FIX pass consumes)_
    (`GET /api/notes/module/:id`, both `*/regenerate` routes) are called by zero UI anywhere
    (student, faculty, or superadmin). The empty-state's "Generate notes" button re-fetches the same
    doomed assembly call and loops forever. [AU-NOTES]
+2. Quiz export has no working path anywhere: zero UI call site for `api/quiz/export`, and even
+   called directly it can never succeed because it queries the dead v1 `quiz_attempts`/`quizzes`
+   tables (0 rows platform-wide) while the current engine writes only to
+   `quiz_sessions`/`student_question_attempts`. [AU-QUIZ]
 
 **S2**
 1. Rate-limit check-then-increment race in `src/lib/utils/rate-limit.ts` — likely affects every
@@ -159,6 +211,23 @@ _(S1 first, then S2, then S3 — this is what the FIX pass consumes)_
    a fast double-tap, or a rapid double-swipe) collapse into a single card advance with no error or visual
    indication — silently misleads a student about how much of the deck they've reviewed.
    [AU-FLASH]
+8. Student and faculty dashboards + `/api/analytics` read quiz history from the dead v1
+   `quiz_attempts`/`quizzes` tables — same root cause as S1-2 above — so a real quiz taken today
+   never appears on the taker's own dashboard. [AU-QUIZ; cross-ref AU-SHELL for the dashboard
+   surface itself]
+9. `/api/assessment/submit` does not enforce the session timer (unlike its sibling `/answer`,
+   which does) — a student can submit an exam-sim paper an unbounded time after it visibly
+   expired, defeating the timed-benchmark premise. [AU-QUIZ]
+10. `/api/assessment/submit` is not safe under concurrent double-submission — two simultaneous
+    calls both succeed and duplicate `student_question_attempts` rows (same check-then-act shape
+    as the rate-limit race above, applied to session completion). [AU-QUIZ]
+11. The `true_false` assessment question type renders with zero answer controls (confirmed via
+    screenshot) — `typeHasOptions()` excludes it but `AnswerInput.tsx` has no other render path;
+    latent today (not in any mode's default types) but live the moment it's requested. [AU-QUIZ]
+12. The assessment engine has no subject-enrollment/scope check — any student can generate and
+    grade a real quiz for a subject outside their branch/semester offering; Notes already closed
+    this exact gap (`src/lib/notes/access.ts`) and flagged chat as having the same one — the
+    (newer) assessment engine has it too. [AU-QUIZ]
 
 **S3**
 7. Chat PDF export garbles markdown tables into raw pipe-syntax text (diagrams export fine). [AU-CHAT]
@@ -170,3 +239,6 @@ _(S1 first, then S2, then S3 — this is what the FIX pass consumes)_
     symbol — prompt-adherence drift the length-only validator doesn't catch. [AU-NOTES]
 12. Non-ASCII characters outside recognized math spans are silently dropped (not logged) by the PDF
     text sanitizer — plausible, not reproduced with real content this run. [AU-NOTES]
+13. A SQL-injection-shaped `subjectIds` value causes an unhandled upstream failure that dumps a raw
+    HTML error page into server logs (client response stays a safe generic 500 — no data exposure,
+    just missing UUID-shape input validation). [AU-QUIZ]
