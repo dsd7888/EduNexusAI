@@ -48,3 +48,11 @@ next-env.d.ts
 
 # Supabase CLI version-check artifact (re-dirties the tree on every CLI run)
 supabase/.temp/
+
+# run-spec.sh checkpoint-runner output — operational, not source
+.claude/logs/
+
+# _cp_*_verify/ harness scripts are tracked; the screenshots they produce are
+# review artifacts for the HALT-gate human, not source — and untracked PNGs
+# here re-dirty the tree on every run, blocking run-spec.sh's clean-tree gate
+_cp_*_verify/screens/
