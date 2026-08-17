@@ -35,8 +35,10 @@ interface SessionRow {
     questions?: Array<{ slotId: string; options?: string[] | null }>;
     negative_marking?: boolean;
     negative_marking_rule?: string | null;
+    time_limit_minutes?: number | null;
   } | null;
   total_marks: number | null;
+  started_at: string;
 }
 
 export async function POST(request: NextRequest) {
@@ -71,7 +73,7 @@ export async function POST(request: NextRequest) {
 
     const { data: sessionData, error: sessionErr } = await adminClient
       .from("quiz_sessions")
-      .select("id, student_id, mode, status, config, total_marks")
+      .select("id, student_id, mode, status, config, total_marks, started_at")
       .eq("id", sessionId)
       .maybeSingle();
     if (sessionErr) return apiError(sessionErr.message, 500);
@@ -80,15 +82,56 @@ export async function POST(request: NextRequest) {
     // Ownership is checked here even though the admin client bypasses RLS —
     // that bypass is exactly why the check has to be explicit.
     if (session.student_id !== user.id) return apiError("Forbidden", 403);
-    if (session.status === "completed") {
-      return apiError("This session has already been submitted", 409);
+    if (session.status !== "in_progress") {
+      return apiError(
+        session.status === "completed"
+          ? "This session has already been submitted"
+          : "This session is no longer active",
+        409
+      );
+    }
+
+    // ── timer enforcement (server-side, authoritative) ─────────────────────
+    // Mirrors /api/assessment/answer exactly (same limit source, same 5s
+    // grace for in-flight request latency). A late payload — however
+    // complete — does not get graded once the server's clock says time is
+    // up; the client's local timer is not trusted.
+    const limit = session.config?.time_limit_minutes ?? null;
+    if (limit != null) {
+      const elapsed = (Date.now() - new Date(session.started_at).getTime()) / 1000;
+      if (elapsed > limit * 60 + 5) {
+        return apiError("Time is up for this session", 409);
+      }
     }
 
     // Server-side read with the admin client — quiz_session_keys has no
-    // student-readable policy, which is the whole point of the table.
+    // student-readable policy, which is the whole point of the table. Read
+    // BEFORE the atomic claim below: it is read-only, so doing it first
+    // means an unrelated key-load failure returns 500 without having
+    // already flipped the session to 'completed' (which would strand it).
     const key = await loadSessionKey(adminClient, session.id);
     if (key.length === 0) {
       return apiError("Session has no answer key — cannot grade", 500);
+    }
+
+    // ── atomic claim ─────────────────────────────────────────────────────
+    // Flip status → completed HERE, guarded by the status we just read, and
+    // before any grading/insert work runs. This is the only gate that
+    // matters: two concurrent /submit calls both pass the read-only checks
+    // above (neither has written yet), so without a conditional write here
+    // both would go on to grade and insert attempts, doubling
+    // student_question_attempts. Only the request whose UPDATE actually
+    // matches a row (status was still 'in_progress' at write time) proceeds;
+    // the loser gets the same 409 an already-completed session would.
+    const { data: claimedRows, error: claimErr } = await adminClient
+      .from("quiz_sessions")
+      .update({ status: "completed", completed_at: new Date().toISOString() })
+      .eq("id", session.id)
+      .eq("status", "in_progress")
+      .select("id");
+    if (claimErr) return apiError(claimErr.message, 500);
+    if (!claimedRows || claimedRows.length === 0) {
+      return apiError("This session has already been submitted", 409);
     }
 
     const optionCounts: Record<string, number> = {};
@@ -142,17 +185,17 @@ export async function POST(request: NextRequest) {
       ? await updateMastery(adminClient, user.id, scored.results)
       : null;
 
+    // status/completed_at were already set atomically by the claim above;
+    // this just fills in the score now that grading has run.
     const { error: closeErr } = await adminClient
       .from("quiz_sessions")
       .update({
-        status: "completed",
-        completed_at: new Date().toISOString(),
         score: scored.score,
         total_marks: scored.totalMarks,
       })
       .eq("id", session.id);
     if (closeErr) {
-      console.warn(`[assessment/submit] session close failed: ${closeErr.message}`);
+      console.warn(`[assessment/submit] session score write failed: ${closeErr.message}`);
     }
 
     return apiSuccess({
