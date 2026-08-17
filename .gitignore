@@ -56,3 +56,8 @@ supabase/.temp/
 # review artifacts for the HALT-gate human, not source — and untracked PNGs
 # here re-dirty the tree on every run, blocking run-spec.sh's clean-tree gate
 _cp_*_verify/screens/
+
+# audit harness session artifacts — live Supabase bearer/refresh tokens for
+# throwaway test accounts, never commit
+_audit_chat/curl_cookie.txt
+_audit_chat/curl_userid.txt
