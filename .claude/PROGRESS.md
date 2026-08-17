@@ -1052,3 +1052,80 @@ _(entries appended below by each checkpoint session)_
   4. CP-23 (empty Next-Move queue for a ready student) is next in FIX_SPEC.md's
      S2 tier — `src/lib/placement/nextMove.ts` `computeNextMoves`, Rules 2 and
      6.
+
+### CP-23 — Empty Next-Move queue for a ready student — 2026-08-17
+- **Commit SHA:** `c758d548dc6fa006d2ac6e553961571ee9b79295`. Committed locally
+  only, per this session's no-push default.
+- **Not HALT-gated:** confirmed by grep — FIX_SPEC.md's `HALT` markers land on
+  CP-01, CP-09-adjacent text, and the AU-SHELL RLS block; none near CP-23's
+  entry (line 323-326). Pure application logic, no schema/RLS/AI-call change.
+- **What was found:** `computeNextMoves` in `src/lib/placement/nextMove.ts`
+  could return an empty array for a student who was actually in good shape.
+  Two independent gaps compounded: (1) Rule 2 (drive-sprint) `continue`d past
+  an eligible, in-window drive whenever the weighted-weakest relevant
+  dimension for it scored above `DRIVE_SPRINT_SCORE_THRESHOLD` (60) — correct
+  in isolation (nothing to sprint on), but it left no move behind to say so.
+  (2) Rule 6's fallback (`allReady && !hasAnyEligibleDrive`) used
+  `eligibleDrives.length > 0` for `hasAnyEligibleDrive`, which counts ANY
+  future-eligible drive regardless of distance — a drive three months out
+  suppressed the "you're all caught up" maintenance/mock-interview fallback
+  just as effectively as a real week-away one, even though it isn't
+  actionable yet. Together: a ready student with either (a) an in-window
+  drive they're already prepared for, or (b) any eligible drive at all sitting
+  outside the 14-day sprint window, got zero ranked moves — an empty
+  Next-Move queue with nothing wrong.
+- **Fix:** added Rule 2b — track the nearest in-window eligible drive that
+  produced no sprint move (either every relevant dimension already scored
+  above threshold, or all relevant dimensions were already covered by a
+  stronger drive's move earlier in the loop) and, if no real `drive_sprint`
+  move was added at all, push one confirmatory `drive_ready` move
+  ("You're on track for {company}") linking to `/student/placement/companies`.
+  New `MoveKind: "drive_ready"` added to the exported union (the UI keys
+  nothing off `kind` beyond `${m.kind}-${m.href}-${m.title}` React keys, so no
+  UI change was needed). Separately, narrowed Rule 6's `hasAnyEligibleDrive`
+  to `eligibleDrives.some(d => d.daysRemaining <= DRIVE_SPRINT_WINDOW_DAYS)` so
+  a not-yet-actionable drive no longer blocks the maintenance fallback.
+- **Verified:** new pure-function harness `_cp_23_verify/nextMove.mts` (no
+  DB/session needed — `computeNextMoves` has zero I/O per its own doc
+  comment), 8 assertions, all passing (`.claude/logs-fix/CP-23-verify.log`):
+  (1) a fully-ready profile with one in-window eligible drive (7 days out,
+  every relevant dimension ≥ sprint threshold) now returns a non-empty queue
+  containing exactly one `drive_ready` move and zero fabricated
+  `drive_sprint` moves. (2) **Regression guard** — the same drive with one
+  genuinely weak relevant dimension (aptitude dropped to 40) still produces a
+  real `drive_sprint` move, and the confirmatory move does NOT also fire
+  alongside it for that drive. (3) **Unhappy path — no drives at all**: a
+  not-fully-ready profile with zero drives never fabricates a `drive_ready`
+  move, and the pre-existing `weak_dimension` rule still fires normally. (4)
+  **Unhappy path — drive outside the sprint window**: a fully-ready profile
+  with its only eligible drive 45 days out does not get a `drive_ready` move
+  (correctly not "ready for" something not yet in play) but DOES correctly
+  fall through to the old Rule 6 `maintenance` fallback now that the window
+  narrowing landed — this case was the second empty-queue reproduction found
+  while writing the harness (initially failed before the Rule 6 fix, which is
+  why both Rule 2 and Rule 6 needed touching, matching FIX_SPEC.md's note).
+- **Gate status:** `tsc --noEmit` clean, `npx eslint` on the changed file
+  clean, full `npm run build` clean (all routes compiled, including
+  `/student/placement`). No live-server/browser pass — this function is pure
+  and has no route/UI surface of its own beyond feeding `page.tsx`'s existing
+  generic `RankedMove` rendering, which was not touched.
+- **Migration needed:** none.
+- **Next checkpoint must know:**
+  1. Commit is **not pushed** — confirm `origin/dev` state before assuming
+     this or any prior checkpoint is live, per the standing caveat carried
+     since CP-03.
+  2. The pre-existing uncommitted CP-08 changes (`api/placement/prep/
+     {generate,submit}/route.ts`, `student/placement/prep/[track]/
+     practice/page.tsx`, `src/types/placement.ts`) are still present and
+     still untouched by this session — this checkpoint's commit deliberately
+     excluded them, staging only `src/lib/placement/nextMove.ts` and the new
+     verify harness.
+  3. The new `drive_ready` `MoveKind` renders fine today only because
+     `page.tsx`'s `HeroMoveCard`/`SecondaryMoveCard`/`MoreMovesPanel` are
+     generic over `RankedMove` and don't switch on `kind` for icon/styling —
+     if a future checkpoint (e.g. CP-27/CP-38 design migration) adds a
+     kind-keyed icon or color map, it needs a `drive_ready` case added or it
+     will silently fall through to whatever default that map uses.
+  4. CP-24 (SQL-injection-shaped input in logs — `assessment/engine.ts`
+     `subjectIds`, `prep/submit/route.ts` `topic`) is next in FIX_SPEC.md's
+     S2 tier.

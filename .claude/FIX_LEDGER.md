@@ -38,7 +38,7 @@ runner may touch it — the runner refuses and errors, it does not skip silently
 | CP-20 | done | 9f2f1328370ab11c1bfa1f47004dfe10c543d79b | 2026-08-17 | mobile shell + chat composer/header only — does not cover placement pages (needs CP-38); committed locally only, per this session's no-push default |
 | CP-21 | done | 7616911e41ed3ebacb9037dd764e8a0de4348f65 | 2026-08-17 | resume PDF/DOCX export null-guards; committed locally only, per this session's no-push default |
 | CP-22 | done | 856aa7464b4e2832442b657e36fb5e6be48cf762 | 2026-08-17 | `setup_complete:true` now requires a valid CGPA (0-10), request-supplied or existing; committed locally only, per this session's no-push default |
-| CP-23 | pending | | | |
+| CP-23 | done | c758d548dc6fa006d2ac6e553961571ee9b79295 | 2026-08-17 | Added Rule 2b ('drive_ready' confirmatory move) and narrowed Rule 6's hasAnyEligibleDrive to the sprint window; `_cp_23_verify/nextMove.mts` (8 assertions) verified live, incl. two regression/unhappy-path guards; committed locally only, per this session's no-push default |
 | CP-24 | pending | | | |
 | CP-25 | pending | | | |
 | CP-26 | pending | | | |
