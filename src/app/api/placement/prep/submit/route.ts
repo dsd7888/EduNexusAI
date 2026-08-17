@@ -17,6 +17,9 @@ const VALID_TRACKS = new Set<string>([
 
 const UUID_RE = /^[0-9a-f-]{36}$/i;
 
+// Client `is_correct` is NEVER trusted — parsed here only to satisfy the
+// DrillAttempt shape; it is overwritten below from a server-side bank lookup
+// before any grading, stats, or mastery calculation happens.
 function parseValidAttempts(raw: unknown[]): DrillAttempt[] {
   const valid: DrillAttempt[] = [];
 
@@ -31,7 +34,7 @@ function parseValidAttempts(raw: unknown[]): DrillAttempt[] {
       question_id: questionId,
       selected_answer:
         typeof att.selected_answer === "string" ? att.selected_answer : null,
-      is_correct: att.is_correct === true,
+      is_correct: false,
       is_skipped: att.is_skipped === true,
       time_spent_seconds:
         typeof att.time_spent_seconds === "number" ? att.time_spent_seconds : 0,
@@ -39,6 +42,10 @@ function parseValidAttempts(raw: unknown[]): DrillAttempt[] {
   }
 
   return valid;
+}
+
+function normalizeAnswerKey(v: string | null | undefined): string {
+  return (v ?? "").trim().toUpperCase();
 }
 
 function resolveSessionDuration(raw: unknown): number {
@@ -96,6 +103,57 @@ export async function POST(request: NextRequest) {
     const warnings: string[] = [];
 
     const adminClient = createAdminClient();
+
+    // ── Step 0: Server-side re-grading (never trust client `is_correct`) ──────
+    // A forged `is_correct: true` on an all-wrong session must not reach the
+    // mastery/readiness writes below — look up the canonical answer for every
+    // submitted question_id and recompute correctness from that.
+    const distinctQuestionIds = [
+      ...new Set(validAttempts.map((a) => a.question_id)),
+    ];
+
+    if (distinctQuestionIds.length > 0) {
+      const { data: answerRows, error: answerFetchError } = await adminClient
+        .from("placement_question_bank")
+        .select("id, correct_answer")
+        .in("id", distinctQuestionIds);
+
+      if (answerFetchError) {
+        console.error(
+          "[placement-submit] Answer-key fetch error:",
+          answerFetchError
+        );
+        return apiError("Failed to load question data", 500);
+      }
+
+      const answerMap = new Map(
+        (answerRows ?? []).map((r) => [r.id as string, r.correct_answer as string])
+      );
+
+      let unknownQuestionCount = 0;
+      for (const att of validAttempts) {
+        const correctAnswer = answerMap.get(att.question_id);
+        if (correctAnswer === undefined) {
+          // Unknown/forged question_id — can't be graded; exclude from
+          // scoring entirely rather than trusting anything the client sent.
+          unknownQuestionCount += 1;
+          att.is_skipped = true;
+          att.is_correct = false;
+          continue;
+        }
+        att.is_correct =
+          !att.is_skipped &&
+          att.selected_answer !== null &&
+          normalizeAnswerKey(att.selected_answer) ===
+            normalizeAnswerKey(correctAnswer);
+      }
+
+      if (unknownQuestionCount > 0) {
+        warnings.push(
+          `${unknownQuestionCount} attempt${unknownQuestionCount === 1 ? "" : "s"} referenced an unknown question and were excluded from grading`
+        );
+      }
+    }
 
     // ── Step 1: Insert attempts (best-effort, parallel) ───────────────────────
     const insertResults = await Promise.allSettled(
