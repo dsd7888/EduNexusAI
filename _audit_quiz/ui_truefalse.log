@@ -1,6 +1,0 @@
-generate status: 200 sessionId: 8e003d63-a980-4a86-9d61-6c49be596b5e count: 5
-desktop/light: screenshot=_audit_quiz/truefalse-desktop-light.png optionButtons=0 natInputs=0 pageErrors=[]
-desktop/dark: screenshot=_audit_quiz/truefalse-desktop-dark.png optionButtons=0 natInputs=0 pageErrors=[]
-mobile/light: screenshot=_audit_quiz/truefalse-mobile-light.png optionButtons=0 natInputs=0 pageErrors=[]
-mobile/dark: screenshot=_audit_quiz/truefalse-mobile-dark.png optionButtons=0 natInputs=0 pageErrors=[]
-cleaned up session 8e003d63-a980-4a86-9d61-6c49be596b5e

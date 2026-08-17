@@ -57,7 +57,8 @@ supabase/.temp/
 # here re-dirty the tree on every run, blocking run-spec.sh's clean-tree gate
 _cp_*_verify/screens/
 
-# audit harness session artifacts — live Supabase bearer/refresh tokens for
-# throwaway test accounts, never commit
-_audit_chat/curl_cookie.txt
-_audit_chat/curl_userid.txt
+# _audit_<feature>/ dirs are throwaway audit-run harnesses per AUDIT_SPEC.md
+# §0 ("throwaway verification harnesses under _audit_<feature>/ (git-ignored)")
+# — findings live in .claude/findings/ instead. Wrongly committed wholesale
+# in d48d30e; untracked (not deleted) to correct that.
+_audit_*/
