@@ -327,6 +327,63 @@ Evidence tags: [RUNTIME] [EXPORT] [UI] [STATIC].
 
 ---
 
+### AU-EXPORTS — Cross-engine export pass: 5 math/render engines + PPT diagrams/SVG — 2026-08-17 — findings file: .claude/findings/AU-EXPORTS.md
+- S1: 2 — (1) PPT "svg" diagram slides (the DEFAULT render type when a diagram slide has no
+  explicit renderHint, `src/lib/ppt/generator.ts:471-475`) embed a broken compatibility fallback:
+  `svgToBase64()` hands pptxgenjs a raw SVG data URI, and pptxgenjs's own SVG handling writes the
+  SAME SVG bytes into the media part it labels `image/png` for the primary/fallback blip instead
+  of a real rasterisation — confirmed live by unzipping a real generated `.pptx` and finding
+  `image-4-1.png` is detected as `SVG Scalable Vector Graphics image` by `file`/PIL, not PNG. Any
+  viewer without Microsoft's 2016+ SVG-extension support (older PowerPoint, Keynote, Google Slides,
+  LibreOffice Impress, many classroom/lab machines — plausible population for an institutional
+  pilot) renders a blank/broken image with zero on-slide indication anything failed; (2) Notes PDF
+  export (`sanitizeForPDF` in `src/lib/pdf/builder.ts`, backs every text draw in the shared
+  `PDFBuilder`) silently DELETES any Unicode character outside a ~40-symbol curated allowlist — no
+  placeholder, no log, no visual trace — confirmed live with a real stress string containing
+  Devanagari, an emoji, and four math/logic symbols: all vanished, leaving only double-spaces and
+  one silently-mangled word (`café`→`caf`). This upgrades/confirms the AU-NOTES-run S3 finding
+  ("Non-ASCII characters... silently dropped... plausible, not reproduced with real content") to a
+  confirmed [EXPORT] finding — and elevates it because the sibling Q Paper PDF engine, tested in
+  the same run on the identical input, at least substitutes a visible `?` (still degraded, but
+  detectable) rather than deleting with no trace.
+- S2: 2 — (1) Notes PDF's worked-example text (`drawWorkedExample` in
+  `src/lib/notes/pdf/formulaRenderer.ts`) does not parse markdown — a markdown table embedded in a
+  worked-example problem renders as raw, unreadable pipe-syntax, while the identical table renders
+  as a real bordered table THREE LINES ABOVE IT in the same PDF (the block's own symbols table) and
+  again in the qpaper PDF/DOCX on the same content — a second, independent confirmation of the
+  AU-CHAT-ledgered "PDF export garbles markdown tables" defect (S3-7 above), but in a different
+  engine (Notes PDF, not chat PDF export) and narrower in scope than that finding implied (qpaper's
+  own table rendering is fine — the gap is specifically Notes' `textOrMath` call not being
+  table-aware, not a platform-wide markdown-parser bug); (2) Q Paper PDF: a question's marks/CO/
+  BTL/PO tag-row header can print with empty values at the bottom of one page while the actual
+  sub-part content — and the tag VALUES that belong to that empty header — print at the top of the
+  next page, disconnected with no repeated column context; confirmed live via two-page screenshot
+  comparison, no page-break/keep-together guard exists between a question header and its first
+  sub-part in `src/lib/qpaper/builder.ts`.
+- S3: 0 counted this run (none met the bar independently of the S1/S2 findings above).
+- Notable positives (verified live, not just read): the single shared `katexRender.ts`
+  (MathJax→sharp) rasteriser produces excellent, visually consistent math across all four artifact
+  types (Notes PDF, Q Paper PDF, Q Paper DOCX, PPT) — every drift found is in each builder's
+  surrounding text handling, never in the math renderer itself; malformed LaTeX (unclosed braces,
+  undefined commands, empty spans, a ~9KB single math blob) never crashed either PDF engine —
+  clean literal-source fallback every time; the live Mermaid diagram path (real `mermaid.ink`
+  network call, not mocked) produced a correct embedded PNG; raster-image sizing is
+  pixel-consistent between Q Paper PDF and DOCX; all four export routes tested are reachable from
+  real UI call sites (this feature does NOT reproduce the "generated but nothing calls it" pattern
+  ledgered against AU-NOTES/AU-QUIZ/AU-PLACE-CORE); the answer-key DOCX correctly isolates
+  confidential content in the document header part with model answers in green.
+- AI spend this run: $0.00, 0 real Gemini calls — all five engines are deterministic by design
+  (no `routeAI`/Gemini call anywhere in the render path); confirmed by reading every engine file,
+  not just by absence of `ai_call_logs` rows. Comfortably under the ≤25-call cap; no DB/Storage
+  cleanup needed since no admin client was used anywhere in the harness.
+- Most important single thing: the PPT SVG-fallback bug (S1-1) — SVG is the *default* diagram
+  render type for any under-specified diagram slide, so this is not an edge case; it silently
+  breaks the platform's own signature "AI-generated technical diagram" feature the moment a deck is
+  opened on any machine without the newest Office SVG extension, with nothing on the slide to
+  signal the failure to whoever is presenting.
+
+---
+
 ## Master punch-list (ranked, filled as features complete)
 
 _(S1 first, then S2, then S3 — this is what the FIX pass consumes)_
@@ -404,6 +461,19 @@ _(S1 first, then S2, then S3 — this is what the FIX pass consumes)_
     `education`/`technical_skills`/`projects`) 500s via an uncaught exception in
     `computeCompleteness` instead of returning 400; same root cause as #16 and the enabler of the
     S2 export-crash finding below. [AU-PLACE-TOOLS]
+18. PPT "svg" diagram slides (the DEFAULT render type for any diagram slide with no explicit
+    renderHint) embed a broken compatibility fallback: pptxgenjs writes the raw SVG source into the
+    media part it labels as the PNG fallback, instead of a real rasterisation — confirmed live by
+    unzipping a real generated `.pptx` and finding the "PNG" fallback is detected as SVG by
+    `file`/PIL, not PNG. Any viewer without Microsoft's 2016+ SVG-extension support (older
+    PowerPoint, Keynote, Google Slides, LibreOffice Impress) renders a blank/broken image with no
+    on-slide indication of failure. [AU-EXPORTS]
+19. Notes PDF export silently DELETES any Unicode character outside a ~40-symbol curated allowlist
+    (`sanitizeForPDF` in `src/lib/pdf/builder.ts`) — no placeholder, no log, no visual trace;
+    confirmed live with real Devanagari/emoji/math-symbol content all vanishing, leaving only
+    double-spaces. The sibling Q Paper PDF engine at least substitutes a visible `?` for the same
+    input class (still degraded, but detectable) — confirms and elevates the AU-NOTES-run S3-12
+    entry below from "plausible, not reproduced" to confirmed [EXPORT]. [AU-EXPORTS]
 
 **S2**
 13. `api/placement/practice/submit` (and its unreachable twin `api/placement/submit`) score
@@ -447,6 +517,17 @@ _(S1 first, then S2, then S3 — this is what the FIX pass consumes)_
     for unprofessionalism; the route passes no `systemPrompt` at all, reproducing AU-CHAT's
     already-ledgered missing-distress-clause gap (S2-5 above) in a second, independently-tested
     feature. [AU-PLACE-TOOLS]
+22. Notes PDF's worked-example text does not parse markdown — a markdown table embedded in a
+    worked-example problem renders as raw pipe-syntax, while the identical table renders as a real
+    bordered table three lines above it in the same PDF (the block's own symbols table) and again
+    in qpaper PDF/DOCX on the same content — a second, independent, narrower confirmation of the
+    AU-CHAT-ledgered "PDF export garbles markdown tables" defect (S3-7 below), in a different
+    engine. [AU-EXPORTS]
+23. Q Paper PDF: a question's marks/CO/BTL/PO tag-row header can print with empty values at the
+    bottom of one page while the sub-part content — and the tag values that belong to that empty
+    header — print at the top of the next page, disconnected with no repeated column context; no
+    page-break/keep-together guard exists between a question header and its first sub-part.
+    [AU-EXPORTS]
 
 **S3**
 7. Chat PDF export garbles markdown tables into raw pipe-syntax text (diagrams export fine). [AU-CHAT]
@@ -458,6 +539,8 @@ _(S1 first, then S2, then S3 — this is what the FIX pass consumes)_
     symbol — prompt-adherence drift the length-only validator doesn't catch. [AU-NOTES]
 12. Non-ASCII characters outside recognized math spans are silently dropped (not logged) by the PDF
     text sanitizer — plausible, not reproduced with real content this run. [AU-NOTES]
+    **Confirmed and promoted to S1-19 above by AU-EXPORTS** with a real generated artifact
+    (Devanagari/emoji/math-symbol content fully vanishing, no trace) — not re-counted here.
 13. A SQL-injection-shaped `subjectIds` value causes an unhandled upstream failure that dumps a raw
     HTML error page into server logs (client response stays a safe generic 500 — no data exposure,
     just missing UUID-shape input validation). [AU-QUIZ]
