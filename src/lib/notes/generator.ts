@@ -88,7 +88,7 @@ export type GenerateModuleNotesResult =
       version: number;
       generatedAt: string;
       contentHash: string;
-      source: "cache" | "fresh";
+      source: "cache" | "fresh" | "concurrent";
       tokensUsed: number;
       costInr: number;
       model: string;
@@ -471,10 +471,48 @@ export async function generateModuleNotes(
     .single();
 
   if (insertError || !inserted) {
+    // Unique-violation on (subject_id, module_id, scope, version) means a
+    // concurrent request generated the same version first — both requests
+    // computed the same maxVersion+1 because they read it before either had
+    // inserted. Rather than discarding this request's already-paid-for AI
+    // call as a bare error, re-read the winner's row and serve it: the
+    // content is equivalent (same content_hash-derived version), and the
+    // student gets notes instead of a 500.
+    if (insertError?.code === "23505") {
+      const { data: winner } = await adminClient
+        .from("study_notes")
+        .select("id, version, blocks, created_at")
+        .eq("subject_id", subjectId)
+        .eq("module_id", moduleId)
+        .eq("scope", "module")
+        .eq("version", version)
+        .maybeSingle();
+      const winnerValidation = winner
+        ? validateNoteBlocks(winner.blocks)
+        : undefined;
+      if (winner && winnerValidation?.ok) {
+        return {
+          ok: true,
+          blocks: winnerValidation.blocks,
+          version: winner.version,
+          generatedAt: winner.created_at,
+          contentHash,
+          source: "concurrent",
+          tokensUsed,
+          costInr: ai.costInr,
+          model: ai.modelUsed,
+        };
+      }
+    }
+    // Log the real cause server-side only — a raw Postgres error (column
+    // names, constraint names, index internals) is not for the client.
+    console.error(
+      `[notes] module ${moduleId} storage failed: ${insertError?.message ?? "insert returned no row"}`,
+    );
     return {
       ok: false,
       error: "storage_failed",
-      message: insertError?.message ?? "Failed to store generated notes.",
+      message: "Failed to save the generated notes. Please try again.",
     };
   }
 
