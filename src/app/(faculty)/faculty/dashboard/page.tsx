@@ -26,7 +26,7 @@ interface GeneratedContentRow {
   type: string;
   title: string;
   created_at: string;
-  metadata: Record<string, any> | null;
+  metadata: Record<string, unknown> | null;
 }
 
 interface Stats {
@@ -83,19 +83,18 @@ export default function FacultyDashboard() {
               .eq("type", "qpaper"),
           ]);
 
+        // quiz_attempts/quizzes are dead v1 tables with no data since the
+        // assessment engine's quiz_sessions replaced them, and quiz_sessions
+        // has no faculty RLS policy (student-owned rows only) — go through
+        // /api/analytics, which already aggregates via the service-role
+        // client for exactly this purpose.
         let quizAttempts = 0;
         if (assignedIds.length > 0) {
-          const { data: quizAggRows } = await supabase
-            .from("quiz_attempts")
-            .select("id, quizzes(subject_id)")
-            .not("quizzes", "is", null);
-
-          quizAttempts =
-            quizAggRows?.filter(
-              (row: any) =>
-                row.quizzes &&
-                assignedIds.includes(row.quizzes.subject_id as string)
-            ).length ?? 0;
+          const res = await fetch("/api/analytics");
+          if (res.ok) {
+            const json = await res.json().catch(() => null);
+            quizAttempts = json?.totalQuizAttempts ?? 0;
+          }
         }
 
         setStats({

@@ -37,15 +37,17 @@ interface SubjectRow {
 }
 
 interface QuizAttemptRow {
+  id: string;
   score: number;
-  created_at: string;
-  // Supabase join; can be object or array depending on relationship typing
-  quizzes: any;
+  completed_at: string;
+  mode: string;
+  subject_ids: string[];
 }
 
 export default function StudentDashboard() {
   const [subjects, setSubjects] = useState<SubjectRow[]>([]);
   const [recentAttempts, setRecentAttempts] = useState<QuizAttemptRow[]>([]);
+  const [attemptSubjectNames, setAttemptSubjectNames] = useState<Record<string, string>>({});
   const [isLoading, setIsLoading] = useState(true);
   const [tipDismissed, setTipDismissed] = useState(true);
 
@@ -117,15 +119,35 @@ export default function StudentDashboard() {
           setSubjects(rows);
         }
 
-        // 3. Recent quiz attempts
+        // 3. Recent quiz sessions (quiz_attempts/quizzes are dead v1 tables —
+        // the assessment engine writes quiz_sessions instead).
         const { data: attemptRows } = await supabase
-          .from("quiz_attempts")
-          .select("score, created_at, quizzes(title)")
+          .from("quiz_sessions")
+          .select("id, score, completed_at, mode, subject_ids")
           .eq("student_id", userId)
-          .order("created_at", { ascending: false })
+          .eq("status", "completed")
+          .order("completed_at", { ascending: false })
           .limit(3);
 
-        setRecentAttempts((attemptRows ?? []) as QuizAttemptRow[]);
+        const attempts = (attemptRows ?? []) as QuizAttemptRow[];
+        setRecentAttempts(attempts);
+
+        const attemptSubjectIds = [
+          ...new Set(attempts.flatMap((a) => a.subject_ids ?? [])),
+        ];
+        if (attemptSubjectIds.length > 0) {
+          const { data: subjRows } = await supabase
+            .from("subjects")
+            .select("id, name")
+            .in("id", attemptSubjectIds);
+          const map: Record<string, string> = {};
+          for (const row of (subjRows ?? []) as Array<{ id: string; name: string }>) {
+            map[row.id] = row.name;
+          }
+          setAttemptSubjectNames(map);
+        } else {
+          setAttemptSubjectNames({});
+        }
       } catch (err) {
         console.error("[student/dashboard] load error:", err);
       } finally {
@@ -152,9 +174,9 @@ export default function StudentDashboard() {
           .select("id, name")
           .in("id", ids);
         const map: Record<string, string> = {};
-        for (const row of data ?? []) {
-          const id = String((row as any)?.id ?? "");
-          const name = String((row as any)?.name ?? "");
+        for (const row of (data ?? []) as Array<{ id: string; name: string }>) {
+          const id = String(row?.id ?? "");
+          const name = String(row?.name ?? "");
           if (id) map[id] = name;
         }
         setCompanyNameById(map);
@@ -476,22 +498,20 @@ export default function StudentDashboard() {
         ) : (
           <Card>
             <CardContent className="divide-y px-0">
-              {recentAttempts.map((attempt, idx) => {
-                const quizRel = attempt.quizzes;
-                const title =
-                  (Array.isArray(quizRel)
-                    ? quizRel[0]?.title
-                    : quizRel?.title) ?? "Untitled Quiz";
+              {recentAttempts.map((attempt) => {
+                const subjectName = attemptSubjectNames[attempt.subject_ids?.[0]] ?? "";
+                const modeLabel = attempt.mode.replace("_", " ");
+                const title = subjectName ? `${modeLabel} · ${subjectName}` : modeLabel;
                 const score = attempt.score ?? 0;
                 return (
                   <div
-                    key={idx}
+                    key={attempt.id}
                     className="flex items-center justify-between px-6 py-3 text-sm"
                   >
                     <div className="min-w-0">
-                      <p className="truncate font-medium">{title}</p>
+                      <p className="truncate font-medium capitalize">{title}</p>
                       <p className="text-xs text-muted-foreground">
-                        {formatDate(attempt.created_at)}
+                        {formatDate(attempt.completed_at)}
                       </p>
                     </div>
                     <span
