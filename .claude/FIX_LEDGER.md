@@ -16,7 +16,7 @@ runner may touch it — the runner refuses and errors, it does not skip silently
 
 | CP id | status | commit SHA | date | note |
 |---|---|---|---|---|
-| CP-01 | pending | | | Decided: allow-list, not block-list — self-service column allow-list starts EMPTY (profile UI is read-only today, no live feature needs student-writable columns); "own profile" UPDATE policy permits row-match only, zero columns writable by non-admin; admin/superadmin unchanged. Adding a future self-service field (e.g. full_name) is a small separate follow-up once a real editing feature exists. HALT checkpoint — still needs Dhruv's go-ahead on live-DB timing before the migration is applied. |
+| CP-01 | blocked |  | 2026-08-17 | Migration file drafted: `supabase/migrations/20260817000000_profiles_self_service_column_allowlist.sql` (BEFORE UPDATE trigger, empty self-service allow-list; exempts service_role and superadmin/dept_admin). NOT applied to live DB, NOT committed (guard hook (C) refuses any commit staging `supabase/migrations/**` — must be committed by hand after Dhruv applies it). HALT — awaiting Dhruv's review of the SQL and go-ahead on live-DB timing. |
 | CP-02 | pending | | | |
 | CP-03 | pending | | | |
 | CP-04 | pending | | | |
