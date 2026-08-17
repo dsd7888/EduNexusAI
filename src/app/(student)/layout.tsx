@@ -85,7 +85,7 @@ function SidebarContent({
         )}
         <button
           type="button"
-          className="inline-flex size-8 items-center justify-center rounded-md border bg-background text-muted-foreground hover:bg-muted lg:hidden"
+          className="inline-flex min-h-11 min-w-11 items-center justify-center rounded-md border bg-background text-muted-foreground hover:bg-muted lg:hidden"
           onClick={onNavigate}
           aria-label="Close menu"
         >
@@ -149,7 +149,7 @@ export default function StudentLayout({ children }: LayoutProps) {
       <div className="fixed inset-x-0 top-0 z-30 flex items-center justify-between border-b bg-background/80 px-4 py-3 backdrop-blur lg:hidden">
         <button
           type="button"
-          className="inline-flex size-9 items-center justify-center rounded-md border bg-background text-muted-foreground hover:bg-muted"
+          className="inline-flex min-h-11 min-w-11 items-center justify-center rounded-md border bg-background text-muted-foreground hover:bg-muted"
           onClick={() => setMobileMenuOpen(true)}
           aria-label="Open menu"
         >

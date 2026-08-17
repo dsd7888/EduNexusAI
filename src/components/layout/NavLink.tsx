@@ -35,7 +35,7 @@ export function NavLink({
       onClick={onNavigate}
       title={collapsed && typeof children === "string" ? children : undefined}
       className={cn(
-        "flex items-center gap-2 rounded-md px-3 py-2 text-sm transition-colors",
+        "flex min-h-11 items-center gap-2 rounded-md px-3 py-2 text-sm transition-colors",
         collapsed && "justify-center px-2",
         isActive
           ? "bg-accent font-medium text-accent-foreground"

@@ -88,7 +88,7 @@ export function ChatHeader({
             onClick={() => setMenuOpen((v) => !v)}
             aria-label="More actions"
             aria-expanded={menuOpen}
-            className="flex h-8 w-8 items-center justify-center rounded-md border border-border text-muted-foreground hover:bg-accent hover:text-accent-foreground"
+            className="flex min-h-11 min-w-11 items-center justify-center rounded-md border border-border text-muted-foreground hover:bg-accent hover:text-accent-foreground"
           >
             <MoreVertical className="h-4 w-4" />
           </button>
@@ -102,7 +102,7 @@ export function ChatHeader({
                   setMenuOpen(false);
                   onExport();
                 }}
-                className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-popover-foreground hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
+                className="flex min-h-11 w-full items-center gap-2 px-3 py-2 text-left text-sm text-popover-foreground hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
               >
                 {isExporting ? (
                   <Loader2 className="h-3.5 w-3.5 animate-spin" />
@@ -117,7 +117,7 @@ export function ChatHeader({
                   setMenuOpen(false);
                   onStartFresh();
                 }}
-                className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-popover-foreground hover:bg-accent"
+                className="flex min-h-11 w-full items-center gap-2 px-3 py-2 text-left text-sm text-popover-foreground hover:bg-accent"
               >
                 <RotateCcw className="h-3.5 w-3.5" />
                 New session
