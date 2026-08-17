@@ -1,0 +1,5 @@
+student_placement_profiles -> student_id=d4a32a8a-cc85-4ac2-bd14-ea6896ec150a email=teststudent@gmail.com
+placement_topic_mastery -> student_id=d4a32a8a-cc85-4ac2-bd14-ea6896ec150a email=teststudent@gmail.com
+placement_question_attempts -> student_id=d4a32a8a-cc85-4ac2-bd14-ea6896ec150a email=teststudent@gmail.com
+practice_attempts -> student_id=d4a32a8a-cc85-4ac2-bd14-ea6896ec150a email=teststudent@gmail.com
+practice_attempts -> student_id=0a1f9e22-2afb-4c80-8446-85f67bf384ba email=teststudent2@gmail.com

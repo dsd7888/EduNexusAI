@@ -1,0 +1,63 @@
+EduNexus AI
+Study Notes -- AU-EXPORTS Stress Test
+
+
+
+Mechanics of Vibrations
+Module 1 - Stress Doc
+
+
+
+
+Module 1: Vibrations
+
+  Stress Concept -- Sample text with symbols: A B, P Q, damping and , em--dash,
+  caf
+A concept block carrying unicode: Sample text with symbols: A B, P Q, damping and , em--dash, caf and
+inline math                            .
+
+
+                                    and chemistry
+
+
+
+Appears in every mechanics/vibrations exam.
+SHM - damping
+
+
+
+
+  Damped Harmonic Oscillator
+
+
+
+
+ Symbol                                     Meaning                                     Unit
+                                            angular frequency                           rad/s
+                                            damping ratio (unicode )                    -
+
+Example
+A Sample text with symbols: A B, P Q, damping and , em--dash, caf. Given the table below: | Trial | Load (N) |
+Deflection (mm) | Stress (MPa) | Remarks | |---|---|---|---|---| | 1 | 100 | 0.42 | 12.5 | within limit | | 2 | 200 | 0.88 |
+25.1 | within limit | | 3 | 300 | 1.31 | 37.8 | within limit | | 4 | 400 | 1.79 | 50.2 | near yield | | 5 | 500 | 2.35 | 62.9 |
+yield onset | | 6 | 600 | 3.02 | 75.4 | plastic | | 7 | 700 | 3.91 | 88.0 | plastic | | 8 | 800 | 5.20 | 100.6 | necking | | 9 |
+900 | 7.10 | 113.1 | necking | | 10 | 1000 | 9.85 | 125.7 | fracture | Find deflection at 500N using                              .
+
+Applying                                    and the boundary condition                              , and the reaction
+
+
+
+, we solve the system                                   to get the deflection.
+
+Applies when:
+
+Valid when                           is non-singular.
+ Damping Regimes
+
+                    Condition   Formula   Behaviour
+Underdamped                               Sample text with symbols:
+                                          A B, P Q, damping and ,
+                                          em--dash, caf
+Critically damped                         fastest return
+Overdamped                                no oscillation
+

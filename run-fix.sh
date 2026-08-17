@@ -21,6 +21,11 @@
 #   ./run-fix.sh                  # run all checkpoints from the start
 #   ./run-fix.sh CP-12            # RESUME: skip everything before CP-12
 #   ./run-fix.sh --one CP-12      # run EXACTLY CP-12, then stop
+#   ./run-fix.sh --yes            # skip the ENTER-to-continue prompt between checkpoints
+#
+# After EVERY checkpoint (not just HALT ones), the runner prints a short summary
+# (status, SHA if committed) and waits for ENTER before starting the next one,
+# unless --yes is passed. --yes may be combined with --one or a resume CP-id.
 # -----------------------------------------------------------------------------
 set -uo pipefail
 
@@ -72,12 +77,18 @@ CHECKPOINTS=(
 
 # ---- arg parsing --------------------------------------------------------------
 ONE_MODE=false
-if [ "${1:-}" = "--one" ]; then
-  ONE_MODE=true
-  START_FROM="${2:-}"
-  [ -n "$START_FROM" ] || { echo "--one requires a CP-id, e.g. ./run-fix.sh --one CP-12"; exit 1; }
-else
-  START_FROM="${1:-}"
+YES_MODE=false
+POSITIONAL=()
+for arg in "$@"; do
+  case "$arg" in
+    --one) ONE_MODE=true ;;
+    --yes) YES_MODE=true ;;
+    *) POSITIONAL+=("$arg") ;;
+  esac
+done
+START_FROM="${POSITIONAL[0]:-}"
+if [ "$ONE_MODE" = true ] && [ -z "$START_FROM" ]; then
+  echo "--one requires a CP-id, e.g. ./run-fix.sh --one CP-12"; exit 1
 fi
 
 # ---- preflight --------------------------------------------------------------
@@ -212,19 +223,24 @@ End with a 3-bullet summary including the commit SHA."
   fi
 
   HEAD_AFTER="$(git rev-parse HEAD)"
+  RESULT_SHA="(none)"
   if [ "$HEAD_BEFORE" = "$HEAD_AFTER" ]; then
     echo "NOTE: no new commit landed for $CP."
     echo "      Either it stopped on purpose (e.g. migration pending, HALT awaiting approval) or under-delivered."
     echo "      Inspect $LOG and .claude/PROGRESS.md before continuing."
     ledger_update "$CP" "pending" "" "$TODAY" "no commit landed — see $LOG and PROGRESS.md"
+    RESULT_STATUS="pending"
     read -r -p "ENTER to continue anyway, or Ctrl+C to stop and investigate: "
   else
     echo "committed: $HEAD_AFTER"
     git --no-pager show --stat "$HEAD_AFTER" | head -30
+    RESULT_SHA="$HEAD_AFTER"
     if [ "$HALT" = "yes" ]; then
       ledger_update "$CP" "halted-review" "$HEAD_AFTER" "$TODAY"
+      RESULT_STATUS="halted-review"
     else
       ledger_update "$CP" "done" "$HEAD_AFTER" "$TODAY"
+      RESULT_STATUS="done"
     fi
   fi
 
@@ -233,12 +249,19 @@ End with a 3-bullet summary including the commit SHA."
     echo "HALT GATE — $CP  (this checkpoint is committed locally but NOT pushed)"
     echo "  Review:  git show $HEAD_AFTER   and .claude/PROGRESS.md's entry for this checkpoint."
     read -r -p "ENTER to push $CP to dev and continue, or Ctrl+C to stop: "
-    git push origin dev && { echo "pushed $CP to dev."; ledger_update "$CP" "done" "$HEAD_AFTER" "$(date +%Y-%m-%d)"; }
+    git push origin dev && { echo "pushed $CP to dev."; ledger_update "$CP" "done" "$HEAD_AFTER" "$(date +%Y-%m-%d)"; RESULT_STATUS="done"; }
   fi
+
+  echo ""
+  echo "---- $CP finished: status=$RESULT_STATUS sha=$RESULT_SHA ----"
 
   if [ "$ONE_MODE" = true ]; then
     echo "One-shot mode: stopping after $CP."
     break
+  fi
+
+  if [ "$YES_MODE" = false ]; then
+    read -r -p "ENTER to continue to the next checkpoint, or Ctrl+C to stop: "
   fi
 done
 

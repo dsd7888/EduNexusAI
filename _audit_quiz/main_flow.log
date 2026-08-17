@@ -1,0 +1,47 @@
+
+══════════════════════════════════════════════════════════════════════════════
+A. HAPPY PATH — quick mode, bank-sourced MCQ
+══════════════════════════════════════════════════════════════════════════════
+  ✓ quick generate 200 — status=200 body={"sessionId":"6e1da578-4163-4fba-9dc1-22cbfb40bdf3","mode":"quick","preset":null,"immediateFeedback":true,"timeLimitMinutes":null,"negativeMarking":false,"totalMarks":5,"questions":[{"slotId":"S1","question":"Which of the following number systems is commonly used for representing memory addresses an
+  ✓ questions.length === 5 — got 5
+  ✗ sourcing shows bank not ai_fresh (cost check) — {"totalSlots":5,"bySubject":{"b862c433-29d1-4e43-ac54-4a1369a7f195":5},"byModule":{"55cd3c57-3bb3-4a5c-8630-594bdde6b966":1,"45b3d30e-047c-41aa-a5cc-f060dfffe92b":1,"9998766d-406f-4b74-a1c4-cdcde97bb08d":1,"c67cc156-36ee-4fe3-88cb-fc3f4632859b":1,"75ac59a7-ed74-4738-a09e-c78a205f050f":1},"byDifficulty":{"easy":2,"medium":2,"hard":1},"byType":{"mcq":5},"adaptiveApplied":false,"warnings":[],"fromBank":5,"fromAi":0,"natVerified":0,"natDiscarded":0,"natAgreement":{"compared":0,"agreed":0,"boolTrueNumericFalse":0,"boolFalseNumericTrue":0}}
+  ✓ questions are student-safe (no correctAnswer leaked) — checked all
+  ✓ answer q0 200 with feedback — {"slotId":"S1","isCorrect":false,"correctAnswer":"C","explanation":"Hexadecimal numbers have a base of 16, making them suitable for compactly representing binary data like memory addresses. Binary has
+  ✓ answer q1 200 with feedback — {"slotId":"S2","isCorrect":false,"correctAnswer":"C","explanation":"Booth's algorithm is a well-known multiplication algorithm that handles both positive and negative numbers efficiently, making it a 
+
+──────────────────────────────────────────────────────────────────────
+B. RESUME — GET session mid-flight
+──────────────────────────────────────────────────────────────────────
+  ✓ resume 200
+  ✓ answeredSlots length === 2 — [{"slotId":"S1","studentAnswer":"A","timeTakenSeconds":5,"isCorrect":false,"correctAnswer":"C","explanation":"Hexadecimal numbers have a base of 16, making them suitable for compactly representing binary data like memory addresses. Binary has a base of 2, Decimal a base of 10, and Octal a base of 8."},{"slotId":"S2","studentAnswer":"A","timeTakenSeconds":5,"isCorrect":false,"correctAnswer":"C","explanation":"Booth's algorithm is a well-known multiplication algorithm that handles both positive and negative numbers efficiently, making it a common choice in computer arithmetic."}]
+  ✓ submit 200 — {"sessionId":"6e1da578-4163-4fba-9dc1-22cbfb40bdf3","mode":"quick","score":1,"totalMarks":5,"correctCount":1,"wrongCount":4,"unansweredCount":0,"negativeMarksApplied":0,"perQuestionResults":[{"slotId":"S1","questionIndex":0,"isCorrect":false,"marksAwarded":0,"studentAnswer":"A","correctAnswer":"C","
+  ✓ quick mode returns masteryDeltas — [{"subjectId":"b862c433-29d1-4e43-ac54-4a1369a7f195","moduleId":"55cd3c57-3bb3-4a5c-8630-594bdde6b966","attemptsBefore":0,"attemptsAfter":1,"accuracyBefore":null,"accuracyAfter":0,"difficultyBefore":"easy","difficultyAfter":"easy","promoted":false,"demoted":false},{"subjectId":"b862c433-29d1-4e43-ac54-4a1369a7f195","moduleId":"45b3d30e-047c-41aa-a5cc-f060dfffe92b","attemptsBefore":0,"attemptsAfter":1,"accuracyBefore":null,"accuracyAfter":0,"difficultyBefore":"easy","difficultyAfter":"easy","promoted":false,"demoted":false},{"subjectId":"b862c433-29d1-4e43-ac54-4a1369a7f195","moduleId":"9998766d-406f-4b74-a1c4-cdcde97bb08d","attemptsBefore":0,"attemptsAfter":1,"accuracyBefore":null,"accuracyAfter":0,"difficultyBefore":"easy","difficultyAfter":"easy","promoted":false,"demoted":false},{"subjectId":"b862c433-29d1-4e43-ac54-4a1369a7f195","moduleId":"c67cc156-36ee-4fe3-88cb-fc3f4632859b","attemptsBefore":0,"attemptsAfter":1,"accuracyBefore":null,"accuracyAfter":1,"difficultyBefore":"easy","difficultyAfter":"easy","promoted":false,"demoted":false},{"subjectId":"b862c433-29d1-4e43-ac54-4a1369a7f195","moduleId":"75ac59a7-ed74-4738-a09e-c78a205f050f","attemptsBefore":0,"attemptsAfter":1,"accuracyBefore":null,"accuracyAfter":0,"difficultyBefore":"easy","difficultyAfter":"easy","promoted":false,"demoted":false}]
+  ✓ quick mode DID mutate student_topic_mastery — before=0 after=5
+  ✓ re-submit completed session -> 409 — status=409
+
+──────────────────────────────────────────────────────────────────────
+C. AUTHORIZATION — student2 hitting student1's session
+──────────────────────────────────────────────────────────────────────
+  ✓ cross-student GET session -> 403 — status=403 body={"error":"Forbidden"}
+  ✓ cross-student POST answer -> 403 — status=403
+  ✓ cross-student POST submit -> 403 — status=403
+  ✓ nonexistent session -> 404 — status=404
+
+══════════════════════════════════════════════════════════════════════════════
+D. MALFORMED / BOUNDARY INPUT
+══════════════════════════════════════════════════════════════════════════════
+  ✓ empty subjectIds -> 400 — status=400
+  ✓ huge questionCount clamped, not 500/hang — status=200 count=20
+  ✓ huge questionCount clamped to mode max (20) — got 20
+  ✓ negative questionCount doesn't crash — status=200
+  ✗ SQL-ish subjectId doesn't 500 / doesn't crash — status=500 body={"error":"Internal server error"}
+  ✓ malformed JSON body doesn't 500 — status=400
+  ✓ empty slotId -> 400 — status=400
+
+HAPPY-PATH/AUTH/BOUNDARY DONE. sessionId=6e1da578-4163-4fba-9dc1-22cbfb40bdf3
+SUBJECT_ID=b862c433-29d1-4e43-ac54-4a1369a7f195
+
+[cleanup s1] deleted student cp-harness-496bf044@edunexus-harness.invalid (3 session(s))
+[cleanup s2] deleted student cp-harness-9588dde3@edunexus-harness.invalid (0 session(s))
+
+SUMMARY: 21 passed, 2 failed

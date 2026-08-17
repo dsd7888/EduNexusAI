@@ -157,14 +157,34 @@ not a generated quiz (was: 200 + 5 real questions).
 
 ## S1 (non-security)
 
-### CP-11 — Notes v2 cold-start generation path
+### CP-11 — Notes v2 cold-start generation path — **DECIDED: student-triggered, no faculty path**
 **Files:** `src/app/(student)/student/notes/[subjectId]/page.tsx` (ErrorState), likely a new
 orchestration point calling `generateModuleNotes` per uncovered module.
-**Decision confirmed:** student-triggered only — there is no faculty-provisioned notes
-generation flow and none is planned. The "Generate notes" button calls `generateModuleNotes`
-for each uncovered module, gated by the existing `notes_view` rate limit.
+**Decision (confirmed by Dhruv):** there is no faculty-provisioned notes flow and none is
+planned — Short Notes is a student-purpose feature, distinct from faculty course-material
+generation. Wire the existing "Generate notes" button to call `generateModuleNotes` for each
+uncovered module in the subject, gated by the existing `notes_view` rate limit.
 **Verify:** a real zero-notes subject, click "Generate notes," confirm `study_notes` rows
 appear and the page renders real content (was: 0 rows, infinite loop).
+
+```
+Prompt: "Wire up Notes v2 cold-start generation. Read CLAUDE_CONTEXT.md first.
+The student notes page (src/app/(student)/student/notes/[subjectId]/page.tsx) shows an
+ErrorState with a 'Generate notes' button when a subject has zero study_notes rows, but the
+button just re-fetches GET /api/notes/subject/:id, which by design only assembles
+already-fresh rows and never generates missing ones. The only function that actually generates
+(generateModuleNotes in src/lib/notes/generator.ts) is currently reachable only via
+GET /api/notes/module/:moduleId, called by no UI anywhere.
+Fix: give the 'Generate notes' button a real action — on click, call generateModuleNotes for
+each module in the subject that has no fresh row (loop or a new lightweight endpoint that does
+the loop server-side, your call on which is cleaner given the existing code shape), gated by
+the existing notes_view rate limit so this can't become a cost hole. This is student-triggered
+only — there is no faculty-provisioned generation flow for this feature and none should be
+added.
+Verify: pick a real subject with zero study_notes rows, click 'Generate notes' in a live
+browser session, confirm study_notes rows appear in the DB and the page renders real content
+(not the same error state looping). tsc/eslint/build clean, commit SHA, confirm push."
+```
 
 ### CP-12 — Quiz export + dashboard dead-table cleanup
 **Files:** `api/quiz/export/route.ts` (rebuild against `quiz_sessions`), `ResultCtas.tsx` (wire
@@ -327,8 +347,7 @@ genuinely multi-file — scope as its own checkpoint cluster when you're ready, 
 | CP | Finding | File(s) | Note |
 |---|---|---|---|
 | 28 | Chat PDF markdown tables garbled | `PDFBuilder.markdown()` in `src/lib/pdf/builder.ts` | Give it a real table renderer (grid + cells) |
-| 29a | Dark mode unreachable app-wide — infra | none exist — `next-themes`/toggle | Wire a real, persisted toggle mechanism (`next-themes` or equivalent) only. Scope excludes adding new `dark:` classes to unstyled pages — that's CP-29b+. |
-| 29b+ | Per-surface dark-class coverage | pages/components lacking `dark:` classes | Deferred — bundle with CP-27/CP-38's DESIGN.md token migration rather than run separately; schedule when those are scoped. |
+| 29a | Dark mode — infra | new: theme provider/toggle | **DECIDED: ship a real toggle.** See CP-29a spec below. Split from full-coverage work (CP-29b+) since those are design-migration-scale, not a toggle add-on. |
 | 30 | No chat double-submit guard | `api/chat/route.ts` | Backlog — only act if double-submits show up in production telemetry, per the audit's own framing |
 | 31 | Generic PDF branding (Tailwind-blue/Helvetica) | `src/lib/pdf/builder.ts` `COLORS`, font embedding | Swap to DESIGN.md hex values + IBM Plex via `fontkit`; fixes every PDF export at once, good ROI, bundle with CP-16b (same file) |
 | 32 | Formula `symbol` field holds full phrases | `src/lib/notes/prompts.ts` `FORMULA_SCHEMA` | Add a bad-example pair, low priority |
@@ -338,6 +357,56 @@ genuinely multi-file — scope as its own checkpoint cluster when you're ready, 
 | 36 | Duplicate `ResumeProject`/etc. type declarations | `src/types/placement.ts:101-128` vs `:369-437` | Delete the first block, keep the second (the one actually used) |
 | 37 | No `prefers-reduced-motion` handling | `src/app/globals.css` | One global media-query rule |
 | 38 | Design migration: Resume/JD/Interview-bank/Projects pages | those 4 page files | Large — pairs with CP-27, own initiative |
+
+---
+
+### CP-29a — Dark mode infrastructure — **DECIDED: ship a real toggle**
+**Files:** new — a theme provider (`next-themes` or an equivalent class-on-`<html>` toggler),
+a toggle control (placed in the shell nav, e.g. near `UserProfile`/`LogoutButton` in
+`(student)/layout.tsx`), persistence (localStorage is sufficient per DESIGN.md's own note).
+**Scope, deliberately bounded to infra only:** wire the mechanism and prove it works on the one
+surface that's *already* dark-mode-styled and just unreachable — CLAUDE_CONTEXT/AU-CHAT confirm
+DESIGN.md's `.dark` class variant, `ring-paper` focus states, and CP-D0's flashcard dark-surface
+layering already exist in the codebase, they're just never toggled on. Do NOT attempt to add
+dark-mode classes to pages that don't have them yet (dashboard/subjects/profile/history, most of
+placement) — that's CP-29b+ below, intentionally deferred.
+**Note:** Flashcards is *always*-dark by design (AU-FLASH: "deliberately always-night regardless
+of the system/app color scheme") — confirm the new toggle doesn't fight that page; it should
+stay pinned dark regardless of the global toggle state, not become themeable.
+**Verify:** toggle switches `.dark` on `<html>`, persists across reload, and any surface that
+already has `dark:`-variant Tailwind classes (check via grep for `dark:` usage before/after —
+this tells you which surfaces CP-29b needs to cover) visibly changes. Flashcards stays dark
+regardless of toggle state.
+
+```
+Prompt: "Ship dark-mode infrastructure. Read CLAUDE_CONTEXT.md and DESIGN.md first.
+Tailwind's dark variant here is class-based (globals.css: @custom-variant dark (&:is(.dark *))),
+not prefers-color-scheme-based, and no toggle exists anywhere in the app — grep confirms zero
+next-themes/ThemeProvider usage.
+Fix: wire a real theme mechanism (next-themes is fine, or an equivalent minimal class-on-<html>
+toggler if you'd rather avoid the dependency) with a toggle control placed in the student shell
+nav (near the UserProfile/LogoutButton area in src/app/(student)/layout.tsx), persisted via
+localStorage.
+Scope check before you start: grep for `dark:` Tailwind variant usage across src/app and
+src/components — report which surfaces already have dark-mode classes ready to go (expect:
+some of chat, flashcards' CP-D0 work) vs. which have none (expect: dashboard/subjects/
+profile/history, most of placement). Do NOT add new dark: classes to any page that doesn't
+already have them — that's separate follow-up work, out of scope for this checkpoint.
+Important: src/app/(student)/student/notes/[subjectId]/flashcards/page.tsx is deliberately
+ALWAYS dark regardless of system/app color scheme (documented behavior, not a bug) — confirm
+the new toggle does not make this page themeable; it should stay pinned to dark mode
+independent of the global toggle.
+Verify: toggle switches .dark on <html>, persists across a reload, surfaces with existing
+dark: classes visibly respond, flashcards stays dark regardless of toggle position.
+tsc/eslint/build clean, commit SHA, confirm push."
+```
+
+### CP-29b+ — Dark mode full coverage (backlog, run after CP-27)
+Per-surface dark-class coverage for dashboard/subjects/profile/history, quiz, and the
+un-migrated placement pages. Deliberately bundled with CP-27/CP-38 (the DESIGN.md token
+migration) rather than run separately — a page picking up its ink/ochre/Plex tokens and its
+dark-mode classes should happen in the same pass, not two. Scope each sub-checkpoint by feature
+area when CP-27 is scheduled.
 
 ---
 

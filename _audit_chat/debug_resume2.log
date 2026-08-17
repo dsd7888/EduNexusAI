@@ -1,0 +1,12 @@
+created session 7ff9a032-20d7-42af-90db-1fac39c287e7 at 2026-08-16T15:36:37.948887+00:00
+insert error: none
+admin can see 2 messages via service role
+[browser console] info: %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold
+[browser console] log: [HMR] connected
+[response] 200 http://localhost:3000/api/chat/session
+[response] 200 https://rdtipzxxrjszjxirtbzd.supabase.co/rest/v1/chat_sessions?select=created_at&id=eq.7ff9a032-20d7-42af-90db-1fac39c287e7
+[response] 200 https://rdtipzxxrjszjxirtbzd.supabase.co/rest/v1/chat_messages?select=id%2Crole%2Ccontent%2Ccreated_at&session_id=eq.7ff9a032-20d7-42af-90db-1fac39c287e7&order=created_at.desc&limit=20
+--- shows 'debug question'? --- true
+--- shows 'Resumed'? --- true
+--- shows suggestion grid text (empty state)? --- false
+cleanup done

@@ -1,0 +1,15 @@
+signed in as cp-audit-ui-833bb298@edunexus-harness.invalid, cookies: sb-rdtipzxxrjszjxirtbzd-auth-token
+seeded session b9de7809-cf8d-4cae-88e1-e91a5d0a96b5 with 2 messages
+wrote _audit_chat/screenshots/chat-desktop-light.png
+  desktop aside visible=true, collapse-labeled buttons found=0
+  composer boundingBox={"x":293,"y":615,"width":950,"height":36} viewportHeight=800
+  gap between composer bottom and viewport bottom = 149px
+  document.scrollHeight=800 vs viewport 800 (extra=0)
+wrote _audit_chat/screenshots/chat-desktop-dark.png
+  desktop aside visible=true, collapse-labeled buttons found=0
+  composer boundingBox={"x":293,"y":615,"width":950,"height":36} viewportHeight=800
+  gap between composer bottom and viewport bottom = 149px
+  document.scrollHeight=800 vs viewport 800 (extra=0)
+wrote _audit_chat/screenshots/chat-mobile-light.png
+wrote _audit_chat/screenshots/chat-mobile-dark.png
+cleanup done

@@ -1,0 +1,122 @@
+
+══════════════════════════════════════════════════════════════════════════════
+AU-PLACE-CORE — setup
+══════════════════════════════════════════════════════════════════════════════
+student: cp-harness-1ea329ec@edunexus-harness.invalid 134ee332-0fc6-4c7e-945f-9e7e5910c86d
+  ✓ profile setup POST succeeds — status=200
+
+══════════════════════════════════════════════════════════════════════════════
+1. prep/generate — correct_answer exposure (fill_code mix topic)
+══════════════════════════════════════════════════════════════════════════════
+  ✓ generate 200 — status=200 ms=11210
+source: generated question_count: 8
+mcq: 4 fill_code: 4
+  ✓ correct_answer field present in generate response for >=1 question (client can read it before answering) — leaked 8/8
+sample question keys: [
+  'id',            'track',
+  'topic',         'topic_bucket',
+  'difficulty',    'question_text',
+  'options',       'correct_answer',
+  'explanation',   'times_served',
+  'times_correct', 'avg_time_seconds',
+  'quality_score', 'company_context',
+  'generated_at',  'is_active',
+  'question_type', 'code_context'
+]
+sample question: {
+  "id": "7de9dd42-6e4c-474f-a663-07d62b061566",
+  "track": "domain",
+  "topic": "SQL Queries & Joins",
+  "topic_bucket": "sql_queries_joins",
+  "difficulty": "easy",
+  "question_text": "Which SQL keyword is used to retrieve data from a database?",
+  "options": [
+    {
+      "key": "A",
+      "text": "GET"
+    },
+    {
+      "key": "B",
+      "text": "SELECT"
+    },
+    {
+      "key": "C",
+      "text": "FETCH"
+    },
+    {
+      "key": "D",
+      "text": "EXTRACT"
+    }
+  ],
+  "correct_answer": "B",
+  "explanation": "The SELECT statement is used to retrieve data from one or more tables in a database. The other options are not standard SQL keywords for data retrieval. The correct answer is B.",
+  "times_served": 0,
+  "times_correct": 0,
+  "avg_time_seconds": null,
+  "quality_score": null,
+  "company_context": null,
+  "generated_at": "2026-08-16T17:22:10.634918+00:00",
+  "is_active": true,
+  "question_type": "mcq",
+  "code_context": null
+}
+
+══════════════════════════════════════════════════════════════════════════════
+2. prep/submit — server trust of client-supplied is_correct
+══════════════════════════════════════════════════════════════════════════════
+mastery BEFORE forged submit: null
+  ✓ forged submit 200 — status=200
+submit response: {"mastery":{"id":"544a38c7-5b10-45aa-bd4f-b93b1f142bf4","student_id":"134ee332-0fc6-4c7e-945f-9e7e5910c86d","track":"domain","topic":"SQL Queries & Joins","attempts_count":8,"correct_count":8,"sessions_count":1,"recent_accuracy":100,"current_difficulty":"easy","last_practiced_at":"2026-08-16T17:22:14.061+00:00","updated_at":"2026-08-16T17:22:14.40122+00:00"},"difficulty_changed":false,"new_difficulty":"easy","readiness_updated":true,"warnings":[]}
+mastery AFTER forged submit: {"id":"544a38c7-5b10-45aa-bd4f-b93b1f142bf4","student_id":"134ee332-0fc6-4c7e-945f-9e7e5910c86d","track":"domain","topic":"SQL Queries & Joins","attempts_count":8,"correct_count":8,"sessions_count":1,"recent_accuracy":100,"current_difficulty":"easy","last_practiced_at":"2026-08-16T17:22:14.061+00:00","updated_at":"2026-08-16T17:22:14.40122+00:00"}
+  ✓ SERVER DID NOT catch the forgery — recent_accuracy reflects the LIE (100%), not the true 0% (every selected_answer was wrong) — recent_accuracy=100
+profile readiness AFTER forged submit: {"readiness_domain":100,"readiness_overall":15}
+  ✓ readiness_domain inflated by forged attempts (>0 despite every answer being wrong) — readiness_domain=100
+
+══════════════════════════════════════════════════════════════════════════════
+3. prep/submit — malformed & boundary input
+══════════════════════════════════════════════════════════════════════════════
+  ✓ 21 attempts rejected (>20 cap) — status=400
+  ✓ invalid track 'coding' rejected — status=400
+  ✗ SQL-injection-shaped topic handled without 500 — status=500
+  ✓ 5000-char topic rejected (>100 char cap) — status=400
+
+══════════════════════════════════════════════════════════════════════════════
+4. prep/submit — concurrent double-submit of identical session
+══════════════════════════════════════════════════════════════════════════════
+concurrent submit statuses: 200 200
+sessions_count before=1 after=2 (both calls sent the SAME session's answers)
+  ✓ both concurrent submits accepted 200 (no idempotency key on session submission) — r1=200 r2=200
+  ✗ sessions_count incremented by 2 for what the UI treats as ONE session (double count on double-fire) — delta=1
+
+══════════════════════════════════════════════════════════════════════════════
+5. Authorization — mastery/profile scoping (positive control)
+══════════════════════════════════════════════════════════════════════════════
+  ✓ mastery GET 200
+  ✓ every mastery row belongs to the calling student (no cross-student leak via unscoped query)
+
+══════════════════════════════════════════════════════════════════════════════
+6. Orphaned legacy company-test + practice-module routes — still functional?
+══════════════════════════════════════════════════════════════════════════════
+new-schema companies: 8 drives: 0
+OLD placement_companies table: 5 rows [{"id":"913d1c8f-d028-4b77-be0b-76b813b89ebd","name":"TCS","branches":["Mechanical","Chemical","Computer Science","Electronics","Electrical","Civil","Information Technology"]},{"id":"0e730aa9-abdc-4084-baaf-40beae625032","name":"Infosys","branches":["Mechanical","Chemical","Computer Science","Electronics","Electrical","Civil","Information Technology"]}]
+  ✗ api/placement/submit accepts entirely client-fabricated questions+answers (never called generate) and returns 100% — status=500 score=undefined
+  ✓ api/placement/practice/submit accepts entirely client-fabricated questions+answers and returns 100% — status=200 score=100
+
+══════════════════════════════════════════════════════════════════════════════
+7. prep/generate — degenerate/edge inputs
+══════════════════════════════════════════════════════════════════════════════
+  ✓ whitespace-only topic rejected — status=400
+  ✓ invalid track rejected on generate — status=400
+injection-flavored topic status: 200
+  ✓ injection-flavored topic does not leak system prompt into a generated question
+sample generated question_text: If the cost price of 10 articles is equal to the selling price of 8 articles, find the profit percentage.
+
+══════════════════════════════════════════════════════════════════════════════
+SUMMARY
+══════════════════════════════════════════════════════════════════════════════
+passed=16 failed=3
+
+══════════════════════════════════════════════════════════════════════════════
+CLEANUP
+══════════════════════════════════════════════════════════════════════════════
+cleanup: deleted student cp-harness-1ea329ec@edunexus-harness.invalid (0 session(s))

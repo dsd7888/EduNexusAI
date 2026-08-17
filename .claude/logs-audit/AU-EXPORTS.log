@@ -1,0 +1,5 @@
+Committed locally to `dev` (not pushed, per instructions — the guard blocks push unless the runner explicitly allows it for this checkpoint).
+
+- **S1: 2** — PPT "svg" diagram slides (the default diagram type) embed a broken PNG fallback that's actually raw SVG bytes mislabeled, breaking in any viewer without Office-2016+ SVG support; Notes PDF silently deletes unsupported Unicode (Devanagari/emoji/math symbols) with zero trace, while the sibling Q Paper PDF at least shows a visible `?` for the same input.
+- **S2: 2** — Notes PDF's worked-example text doesn't parse markdown tables (renders as raw pipe-syntax, unlike the rest of the same document); Q Paper PDF can orphan a question's marks/CO/BTL/PO header across a page break from its own content and tag values.
+- **Most important finding**: the PPT SVG-fallback bug — SVG is the *default* diagram render type, so this silently breaks the platform's signature AI-diagram feature the moment a generated deck opens on any machine without the newest Office SVG extension, with nothing on the slide signaling the failure.

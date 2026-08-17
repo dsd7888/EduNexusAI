@@ -1,0 +1,35 @@
+
+══════════════════════════════════════════════════════════════════════════════
+E. NAT GRADING — right and wrong numeric input
+══════════════════════════════════════════════════════════════════════════════
+  ✓ NAT generate 200 — status=200 sourcing={"totalSlots":5,"bySubject":{"b862c433-29d1-4e43-ac54-4a1369a7f195":5},"byModule":{"55cd3c57-3bb3-4a5c-8630-594bdde6b966":1,"45b3d30e-047c-41aa-a5cc-f060dfffe92b":1,"9998766d-406f-4b74-a1c4-cdcde97bb08d":1,"c67cc156-36ee-4fe3-88cb-fc3f4632859b":1,"75ac59a7-ed74-4738-a09e-c78a205f050f":1},"byDifficulty":{"easy":2,"medium":2,"hard":1},"byType":{"nat":5},"adaptiveApplied":false,"warnings":[],"natDegraded":{"requested":5,"delivered":5,"reason":null,"affectedModules":[]},"fromBank":0,"fromAi":5,"natVerified":5,"natDiscarded":0,"natAgreement":{"compared":5,"agreed":5,"boolTrueNumericFalse":0,"boolFalseNumericTrue":0}}
+  ✓ NAT questions produced (verifier didn't discard all) — got 5, warnings=[]
+  ✓ NAT wrong numeric -> isCorrect:false — {"slotId":"S1","isCorrect":false,"correctAnswer":"64","explanation":"The number of unique operations is determined by the number of bits in the opcode. With 6 bits for the opcode, the number of unique operations is $2^6 = 64$.","ms":2143}
+  ✓ NAT exact correct numeric (re-answer) -> isCorrect:true — {"slotId":"S1","isCorrect":true,"correctAnswer":"64","explanation":"The number of unique operations is determined by the number of bits in the opcode. With 6 bits for the opcode, the number of unique operations is $2^6 = 64$.","ms":1525}
+
+──────────────────────────────────────────────────────────────────────
+F. TRUE/FALSE — live round trip through the real routes
+──────────────────────────────────────────────────────────────────────
+  ✓ true_false generate 200 — status=200
+  ✓ true_false questions produced — got 5 warnings=[]
+  true_false question shape: {"slotId":"S1","question":"The primary distinction between computer organization and computer architecture lies in whether it focuses on the functional behavior or the hardware implementation details.","type":"true_false","options":null,"marks":1,"subjectId":"b862c433-29d1-4e43-ac54-4a1369a7f195","moduleId":"55cd3c57-3bb3-4a5c-8630-594bdde6b966","difficulty":"easy"}
+  ✓ true_false question ships with NO options array (UI has nothing to render) — options=null
+  answer 'True' -> {"slotId":"S1","isCorrect":true,"correctAnswer":"True","explanation":"Computer architecture focuses on the functional behavior and logical design, while computer organization deals with the physical implementation and interconnection of hardware components.","ms":1439}
+  ✓ answering the LITERAL correct text ("True") grades correct — answered True, correctAnswer=True, isCorrect=true
+
+══════════════════════════════════════════════════════════════════════════════
+G. EXAM-SIM — mastery non-mutation & server-side timer enforcement at /submit
+══════════════════════════════════════════════════════════════════════════════
+  ✓ exam-sim generate 200 — status=200 body={"sessionId":"7816f789-ec05-46a6-80f4-c088ae6b385c","mode":"exam_sim","preset":null,"immediateFeedback":false,"timeLimitMinutes":1,"negativeMarking":false,"totalMarks":20,"questions":[{"slotId":"S1","
+  ✓ exam-sim immediateFeedback=false — false
+  waiting 70s for the 1-minute timer to expire (server-side)...
+  ✓ /answer rejects a write after expiry (409) — status=409 body={"error":"Time is up for this session"}
+  ✗ *** /submit should reject a submission after the timer expired, same as /answer *** — status=200 body={"sessionId":"7816f789-ec05-46a6-80f4-c088ae6b385c","mode":"exam_sim","score":8,"totalMarks":20,"correctCount":4,"wrongCount":6,"unansweredCount":0,"negativeMarksApplied":0,"perQuestionResults":[{"slotId":"S1","questionIndex":0,"isCorrect":false,"marksAwarded":0,"studentAnswer":"A","correctAnswer":" — if 200, a student can think past the visible countdown indefinitely as long as they never call /answer again
+  ✓ exam-sim does NOT mutate student_topic_mastery — before=5 after=5
+  ✓ exam-sim submit response carries no masteryDeltas key — ["sessionId","mode","score","totalMarks","correctCount","wrongCount","unansweredCount","negativeMarksApplied","perQuestionResults"]
+
+STAGE2 DONE
+
+[cleanup s1] deleted student cp-harness-c5c9a21e@edunexus-harness.invalid (3 session(s))
+
+SUMMARY: 13 passed, 1 failed

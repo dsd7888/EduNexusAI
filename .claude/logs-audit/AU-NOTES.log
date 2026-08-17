@@ -1,0 +1,6 @@
+Audit complete, committed locally (not pushed, per spec).
+
+**Summary:**
+- **S1 count: 1** — Notes v2 has no product-reachable way to ever generate its own content. The student page only assembles pre-existing module rows; the routes that actually call Gemini to generate notes are invoked by zero UI anywhere (student, faculty, or superadmin). Confirmed live: 7 of 9 real subjects have zero notes rows, and clicking the empty-state's "Generate notes" button creates nothing and loops forever.
+- **S2 count: 1** — Concurrent requests for the same ungenerated module double real AI spend (both calls billed in `ai_call_logs`) and leak a raw Postgres constraint-name error to the client instead of failing gracefully.
+- **Most important finding:** the S1 — this isn't a rough edge, the feature as shipped cannot produce its own content for any subject that hasn't been manually seeded via direct API/DB access by a developer, which is exactly what happened to the only two subjects that currently have notes.

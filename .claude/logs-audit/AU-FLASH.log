@@ -1,0 +1,6 @@
+Committed locally (not pushed, per the audit spec — a human reviews and pushes).
+
+**Summary:**
+- **S1: 0** — flashcards has no generation of its own (it reuses the reading view's assembly endpoint verbatim), so AU-NOTES's existing S1 applies by inheritance but isn't double-counted.
+- **S2: 1** — a real, cleanly-reproduced bug: two Next/Previous clicks or ArrowRight keydowns landing in the same React render batch collapse into a single card advance because `go()` reads a stale closure value instead of using a functional `setState` updater. Repro'd three independent ways (2 clicks→1 advance, 3 clicks→still 1 advance, 2 synchronous key presses→1 advance).
+- **Most important finding:** that silent double-advance collapse sits in the core reveal/advance loop of the one surface DESIGN.md itself describes as used "tired, in bed, one-handed" — it quietly undercounts a student's actual review progress with zero indication. Everything else (CP-D0 dark-surface layering, authorization, empty/error states, touch targets, focus rings, reduced-motion, cost — ₹0 spend, 0 AI calls) held up cleanly on direct verification.

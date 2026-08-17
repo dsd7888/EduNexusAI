@@ -1,0 +1,7 @@
+Committed locally (not pushed, per audit protocol — a human reviews findings first). Dev server has been stopped and audit-generated DB rows verified swept clean.
+
+**AU-PLACE-CORE audit complete:**
+
+- **S1: 3** — `prep/submit` trusts the client's own `is_correct` claim with zero server-side re-grading (forged 100% mastery/readiness on a session where every answer was actually wrong); `prep/generate` ships the plaintext answer key in the same payload that renders the question; and a whole legacy company-mock-test + practice-module subsystem has zero UI entry point anywhere and, where still directly reachable, 500s because its target table doesn't exist in the live schema.
+- **S2: 5** — the old practice-module route has the identical client-controls-its-own-grading bug; concurrent double-submit causes a lost update (not duplicate) on mastery; a SQL-injection-shaped topic string 500s with an unbounded log dump; `setup_complete` can be flipped true without CGPA ever being set (silently coalesced to 0 downstream); and Next-Move returns an empty queue for a fully-ready student with an imminent eligible drive.
+- **Most important finding:** the platform ships every question's answer key to the client and then trusts the client's own claim about whether it got the answer right — for the exact scores that drive company-fit ranking, Next-Move recommendations, and the faculty TPO dashboard. No special tooling required, just a browser's own "Edit and Resend."
