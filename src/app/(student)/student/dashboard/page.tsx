@@ -66,22 +66,11 @@ export default function StudentDashboard() {
   );
 
   const { profile, userId, isLoading: isLoadingUser } = useCurrentUser();
-  const { attempts: placementHistory, isLoading: isLoadingPlacementHistory } =
-    usePlacementHistory(3);
-  const [companyNameById, setCompanyNameById] = useState<Record<string, string>>(
-    {}
-  );
-
-  const placementAttempts = useMemo(
-    () =>
-      (placementHistory ?? []).map((a) => ({
-        ...a,
-        placement_companies: {
-          name: companyNameById[a.company_id] ?? "Unknown Company",
-        },
-      })),
-    [placementHistory, companyNameById]
-  );
+  const {
+    attempts: placementHistory,
+    isLoading: isLoadingPlacementHistory,
+    error: placementHistoryError,
+  } = usePlacementHistory(3);
 
   useEffect(() => {
     const run = async () => {
@@ -158,35 +147,6 @@ export default function StudentDashboard() {
     run();
   }, [isLoadingUser, isLoadingPlacementHistory, userId, profile?.branch]);
 
-  useEffect(() => {
-    const run = async () => {
-      const ids = [...new Set((placementHistory ?? []).map((a) => a.company_id))].filter(
-        Boolean
-      ) as string[];
-      if (ids.length === 0) {
-        setCompanyNameById({});
-        return;
-      }
-      try {
-        const supabase = createBrowserClient();
-        const { data } = await supabase
-          .from("placement_companies")
-          .select("id, name")
-          .in("id", ids);
-        const map: Record<string, string> = {};
-        for (const row of (data ?? []) as Array<{ id: string; name: string }>) {
-          const id = String(row?.id ?? "");
-          const name = String(row?.name ?? "");
-          if (id) map[id] = name;
-        }
-        setCompanyNameById(map);
-      } catch {
-        setCompanyNameById({});
-      }
-    };
-    run();
-  }, [placementHistory]);
-
   const firstName = useMemo(() => {
     if (!profile?.full_name) return "Student";
     const parts = profile.full_name.trim().split(" ");
@@ -200,9 +160,9 @@ export default function StudentDashboard() {
   }, [recentAttempts]);
 
   const bestPlacementScore = useMemo(() => {
-    if (!placementAttempts.length) return null;
-    return Math.max(...placementAttempts.map((a) => a.score ?? 0));
-  }, [placementAttempts]);
+    if (!placementHistory.length) return null;
+    return Math.max(...placementHistory.map((a) => a.recent_accuracy ?? 0));
+  }, [placementHistory]);
 
   const formatDate = (iso: string) =>
     new Date(iso).toLocaleDateString("en-IN", {
@@ -318,12 +278,16 @@ export default function StudentDashboard() {
             <div className="text-2xl font-semibold">
               {isLoading
                 ? "—"
-                : bestPlacementScore != null
-                  ? `${bestPlacementScore}%`
-                  : "Not started"}
+                : placementHistoryError
+                  ? "Unavailable"
+                  : bestPlacementScore != null
+                    ? `${Math.round(bestPlacementScore)}%`
+                    : "Not started"}
             </div>
             <p className="text-xs text-muted-foreground">
-              Latest placement readiness peak
+              {placementHistoryError
+                ? "Couldn't load placement data"
+                : "Latest placement readiness peak"}
             </p>
           </CardContent>
         </Card>
@@ -405,7 +369,16 @@ export default function StudentDashboard() {
 
         {isLoading ? (
           <p className="text-sm text-muted-foreground">Loading placement stats...</p>
-        ) : placementAttempts.length === 0 ? (
+        ) : placementHistoryError ? (
+          <Card>
+            <CardHeader className="flex flex-row items-center gap-2">
+              <Target className="size-5 text-muted-foreground" />
+              <CardTitle className="text-sm font-medium">
+                Couldn&apos;t load your placement readiness right now
+              </CardTitle>
+            </CardHeader>
+          </Card>
+        ) : placementHistory.length === 0 ? (
           <Card>
             <CardHeader className="flex flex-row items-center gap-2">
               <Target className="size-5 text-primary" />
@@ -425,22 +398,23 @@ export default function StudentDashboard() {
         ) : (
           <Card>
             <CardContent className="divide-y px-0">
-              {placementAttempts.map((attempt, idx) => {
-                const companyRel = attempt.placement_companies;
-                const companyName =
-                  (Array.isArray(companyRel)
-                    ? companyRel[0]?.name
-                    : companyRel?.name) ?? "Unknown Company";
-                const score = attempt.score ?? 0;
+              {placementHistory.map((row) => {
+                const score = row.recent_accuracy ?? 0;
+                const trackLabel =
+                  row.track.charAt(0).toUpperCase() + row.track.slice(1);
                 return (
                   <div
-                    key={idx}
+                    key={row.id}
                     className="flex items-center justify-between px-6 py-3 text-sm"
                   >
                     <div className="min-w-0">
-                      <p className="truncate font-medium">{companyName}</p>
+                      <p className="truncate font-medium">
+                        {trackLabel} · {row.topic}
+                      </p>
                       <p className="text-xs text-muted-foreground">
-                        {formatDate(attempt.created_at)}
+                        {row.last_practiced_at
+                          ? formatDate(row.last_practiced_at)
+                          : "—"}
                       </p>
                     </div>
                     <span

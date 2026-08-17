@@ -39,13 +39,17 @@ export interface ProfileRow {
   semester?: number | null;
 }
 
-export interface PlacementAttemptRow {
+// `placement_attempts` never existed as a real table (CP-13 deleted the dead
+// legacy test/practice code that referenced it). Canonical per-topic readiness
+// data lives in `placement_topic_mastery` — see CLAUDE_CONTEXT.md §"Placement".
+export interface PlacementMasteryRow {
   id: string;
-  company_id: string;
-  score: number;
-  category_scores: Record<string, number>;
-  time_taken: number;
-  created_at: string;
+  track: string;
+  topic: string;
+  recent_accuracy: number;
+  sessions_count: number;
+  current_difficulty: "easy" | "medium" | "hard";
+  last_practiced_at: string | null;
 }
 
 // ─── Hooks ────────────────────────────────────────────────────────────────────
@@ -90,13 +94,18 @@ export function useFacultySubjects() {
 
   useEffect(() => {
     let cancelled = false;
-    setIsLoading(true);
-    setError(null);
 
     const supabase = createBrowserClient();
-    supabase.auth.getUser()
-      .then(async ({ data: { user } }) => {
-        if (cancelled) return;
+    Promise.resolve()
+      .then(() => {
+        if (cancelled) return null;
+        setIsLoading(true);
+        setError(null);
+        return supabase.auth.getUser();
+      })
+      .then(async (result) => {
+        if (cancelled || !result) return;
+        const { data: { user } } = result;
         if (!user) { setIsLoading(false); return; }
 
         const { data: assignments } = await supabase
@@ -169,18 +178,24 @@ export function useSubjectModules(subjectId: string | null) {
   const [isLoading, setIsLoading] = useState(false);
 
   useEffect(() => {
-    if (!subjectId) { setModules([]); return; }
-    setIsLoading(true);
+    let cancelled = false;
     const supabase = createBrowserClient();
-    supabase
-      .from("modules")
-      .select("id, name, module_number, description, subject_id")
-      .eq("subject_id", subjectId)
-      .order("module_number")
-      .then(({ data }) => {
-        setModules((data ?? []) as ModuleRow[]);
-        setIsLoading(false);
-      });
+    Promise.resolve().then(() => {
+      if (cancelled) return;
+      if (!subjectId) { setModules([]); return; }
+      setIsLoading(true);
+      supabase
+        .from("modules")
+        .select("id, name, module_number, description, subject_id")
+        .eq("subject_id", subjectId)
+        .order("module_number")
+        .then(({ data }) => {
+          if (cancelled) return;
+          setModules((data ?? []) as ModuleRow[]);
+          setIsLoading(false);
+        });
+    });
+    return () => { cancelled = true; };
   }, [subjectId]);
 
   return { modules, isLoading };
@@ -202,33 +217,39 @@ export function useStudentSubjects(branch: string | null, semester: number | nul
   const [isLoading, setIsLoading] = useState(false);
 
   useEffect(() => {
-    if (!branch || !semester) { setSubjects([]); return; }
-    setIsLoading(true);
+    let cancelled = false;
     const supabase = createBrowserClient();
-    supabase
-      .from("subject_offerings")
-      .select("branch, semester, subject:subjects(id, name, code, department)")
-      .eq("branch", branch)
-      .then(({ data }) => {
-        type OfferingRow = {
-          branch: string;
-          semester: number;
-          subject: { id: string; name: string; code: string; department?: string } | null;
-        };
-        const rows = ((data ?? []) as unknown as OfferingRow[])
-          .filter((r) => r.subject)
-          .map((r) => ({
-            id: r.subject!.id,
-            name: r.subject!.name,
-            code: r.subject!.code,
-            department: r.subject!.department,
-            branch: r.branch,
-            semester: r.semester,
-          }))
-          .sort((a, b) => a.semester - b.semester || a.code.localeCompare(b.code));
-        setSubjects(rows as SubjectRow[]);
-        setIsLoading(false);
-      });
+    Promise.resolve().then(() => {
+      if (cancelled) return;
+      if (!branch || !semester) { setSubjects([]); return; }
+      setIsLoading(true);
+      supabase
+        .from("subject_offerings")
+        .select("branch, semester, subject:subjects(id, name, code, department)")
+        .eq("branch", branch)
+        .then(({ data }) => {
+          if (cancelled) return;
+          type OfferingRow = {
+            branch: string;
+            semester: number;
+            subject: { id: string; name: string; code: string; department?: string } | null;
+          };
+          const rows = ((data ?? []) as unknown as OfferingRow[])
+            .filter((r) => r.subject)
+            .map((r) => ({
+              id: r.subject!.id,
+              name: r.subject!.name,
+              code: r.subject!.code,
+              department: r.subject!.department,
+              branch: r.branch,
+              semester: r.semester,
+            }))
+            .sort((a, b) => a.semester - b.semester || a.code.localeCompare(b.code));
+          setSubjects(rows as SubjectRow[]);
+          setIsLoading(false);
+        });
+    });
+    return () => { cancelled = true; };
   }, [branch, semester]);
 
   return { subjects, isLoading };
@@ -258,28 +279,38 @@ export function useAllSubjects() {
 }
 
 /**
- * Fetches recent placement attempts for the current student.
+ * Fetches the current student's most recently practiced placement topics
+ * (readiness activity), ordered by recency.
  */
 export function usePlacementHistory(limit = 5) {
-  const [attempts, setAttempts] = useState<PlacementAttemptRow[]>([]);
+  const [attempts, setAttempts] = useState<PlacementMasteryRow[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
+    let cancelled = false;
+
     const supabase = createBrowserClient();
     supabase.auth.getUser().then(({ data: { user } }) => {
+      if (cancelled) return;
       if (!user) { setIsLoading(false); return; }
       supabase
-        .from("placement_attempts")
-        .select("id, company_id, score, category_scores, time_taken, created_at")
+        .from("placement_topic_mastery")
+        .select("id, track, topic, recent_accuracy, sessions_count, current_difficulty, last_practiced_at")
         .eq("student_id", user.id)
-        .order("created_at", { ascending: false })
+        .not("last_practiced_at", "is", null)
+        .order("last_practiced_at", { ascending: false, nullsFirst: false })
         .limit(limit)
-        .then(({ data }) => {
-          setAttempts((data ?? []) as PlacementAttemptRow[]);
+        .then(({ data, error }) => {
+          if (cancelled) return;
+          if (error) setError(error.message);
+          setAttempts((data ?? []) as PlacementMasteryRow[]);
           setIsLoading(false);
         });
     });
+
+    return () => { cancelled = true; };
   }, [limit]);
 
-  return { attempts, isLoading };
+  return { attempts, isLoading, error };
 }
