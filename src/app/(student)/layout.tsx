@@ -145,7 +145,7 @@ export default function StudentLayout({ children }: LayoutProps) {
       )}
 
       {/* Main content */}
-      <main className="flex-1 overflow-auto px-4 pb-6 pt-20 sm:px-6 lg:ml-64 lg:px-8 lg:pt-6">
+      <main className="h-dvh flex-1 overflow-auto px-4 pb-6 pt-20 sm:px-6 lg:ml-64 lg:px-8 lg:pt-6">
         <ErrorBoundary>{children}</ErrorBoundary>
       </main>
     </div>

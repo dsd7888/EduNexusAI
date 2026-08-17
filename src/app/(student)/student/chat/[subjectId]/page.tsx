@@ -664,7 +664,7 @@ export default function StudentSubjectChatPage() {
       : { used: quotaChat, limit: QUOTA_LIMITS.chat, label: "Chat" };
 
   return (
-    <div className="flex h-[calc(100vh-7rem)] flex-col">
+    <div className="flex h-full flex-col">
       <ChatHeader
         subject={subject}
         isResumed={isResumed}
