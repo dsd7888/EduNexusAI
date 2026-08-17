@@ -13,6 +13,7 @@ import type { NextRequest } from "next/server";
 import { apiError, apiSuccess, requireRole } from "@/lib/api/helpers";
 import { checkRateLimit, releaseRateLimit, RATE_LIMITS } from "@/lib/utils/rate-limit";
 import { runAssessment, studentSafe, describeFailed } from "./runner";
+import { assertAssessmentSubjectAccess } from "./access";
 import { buildMasterySnapshot } from "./masterySnapshot";
 import {
   MODE_CONFIG,
@@ -80,6 +81,13 @@ export async function handleAssessmentRequest(
         400
       );
     }
+    const scopeCheck = await assertAssessmentSubjectAccess(
+      adminClient,
+      user.id,
+      subjectIds
+    );
+    if (scopeCheck) return scopeCheck;
+
     const moduleIds = asStringArray(body.moduleIds);
 
     // ── preset (exam_sim only) ─────────────────────────────────────────────
