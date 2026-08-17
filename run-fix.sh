@@ -160,6 +160,18 @@ ledger_update() {
   ' "$LEDGER" > "$tmp" && mv "$tmp" "$LEDGER"
 }
 
+# Commits any pending FIX_LEDGER.md/PROGRESS.md edit from ledger_update() itself.
+# Without this, the runner's own post-checkpoint ledger correction (it runs
+# after the checkpoint's own commit, so it can't be folded into it) is left
+# uncommitted — which then trips the clean-tree gate on the *next* invocation.
+commit_ledger() {
+  local cp="$1" note="$2"
+  git add "$LEDGER" .claude/PROGRESS.md 2>/dev/null
+  if ! git diff --cached --quiet -- "$LEDGER" .claude/PROGRESS.md 2>/dev/null; then
+    git commit -q -m "$cp: $note" -- "$LEDGER" .claude/PROGRESS.md
+  fi
+}
+
 started=false
 [ -z "$START_FROM" ] && started=true
 
@@ -243,6 +255,7 @@ End with a 3-bullet summary including the commit SHA."
   if [ "$RC" -ne 0 ]; then
     echo "FAILED: $CP exited $RC. Fix the cause, then resume with:  ./run-fix.sh $CP"
     ledger_update "$CP" "pending" "" "$TODAY" "runner exited $RC — see $LOG"
+    commit_ledger "$CP" "runner exited $RC, record failure in ledger"
     exit "$RC"
   fi
 
@@ -253,6 +266,7 @@ End with a 3-bullet summary including the commit SHA."
     echo "      Either it stopped on purpose (e.g. migration pending, HALT awaiting approval) or under-delivered."
     echo "      Inspect $LOG and .claude/PROGRESS.md before continuing."
     ledger_update "$CP" "pending" "" "$TODAY" "no commit landed — see $LOG and PROGRESS.md"
+    commit_ledger "$CP" "no commit landed, record status in ledger"
     RESULT_STATUS="pending"
     if [ "$YES_MODE" = false ]; then
       read -r -p "ENTER to continue anyway, or Ctrl+C to stop and investigate: "
@@ -263,9 +277,11 @@ End with a 3-bullet summary including the commit SHA."
     RESULT_SHA="$HEAD_AFTER"
     if [ "$HALT" = "yes" ]; then
       ledger_update "$CP" "halted-review" "$HEAD_AFTER" "$TODAY"
+      commit_ledger "$CP" "record halted-review status + SHA in ledger"
       RESULT_STATUS="halted-review"
     else
       ledger_update "$CP" "done" "$HEAD_AFTER" "$TODAY"
+      commit_ledger "$CP" "record done status + SHA in ledger"
       RESULT_STATUS="done"
     fi
   fi
@@ -276,7 +292,7 @@ End with a 3-bullet summary including the commit SHA."
     echo "  Review:  git show $HEAD_AFTER   and .claude/PROGRESS.md's entry for this checkpoint."
     if [ "$YES_MODE" = false ]; then
       read -r -p "ENTER to push $CP to dev and continue, or Ctrl+C to stop: "
-      git push origin dev && { echo "pushed $CP to dev."; ledger_update "$CP" "done" "$HEAD_AFTER" "$(date +%Y-%m-%d)"; RESULT_STATUS="done"; }
+      git push origin dev && { echo "pushed $CP to dev."; ledger_update "$CP" "done" "$HEAD_AFTER" "$(date +%Y-%m-%d)"; commit_ledger "$CP" "record pushed/done status in ledger"; RESULT_STATUS="done"; }
     else
       echo "  --yes run: leaving this HALT gate for manual review — not pushing unattended. Status stays 'halted-review'."
     fi
