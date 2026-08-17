@@ -3,6 +3,7 @@ import { requireRole, apiError, apiSuccess } from "@/lib/api/helpers";
 import { createAdminClient } from "@/lib/db/supabase-server";
 import { routeAI } from "@/lib/ai/router";
 import { repairGeminiJsonEscapes } from "@/lib/text/latexSegments";
+import { checkRateLimit, releaseRateLimit, RATE_LIMITS } from "@/lib/utils/rate-limit";
 import type { ResumeData, ATSAnalysis } from "@/types/placement";
 
 export const maxDuration = 60;
@@ -235,6 +236,7 @@ type RawHollowBullet = {
 };
 
 export async function POST(request: NextRequest) {
+  let releaseReservation: (() => Promise<void>) | null = null;
   try {
     const authResult = await requireRole(["student"]);
     if (authResult instanceof Response) return authResult;
@@ -255,6 +257,29 @@ export async function POST(request: NextRequest) {
       return apiError("Job description too short. Paste the full JD.", 400);
     }
 
+    const rateCheck = await checkRateLimit({
+      userId: user.id,
+      eventType: "placement_resume_ats",
+      limit: RATE_LIMITS.placement_resume_ats,
+      subjectId: null,
+    });
+    if (!rateCheck.allowed) {
+      return Response.json(
+        {
+          error: "Daily limit reached",
+          message: `You've used all ${RATE_LIMITS.placement_resume_ats} ATS analyses for today. ${rateCheck.resetAt}.`,
+          limitReached: true,
+        },
+        { status: 429 }
+      );
+    }
+    releaseReservation = () =>
+      releaseRateLimit({
+        userId: user.id,
+        eventType: "placement_resume_ats",
+        subjectId: null,
+      });
+
     const resumeText = buildResumeText(resume);
 
     const hasContent =
@@ -264,6 +289,7 @@ export async function POST(request: NextRequest) {
         (resume.internships?.length ?? 0) > 0);
 
     if (!hasContent) {
+      if (releaseReservation) await releaseReservation();
       return apiSuccess({
         overall_score: 0,
         keyword_matches: [],
@@ -341,6 +367,7 @@ export async function POST(request: NextRequest) {
       });
     } catch (err) {
       console.error("[resume/ats] AI call failed:", err);
+      if (releaseReservation) await releaseReservation();
       return apiError("Analysis failed. Try again.", 500);
     }
 
@@ -349,6 +376,7 @@ export async function POST(request: NextRequest) {
       parsed = JSON.parse(String(result.content ?? ""));
     } catch {
       console.error("[resume/ats] Failed to parse AI response");
+      if (releaseReservation) await releaseReservation();
       return apiError("Analysis failed. Try again.", 500);
     }
 
@@ -467,6 +495,7 @@ export async function POST(request: NextRequest) {
       "[resume/ats] Error:",
       error instanceof Error ? error.message : error
     );
+    if (releaseReservation) await releaseReservation().catch(() => {});
     return apiError("Analysis failed. Try again.", 500);
   }
 }

@@ -23,6 +23,15 @@ export const RATE_LIMITS = {
   // export counts against this allowance regardless of whether the source
   // blocks were freshly assembled or already stored.
   notes_export: 5,
+  // Placement AI routes (CP-07) — previously uncapped, each hitting Gemini
+  // directly off a student POST with no daily ceiling. Split per-route since
+  // cost varies: ATS runs two sequential AI passes (keyword-match +
+  // interviewer-lens) so it gets the tightest cap; bullet rewrite is a single
+  // small 800-token call so it can afford the highest.
+  placement_resume_ats: 10,
+  placement_resume_rewrite: 30,
+  placement_jd_analyze: 15,
+  placement_interview_evaluate: 20,
 } as const;
 
 type RateLimitedEvent = keyof typeof RATE_LIMITS;

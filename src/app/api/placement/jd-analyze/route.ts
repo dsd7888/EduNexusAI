@@ -1,6 +1,7 @@
 import type { NextRequest } from "next/server";
 import { requireRole, apiError, apiSuccess } from "@/lib/api/helpers";
 import { routeAI } from "@/lib/ai/router";
+import { checkRateLimit, releaseRateLimit, RATE_LIMITS } from "@/lib/utils/rate-limit";
 
 export const maxDuration = 60;
 
@@ -95,6 +96,7 @@ function buildSubjectContext(rows: SubjectRow[]): string {
 // ─── Route handler ────────────────────────────────────────────────────────────
 
 export async function POST(request: NextRequest) {
+  let releaseReservation: (() => Promise<void>) | null = null;
   try {
     const authResult = await requireRole(["student"]);
     if (authResult instanceof Response) return authResult;
@@ -109,6 +111,29 @@ export async function POST(request: NextRequest) {
       return apiError("Job description too short. Paste the full JD.", 400);
     }
     const jdText = rawJd.slice(0, 5000); // truncate silently past 5000
+
+    const rateCheck = await checkRateLimit({
+      userId: user.id,
+      eventType: "placement_jd_analyze",
+      limit: RATE_LIMITS.placement_jd_analyze,
+      subjectId: null,
+    });
+    if (!rateCheck.allowed) {
+      return Response.json(
+        {
+          error: "Daily limit reached",
+          message: `You've used all ${RATE_LIMITS.placement_jd_analyze} JD analyses for today. ${rateCheck.resetAt}.`,
+          limitReached: true,
+        },
+        { status: 429 }
+      );
+    }
+    releaseReservation = () =>
+      releaseRateLimit({
+        userId: user.id,
+        eventType: "placement_jd_analyze",
+        subjectId: null,
+      });
 
     // ── Step 1: Fetch student context ──────────────────────────────────────────
     // profile + placement profile in parallel; subjects depend on branch.
@@ -198,6 +223,7 @@ export async function POST(request: NextRequest) {
       });
     } catch (err) {
       console.error("[jd-analyze] AI call failed:", err);
+      if (releaseReservation) await releaseReservation();
       return apiError("Analysis failed. Try again.", 500);
     }
 
@@ -206,10 +232,12 @@ export async function POST(request: NextRequest) {
       analysis = JSON.parse(String(result.content ?? ""));
     } catch {
       console.error("[jd-analyze] Failed to parse AI response");
+      if (releaseReservation) await releaseReservation();
       return apiError("Analysis failed. Try again.", 500);
     }
 
     if (!Array.isArray((analysis as { requirements?: unknown }).requirements)) {
+      if (releaseReservation) await releaseReservation();
       return apiError("Analysis failed. Try again.", 500);
     }
 
@@ -225,6 +253,7 @@ export async function POST(request: NextRequest) {
       "[jd-analyze] Error:",
       error instanceof Error ? error.message : error
     );
+    if (releaseReservation) await releaseReservation().catch(() => {});
     return apiError("Analysis failed. Try again.", 500);
   }
 }
