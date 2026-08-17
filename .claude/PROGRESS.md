@@ -834,3 +834,70 @@ _(entries appended below by each checkpoint session)_
      `SidebarContent`/nav-item structure (now a `NAV_ITEMS` array + shared `NavLink` render)
      so its diff context will look different from what CP-20 was scoped against when
      FIX_SPEC.md was written.
+
+### CP-20 — Touch-target floor (shared component, many call sites) — 2026-08-17
+- **Commit SHAs:** `cce95e0f05a18946c8d0449b3fdb31261c19287e` (fix) and
+  `1413337` (ledger status update) — both committed locally only, per this session's no-push
+  default.
+- **What was built:** Bumped every interactive control at the checkpoint's named call sites
+  from below the 44px WCAG 2.2 / DESIGN.md touch-target floor up to it, via `min-h-11`/
+  `min-w-11` padding utilities (not font-size), matching the existing `min-h-11`/`h-11`
+  convention already used on DESIGN.md-migrated pages (e.g. `src/components/notes/shell.tsx`'s
+  `TOUCH_TARGET` constant):
+  - `(student)/layout.tsx` — mobile top-bar hamburger (`size-9`→`min-h-11 min-w-11`) and the
+    mobile drawer's close button (`size-8`→`min-h-11 min-w-11`).
+  - `NavLink.tsx` — row padding got `min-h-11` added (was `px-3 py-2` alone, ~36px).
+  - `Composer.tsx` — the chat Send button's explicit `h-8` override replaced with `min-h-11`.
+  - `ModeControl.tsx` (the pill-shaped Auto/Deep/Research radio control embedded in the
+    composer — read as the checkpoint's "pill component," since no separately-shared pill
+    component exists in `src/components/`) — pill buttons got `min-h-11` added; width stays
+    compact by design (icon + short label), only height was floored.
+  - `ChatHeader.tsx` — the "More actions" icon button (`h-8 w-8`→`min-h-11 min-w-11`) and both
+    dropdown menu rows ("Export PDF", "New session"; `py-2` alone→`min-h-11` added).
+  **Deliberately did not touch** `src/components/ui/button.tsx` (the shadcn shared `Button`):
+  none of the checkpoint's named call sites depend on its default size variants (Composer's
+  Send button already overrides height explicitly; ChatHeader/layout/NavLink use plain
+  `<button>`/`<Link>`, not the shared `Button`). Globally resizing `Button`'s `sm`/`xs`/`icon-*`
+  variants would ripple across ~160 other call sites, many in dense faculty/admin tables never
+  audited for this — that blast radius belongs to CP-27/CP-38's broader design migration, not
+  this checkpoint's scoped fix. Placement pages (Resume/JD/Interview-bank/Projects) are
+  unchanged, as FIX_SPEC.md's own note says they build on ad hoc classes and need CP-38.
+- **Verified (happy path):** New harness `_cp_20_verify/ui.mts`, same real-magic-link-session
+  pattern as `_cp_19_verify/ui.mts` (auth via `admin.auth.admin.generateLink` +
+  `anon.auth.verifyOtp`, session cookie set directly, live dev server, live pilot DB — Test
+  Student, `teststudent@gmail.com`). Measured every touched control's real rendered
+  `getBoundingClientRect()` on a 390×844 mobile viewport: mobile hamburger 44×44, drawer close
+  button 44×44, NavLink rows 168×44, chat header "More actions" 44×44, both dropdown menu rows
+  190×44, mode-control pills 34×44 (height floored, width deliberately still compact). Also
+  confirmed on a 1440×900 desktop viewport that the chat Send button (visible-label variant)
+  measures 76×44.
+- **Verified (unhappy path):** (1) **Interrupted flow** — opened the mobile drawer, clicked a
+  NavLink to navigate away before the drawer's close/collapse settled, then browser-backed to
+  the original page: hamburger still renders at a clean 44×44, zero console errors. (2)
+  **Concurrent flow** — fired two overlapping clicks at the mobile hamburger
+  (`Promise.all`), and separately at ChatHeader's "New session" button (which starts a new
+  session and unmounts itself mid-click, so the second racing click hits a detached element by
+  design): both settled cleanly with zero console/page errors and no torn UI state.
+- **Gate status:** `tsc --noEmit` clean. `npx eslint` on all 5 touched source files: zero
+  errors/warnings. `npm run build`: exits clean, all routes compile (including every
+  `/student/*` route touched here). Commit-guard hook's tsc/eslint/build gates passed live on
+  both commits (no `--no-verify`); the first attempt was rejected once for an untyped
+  `_cp_20_verify/ui.mts` helper (`page`/`selector`/`el` implicitly `any`) — fixed with explicit
+  `Page`/`Element` types from `playwright`, then the commit went through clean.
+- **Migration needed:** none — pure Tailwind class changes, no schema/API/DB surface touched.
+- **Screenshots:** none — same rationale as CP-19 (this is a `FIX_SPEC.md` fix-pass checkpoint,
+  not a `SPEC.md` UI checkpoint that mandates them); `_cp_20_verify/ui.mts` is available for a
+  future session that wants `page.screenshot()` calls added at the measured states.
+- **Next checkpoint must know:**
+  1. Both commits are **not pushed** — confirm `origin/dev` state before assuming this or any
+     prior checkpoint is live, per the standing caveat carried since CP-03.
+  2. The pre-existing uncommitted CP-08 changes (`api/placement/prep/{generate,submit}/
+     route.ts`, `student/placement/prep/[track]/practice/page.tsx`, `src/types/placement.ts`)
+     are still present and still untouched by this session.
+  3. CP-38 (design migration for Resume/JD/Interview-bank/Projects) still needs its own touch-
+     target pass — those pages were explicitly out of scope here and remain on ad hoc classes
+     below the 44px floor.
+  4. If a future checkpoint does decide to touch `src/components/ui/button.tsx`'s shared size
+     variants (e.g. as part of CP-27/CP-38), grep for `size="xs"` / `size="icon-xs"` / dense
+     admin-table usages first — this session found ~160 call sites of `sm`/`icon-sm`/`icon`
+     alone, several in faculty dashboards not covered by any touch-target audit yet.
