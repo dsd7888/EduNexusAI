@@ -16,7 +16,7 @@ import type { NextRequest } from "next/server";
 
 import { requireAuth, apiError } from "@/lib/api/helpers";
 import { createAdminClient } from "@/lib/db/supabase-server";
-import { checkRateLimit, RATE_LIMITS } from "@/lib/utils/rate-limit";
+import { checkRateLimit, releaseRateLimit, RATE_LIMITS } from "@/lib/utils/rate-limit";
 import { assertNotesSubjectAccess } from "@/lib/notes/access";
 import { NOTES_FEATURE } from "@/lib/notes/generator";
 import {
@@ -32,6 +32,10 @@ export async function GET(
   request: NextRequest,
   context: { params: Promise<{ subjectId: string }> }
 ) {
+  // Hoisted above the try so the outer catch can release a reservation made
+  // partway through — let/const declared inside `try {}` aren't visible in
+  // its `catch` block.
+  let releaseReservation: (() => Promise<void>) | null = null;
   try {
     const { subjectId } = await context.params;
     if (!subjectId) return apiError("subjectId is required", 400);
@@ -92,6 +96,7 @@ export async function GET(
       userId: user.id,
       eventType: "notes_view",
       limit: RATE_LIMITS.notes_view,
+      subjectId,
     });
     if (!rate.allowed) {
       return Response.json(
@@ -103,6 +108,8 @@ export async function GET(
         { status: 429 }
       );
     }
+    releaseReservation = () =>
+      releaseRateLimit({ userId: user.id, eventType: "notes_view", subjectId });
 
     const result = await assembleSubjectNotes({
       subjectId,
@@ -121,6 +128,7 @@ export async function GET(
     });
 
     if (!result.ok) {
+      if (releaseReservation) await releaseReservation();
       return Response.json(
         {
           error: result.error,
@@ -133,11 +141,12 @@ export async function GET(
       );
     }
 
-    // NO logAICall here, deliberately: assembly makes no AI call, and its
-    // tokens/cost are the AGGREGATE of module rows whose own generations were
-    // already logged by routeAI. Emitting a row for them would double-count
-    // notes spend — the exact class of bug v1's feature='chat' mislabelling was.
-    await recordUsage(adminClient, user.id, subjectId);
+    // Quota was reserved atomically in the check above — nothing further to
+    // record here on success (NO logAICall here either, deliberately:
+    // assembly makes no AI call, and its tokens/cost are the AGGREGATE of
+    // module rows whose own generations were already logged by routeAI;
+    // emitting a row for them would double-count notes spend — the exact
+    // class of bug v1's feature='chat' mislabelling was).
 
     const enriched = await enrichBlocksWithPyqFrequency(
       result.blocks,
@@ -156,45 +165,12 @@ export async function GET(
     });
   } catch (err) {
     console.error("[notes/subject] GET error:", err);
+    if (releaseReservation) {
+      await releaseReservation().catch(() => {});
+    }
     return apiError(
       err instanceof Error ? err.message : "Failed to load subject notes",
       500
     );
-  }
-}
-
-/**
- * Consumes one notes_view unit. Only reached on a cache MISS — a hit returns
- * above without touching this, so quota tracks assemblies, not reads.
- */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-async function recordUsage(adminClient: any, userId: string, subjectId: string) {
-  try {
-    const today = new Date().toISOString().slice(0, 10);
-    const { data: existing } = await adminClient
-      .from("usage_analytics")
-      .select("id, event_count")
-      .eq("date", today)
-      .eq("user_id", userId)
-      .eq("event_type", "notes_view")
-      .eq("subject_id", subjectId)
-      .maybeSingle();
-
-    if (existing) {
-      await adminClient
-        .from("usage_analytics")
-        .update({ event_count: (existing.event_count ?? 0) + 1 })
-        .eq("id", existing.id);
-    } else {
-      await adminClient.from("usage_analytics").insert({
-        date: today,
-        user_id: userId,
-        subject_id: subjectId,
-        event_type: "notes_view",
-        event_count: 1,
-      });
-    }
-  } catch (err) {
-    console.error("[notes/subject] usage_analytics error:", err);
   }
 }

@@ -11,7 +11,7 @@
 import { randomUUID } from "node:crypto";
 import type { NextRequest } from "next/server";
 import { apiError, apiSuccess, requireRole } from "@/lib/api/helpers";
-import { checkRateLimit, RATE_LIMITS } from "@/lib/utils/rate-limit";
+import { checkRateLimit, releaseRateLimit, RATE_LIMITS } from "@/lib/utils/rate-limit";
 import { runAssessment, studentSafe, describeFailed } from "./runner";
 import { buildMasterySnapshot } from "./masterySnapshot";
 import {
@@ -56,6 +56,10 @@ export async function handleAssessmentRequest(
   request: NextRequest,
   mode: AssessmentMode
 ): Promise<Response> {
+  // Hoisted above the try so the outer catch can release a reservation made
+  // partway through — let/const declared inside `try {}` aren't visible in
+  // its `catch` block.
+  let releaseReservation: (() => Promise<void>) | null = null;
   try {
     const authResult = await requireRole(["student"]);
     if (authResult instanceof Response) return authResult;
@@ -130,7 +134,16 @@ export async function handleAssessmentRequest(
     // low ceiling is a COST guard, not a UX opinion.
     const eventType = mode === "exam_sim" ? "examSim" : "quiz";
     const limit = mode === "exam_sim" ? RATE_LIMITS.examSim : RATE_LIMITS.quiz;
-    const rate = await checkRateLimit({ userId: user.id, eventType, limit });
+    // Multi-subject requests (exam_sim) anchor the reservation on the first
+    // subject — checkRateLimit's cap is enforced globally per user/event/day
+    // (it sums usage across ALL of a user's subject rows), so subjectId only
+    // picks which row absorbs the CAS write, not which subject "counts."
+    const rate = await checkRateLimit({
+      userId: user.id,
+      eventType,
+      limit,
+      subjectId: subjectIds[0],
+    });
     if (!rate.allowed) {
       return apiError(
         `Daily limit reached (${limit} ${
@@ -139,6 +152,8 @@ export async function handleAssessmentRequest(
         429
       );
     }
+    releaseReservation = () =>
+      releaseRateLimit({ userId: user.id, eventType, subjectId: subjectIds[0] });
 
     // ── mastery snapshot (mastery mode only, CP-Q3 Part 5A) ──────────────────
     // Captured BEFORE runAssessment/planAssessment touch anything, so it is a
@@ -187,6 +202,7 @@ export async function handleAssessmentRequest(
     );
 
     if (result.questions.length === 0) {
+      if (releaseReservation) await releaseReservation();
       return apiError(
         "Could not produce any questions for this selection. Try a different module scope or question type.",
         502
@@ -212,6 +228,9 @@ export async function handleAssessmentRequest(
     });
   } catch (err) {
     console.error(`[assessment/${mode}]`, err);
+    if (releaseReservation) {
+      await releaseReservation().catch(() => {});
+    }
     return apiError("Internal server error", 500);
   }
 }

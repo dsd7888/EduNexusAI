@@ -127,6 +127,7 @@ export async function GET(
         userId: user.id,
         eventType: "notes_export",
         limit: RATE_LIMITS.notes_export,
+        subjectId,
       });
       if (!rate.allowed) {
         return Response.json(

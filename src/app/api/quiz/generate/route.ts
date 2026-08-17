@@ -4,18 +4,14 @@ import {
 } from "@/lib/quiz/generator";
 import { routeAI } from "@/lib/ai/router";
 import { backfillRelatedContentId } from "@/lib/ai/costLogger";
-import {
-  createAdminClient,
-  createServerClient,
-} from "@/lib/db/supabase-server";
-import { checkRateLimit, RATE_LIMITS } from "@/lib/utils/rate-limit";
-import { requireAuth, requireRole, apiError, apiSuccess } from "@/lib/api/helpers";
+import { checkRateLimit, releaseRateLimit, RATE_LIMITS } from "@/lib/utils/rate-limit";
+import { requireRole, apiError } from "@/lib/api/helpers";
 import type { NextRequest } from "next/server";
 
 const VALID_DIFFICULTIES = ["easy", "medium", "hard", "mixed"] as const;
 const VALID_TYPES = ["mcq", "true_false", "short", "multiple_correct", "match"] as const;
 
-function parseQuizResponse(raw: string): any[] | null {
+function parseQuizResponse(raw: string): Record<string, unknown>[] | null {
   const cleaned = raw
     .replace(/```json\s*/gi, "")
     .replace(/```\s*/gi, "")
@@ -42,7 +38,7 @@ function parseQuizResponse(raw: string): any[] | null {
   } catch {}
 
   try {
-    const objects: any[] = [];
+    const objects: Record<string, unknown>[] = [];
     const search = cleaned;
     let depth = 0;
     let objStart = -1;
@@ -54,7 +50,10 @@ function parseQuizResponse(raw: string): any[] | null {
         depth--;
         if (depth === 0 && objStart !== -1) {
           try {
-            const obj = JSON.parse(search.slice(objStart, i + 1));
+            const obj = JSON.parse(search.slice(objStart, i + 1)) as Record<
+              string,
+              unknown
+            >;
             if (obj.question || obj.text) objects.push(obj);
           } catch {}
           objStart = -1;
@@ -68,15 +67,40 @@ function parseQuizResponse(raw: string): any[] | null {
 }
 
 export async function POST(request: NextRequest) {
+  // Hoisted above the try so the outer catch can release a reservation made
+  // partway through — let/const declared inside `try {}` aren't visible in
+  // its `catch` block.
+  let releaseReservation: (() => Promise<void>) | null = null;
   try {
     const authResult = await requireRole(["student"]);
     if (authResult instanceof Response) return authResult;
     const { user, profile, adminClient } = authResult;
 
+    const body = await request
+      .json()
+      .catch(() => ({}) as Record<string, unknown>);
+    const subjectIdsRaw = Array.isArray(body?.subjectIds)
+      ? body.subjectIds
+      : body?.subjectId
+      ? [body.subjectId]
+      : [];
+    const subjectIds = subjectIdsRaw
+      .map((id: unknown) => String(id ?? "").trim())
+      .filter(Boolean);
+
+    if (!subjectIds.length) {
+      return apiError("subjectIds is required", 400);
+    }
+
+    // Multi-subject requests anchor the reservation on the first subject —
+    // checkRateLimit's cap is enforced globally per user/event/day (it sums
+    // usage across ALL of a user's subject rows), so subjectId only picks
+    // which row absorbs the CAS write, not which subject "counts."
     const rateCheck = await checkRateLimit({
       userId: user.id,
       eventType: "quiz",
       limit: RATE_LIMITS.quiz,
+      subjectId: subjectIds[0],
     });
 
     if (!rateCheck.allowed) {
@@ -89,22 +113,16 @@ export async function POST(request: NextRequest) {
         { status: 429 }
       );
     }
-
-    const body = await request.json().catch(() => ({} as any));
-    const subjectIdsRaw = Array.isArray(body?.subjectIds)
-      ? body.subjectIds
-      : body?.subjectId
-      ? [body.subjectId]
-      : [];
-    const subjectIds = subjectIdsRaw
-      .map((id: unknown) => String(id ?? "").trim())
-      .filter(Boolean);
+    releaseReservation = () =>
+      releaseRateLimit({ userId: user.id, eventType: "quiz", subjectId: subjectIds[0] });
     const questionCount = Math.min(
       Math.max(1, Number(body?.questionCount) || 10),
       20
     );
     const difficultyRaw = String(body?.difficulty ?? "mixed").toLowerCase();
-    const difficulty = VALID_DIFFICULTIES.includes(difficultyRaw as any)
+    const difficulty = (
+      VALID_DIFFICULTIES as readonly string[]
+    ).includes(difficultyRaw)
       ? (difficultyRaw as (typeof VALID_DIFFICULTIES)[number])
       : "mixed";
     const rawTypes = Array.isArray(body?.questionTypes)
@@ -112,7 +130,7 @@ export async function POST(request: NextRequest) {
       : ["mcq"];
     const questionTypes = rawTypes
       .map((t: unknown) => String(t).toLowerCase())
-      .filter((t: string) => VALID_TYPES.includes(t as any)) as (
+      .filter((t: string) => (VALID_TYPES as readonly string[]).includes(t)) as (
       | "mcq"
       | "true_false"
       | "short"
@@ -128,10 +146,6 @@ export async function POST(request: NextRequest) {
     const focusTopic =
       body?.focusTopic != null ? String(body.focusTopic).trim() || undefined : undefined;
 
-    if (!subjectIds.length) {
-      return apiError("subjectIds is required", 400);
-    }
-
     const { data: contentRows, error: contentError } = await adminClient
       .from("subject_content")
       .select("content, subject_id, subjects(name, code)")
@@ -139,10 +153,12 @@ export async function POST(request: NextRequest) {
 
     if (contentError) {
       console.error("[quiz/generate] subject_content error:", contentError);
+      if (releaseReservation) await releaseReservation();
       return apiError("Failed to load syllabus", 500);
     }
 
     if (!contentRows || contentRows.length === 0) {
+      if (releaseReservation) await releaseReservation();
       return Response.json(
         {
           error: "no_content",
@@ -153,10 +169,15 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const subjectBlocks = (contentRows as any[]).map((row) => {
-      const subj = row.subjects as { name: string; code: string } | null;
+    type ContentRow = {
+      content: string | null;
+      subject_id: string;
+      subjects: { name: string; code: string }[] | null;
+    };
+    const subjectBlocks = (contentRows as unknown as ContentRow[]).map((row) => {
+      const subj = row.subjects?.[0] ?? null;
       return {
-        subjectId: row.subject_id as string,
+        subjectId: row.subject_id,
         name: subj?.name ?? "Subject",
         code: subj?.code ?? "",
         content: String(row.content ?? ""),
@@ -190,6 +211,7 @@ export async function POST(request: NextRequest) {
       : null;
 
     if (!moduleId) {
+      if (releaseReservation) await releaseReservation();
       return apiError(
         "Primary subject has no modules; cannot create quiz",
         400
@@ -225,6 +247,7 @@ export async function POST(request: NextRequest) {
     const rawItems = parseQuizResponse(rawText);
     if (rawItems === null) {
       console.error("[quiz/generate] parseQuizResponse returned null");
+      if (releaseReservation) await releaseReservation();
       return apiError(
         "Failed to generate quiz. Please try again.",
         500
@@ -235,6 +258,7 @@ export async function POST(request: NextRequest) {
 
     if (!questions || questions.length === 0) {
       console.error("[quiz/generate] normalizeQuizQuestions returned null or empty");
+      if (releaseReservation) await releaseReservation();
       return Response.json(
         {
           error: "generation_failed",
@@ -267,6 +291,7 @@ export async function POST(request: NextRequest) {
 
     const isPartial = questions.length < questionCount;
     if (isPartial && questions.length < 3) {
+      if (releaseReservation) await releaseReservation();
       return Response.json(
         {
           error: "generation_failed",
@@ -298,6 +323,7 @@ export async function POST(request: NextRequest) {
 
     if (insertError) {
       console.error("[quiz/generate] insert error:", insertError);
+      if (releaseReservation) await releaseReservation();
       return apiError("Failed to save quiz", 500);
     }
 
@@ -311,6 +337,9 @@ export async function POST(request: NextRequest) {
     });
   } catch (err) {
     console.error("[quiz/generate] POST error:", err);
+    if (releaseReservation) {
+      await releaseReservation().catch(() => {});
+    }
     const msg =
       err instanceof Error ? err.message : "Failed to generate quiz";
     return apiError(msg, 500);

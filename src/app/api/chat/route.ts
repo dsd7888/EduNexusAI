@@ -10,7 +10,7 @@ import {
   isGeminiRateLimitError,
 } from "@/lib/ai/providers/gemini";
 import { createAdminClient } from "@/lib/db/supabase-server";
-import { checkRateLimit, RATE_LIMITS } from "@/lib/utils/rate-limit";
+import { checkRateLimit, releaseRateLimit, RATE_LIMITS } from "@/lib/utils/rate-limit";
 import { requireAuth, apiError } from "@/lib/api/helpers";
 import type { NextRequest } from "next/server";
 
@@ -185,7 +185,6 @@ export async function POST(request: NextRequest) {
     if (profileError || !profile) {
       return apiError("Failed to load profile", 500);
     }
-    const profileId = profile.id;
 
     // ── 2. Parse body ────────────────────────────────────────────────────
     const body: {
@@ -311,8 +310,6 @@ export async function POST(request: NextRequest) {
       outputTokens: number | null;
       costInr: number | null;
       citations: { title: string; uri: string }[] | null;
-      incrementUsage: boolean;
-      usageEventType: "chat" | "research";
       writeCache: boolean;
       // False when the streaming path already persisted the user row eagerly,
       // before generation started (see the pre-stream insert below) — avoids
@@ -386,38 +383,10 @@ export async function POST(request: NextRequest) {
         console.error("[chat] struggle detection error:", err);
       }
 
-      // usage_analytics increment (skipped for cache hits — they consumed no
-      // quota and made no AI call).
-      if (opts.incrementUsage) {
-        try {
-          const today = new Date().toISOString().slice(0, 10);
-          const { data: existingUsage } = await adminClient
-            .from("usage_analytics")
-            .select("id, event_count")
-            .eq("date", today)
-            .eq("user_id", profileId)
-            .eq("subject_id", subjectId)
-            .eq("event_type", opts.usageEventType)
-            .maybeSingle();
-
-          if (existingUsage) {
-            await adminClient
-              .from("usage_analytics")
-              .update({ event_count: (existingUsage.event_count ?? 0) + 1 })
-              .eq("id", existingUsage.id);
-          } else {
-            await adminClient.from("usage_analytics").insert({
-              date: today,
-              user_id: profileId,
-              subject_id: subjectId,
-              event_type: opts.usageEventType,
-              event_count: 1,
-            });
-          }
-        } catch (err) {
-          console.error("[chat] usage_analytics error:", err);
-        }
-      }
+      // usage_analytics is no longer incremented here: checkRateLimit already
+      // reserved this turn's quota atomically before generation started (§8
+      // below). Failure paths that reach a `return` without calling
+      // persistTurn instead call releaseRateLimit directly to refund it.
 
       // Cache write — standard mode, non-bypassed, successful generation only.
       if (opts.writeCache && embeddingForDB) {
@@ -512,8 +481,6 @@ export async function POST(request: NextRequest) {
               outputTokens: null,
               costInr: null,
               citations: null,
-              incrementUsage: false,
-              usageEventType: "chat",
               writeCache: false,
               insertUserRow: true,
             });
@@ -557,6 +524,7 @@ export async function POST(request: NextRequest) {
       userId: user.id,
       eventType: usageEventType,
       limit: rateLimit,
+      subjectId,
     });
 
     if (!rateCheck.allowed) {
@@ -611,6 +579,7 @@ export async function POST(request: NextRequest) {
         });
       } catch (err) {
         console.error("[chat] research generation failed:", err);
+        await releaseRateLimit({ userId: user.id, eventType: usageEventType, subjectId });
         if (isGeminiRateLimitError(err)) {
           return Response.json(
             { error: "busy", retryable: true },
@@ -638,6 +607,7 @@ export async function POST(request: NextRequest) {
       // real cure (project principle: hard gates over ever-smarter fallbacks).
       if (responseText.trim().length === 0) {
         console.error("[chat] research returned empty content");
+        await releaseRateLimit({ userId: user.id, eventType: usageEventType, subjectId });
         return Response.json(
           { error: "generation_failed", retryable: true },
           { status: 500 }
@@ -652,8 +622,6 @@ export async function POST(request: NextRequest) {
         outputTokens: ai.tokensUsed?.output ?? null,
         costInr: ai.costInr ?? null,
         citations,
-        incrementUsage: true,
-        usageEventType: "research",
         writeCache: false,
         insertUserRow: true,
       });
@@ -709,6 +677,7 @@ export async function POST(request: NextRequest) {
       // Pre-first-chunk failure (incl. exhausted flash 429 same-model retry).
       // Surface a clean JSON response — never an opened-then-empty SSE stream.
       console.error("[chat] stream open failed:", err);
+      await releaseRateLimit({ userId: user.id, eventType: usageEventType, subjectId });
       if (isGeminiRateLimitError(err)) {
         return Response.json(
           { error: "busy", retryable: true },
@@ -744,6 +713,7 @@ export async function POST(request: NextRequest) {
           // routeAIStream already logged this to ai_call_logs (logOnce); the
           // route must not write a second row.
           console.error("[chat] mid-stream error:", streamErr);
+          await releaseRateLimit({ userId: user.id, eventType: usageEventType, subjectId });
           controller.enqueue(
             sse("error", { message: "The response was interrupted. Please try again." })
           );
@@ -770,8 +740,6 @@ export async function POST(request: NextRequest) {
           outputTokens,
           costInr,
           citations: null,
-          incrementUsage: true,
-          usageEventType: "chat",
           writeCache: effectiveMode === "standard" && !bypassCache,
           insertUserRow: !userRowInserted,
         });

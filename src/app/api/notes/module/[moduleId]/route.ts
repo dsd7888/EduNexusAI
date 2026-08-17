@@ -11,7 +11,7 @@ import type { NextRequest } from "next/server";
 
 import { requireAuth, apiError } from "@/lib/api/helpers";
 import { createAdminClient } from "@/lib/db/supabase-server";
-import { checkRateLimit, RATE_LIMITS } from "@/lib/utils/rate-limit";
+import { checkRateLimit, releaseRateLimit, RATE_LIMITS } from "@/lib/utils/rate-limit";
 import { assertNotesSubjectAccess } from "@/lib/notes/access";
 import { generateModuleNotes } from "@/lib/notes/generator";
 import { enrichBlocksWithPyqFrequency } from "@/lib/notes/pyq-frequency";
@@ -20,6 +20,10 @@ export async function GET(
   request: NextRequest,
   context: { params: Promise<{ moduleId: string }> }
 ) {
+  // Hoisted above the try so the outer catch can release a reservation made
+  // partway through — let/const declared inside `try {}` aren't visible in
+  // its `catch` block.
+  let releaseReservation: (() => Promise<void>) | null = null;
   try {
     const { moduleId } = await context.params;
     if (!moduleId) return apiError("moduleId is required", 400);
@@ -67,6 +71,7 @@ export async function GET(
         userId: user.id,
         eventType: "hint",
         limit: RATE_LIMITS.hint,
+        subjectId: moduleRow.subject_id,
       });
       if (!rate.allowed) {
         return Response.json(
@@ -78,6 +83,14 @@ export async function GET(
           { status: 429 }
         );
       }
+      // Reserved atomically above. A cache hit below refunds it (only a
+      // fresh generation should cost the student a study aid).
+      releaseReservation = () =>
+        releaseRateLimit({
+          userId: user.id,
+          eventType: "hint",
+          subjectId: moduleRow.subject_id,
+        });
     }
 
     const result = await generateModuleNotes({
@@ -96,6 +109,7 @@ export async function GET(
     });
 
     if (!result.ok) {
+      if (releaseReservation) await releaseReservation();
       const status =
         result.error === "module_not_found"
           ? 404
@@ -114,10 +128,11 @@ export async function GET(
       );
     }
 
-    // Only a generation counts against the student's allowance; a cache hit
-    // costs nothing to serve.
-    if (profile.role === "student" && result.source === "fresh") {
-      await recordUsage(adminClient, user.id, moduleRow.subject_id);
+    // Quota was reserved atomically in the check above (§ rate limit). A
+    // cache hit didn't need it — refund; only a fresh generation should cost
+    // the student a study aid.
+    if (releaseReservation && result.source !== "fresh") {
+      await releaseReservation();
     }
 
     // CP-N3: PYQ exam-frequency enrichment, computed fresh against current
@@ -140,41 +155,12 @@ export async function GET(
     });
   } catch (err) {
     console.error("[notes/module] GET error:", err);
+    if (releaseReservation) {
+      await releaseReservation().catch(() => {});
+    }
     return apiError(
       err instanceof Error ? err.message : "Failed to load notes",
       500
     );
-  }
-}
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-async function recordUsage(adminClient: any, userId: string, subjectId: string) {
-  try {
-    const today = new Date().toISOString().slice(0, 10);
-    const { data: existing } = await adminClient
-      .from("usage_analytics")
-      .select("id, event_count")
-      .eq("date", today)
-      .eq("user_id", userId)
-      .eq("event_type", "hint")
-      .eq("subject_id", subjectId)
-      .maybeSingle();
-
-    if (existing) {
-      await adminClient
-        .from("usage_analytics")
-        .update({ event_count: (existing.event_count ?? 0) + 1 })
-        .eq("id", existing.id);
-    } else {
-      await adminClient.from("usage_analytics").insert({
-        date: today,
-        user_id: userId,
-        subject_id: subjectId,
-        event_type: "hint",
-        event_count: 1,
-      });
-    }
-  } catch (err) {
-    console.error("[notes/module] usage_analytics error:", err);
   }
 }
