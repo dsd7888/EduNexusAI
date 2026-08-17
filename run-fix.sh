@@ -254,7 +254,9 @@ End with a 3-bullet summary including the commit SHA."
     echo "      Inspect $LOG and .claude/PROGRESS.md before continuing."
     ledger_update "$CP" "pending" "" "$TODAY" "no commit landed — see $LOG and PROGRESS.md"
     RESULT_STATUS="pending"
-    read -r -p "ENTER to continue anyway, or Ctrl+C to stop and investigate: "
+    if [ "$YES_MODE" = false ]; then
+      read -r -p "ENTER to continue anyway, or Ctrl+C to stop and investigate: "
+    fi
   else
     echo "committed: $HEAD_AFTER"
     git --no-pager show --stat "$HEAD_AFTER" | head -30
@@ -272,8 +274,12 @@ End with a 3-bullet summary including the commit SHA."
     echo ""
     echo "HALT GATE — $CP  (this checkpoint is committed locally but NOT pushed)"
     echo "  Review:  git show $HEAD_AFTER   and .claude/PROGRESS.md's entry for this checkpoint."
-    read -r -p "ENTER to push $CP to dev and continue, or Ctrl+C to stop: "
-    git push origin dev && { echo "pushed $CP to dev."; ledger_update "$CP" "done" "$HEAD_AFTER" "$(date +%Y-%m-%d)"; RESULT_STATUS="done"; }
+    if [ "$YES_MODE" = false ]; then
+      read -r -p "ENTER to push $CP to dev and continue, or Ctrl+C to stop: "
+      git push origin dev && { echo "pushed $CP to dev."; ledger_update "$CP" "done" "$HEAD_AFTER" "$(date +%Y-%m-%d)"; RESULT_STATUS="done"; }
+    else
+      echo "  --yes run: leaving this HALT gate for manual review — not pushing unattended. Status stays 'halted-review'."
+    fi
   fi
 
   PUSH_NOTE="not pushed — commit is local only"
