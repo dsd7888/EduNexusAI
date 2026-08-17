@@ -494,3 +494,80 @@ _(entries appended below by each checkpoint session)_
   note (`practice/submit` re-grading held back pending a migration) is unrelated and still pending
   separately. This commit is **not pushed** — same carried-forward caveat as every checkpoint since CP-03:
   confirm `origin/dev` state before assuming this or any prior local commit is live.
+
+### CP-15 — Resume autosave: upsert + validation (+ array caps) — 2026-08-17
+- **Commit SHA:** `60d8a4270286d46f9bfd9a659306413f5a482fee` (committed locally only, per this
+  session's no-push default — not pushed; `git log origin/dev -1` still points at the CP-14 commit).
+- **Repo-state verification:** confirmed live before editing — `POST /api/placement/resume` used
+  `.update({resume_data, resume_completeness}).eq('student_id', user.id)`, which is a documented
+  Postgres/PostgREST no-op (200, zero rows affected, no error) when no matching row exists yet — a
+  brand-new student's first resume save silently vanished, and the next `GET` kept returning the
+  hardcoded `DEFAULT_RESUME` (`full_name:""`, etc.), not the data just POSTed. Confirmed
+  `api/placement/profile/route.ts` already has the working upsert pattern
+  (`.upsert(payload, {onConflict:'student_id'})`) to mirror. Confirmed `computeCompleteness()` reads
+  `resume.education.length`, `resume.technical_skills.languages/concepts.length`, `resume.projects.length`
+  with no guard — a payload missing any of those fields throws, caught only by the route's outer
+  `try/catch`, surfacing as a bare "Internal server error" 500 instead of a 400. Confirmed the array caps
+  (`MAX_PROJECTS=4`, `MAX_BULLETS=3`, `MAX_ACHIEVEMENTS=5`, `MAX_COURSES=6`) in
+  `student/placement/resume/page.tsx` are UI-only `useState` guards with no server-side counterpart —
+  grepped the whole page for every `MAX_*` usage to get the exact numbers to mirror, rather than inventing
+  new limits for fields the client doesn't cap (internships/education/certifications counts were left
+  uncapped, matching FIX_SPEC's literal "matching the client's MAX_PROJECTS=4 etc." scope, not a broader
+  invented hardening pass).
+- **What was built (`api/placement/resume/route.ts`):**
+  1. `validateResumeShape()` — checks `education`/`projects`/`internships`/`certifications`/`achievements`/
+     `soft_skills` are arrays and `technical_skills.{languages,frameworks,tools,concepts}` are arrays;
+     returns the name of the first malformed field or `null`. Runs before `computeCompleteness()`; a
+     failure returns 400 with the specific field name, not a 500.
+  2. `capArraySizes()` — slices `projects` to 4 (and each project's `bullets` to 3), each internship's
+     `bullets` to 3, `achievements` to 5, each education entry's `relevant_courses` to 6. Applied after
+     validation, before `computeCompleteness()` (so completeness is computed on the capped, persisted
+     shape, not the raw oversized one) and before the upsert (so the DB never stores the uncapped payload).
+  3. POST's `.update(...).eq('student_id', user.id)` → `.upsert({student_id: user.id, resume_data,
+     resume_completeness}, {onConflict: 'student_id'})`, same pattern as `profile/route.ts`.
+  4. `GET` was already correct (`.maybeSingle()` + `DEFAULT_RESUME` fallback) — untouched.
+- **Verified (happy path):** `tsc --noEmit`, scoped `eslint` on the touched file, and `npm run build`
+  all clean. `_cp_15_verify/api.mts` (16 assertions, live HTTP against the real dev server + real DB via
+  `src/lib/testing/httpHarness.ts`, ephemeral ad-hoc student, cleaned up after): confirmed **no**
+  `student_placement_profiles` row exists before the first POST (real precondition, not assumed); POSTed
+  a full resume as that fresh student → immediate GET returns the same `full_name` (was: silently
+  `DEFAULT_RESUME`/`""`); POSTed again (row now exists) → GET reflects the update too (upsert covers both
+  the insert and the update branch, not just the insert).
+- **Verified (unhappy path):**
+  1. **Malformed payload → 400, not 500** — three variants: a payload missing all the array fields
+     (`{full_name:"X"}` only), a payload with `technical_skills.languages` as a string instead of an
+     array, and a payload missing the `resume` key entirely — all three returned 400 with a field-naming
+     message, none crashed to 500.
+  2. **200-project payload → capped, not silently accepted** — POSTed a resume with 200 synthetic
+     projects (each with 5 bullets). Response returned 200 (accepted, not rejected outright — matching
+     FIX_SPEC's "rejected or capped" allowance) with `projects.length === 4` and
+     `projects[0].bullets.length === 3`; re-fetched via a fresh GET and confirmed the **persisted** DB row
+     is also capped at 4 (not just the response body — i.e. the cap runs before the upsert, not only in a
+     response transform).
+  3. **Concurrent** — two simultaneous `POST /api/placement/resume` calls (different `full_name`s) against
+     the same student both returned 200; a follow-up GET shows one full consistent value landed (no
+     torn/interleaved write, no crash) — expected for an upsert on a single-row-per-student table with no
+     read-modify-write gap in this handler.
+  4. **Cleanup verified, not assumed** — harness's `cleanup()` return note confirms the ephemeral test
+     student and its `student_placement_profiles` row were deleted after the run, not left behind.
+- **Migration needed:** none — no schema change, `student_placement_profiles` and its
+  `(student_id UNIQUE)` constraint already existed (that's what makes `onConflict:'student_id'` valid).
+- **Screenshots:** none — no UI checkpoint (API-only fix, `resume/page.tsx`'s client caps were read for
+  reference but not modified).
+- **Next checkpoint must know:**
+  1. This commit is **not pushed**. Same unresolved caveat carried forward from CP-03 through CP-14:
+     confirm what `origin/dev` currently has before assuming this or any prior checkpoint is live.
+  2. This session found **pre-existing uncommitted local changes** to CP-08's files (`api/placement/prep/
+     {generate,submit}/route.ts`, `student/placement/prep/[track]/practice/page.tsx`, `src/types/
+     placement.ts`, `.claude/FIX_LEDGER.md`, `.claude/logs-fix/CP-08.json`, `_cp_08_verify/{api,ui}.mts`)
+     already in the working tree at session start (per `git status` and the prior commit
+     `2a87dfc CP-08: no commit landed, record status in ledger`) — **not touched or committed by this
+     session**, left exactly as found. Whoever picks up CP-08 next should `git status`/`git diff` those
+     files before assuming a clean slate.
+  3. CP-16 (PPT SVG fallback + Notes PDF Unicode) touches `src/lib/ppt/generator.ts` and
+     `src/lib/pdf/builder.ts` — no file overlap with this checkpoint's `api/placement/resume/route.ts`.
+  4. `src/types/placement.ts` has a known duplicate `ResumeData`/`ResumeProject`/etc. interface
+     declaration (lines ~101-128 vs ~369-437, tracked separately as finding #36/CP-36) — this checkpoint's
+     route imports resolve to the same merged type either way since TS interface declaration-merging
+     unions the two blocks, so it did not need to be touched here, but a future session touching that file
+     should read CP-36's note before assuming which block is "the real one".
