@@ -1199,3 +1199,67 @@ _(entries appended below by each checkpoint session)_
   4. CP-25 (Notes PDF worked-example markdown tables,
      `src/lib/notes/pdf/formulaRenderer.ts:91-97`) is next in FIX_SPEC.md's
      S2 tier.
+
+## 2026-08-17 — CP-25: Notes PDF worked-example markdown tables
+
+- **Commits:** `7ffe433bf71e2c197e1f9b95af455ea28fc5cbeb` (fix + verify
+  harness), `1b9a5cb` (ledger status update). Both committed locally only,
+  per this session's no-push default.
+- **Finding:** `drawWorkedExample` in `formulaRenderer.ts` drew
+  `example.problem`/`example.solution` straight through `textOrMath`
+  (solution via the line-splitting `drawMultilineMathText` in `shared.ts`,
+  problem via a direct `textOrMath` call). Neither path recognised markdown
+  pipe tables — a worked example whose problem or solution contained a
+  Gemini-generated `| a | b |` table (truth tables, DP grids, comparison
+  rows are the realistic cases) rendered the literal pipe/dash characters as
+  garbled prose instead of a table.
+- **Fix:** `drawMultilineMathText` (`src/lib/notes/pdf/shared.ts`) now runs
+  content through `parseMarkdownLite` (the same parser `PDFBuilder.richText`
+  already uses for chat/quiz markdown) before drawing. A `table` segment
+  goes through `builder.drawTable()` — mirroring `drawSymbolsTable`'s call
+  in the same file — with headers/rows parsed and normalised by the shared
+  parser; `list` segments draw one item per line; plain `text` segments keep
+  the original per-line `textOrMath` behavior (so non-table content is
+  byte-for-byte unchanged). `formulaRenderer.ts`'s `drawWorkedExample` now
+  routes `example.problem` through `drawMultilineMathText` too (previously
+  it bypassed the table-aware path entirely and went straight to
+  `textOrMath`), so a table embedded in the problem statement is caught as
+  well as one in the solution. Added an optional `font` field to
+  `drawMultilineMathText`'s opts so the problem's italic/muted styling
+  carries through unchanged.
+- **Verified:** `_cp_25_verify/verify.mts` (pure-function harness — no
+  DB/AI, a real `PDFBuilder` built directly off `pdf-lib`'s `PDFDocument`
+  with no math assets needed since fixtures are math-free), 6 assertions,
+  all passing (`.claude/logs-fix/CP-25.log`): (1) **happy path** — a
+  worked example with no table still renders without throwing, confirming
+  the change doesn't regress plain multi-line prose; (2) **the finding
+  itself** — a solution containing a markdown pipe table triggers exactly
+  one extra `drawTable()` call (isolated by spying on `builder.drawTable`
+  and filtering out the block's own always-present symbols-table call)
+  with correctly parsed `["Input","Output"]` headers and `[["0","1"],
+  ["1","0"]]` rows; (3) the same for a table embedded in `example.problem`,
+  confirming the previously-bypassed field is now covered too; (4)
+  **unhappy path** — a ragged table (a short row missing a trailing cell)
+  mixed with prose before/after still renders without throwing; (5)
+  **unhappy path** — empty-string `problem`/`solution` (a bank item with a
+  missing/blank field slipping past validation) draws nothing and does not
+  throw. `npm run build` (full type-check + compile, all routes) and
+  `npx eslint` on both changed source files plus the verify harness are all
+  clean. No live-server/browser pass — this is a pure PDF-layout function
+  with no route/UI surface of its own; the existing Notes PDF export route
+  was not touched and its own manual verification is unchanged.
+- **Migration needed:** none.
+- **Next checkpoint must know:**
+  1. Commits are **not pushed** — confirm `origin/dev` before assuming this
+     or any prior checkpoint is live.
+  2. The pre-existing uncommitted CP-08 changes (`api/placement/prep/
+     {generate,submit}/route.ts`, `student/placement/prep/[track]/
+     practice/page.tsx`, `src/types/placement.ts`, `_cp_08_verify/api.mts`)
+     are still present, still untouched, and still uncommitted — same as
+     every prior checkpoint noted this since CP-14/CP-23/CP-24.
+  3. `drawMultilineMathText` (`src/lib/notes/pdf/shared.ts`) is table-aware
+     now — any future PDF renderer drawing free-text AI content line-by-line
+     should reuse it (or `PDFBuilder.richText`) rather than a raw `\n`-split
+     loop, to avoid reintroducing this same garbled-table bug elsewhere.
+  4. CP-26 (Q Paper PDF page-break orphaning, `src/lib/qpaper/builder.ts`)
+     is next in FIX_SPEC.md's S2 tier.
