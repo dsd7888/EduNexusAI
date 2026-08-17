@@ -1,7 +1,8 @@
 import type { NextRequest } from "next/server";
 import { createAdminClient } from "@/lib/db/supabase-server";
-import { requireRole, apiError, apiSuccess } from "@/lib/api/helpers";
+import { requireRole, apiError, apiSuccess, logCappedError } from "@/lib/api/helpers";
 import { recomputeOverall } from "@/lib/placement/readiness";
+import { TRACK_SECTIONS, type Track } from "@/lib/placement/tracks";
 import type { DrillAttempt, PlacementTarget } from "@/types/placement";
 
 export const maxDuration = 30;
@@ -92,6 +93,15 @@ export async function POST(request: NextRequest) {
     const topicTrimmed = topic.trim();
     if (!topicTrimmed || topicTrimmed.length > 100) {
       return apiError("topic must be a non-empty string up to 100 characters", 400);
+    }
+    // topic is meant to be one of TRACK_SECTIONS' fixed labels for this track,
+    // never arbitrary client text — reject anything else before it reaches a
+    // query (same bug class as the assessment engine's subjectIds finding).
+    const knownTopicsForTrack = new Set(
+      TRACK_SECTIONS[track as Track].flatMap((section) => section.topics)
+    );
+    if (!knownTopicsForTrack.has(topicTrimmed)) {
+      return apiError("topic is not a recognized topic for this track", 400);
     }
 
     const validAttempts = parseValidAttempts(attempts);
@@ -481,10 +491,7 @@ export async function POST(request: NextRequest) {
       warnings,
     });
   } catch (error) {
-    console.error(
-      "[placement-submit] Error:",
-      error instanceof Error ? error.message : error
-    );
+    logCappedError("[placement-submit] Error:", error);
     return apiError("Internal server error", 500);
   }
 }

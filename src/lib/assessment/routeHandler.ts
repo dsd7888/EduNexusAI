@@ -10,7 +10,7 @@
 
 import { randomUUID } from "node:crypto";
 import type { NextRequest } from "next/server";
-import { apiError, apiSuccess, requireRole } from "@/lib/api/helpers";
+import { apiError, apiSuccess, requireRole, isUuid, logCappedError } from "@/lib/api/helpers";
 import { checkRateLimit, releaseRateLimit, RATE_LIMITS } from "@/lib/utils/rate-limit";
 import { runAssessment, studentSafe, describeFailed } from "./runner";
 import { assertAssessmentSubjectAccess } from "./access";
@@ -74,6 +74,9 @@ export async function handleAssessmentRequest(
     const subjectIds = asStringArray(body.subjectIds);
     if (subjectIds.length === 0) {
       return apiError("subjectIds must contain at least one subject", 400);
+    }
+    if (subjectIds.some((id) => !isUuid(id))) {
+      return apiError("subjectIds must be valid subject identifiers", 400);
     }
     if (!cfg.allowsMultiSubject && subjectIds.length > 1) {
       return apiError(
@@ -235,7 +238,7 @@ export async function handleAssessmentRequest(
       warnings: [...warnings, ...result.warnings],
     });
   } catch (err) {
-    console.error(`[assessment/${mode}]`, err);
+    logCappedError(`[assessment/${mode}]`, err);
     if (releaseReservation) {
       await releaseReservation().catch(() => {});
     }

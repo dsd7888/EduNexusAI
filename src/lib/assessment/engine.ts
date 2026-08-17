@@ -23,6 +23,7 @@
  */
 
 import { createAdminClient } from "@/lib/db/supabase-server";
+import { isUuid } from "@/lib/api/helpers";
 import {
   marksForSlot,
   type AssessmentDifficulty,
@@ -189,6 +190,17 @@ export async function planAssessment(
   const subjectIds = Array.from(new Set(input.subjectIds)).filter(Boolean);
   if (subjectIds.length === 0) {
     throw new Error("planAssessment: at least one subjectId is required");
+  }
+  // Defense-in-depth: the only caller (routeHandler.ts) already rejects
+  // non-UUID subjectIds before this runs, but this is the layer that owns the
+  // query — a shape check here means a bad id throws a clean, bounded error
+  // instead of letting an unbounded upstream error (possibly raw HTML) reach
+  // the logs.
+  const invalidSubjectIds = subjectIds.filter((id) => !isUuid(id));
+  if (invalidSubjectIds.length > 0) {
+    throw new Error(
+      `planAssessment: subjectIds must be valid UUIDs (got ${invalidSubjectIds.length} malformed value(s))`
+    );
   }
   if (!Number.isFinite(input.questionCount) || input.questionCount <= 0) {
     throw new Error(
