@@ -6,7 +6,8 @@
  * would make that shared language a copy in three places.
  *
  * KEYBOARD (the whole point of this component beyond correctness):
- *   MCQ / true_false — 1-4 or A-D selects and is a commit-ready answer
+ *   MCQ              — 1-4 or A-D selects and is a commit-ready answer
+ *   true_false       — 1/T selects True, 2/F selects False
  *   MSQ              — 1-5 or A-E TOGGLES; nothing commits until the student says so
  *   NAT              — a focus-trapped numeric field; digits go to the field,
  *                      never to a shortcut
@@ -61,6 +62,7 @@ export default function AnswerInput({
 }) {
   const isMulti = question.type === "msq" || question.type === "multiple_correct";
   const isNumeric = question.type === "nat";
+  const isTrueFalse = question.type === "true_false";
   const options = question.options ?? [];
   const locked = revealed || disabled;
 
@@ -83,7 +85,8 @@ export default function AnswerInput({
 
   // ── keyboard shortcuts ────────────────────────────────────────────────────
   useEffect(() => {
-    if (locked || isNumeric || options.length === 0) return;
+    if (locked || isNumeric) return;
+    if (!isTrueFalse && options.length === 0) return;
     const onKey = (e: KeyboardEvent) => {
       // Never hijack typing in an input, and never fight a modifier combo.
       const target = e.target as HTMLElement | null;
@@ -98,6 +101,18 @@ export default function AnswerInput({
       if (e.metaKey || e.ctrlKey || e.altKey) return;
 
       const k = e.key.toUpperCase();
+
+      if (isTrueFalse) {
+        if (k === "1" || k === "T") {
+          e.preventDefault();
+          onChange("True");
+        } else if (k === "2" || k === "F") {
+          e.preventDefault();
+          onChange("False");
+        }
+        return;
+      }
+
       let index = -1;
       if (/^[1-9]$/.test(k)) index = Number(k) - 1;
       else if (/^[A-J]$/.test(k)) index = LETTERS.indexOf(k);
@@ -116,7 +131,7 @@ export default function AnswerInput({
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [locked, isNumeric, options.length, isMulti, selected, onChange]);
+  }, [locked, isNumeric, isTrueFalse, options.length, isMulti, selected, onChange]);
 
   // Focus the NAT field when the question mounts, so a numeric question is
   // immediately typeable without a click.
@@ -171,7 +186,63 @@ export default function AnswerInput({
     );
   }
 
-  // ── MCQ / MSQ / true_false ────────────────────────────────────────────────
+  // ── true_false ────────────────────────────────────────────────────────────
+  // No `options` array (typeHasOptions() excludes true_false on purpose — the
+  // AI generator emits `correct_answer: "True" | "False"`, not a bank-shaped
+  // options list), so this cannot reuse the MCQ options.map() path below: that
+  // path renders nothing when `options` is empty, which is the bug this branch
+  // fixes. Two fixed buttons, no option letters.
+  if (isTrueFalse) {
+    const tfOptions: Array<"True" | "False"> = ["True", "False"];
+    return (
+      <div className="space-y-2">
+        {tfOptions.map((label) => {
+          const isSelected = value?.toLowerCase() === label.toLowerCase();
+          const isCorrectOption =
+            revealed && !!correctAnswer && correctAnswer.toLowerCase().startsWith(label[0].toLowerCase());
+          const revealTone = revealed
+            ? isCorrectOption
+              ? "border-emerald-500/70 bg-emerald-50 dark:bg-emerald-950/30"
+              : isSelected
+                ? "border-amber-500/70 bg-amber-50 dark:bg-amber-950/30"
+                : "border-border opacity-70"
+            : isSelected
+              ? "border-primary bg-primary/5"
+              : "border-border hover:border-primary/50 hover:bg-muted/50";
+
+          return (
+            <button
+              key={`${question.slotId}-${label}`}
+              type="button"
+              disabled={locked}
+              aria-pressed={isSelected}
+              onClick={() => onChange(isSelected ? null : label)}
+              className={cn(
+                "flex w-full items-center gap-3 rounded-lg border-2 px-3 py-2.5 text-left transition-colors",
+                revealTone,
+                locked && "cursor-default"
+              )}
+            >
+              <span
+                className={cn(
+                  "flex size-6 shrink-0 items-center justify-center rounded-md border text-xs font-semibold",
+                  isSelected
+                    ? "border-transparent bg-primary text-primary-foreground"
+                    : "border-border text-muted-foreground",
+                  revealed && isCorrectOption && "border-transparent bg-emerald-600 text-white"
+                )}
+              >
+                {revealed && isCorrectOption ? <Check className="size-3.5" /> : label[0]}
+              </span>
+              <span className="flex-1 pt-0.5 text-sm leading-relaxed">{label}</span>
+            </button>
+          );
+        })}
+      </div>
+    );
+  }
+
+  // ── MCQ / MSQ ──────────────────────────────────────────────────────────────
   return (
     <div className="space-y-2">
       {isMulti ? (
