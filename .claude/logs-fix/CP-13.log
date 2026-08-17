@@ -1,0 +1,6 @@
+Clean working tree aside from pre-existing untracked artifacts from prior sessions (not part of this checkpoint's scope). Both commits landed locally, not pushed, per the no-push default.
+
+**Summary:**
+- Deleted the entire legacy placement test/practice subsystem: 3 pages (`test/[companyId]`, `practice/[moduleId]`, `history`), 6 backing API routes, 4 orphaned lib files, plus a stale CP-08 patch/migration that targeted the now-deleted routes — verified unreachable from any live nav and broken at the schema level (`placement_attempts` was never created). `tsc`/build clean, live curl confirmed the 6 API routes now 404; page-level 404 couldn't be independently confirmed under `proxy.ts`'s auth-gate (redirects to `/login` regardless of route existence) — documented as the one unverified unhappy-path in PROGRESS.md.
+- Commits: `2e5ad10` (the deletion) and `f3ac748` (ledger/progress updates) on `dev`, both **committed locally only, not pushed**.
+- No migration was created or removed by this checkpoint (the guard hook blocks any commit touching `supabase/migrations/**`); CP-14 (dashboard `usePlacementHistory` hook) still needs its own separate fix for the same dead table.

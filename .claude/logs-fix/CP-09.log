@@ -1,0 +1,6 @@
+Both commits landed locally (not pushed, per this session's no-push default). Working tree is clean aside from other checkpoints' pre-existing untracked files, which I left untouched.
+
+**Summary:**
+- Added a shared `DISTRESS_SAFETY_CLAUSE` to `src/lib/ai/prompts.ts` and wired it into `buildTutorSystemPrompt`, `interview/evaluate/route.ts`, and `interview/mock/follow-up/route.ts` (the latter two previously had no `systemPrompt` at all); verified live against a dev server with both audit test strings plus concurrent and client-abort unhappy paths — all passed (`_cp_09_verify/api.mts`).
+- Commit `25e089dca7d4ef4edb51d5563c30b23760096334` (fix), commit `90ecbb7` (ledger/progress update) — both local-only, not pushed.
+- `buildResearchTutorPrompt` still lacks the clause (out of CP-09's named scope, noted in PROGRESS.md for a future follow-up); CP-10 next, no expected file conflicts.

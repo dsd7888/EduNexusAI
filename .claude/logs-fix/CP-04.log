@@ -1,0 +1,5 @@
+CP-04 is complete, committed locally (not pushed, per this run's no-push default).
+
+- **Fix commit `db4a05b`**: `/api/assessment/submit` now rejects late payloads past `time_limit_minutes` (+5s grace, mirroring `/answer`), and completion is now an atomic claim (`.eq('status','in_progress')`) performed *before* grading/inserts run, so a losing concurrent `/submit` gets a 409 without touching `student_question_attempts`.
+- **Verified live via `_cp_04_verify/api.mts`** (HTTP against the real route, real test student): expired-timer submit → 409, 0 attempt rows, session stays `in_progress`; concurrent-race submit → exactly one 200 + one 409 with exactly **5** attempt rows (was 10); re-submit after completion → still 409. tsc/eslint/build all clean. No schema migration needed.
+- **Ledger commit `b21dc89`**: `FIX_LEDGER.md` CP-04 → `done`, `PROGRESS.md` entry appended with full detail and a note for CP-05/CP-06 that the "atomic claim before side effects" pattern here applies to their mastery/count races too.

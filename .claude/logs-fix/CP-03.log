@@ -1,0 +1,6 @@
+Not pushing per this run's default (no-push). Left `.claude/logs-fix/CP-03.json` (harness-managed, empty) untouched.
+
+**Summary:**
+- Fixed `src/lib/notes/generator.ts`: on a `study_notes` unique-constraint race (two concurrent module-notes generations), the losing insert now re-reads and serves the winner's row (`source: "concurrent"`) instead of discarding the paid AI call; any other storage failure logs the real Postgres error server-side and returns a generic client message instead of leaking `insertError.message`.
+- Verified with a new `_cp_03_verify/verify.mts` harness (real DB, `aiOverride` seam to avoid real Gemini spend, repeated runs): exactly one `"fresh"` write lands per race, exactly one `study_notes` row persists, no raw DB error text ever appears in a response, and cleanup leaves zero residue. `tsc`, `eslint`, and `npm run build` all clean.
+- Commits `4cd0051` (fix) and `cdcefb2` (ledger/progress) on `dev`, **not pushed** — per this run's no-push default, marked `halted-review` in `FIX_LEDGER.md` pending human review/push.
