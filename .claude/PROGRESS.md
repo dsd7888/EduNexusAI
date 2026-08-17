@@ -571,3 +571,97 @@ _(entries appended below by each checkpoint session)_
      route imports resolve to the same merged type either way since TS interface declaration-merging
      unions the two blocks, so it did not need to be touched here, but a future session touching that file
      should read CP-36's note before assuming which block is "the real one".
+
+### CP-16 — PPT SVG fallback + Notes PDF Unicode deletion (CP-16a + CP-16b) — 2026-08-17
+- **Commit SHA:** `b925851` (committed locally only, per this session's no-push default — not pushed;
+  `git log origin/dev -1` still points at an earlier commit).
+- **Not HALT-gated:** FIX_SPEC.md's own CP-16 section carries no HALT marker (unlike CP-01/CP-05/CP-06/
+  CP-08) — both sub-fixes are pure-function/library-level changes with no schema, no RLS, no live-DB
+  write-path change. Proceeded without a HALT pause.
+- **Repo-state verification:** confirmed live before editing — `src/lib/ppt/generator.ts`'s `svgToBase64()`
+  built a `data:image/svg+xml;base64,...` URI and handed it straight to `pptxgenjs`'s `addImage()` at two
+  call sites (main diagram-slide path ~line 2043, `dual_visual` right-panel path ~line 2278); pptxgenjs
+  writes those exact bytes into a media part it names `image-N-N.png`, so the shipped `.pptx` embeds an
+  SVG-typed file wearing a `.png` name/label. Confirmed `svgCodeToPngBytes` (sharp-based, already used by
+  the Notes/Q-paper PDF pipeline) was the pre-existing rasterization helper named explicitly in FIX_SPEC.md.
+  Confirmed `src/lib/pdf/builder.ts`'s `sanitizeForPDF()` catch-all was `.replace(/[^\x00-\x7F]/g, "")` —
+  literal silent deletion, no logging — after a curated ~40-symbol allowlist; confirmed
+  `src/lib/qpaper/builder.ts`'s own `sanitize()` already uses the `?`-substitution convention FIX_SPEC.md
+  asked to match.
+- **What was built:**
+  1. **16a (`src/lib/ppt/generator.ts`):** both call sites now `await svgCodeToPngBytes(svgCode)` and
+     `addImage` a real `data:image/png;base64,...` URI built from the returned bytes, instead of the raw
+     SVG data URI. On rasterization failure (`null` return — malformed/unparseable SVG), both sites fall
+     back to the same caption-placeholder shape already used elsewhere in this function for a failed
+     mermaid.ink render (`_needsReview = true` + a placeholder rect/text), rather than crashing or silently
+     shipping bad bytes. The now-dead `svgToBase64()` helper (superseded by `svgCodeToPngBytes`, which does
+     its own xmlns-normalization) was removed.
+  2. **16b (`src/lib/pdf/builder.ts`):** `sanitizeForPDF`'s final catch-all now uses a replacer function —
+     every character outside `\x00-\x7F` becomes a visible `'?'` (matching qpaper's convention) and logs
+     `console.warn` with the stripped character's codepoint, instead of vanishing with no trace. Also
+     exported `sanitizeForPDF` (was module-private) purely so this checkpoint's verify script could exercise
+     the real function directly rather than re-deriving its regex logic in the test.
+  3. **Guard-hook lint cleanup, same two files:** the commit hook's whole-file `eslint` gate (documented in
+     `guard.sh`'s own comment, same mechanism CP-14 hit) blocked on 8 pre-existing `@typescript-eslint/
+     no-explicit-any` errors untouched by either fix — 5 `as any` casts in `generator.ts`'s `addText(...)`
+     option objects (confirmed via `tsc --noEmit` with all 5 casts stripped: zero new errors, meaning
+     pptxgenjs's shipped types have covered these option shapes for a while and the casts were simply stale)
+     and 3 `color: any`/`bgColor: any` params in `builder.ts` (retyped as pdf-lib's exported `Color` type,
+     which is exactly what every caller already passes). Zero behavior change in either file from this part —
+     confirmed by diffing before/after with the casts/types as the only delta.
+- **Verified (happy path):** `_cp_16_verify/verify.ts` (16 assertions, all passing) — library-level, no DB/
+  auth/AI-cost needed for either fix:
+  - **16a:** `svgCodeToPngBytes` on a real multi-element SVG returns bytes starting with the literal PNG
+    magic number (`89 50 4E 47 0D 0A 1A 0A`); built a real `.pptx` via `pptxgenjs` using the exact
+    `addImage({data: "data:image/png;base64,..."})` shape the fixed call sites now use, unzipped it, and
+    confirmed the embedded `ppt/media/*.png` is detected as `PNG image data` by the real `file` command
+    (not `SVG`) — the literal FIX_SPEC.md verify step.
+  - **16b:** ran the exact stress string FIX_SPEC.md specifies — Devanagari (`नमस्ते`) + emoji (`🎉`) +
+    logic symbols (`∴ ⊂ ⇒`) + accented Latin (`café`) — through `sanitizeForPDF`; every one of those
+    codepoints is gone from the output but each is replaced by a visible `'?'` (`"?????? ?? ? ? ? caf?"`),
+    not silently absorbed into a shorter string. Confirmed the pre-existing curated allowlist (π→pi,
+    ≥→>=, ∞→infinity, →→->, ²→^2) is unaffected by the catch-all change — no regression, no stray `'?'`
+    where a real substitution should have fired.
+- **Verified (unhappy path):**
+  1. **Malformed SVG (16a)** — `svgCodeToPngBytes` on deliberately broken markup (`"<svg><this is not><valid
+     xml"`) returns `null` (sharp/libxml rejects it, caught, logged, returned as `null`) rather than
+     throwing uncaught or returning garbage bytes — exercising exactly the branch both call sites' new
+     `else` (placeholder-fallback) path depends on.
+  2. **Concurrent rasterization (16a)** — two `svgCodeToPngBytes` calls for different-colored SVGs fired via
+     `Promise.all` both resolved successfully with distinct output (no shared-mutable-state bleed between
+     the two racing `sharp` pipelines) — relevant because `generatePPTXBuffer` can process multiple
+     diagram slides whose async work overlaps within one request.
+  3. Both sub-fixes are pure functions with no I/O side effects to leave "residue" in (no DB row, no file
+     left on disk outside the verify script's own `mkdtempSync` sandbox, which it explicitly `rmSync`s after
+     the `.pptx` unzip-and-check) — there is no separate "cleanup verified" step needed the way a DB-backed
+     harness would need one; noting this explicitly rather than silently omitting the cleanup-verification
+     bullet other checkpoints have.
+- **Gate status:** `tsc --noEmit` clean (repo-wide). `npm run lint` scoped to both touched files: **zero
+  errors** (down from 8 pre-existing, per the guard-hook cleanup above), 5 pre-existing warnings left
+  untouched (`no-unused-vars` on `addHeaderBar`/`_max`/`normalizeSlideBullets`/`cleanBulletLineForPpt` in
+  `generator.ts`, `bgColor` in `builder.ts`'s `beginCard` — none block the commit guard, which only fails
+  on errors). `npm run build` exits 0, no route/compile regressions.
+- **Migration needed:** none — no schema/DB change in either sub-fix.
+- **Screenshots:** none — both sub-fixes are backend/library-level (PPT buffer generation, PDF text
+  sanitization), no new UI surface.
+- **Next checkpoint must know:**
+  1. This commit is **not pushed**. Same unresolved caveat carried forward from CP-03 through CP-15:
+     confirm what `origin/dev` currently has before assuming this or any prior checkpoint is live.
+  2. This session found the same **pre-existing uncommitted CP-08 changes** CP-15 already flagged
+     (`api/placement/prep/{generate,submit}/route.ts`, `student/placement/prep/[track]/practice/page.tsx`,
+     `src/types/placement.ts`, `.claude/FIX_LEDGER.md`, `.claude/logs-fix/CP-08.json`, `_cp_08_verify/
+     {api,ui}.mts`) — **not touched or committed by this session either**, left exactly as found (still
+     `pending` in `FIX_LEDGER.md`).
+  3. This session also found (and reverted, not committed) an unrelated one-line corruption in the repo
+     root `CLAUDE.md` (a stray edit had turned `## Version-control discipline (non-negotiable)\n\n**"Committed"...`
+     into `## Version-control discipline (non-negotiable \n**"Committed"...`, dropping the closing paren and
+     a blank line) — present in the working tree at session start, source unknown, restored via
+     `git checkout -- CLAUDE.md` before this session's commit. Not this session's doing; flagging in case a
+     future session sees the same class of drift recur and wants to trace its origin.
+  4. `svgCodeToPngBytes` and `sanitizeForPDF` are both now exported from `src/lib/pdf/builder.ts` (the
+     latter newly so, purely for this checkpoint's verify harness) — any future checkpoint touching PDF/PPT
+     Unicode or SVG handling can import and unit-test them directly rather than re-deriving the regex/
+     rasterization logic inline.
+  5. CP-31 (S3, "Generic PDF branding") is specced to "bundle with CP-16b, same file" — it hasn't been
+     started; a session picking up CP-31 should read `sanitizeForPDF`'s current state (this checkpoint's
+     substitution fix) before layering the branding/font work on top.
