@@ -901,3 +901,71 @@ _(entries appended below by each checkpoint session)_
      variants (e.g. as part of CP-27/CP-38), grep for `size="xs"` / `size="icon-xs"` / dense
      admin-table usages first — this session found ~160 call sites of `sm`/`icon-sm`/`icon`
      alone, several in faculty dashboards not covered by any touch-target audit yet.
+
+### CP-21 — Resume PDF/DOCX export null-guard — 2026-08-17
+- **Commit SHA:** `f6d77ab` (fix + verify harness), committed locally only, per this
+  session's no-push default.
+- **What was built:** `api/placement/resume/export/{pdf,docx}/route.ts` built the
+  `react-pdf`/`docx` document straight off `resume.technical_skills`,
+  `resume.education[0]`, `.projects`/`.internships`/`.certifications`/`.achievements`,
+  plus nested arrays (`p.tech_stack`, `it.bullets`, `edu.relevant_courses`), with no
+  guards — even though the route handler only checks `typeof resume === "object"`
+  before calling the builder. Any resume payload missing (or partially missing) these
+  keys threw inside `renderToBuffer`/`Packer.toBuffer`, converted by the route's
+  try/catch into a 500. Added the same `?? []` / `?? {languages:[],frameworks:[],
+  tools:[],concepts:[]}` defaults `resume/ats/route.ts`'s `buildResumeText` already
+  uses, applied consistently across both export routes at every access site named
+  above, including **per-field** defaults inside `technical_skills` (not just a
+  whole-object fallback) — this was found live by the verify harness, see below.
+- **Verified (happy path + the actual null-guard):** New harness
+  `_cp_21_verify/api.mts`, real-magic-link-session pattern (`admin.auth.admin
+  .generateLink` + `anon.auth.verifyOtp`, live dev server, live pilot DB, Test
+  Student `teststudent@gmail.com`). POSTed a resume payload with `technical_skills`,
+  `education`, `projects`, `internships`, `certifications`, `achievements` **entirely
+  absent** to both `/export/pdf` and `/export/docx` — both returned 200 with a real
+  non-trivial buffer (PDF 1773 bytes, DOCX 8660 bytes), not a 500.
+- **Verified (unhappy path):** (1) **Concurrent flow** — fired the PDF and DOCX
+  export requests simultaneously against the same malformed payload
+  (`Promise.all`): both returned 200. (2) **Interrupted flow** — aborted a PDF
+  export request mid-flight via `AbortController`, confirmed the abort surfaced
+  cleanly client-side (not a hang), then fired a fresh request against the same
+  route immediately after and confirmed it still returned 200 — the route/process
+  isn't wedged by an aborted client. (3) A second malformed shape — arrays present
+  but empty (`education: []`, `projects: []`, etc.) plus a **partial**
+  `technical_skills: { languages: [] }` (frameworks/tools/concepts entirely
+  absent) — was tried first with only a whole-object `?? {...}` fallback on
+  `technical_skills` and **still crashed both routes** with `Cannot read properties
+  of undefined (reading 'length')`, because `ts.frameworks`/`ts.tools`/`ts.concepts`
+  were read directly inside `skillRows`. Fixed by adding `?? []` to each of the
+  four `skillRows` entries individually (`ts.languages ?? []` etc., matching what
+  `ats/route.ts` already does per-field) — re-ran the harness and this shape now
+  exports cleanly on both formats. This is exactly the kind of gap FIX_SPEC's
+  verification protocol exists to catch: a whole-object-only guard reads as
+  "done" against a fully-absent payload but not a partially-populated one.
+- **Gate status:** `tsc --noEmit` clean. `npx eslint` on both touched route files
+  and the new harness: zero errors/warnings (one `no-explicit-any` in the harness
+  fixed by typing the malformed-payload const as `Record<string, unknown>`).
+  `npm run build`: exits clean, all routes compile including both export routes.
+  Commit-guard hook's tsc/eslint/build gates passed live on the commit (no
+  `--no-verify`).
+- **Migration needed:** none — pure application-code null-guards, no schema/API
+  contract change (response shape and status codes for well-formed payloads are
+  unchanged).
+- **Next checkpoint must know:**
+  1. This commit is **not pushed** — confirm `origin/dev` state before assuming
+     this or any prior checkpoint is live, per the standing caveat carried since
+     CP-03.
+  2. The pre-existing uncommitted CP-08 changes (`api/placement/prep/{generate,
+     submit}/route.ts`, `student/placement/prep/[track]/practice/page.tsx`,
+     `src/types/placement.ts`) are still present and still untouched by this
+     session — this checkpoint's `git add`/commit deliberately excluded them,
+     staging only the two export route files and the new verify harness.
+  3. CP-35/CP-36 (unbounded resume array sizes; duplicate `ResumeProject`/etc.
+     type declarations in `src/types/placement.ts:101-128` vs `:369-437`) are
+     adjacent but out of scope here — this checkpoint only added defensive
+     `?? []`/`?? {}` guards at read time, it did not touch validation on write
+     or resolve the duplicate-type-declaration finding.
+  4. If a future checkpoint adds new resume fields, follow the same per-field
+     `?? []` pattern used here (and in `ats/route.ts`) rather than a single
+     whole-object fallback — the partial-`technical_skills` case above shows a
+     whole-object guard alone is not sufficient.
