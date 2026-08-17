@@ -665,3 +665,75 @@ _(entries appended below by each checkpoint session)_
   5. CP-31 (S3, "Generic PDF branding") is specced to "bundle with CP-16b, same file" — it hasn't been
      started; a session picking up CP-31 should read `sanitizeForPDF`'s current state (this checkpoint's
      substitution fix) before layering the branding/font work on top.
+
+### CP-17 — `true_false` renders zero answer controls — 2026-08-17
+- **Commit SHA:** `3cc6115` (committed locally only, per this session's no-push default — not pushed).
+- **Not HALT-gated:** no HALT marker on CP-17 in FIX_SPEC.md (UI-only render fix, no schema/RLS/DB
+  write-path change). FIX_SPEC.md's own claim that a copy-paste prompt exists for CP-17 (line 27) does
+  not hold — grepped the file, only the finding's section header (line 287) exists, no expanded prompt
+  block. Worked from the finding text directly.
+- **Repo-state verification:** confirmed live before editing — `typeHasOptions()`
+  (`src/lib/assessment/types.ts:226`) correctly excludes `true_false` (only `mcq`/`msq`/`multiple_correct`/
+  `match` carry an `options` array — `true_false` has no bank equivalent by design, comment at line
+  203-210 explains why). The AI generator's own prompt (`src/lib/assessment/generator.ts:290`) confirms:
+  `true_false: 'No options. "correct_answer" is exactly "True" or "False".'`. `AnswerInput.tsx` had no
+  `true_false`-specific branch, so `question.options ?? []` resolved to an empty array and the shared
+  `options.map()` render path (used for MCQ/MSQ) rendered zero `<button>`s — the question was
+  un-answerable, matching the finding exactly. Confirmed the grading key's comparison format
+  (`src/lib/assessment/grading.ts:97`, `presets.ts:155`) expects/produces exactly `"True"`/`"False"`
+  strings, not option letters — this shaped the fix (buttons emit `"True"`/`"False"` via `onChange`, not
+  `A`/`B`).
+- **What was built (`AnswerInput.tsx` only):** a dedicated `isTrueFalse` render branch inserted before the
+  MCQ/MSQ `options.map()` fallback — two fixed buttons labelled True/False (no option letters), reusing
+  the same selected/reveal visual language as MCQ (primary highlight when selected; emerald on the
+  correct answer; amber on a wrong pick; never red, per the existing `§16` convention in that file).
+  Selection/correctness comparisons are case-insensitive on read (`value?.toLowerCase() === ...`) since a
+  resumed/legacy value could plausibly be lowercase even though the generator always emits titlecase.
+  Also extended the existing keyboard-shortcut `useEffect` (previously bailed out immediately for
+  `true_false` because it gated on `options.length === 0`) to accept `1`/`T` → True and `2`/`F` → False,
+  consistent with the file's own top-of-file keyboard doc comment which already implied true_false should
+  have a shortcut path.
+- **Verified (happy path):** `_cp_17_verify/verify.tsx` — no jsdom/testing-library in this repo (per
+  CLAUDE.md), so the harness renders the actual `AnswerInput` component via `react-dom/server`
+  (`renderToStaticMarkup`), not a reimplementation of its logic. A `--require` CSS stub
+  (`_cp_17_verify/css-stub.cjs`) was needed to run this standalone under `tsx`/node, since the component
+  tree pulls in `RichQuestionText` → a direct `katex/dist/katex.min.css` import that plain Node can't
+  parse outside Next's bundler; the stub only no-ops `.css` requires, it does not touch component logic.
+  11 assertions, all passing: unanswered `true_false` (both `options: null` and `options: []` — the two
+  falsy shapes `?? []` treats identically) renders exactly 2 labelled buttons where it previously rendered
+  0; a set `value` marks the matching button `aria-pressed`; revealed+correct paints emerald, revealed+
+  wrong paints amber-on-pick/emerald-on-key with zero `red-*` classes anywhere.
+- **Verified (unhappy path):**
+  1. **Interrupted flow** — rendered slot-1 with `value: "True"` (answered) then rendered slot-2 (a fresh
+     question the runner would advance to, mid-flow, before any async settle) with `value: null` and
+     confirmed slot-2 shows no `aria-pressed="true"` leaking over from slot-1's selection — the shape of a
+     student answering, then the runner racing ahead to the next question before that write settles.
+  2. **Concurrent action** — rendered with `disabled: true` (the `locked` prop a second overlapping
+     submit/reveal would set) and confirmed both buttons still render, both `disabled=""`, rather than the
+     panel going blank or the controls silently disappearing under a race.
+- **Gate status:** `tsc --noEmit` clean (repo-wide). `npx eslint` on the touched file: zero errors/warnings.
+  `npm run build`: exits clean, no route/compile regressions.
+- **Migration needed:** none — pure client-component render-branch fix, no DB/schema/API contract change
+  (grading already handled `true_false` correctly server-side; only the student-facing input UI was
+  missing the branch).
+- **Screenshots:** none — this checkpoint's fix path (`true_false` in `AnswerInput.tsx`) is, per
+  FIX_SPEC.md's own note, "currently latent (not in any mode's default types)" — no live preset selects
+  `true_false` today (confirmed: no `true_false` reference in `presets.ts`'s type-selection logic beyond
+  the negative-marking table), so there is no reachable live UI screen to screenshot yet. This is a
+  correctness fix for a type that is fully plumbed through generation/grading but not yet exposed by any
+  default mode.
+- **Next checkpoint must know:**
+  1. This commit is **not pushed**. Same unresolved caveat carried forward from CP-03 through CP-16:
+     confirm what `origin/dev` currently has before assuming this or any prior checkpoint is live.
+  2. The same **pre-existing uncommitted CP-08 changes** flagged by CP-15 and CP-16 are still present and
+     still untouched by this session (`api/placement/prep/{generate,submit}/route.ts`,
+     `student/placement/prep/[track]/practice/page.tsx`, `src/types/placement.ts`) — still `pending` in
+     `FIX_LEDGER.md`.
+  3. `FIX_LEDGER.md` showed CP-18 already marked `done` with SHA `7f40c02b33ee277680de3387e8f5e77d0f1555b9`
+     at the start of this session, but that SHA is not reachable from `dev`'s linear history (not among
+     the last several `git log` entries on this branch) — likely landed via a parallel/different-branch
+     checkpoint session per FIX_SPEC.md's "safe to hand to a fresh chat" split. Not investigated further
+     here (out of scope for CP-17); a session that needs CP-18's actual state should verify `git log
+     <sha>` reachability and which branch/worktree it lives on before trusting the ledger row.
+  4. If a future checkpoint (or CP-27/CP-38 design-migration work) starts exercising `true_false` through
+     a live preset for the first time, capture the screenshots this checkpoint could not.
