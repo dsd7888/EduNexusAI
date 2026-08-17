@@ -88,7 +88,7 @@ function drawWorkedExample(
   builder.space(8);
   builder.text("Example", { font: builder.getFont("bold"), size: 9.5, color: COLORS.muted });
   builder.space(2);
-  builder.textOrMath(example.problem, {
+  drawMultilineMathText(builder, example.problem, {
     font: builder.getFont("italic"),
     size: 10,
     color: COLORS.muted,

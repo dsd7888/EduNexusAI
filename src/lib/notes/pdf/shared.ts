@@ -6,8 +6,9 @@
  * one shared definition (the same call CP-N4's `shell.tsx` made for the client
  * cards). No AI calls; pure layout.
  */
-import { rgb } from "pdf-lib";
+import { rgb, type PDFFont } from "pdf-lib";
 import { COLORS, PDFBuilder } from "@/lib/pdf/builder";
+import { parseMarkdownLite } from "@/lib/text/markdownLite";
 import type { PyqSignal } from "@/lib/notes/pyq-frequency";
 
 // Amber, never red — same rule PyqChip.tsx follows on screen: a student reading
@@ -38,20 +39,39 @@ export function drawPyqLine(builder: PDFBuilder, signal: PyqSignal | undefined):
  * solutions ("solutions are multi-step and the generator separates the steps
  * with newlines"). `PDFBuilder.text()` / `textOrMath()` collapse `\n` to a
  * space (needed for ordinary wrapped prose), which would run a multi-step
- * derivation into one sentence — so this splits first and draws each non-empty
- * line through `textOrMath` individually, math-aware per line.
+ * derivation into one sentence — so plain-text runs are split first and drawn
+ * line by line through `textOrMath`, math-aware per line.
+ *
+ * Also table-aware: a worked example's problem/solution sometimes carries a
+ * markdown pipe table (e.g. a truth table or a DP grid the generator produced
+ * as `| a | b |` rows). Fed straight through `textOrMath` those pipes render
+ * literally as garbled text instead of a table. `parseMarkdownLite` (the same
+ * parser `PDFBuilder.richText()` uses for chat/quiz content) splits any table
+ * segment out so it can go through `drawTable` — mirroring `drawSymbolsTable`'s
+ * `builder.drawTable()` call in formulaRenderer.ts — while everything else
+ * keeps the line-by-line math-aware path above.
  */
 export function drawMultilineMathText(
   builder: PDFBuilder,
   content: string,
-  opts: { size?: number; color?: ReturnType<typeof rgb> } = {}
+  opts: { font?: PDFFont; size?: number; color?: ReturnType<typeof rgb> } = {}
 ): void {
-  for (const raw of content.split("\n")) {
-    const line = raw.trim();
-    if (!line) {
-      builder.space(4);
+  for (const seg of parseMarkdownLite(content ?? "")) {
+    if (seg.type === "table") {
+      builder.space(3);
+      builder.drawTable(seg.headers, seg.rows, { size: Math.min(opts.size ?? 10, 9.5) });
+      builder.space(3);
       continue;
     }
-    builder.textOrMath(line, opts);
+
+    const lines = seg.type === "list" ? seg.items : seg.content.split("\n");
+    for (const raw of lines) {
+      const line = raw.trim();
+      if (!line) {
+        builder.space(4);
+        continue;
+      }
+      builder.textOrMath(line, opts);
+    }
   }
 }

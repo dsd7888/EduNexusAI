@@ -1,0 +1,13 @@
+1. happy path — worked example without a table renders cleanly
+  ok   no-table worked example does not throw
+2. the finding — solution with a markdown pipe table renders as a real table
+  ok   drawTable invoked for the solution's markdown table (got calls: [["Symbol","Meaning"],["Input","Output"]])
+  ok   table rows parsed correctly (got [["0","1"],["1","0"]])
+3. problem field also routes tables through drawTable, not textOrMath
+  ok   drawTable invoked for a table embedded in the problem field (got calls: [["Symbol","Meaning"],["x","y"]])
+4. unhappy path — ragged table (short row) still renders without throwing
+  ok   ragged/malformed table does not throw
+5. unhappy path — empty problem/solution strings draw nothing and do not throw
+  ok   empty worked-example fields do not throw
+
+6 passed, 0 failed
