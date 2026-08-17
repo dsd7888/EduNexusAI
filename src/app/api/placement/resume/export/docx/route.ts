@@ -100,7 +100,7 @@ function buildResumeDoc(resume: ResumeData): Document {
   }
 
   // 2. Education
-  const edu = resume.education[0];
+  const edu = (resume.education ?? [])[0];
   if (edu) {
     children.push(sectionHeader("Education"));
     const eduBits = [
@@ -112,23 +112,28 @@ function buildResumeDoc(resume: ResumeData): Document {
     children.push(
       bodyLine([new TextRun({ text: eduBits.join("  |  "), size: SIZE.body })])
     );
-    if (edu.relevant_courses.length > 0) {
+    if ((edu.relevant_courses ?? []).length > 0) {
       children.push(
         bodyLine([
           new TextRun({ text: "Relevant Coursework: ", bold: true, size: SIZE.body }),
-          new TextRun({ text: edu.relevant_courses.join(", "), size: SIZE.body }),
+          new TextRun({ text: (edu.relevant_courses ?? []).join(", "), size: SIZE.body }),
         ])
       );
     }
   }
 
   // 3. Technical Skills
-  const ts = resume.technical_skills;
+  const ts = resume.technical_skills ?? {
+    languages: [],
+    frameworks: [],
+    tools: [],
+    concepts: [],
+  };
   const skillRows: Array<[string, string[]]> = [
-    ["Languages", ts.languages],
-    ["Frameworks", ts.frameworks],
-    ["Tools", ts.tools],
-    ["Concepts", ts.concepts],
+    ["Languages", ts.languages ?? []],
+    ["Frameworks", ts.frameworks ?? []],
+    ["Tools", ts.tools ?? []],
+    ["Concepts", ts.concepts ?? []],
   ];
   if (skillRows.some(([, list]) => list.length > 0)) {
     children.push(sectionHeader("Technical Skills"));
@@ -144,17 +149,18 @@ function buildResumeDoc(resume: ResumeData): Document {
   }
 
   // 4. Projects
-  if (resume.projects.length > 0) {
+  const projects = resume.projects ?? [];
+  if (projects.length > 0) {
     children.push(sectionHeader("Projects"));
-    for (const p of resume.projects) {
+    for (const p of projects) {
       children.push(titleWithDuration(p.title || "Untitled Project", p.duration));
-      if (p.tech_stack.length > 0) {
+      if ((p.tech_stack ?? []).length > 0) {
         children.push(
           new Paragraph({
             spacing: { after: 20 },
             children: [
               new TextRun({
-                text: `Tech: ${p.tech_stack.join(", ")}`,
+                text: `Tech: ${(p.tech_stack ?? []).join(", ")}`,
                 italics: true,
                 size: SIZE.small,
               }),
@@ -162,16 +168,17 @@ function buildResumeDoc(resume: ResumeData): Document {
           })
         );
       }
-      for (const b of p.bullets) {
+      for (const b of p.bullets ?? []) {
         if (b.trim()) children.push(bullet(b));
       }
     }
   }
 
   // 5. Internships
-  if (resume.internships.length > 0) {
+  const internships = resume.internships ?? [];
+  if (internships.length > 0) {
     children.push(sectionHeader("Internships"));
-    for (const it of resume.internships) {
+    for (const it of internships) {
       const heading = [it.role, it.company].filter(Boolean).join(", ");
       children.push(titleWithDuration(heading || "Internship", it.duration || null));
       if (it.location) {
@@ -184,16 +191,17 @@ function buildResumeDoc(resume: ResumeData): Document {
           })
         );
       }
-      for (const b of it.bullets) {
+      for (const b of it.bullets ?? []) {
         if (b.trim()) children.push(bullet(b));
       }
     }
   }
 
   // 6. Certifications
-  if (resume.certifications.length > 0) {
+  const certifications = resume.certifications ?? [];
+  if (certifications.length > 0) {
     children.push(sectionHeader("Certifications"));
-    for (const c of resume.certifications) {
+    for (const c of certifications) {
       const bits = [c.name, c.issuer, c.year].filter((v) => v && v.trim());
       children.push(
         bodyLine([new TextRun({ text: bits.join("  |  "), size: SIZE.body })])
@@ -202,9 +210,10 @@ function buildResumeDoc(resume: ResumeData): Document {
   }
 
   // 7. Achievements
-  if (resume.achievements.length > 0) {
+  const achievements = resume.achievements ?? [];
+  if (achievements.length > 0) {
     children.push(sectionHeader("Achievements"));
-    for (const a of resume.achievements) {
+    for (const a of achievements) {
       if (a.text.trim()) children.push(bullet(a.text));
     }
   }
