@@ -26,7 +26,7 @@ runner may touch it — the runner refuses and errors, it does not skip silently
 | CP-08 | pending | | | HALT checkpoint — commit locally only, human reviews before push |
 | CP-09 | pending | | | |
 | CP-10 | pending | | | |
-| CP-11 | blocked | | | Product decision needed from Dhruv: (a) student-triggered generate-on-demand vs (b) faculty-provisioned backfill. Do not run until answered. |
+| CP-11 | pending | | | Confirmed student-triggered generate-on-demand, gated by existing notes_view rate limit. |
 | CP-12 | pending | | | |
 | CP-13 | pending | | | |
 | CP-14 | pending | | | decide canonical table alongside CP-13 |
@@ -44,7 +44,8 @@ runner may touch it — the runner refuses and errors, it does not skip silently
 | CP-26 | pending | | | |
 | CP-27 | pending | | | large — own initiative, pairs with CP-38 |
 | CP-28 | pending | | | |
-| CP-29 | blocked | | | Product decision needed from Dhruv: ship a real dark-mode toggle (multi-file) vs. mark DESIGN.md's dark-mode section as not-yet-shipped (docs-only). Do not run until answered. |
+| CP-29a | pending | | | Dark-mode infra only — real toggle (next-themes or equivalent), persisted. Does NOT add new dark: classes to unstyled pages. |
+| CP-29b+ | blocked | | | deferred — bundle with CP-27/CP-38, schedule when those are scoped |
 | CP-30 | pending | | | backlog — only act if double-submits show up in production telemetry |
 | CP-31 | pending | | | bundle with CP-16b, same file |
 | CP-32 | pending | | | |

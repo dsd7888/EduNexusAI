@@ -160,11 +160,9 @@ not a generated quiz (was: 200 + 5 real questions).
 ### CP-11 — Notes v2 cold-start generation path
 **Files:** `src/app/(student)/student/notes/[subjectId]/page.tsx` (ErrorState), likely a new
 orchestration point calling `generateModuleNotes` per uncovered module.
-**Decision needed from Dhruv before writing code:** (a) student-triggered — the "Generate
-notes" button calls `generateModuleNotes` for each uncovered module, gated by the existing
-`notes_view` limit; or (b) faculty-provisioned — ship the faculty regenerate UI that currently
-doesn't exist, treat every live subject as needing a one-time backfill. Recommend (a) for pilot
-speed unless faculty ownership of content timing matters more.
+**Decision confirmed:** student-triggered only — there is no faculty-provisioned notes
+generation flow and none is planned. The "Generate notes" button calls `generateModuleNotes`
+for each uncovered module, gated by the existing `notes_view` rate limit.
 **Verify:** a real zero-notes subject, click "Generate notes," confirm `study_notes` rows
 appear and the page renders real content (was: 0 rows, infinite loop).
 
@@ -329,7 +327,8 @@ genuinely multi-file — scope as its own checkpoint cluster when you're ready, 
 | CP | Finding | File(s) | Note |
 |---|---|---|---|
 | 28 | Chat PDF markdown tables garbled | `PDFBuilder.markdown()` in `src/lib/pdf/builder.ts` | Give it a real table renderer (grid + cells) |
-| 29 | Dark mode unreachable app-wide | none exist — `next-themes`/toggle | **Product decision needed**: ship a real toggle (multi-file) or mark DESIGN.md's dark-mode section as not-yet-shipped (docs-only, trivial). Ask Dhruv before scoping. |
+| 29a | Dark mode unreachable app-wide — infra | none exist — `next-themes`/toggle | Wire a real, persisted toggle mechanism (`next-themes` or equivalent) only. Scope excludes adding new `dark:` classes to unstyled pages — that's CP-29b+. |
+| 29b+ | Per-surface dark-class coverage | pages/components lacking `dark:` classes | Deferred — bundle with CP-27/CP-38's DESIGN.md token migration rather than run separately; schedule when those are scoped. |
 | 30 | No chat double-submit guard | `api/chat/route.ts` | Backlog — only act if double-submits show up in production telemetry, per the audit's own framing |
 | 31 | Generic PDF branding (Tailwind-blue/Helvetica) | `src/lib/pdf/builder.ts` `COLORS`, font embedding | Swap to DESIGN.md hex values + IBM Plex via `fontkit`; fixes every PDF export at once, good ROI, bundle with CP-16b (same file) |
 | 32 | Formula `symbol` field holds full phrases | `src/lib/notes/prompts.ts` `FORMULA_SCHEMA` | Add a bad-example pair, low priority |
