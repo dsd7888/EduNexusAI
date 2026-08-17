@@ -1129,3 +1129,73 @@ _(entries appended below by each checkpoint session)_
   4. CP-24 (SQL-injection-shaped input in logs — `assessment/engine.ts`
      `subjectIds`, `prep/submit/route.ts` `topic`) is next in FIX_SPEC.md's
      S2 tier.
+
+## 2026-08-17 — CP-24: SQL-injection-shaped input → raw HTML in logs
+
+- **Commit:** `10d3cfc980ad05510e71d7d338619991c50383e1` (committed locally
+  only, per this session's no-push default).
+- **Finding:** a SQL-injection-shaped `subjectIds` string (assessment engine)
+  or `topic` string (`prep/submit`) could reach a Supabase query unvalidated;
+  the resulting upstream failure was logged verbatim via `console.error`,
+  including an unbounded raw HTML error body when PostgREST/the gateway
+  returned one — log noise, not data exposure (client response stayed a
+  generic 500/400).
+- **Fix:** added two shared helpers to `src/lib/api/helpers.ts`:
+  `isUuid(value)` (cheap UUID-shape check) and `logCappedError(scope, err)`
+  (console.error wrapper that truncates any message over 500 chars with a
+  `[truncated, N chars total]` marker). Wired `isUuid` into
+  `src/lib/assessment/routeHandler.ts` (the single shared entry for
+  quick/mastery/exam-sim — rejects non-UUID `subjectIds` with a clean 400
+  before `assertAssessmentSubjectAccess`'s or `planAssessment`'s queries ever
+  see it) and, as defense-in-depth for any future direct caller, into
+  `src/lib/assessment/engine.ts:189-197` right after the existing
+  empty-array guard. `src/app/api/placement/prep/submit/route.ts` now checks
+  `topic` against a `Set` built from `TRACK_SECTIONS[track].flatMap(s =>
+  s.topics)` (`src/lib/placement/tracks.ts`) instead of accepting any
+  ≤100-char string — `topic` is meant to be one of those fixed labels, never
+  arbitrary client text. Both routes' outer catch blocks now call
+  `logCappedError` instead of raw `console.error`.
+- **Scoping note:** `src/app/api/placement/prep/submit/route.ts` already had
+  unrelated, uncommitted CP-08 changes sitting in the working tree
+  (server-side re-grading's `grading` response map) when this session
+  started. Verified via `git diff` that those hunks are untouched and staged
+  only the 3 hunks that are actually CP-24's (import line, the new topic
+  check, the catch-block swap) — done by diffing against `git show HEAD:...`
+  and hash-object-ing a HEAD-plus-only-my-edits blob into the index directly,
+  rather than `git add`-ing the whole file. The CP-08 diff is still sitting
+  unstaged in the working tree, exactly as before this session; it is not
+  part of this commit.
+- **Verified:** `_cp_24_verify/verify.mts` (pure-function harness, no
+  DB/session needed — `isUuid`/`logCappedError`/the TRACK_SECTIONS check have
+  zero I/O), 12 assertions, all passing
+  (`.claude/logs-fix/CP-24-verify.log`): valid UUID accepted; SQL-injection-
+  shaped (`'); DROP TABLE modules; --`), boolean-injection-shaped
+  (`1) OR (1=1`), empty-string, and truncated-UUID `subjectIds` all rejected;
+  a real `TRACK_SECTIONS.aptitude` topic label accepted, an HTML/injection-
+  shaped topic and an injection-*suffixed* real-looking topic both rejected
+  (guards against a naive "starts with a known prefix" check); a 5KB
+  HTML-shaped error message is capped under 700 logged chars and flagged
+  `truncated` without containing the raw payload (**unhappy path** — the
+  actual finding); a normal short error is logged completely verbatim,
+  confirming the cap doesn't mangle the common case (**regression guard**).
+  No live-server/browser pass — these are pure input-validation functions
+  with no route/UI surface beyond the request bodies already covered by
+  CP-02/CP-07's existing rate-limit harnesses; `npm run build` (full
+  type-check + compile, all routes including the two touched ones) and
+  targeted `eslint` on every changed file are both clean.
+- **Migration needed:** none.
+- **Next checkpoint must know:**
+  1. Commit is **not pushed** — confirm `origin/dev` before assuming this or
+     any prior checkpoint is live.
+  2. The pre-existing uncommitted CP-08 changes (`api/placement/prep/
+     {generate,submit}/route.ts`, `student/placement/prep/[track]/
+     practice/page.tsx`, `src/types/placement.ts`, `_cp_08_verify/api.mts`)
+     are still present, still untouched, and still uncommitted — same as
+     every prior checkpoint noted this since CP-14/CP-23.
+  3. `src/lib/api/helpers.ts` now exports `isUuid` and `logCappedError` —
+     any future checkpoint touching an API route that takes an ID-shaped or
+     free-text field from the client and logs failures should reuse these
+     rather than re-inventing UUID regexes or raw `console.error(err)`.
+  4. CP-25 (Notes PDF worked-example markdown tables,
+     `src/lib/notes/pdf/formulaRenderer.ts:91-97`) is next in FIX_SPEC.md's
+     S2 tier.
