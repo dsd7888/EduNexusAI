@@ -35,7 +35,7 @@ runner may touch it — the runner refuses and errors, it does not skip silently
 | CP-17 | done | ccb9f44cfafd064de29de7f4b887df09e44182c3 | 2026-08-17 | committed locally only, per this session's no-push default |
 | CP-18 | done | 7f40c02b33ee277680de3387e8f5e77d0f1555b9 | 2026-08-17 |  |
 | CP-19 | done | 05b4cbe42028b0223202206dab0b7efcfed75786 | 2026-08-17 | ported FacultyShell's collapse pattern into the student shell; `_cp_19_verify/ui.mts` verified live incl. nav-interrupted toggle + rapid-double-click; committed locally only, per this session's no-push default |
-| CP-20 | pending | | | shared component, many call sites — does not cover placement pages (needs CP-38) |
+| CP-20 | done | cce95e0f05a18946c8d0449b3fdb31261c19287e | 2026-08-17 | mobile shell + chat composer/header only — does not cover placement pages (needs CP-38); committed locally only, per this session's no-push default |
 | CP-21 | pending | | | |
 | CP-22 | pending | | | |
 | CP-23 | pending | | | |
