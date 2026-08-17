@@ -14,10 +14,15 @@ Evidence tags: [RUNTIME] [EXPORT] [UI] [STATIC].
 - **Desktop sidebar not collapsible** — AU-CHAT. No toggle/rail state on `<aside>` in
   `src/app/(student)/layout.tsx`; only the mobile overlay has open/close. Check AU-SHELL against the
   same layout file (it's shared shell code, not chat-specific) — likely reproduces everywhere.
+  **Confirmed by AU-SHELL** on all four of its pages (dashboard/subjects/profile/history) — and the
+  fix already exists in the codebase: `NavLink.tsx` already has `icon`/`collapsed` props built for
+  this, and `FacultyShell.tsx` is a complete working reference implementation never ported to the
+  student shell.
 - **Dark mode unreachable app-wide** — AU-CHAT. No `next-themes`/`ThemeProvider`/any `.dark`-class
   toggle exists anywhere in `src/app`/`src/components`; Tailwind's dark variant is class-based, not
   `prefers-color-scheme`-based, so there is no automatic fallback either. DESIGN.md's dark-mode spec
-  (night bg, `ring-paper` focus states, CP-D0 layering rules) currently reaches zero sessions. Verify
+  (night bg, `ring-paper` focus states, CP-D0 layering rules) currently reaches zero sessions.
+  **Confirmed by AU-SHELL** (byte-similar light/dark screenshots on all four pages). Verify
   against AU-SHELL and AU-FLASH (CP-D0 dark-surface work) — if true there too, this is a single
   platform-wide gap, not a per-feature one.
 - **Touch targets under 44px** — AU-CHAT (every composer/header control: 26–36px measured). DESIGN.md
@@ -384,6 +389,48 @@ Evidence tags: [RUNTIME] [EXPORT] [UI] [STATIC].
 
 ---
 
+### AU-SHELL — Dashboard/subjects/profile/history + global nav + auth edges + mobile — 2026-08-17 — findings file: .claude/findings/AU-SHELL.md
+- S1: 2 — (1) **any authenticated student can self-promote to `superadmin`** via an ordinary,
+  sanctioned `createBrowserClient()` call (`profiles` RLS's "own profile" UPDATE policy restricts
+  which row, not which columns) — confirmed live: a real `.update({role:'superadmin'})` from the
+  student's own RLS-scoped client succeeded with no error, and the SAME session then read 5 other
+  real users' profiles (including real seeded emails) and successfully WROTE another student's
+  role/branch, all with the one already-issued JWT and zero new login. Because `proxy.ts`/
+  `requireRole()` trust the same `profiles.role` column, this also unlocks real `/superadmin/*`
+  server-side access on the next page load — a full authorization-model bypass, not just a DB
+  quirk; (2) the dashboard's "Placement Readiness"/"Best Placement Score" cards
+  (`usePlacementHistory`, `src/hooks/useSupabaseData.ts:263-285`) query `placement_attempts`, which
+  does not exist in the live schema (same root cause as the already-ledgered AU-PLACE-CORE S1 #15)
+  — confirmed live (`PGRST205`) — and the hook never checks `.error`, so every student's dashboard
+  permanently and silently shows "Not started" regardless of real placement activity, with no trace
+  in the browser console or anywhere a developer would look.
+- S2: 3 — (1) desktop sidebar collapse control confirmed missing on all 4 AU-SHELL pages (cross-cutting,
+  not re-counted below — see cross-cutting section); (2) DESIGN.md's color/typography system (ink/
+  paper/ochre tokens, IBM Plex fonts) is entirely absent from the shared student shell chrome
+  (`(student)/layout.tsx`) and all four core pages, even though Notes/Flashcards/Placement DO opt
+  into `font-plex-*` elsewhere — the one piece of UI present on every screen a student ever sees is
+  unstyled per the design system; (3) mobile nav touch targets measured and confirmed under the
+  44px floor with new numbers (hamburger 36×36px, drawer nav links 36px tall) — cross-cutting,
+  new measurements.
+- S3: 1 — no `prefers-reduced-motion` handling anywhere in `globals.css` (global gap, not
+  AU-SHELL-specific, but not previously logged by name).
+- Notable positives (verified live, not just read): `chat_sessions`/`chat_messages` RLS correctly
+  blocks cross-student reads (canary-string test, unfiltered-select test) — making the `profiles`
+  finding an isolated gap, not a systemic RLS failure; `/api/chat/export` re-verifies session
+  ownership server-side; the History page's session-switch staleness guard holds even under
+  adversarial network ordering (verified with a real 2.5s artificial delay via Playwright request
+  interception); empty/error-state copy meets DESIGN.md's plain-language bar everywhere checked.
+- AI spend this run: $0.00, 0 real Gemini calls (this feature's surfaces have no AI-calling path;
+  confirmed via `ai_call_logs`).
+- Most important single thing: the `profiles.role` self-escalation (S1-1) — every other finding
+  across the whole AU-* series assumes the role/authorization model itself is trustworthy even
+  where individual features have gaps. This shows the column every layer of the app (RLS, `proxy.ts`,
+  `requireRole()`) trusts to decide student-vs-superadmin can be rewritten by any student today from
+  their own browser console, with the app's own public anon key and their own ordinary session — no
+  exploit chain beyond one `.update()` call. Fix before shipping anything else in this punch-list.
+
+---
+
 ## Master punch-list (ranked, filled as features complete)
 
 _(S1 first, then S2, then S3 — this is what the FIX pass consumes)_
@@ -474,6 +521,18 @@ _(S1 first, then S2, then S3 — this is what the FIX pass consumes)_
     double-spaces. The sibling Q Paper PDF engine at least substitutes a visible `?` for the same
     input class (still degraded, but detectable) — confirms and elevates the AU-NOTES-run S3-12
     entry below from "plausible, not reproduced" to confirmed [EXPORT]. [AU-EXPORTS]
+20. Any authenticated student can rewrite their own `profiles.role` to `superadmin` (or any other
+    column, e.g. `department`) via a direct, ordinary `createBrowserClient().from('profiles')
+    .update(...)` call — the "own profile" RLS UPDATE policy restricts the row, not the columns.
+    Confirmed live: the call succeeds with no error, the same already-issued session then reads
+    every other user's real profile data and successfully overwrites another student's role/branch,
+    and because `proxy.ts`/`requireRole()` read the same column, this is a full bypass of the app's
+    server-side authorization model, not just a database anomaly. [AU-SHELL]
+21. The dashboard's "Placement Readiness"/"Best Placement Score" widgets query `placement_attempts`
+    (`usePlacementHistory`, `src/hooks/useSupabaseData.ts:263-285`), which does not exist in the
+    live schema (same root cause as #15 above) — confirmed live (`PGRST205`); the hook drops the
+    resulting `.error` unchecked, so the widget permanently and silently renders "Not started" for
+    every student regardless of real placement activity. [AU-SHELL]
 
 **S2**
 13. `api/placement/practice/submit` (and its unreachable twin `api/placement/submit`) score
@@ -528,6 +587,16 @@ _(S1 first, then S2, then S3 — this is what the FIX pass consumes)_
     header — print at the top of the next page, disconnected with no repeated column context; no
     page-break/keep-together guard exists between a question header and its first sub-part.
     [AU-EXPORTS]
+24. DESIGN.md's color/typography system (ink/paper/ochre tokens, IBM Plex fonts, mono-tag) is
+    entirely absent from the shared student shell chrome (`(student)/layout.tsx`) and the
+    dashboard/subjects/profile/history pages — confirmed via `font-plex` grep (present in Notes/
+    Flashcards/Placement, absent here) and screenshots; distinct from the already-ledgered #17
+    below because this is the nav chrome rendered on every single student screen, not individual
+    un-migrated sub-pages. [AU-SHELL]
+25. Mobile nav touch targets confirmed under the 44px floor with new measurements: the top-bar
+    hamburger button is 36×36px and the open-drawer nav links are 36px tall on all four AU-SHELL
+    pages — cross-cutting instance, additional evidence for a shared component fix.
+    [AU-SHELL]
 
 **S3**
 7. Chat PDF export garbles markdown tables into raw pipe-syntax text (diagrams export fine). [AU-CHAT]
@@ -563,3 +632,6 @@ _(S1 first, then S2, then S3 — this is what the FIX pass consumes)_
     each; TS interface-merging combines them into an unsound wider type the codebase already
     defensively casts around in two places (self-flagged "CP-E1" in a code comment, never fixed).
     [AU-PLACE-TOOLS]
+19. No `prefers-reduced-motion` handling anywhere in `src/app/globals.css` — a global gap noticed
+    while reading the stylesheet for AU-SHELL; low severity there specifically (that feature has
+    almost no motion) but applies app-wide. [AU-SHELL]
