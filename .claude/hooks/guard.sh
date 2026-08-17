@@ -79,4 +79,27 @@ if [ -n "$NEW_ERRORS" ]; then
   exit 2
 fi
 
+# --- (D2) lint gate: eslint must be clean on files this commit touches -----
+# Full-repo eslint is NOT clean today (153 pre-existing errors / 144 warnings
+# in src/**, unrelated to any single fix pass). Scoping to staged files means
+# new/edited code is held to the bar without blocking on legacy debt it
+# didn't touch.
+STAGED_LINT_FILES="$(git diff --cached --name-only --diff-filter=ACMR -- '*.ts' '*.tsx' '*.mts' 2>/dev/null || true)"
+if [ -n "$STAGED_LINT_FILES" ]; then
+  ESLINT_OUT="$(printf '%s\n' "$STAGED_LINT_FILES" | xargs npx eslint 2>&1)"
+  if [ $? -ne 0 ]; then
+    echo "GUARD: commit blocked — eslint errors in staged files:" >&2
+    printf '%s\n' "$ESLINT_OUT" | head -40 >&2
+    exit 2
+  fi
+fi
+
+# --- (D3) build gate: production build must succeed ------------------------
+BUILD_OUT="$(npm run build 2>&1 || true)"
+if printf '%s' "$BUILD_OUT" | grep -q 'Failed to compile'; then
+  echo "GUARD: commit blocked — production build failed:" >&2
+  printf '%s\n' "$BUILD_OUT" | tail -40 >&2
+  exit 2
+fi
+
 exit 0
