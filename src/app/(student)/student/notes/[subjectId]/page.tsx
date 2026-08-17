@@ -49,7 +49,7 @@ export default function StudentNotesReadingPage() {
   const subjectId = params?.subjectId ?? "";
   const router = useRouter();
 
-  const { blocks, metadata, isLoading, error, isRateLimited, reload } =
+  const { blocks, metadata, isLoading, error, isRateLimited, generate, isGenerating } =
     useSubjectNotes(subjectId);
 
   const [moduleId, setModuleId] = useState<string>(ALL_MODULES);
@@ -254,7 +254,8 @@ export default function StudentNotesReadingPage() {
         <ErrorState
           message={error}
           isRateLimited={isRateLimited}
-          onRetry={reload}
+          isGenerating={isGenerating}
+          onGenerate={generate}
         />
       ) : null}
 
@@ -446,30 +447,38 @@ function EmptyState({ title, body }: { title: string; body: string }) {
 
 /**
  * Amber, never red (§16/§17). A subject whose notes have not been built yet is
- * not an error the student caused, and the retry usually works — the first call
- * for a subject is what triggers assembly.
+ * not an error the student caused.
+ *
+ * CP-11: the button actually generates now (POST /generate, calling
+ * generateModuleNotes per uncovered module then assembling), rather than
+ * re-fetching GET — which only assembles already-fresh rows and, on a
+ * genuinely uncovered subject, would fail with the same message forever
+ * (the "0 rows, infinite loop" this checkpoint fixes).
  */
 function ErrorState({
   message,
   isRateLimited,
-  onRetry,
+  isGenerating,
+  onGenerate,
 }: {
   message: string;
   isRateLimited: boolean;
-  onRetry: () => void;
+  isGenerating: boolean;
+  onGenerate: () => void;
 }) {
   return (
     <div className="mt-6 rounded-xl border border-amber-300 bg-amber-50 p-6 text-center dark:border-amber-500/40 dark:bg-amber-500/10">
       <p className="text-sm text-amber-900 dark:text-amber-200">{message}</p>
-      {/* No retry on a 429 — the quota is spent, and a button that cannot
-          succeed is worse than no button. */}
+      {/* No generate action on a 429 — the quota is spent, and a button that
+          cannot succeed is worse than no button. */}
       {!isRateLimited ? (
         <button
           type="button"
-          onClick={onRetry}
-          className="mt-4 inline-flex min-h-11 items-center justify-center rounded-lg border border-amber-400 bg-background px-5 text-sm font-medium transition-colors hover:bg-accent"
+          onClick={onGenerate}
+          disabled={isGenerating}
+          className="mt-4 inline-flex min-h-11 items-center justify-center rounded-lg border border-amber-400 bg-background px-5 text-sm font-medium transition-colors hover:bg-accent disabled:pointer-events-none disabled:opacity-60"
         >
-          Generate notes
+          {isGenerating ? "Generating…" : "Generate notes"}
         </button>
       ) : null}
     </div>

@@ -48,6 +48,18 @@ export type SubjectNotesState = {
   /** True when the failure was a quota 429 — the CTA should not offer a retry. */
   isRateLimited: boolean;
   reload: () => void;
+  /**
+   * Student-triggered cold-start (CP-11): generates every module in the
+   * subject that has no fresh notes row, then assembles. `reload()` alone
+   * cannot do this — GET only ever ASSEMBLES already-fresh module rows and
+   * fails closed with `no_module_notes` when there are none to join, by
+   * design (subject-assembler.ts never makes an AI call). This POSTs to the
+   * generation endpoint instead, gated by the same `notes_view` limit GET
+   * itself charges on a miss.
+   */
+  generate: () => Promise<void>;
+  /** True while a generate() call is in flight. */
+  isGenerating: boolean;
 };
 
 const EMPTY_METADATA: SubjectNotesMetadata = {
@@ -62,10 +74,19 @@ export function useSubjectNotes(subjectId: string): SubjectNotesState {
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [isRateLimited, setIsRateLimited] = useState(false);
+  const [isGenerating, setIsGenerating] = useState(false);
 
-  // Monotonic request id. Only the latest may write state.
+  // Monotonic request id. Only the latest may write state. Shared by load()
+  // and generate() — whichever call is still current when its response
+  // arrives is the one allowed to write, exactly the discipline the file
+  // header describes, now spanning two entry points instead of one.
   const reqRef = useRef(0);
   const abortRef = useRef<AbortController | null>(null);
+  // Re-entrancy guard for generate(): a ref rather than isGenerating itself,
+  // same reasoning as the reading page's downloadingRef — a state read only
+  // reflects the last commit, so two click events dispatched before React
+  // re-renders between them would both see isGenerating === false.
+  const generatingRef = useRef(false);
 
   const load = useCallback(async () => {
     if (!subjectId) return;
@@ -144,5 +165,84 @@ export function useSubjectNotes(subjectId: string): SubjectNotesState {
     };
   }, [load]);
 
-  return { blocks, metadata, isLoading, error, isRateLimited, reload: load };
+  const generate = useCallback(async () => {
+    if (!subjectId || generatingRef.current) return;
+    generatingRef.current = true;
+
+    // Same request-id discipline as load(): this call OWNS state on success,
+    // so it takes a new id and any in-flight/late load() response for the old
+    // id is dropped rather than clobbering what generate() just produced.
+    const id = ++reqRef.current;
+    abortRef.current?.abort();
+
+    // The prior error (usually the ErrorState this button lives inside) is
+    // left in place, not cleared, until generate() actually resolves — the
+    // button switches to a disabled "Generating…" label instead, so the
+    // student is never mid-click looking at a page with no error AND no
+    // content AND no visible reason why.
+    setIsGenerating(true);
+
+    try {
+      const res = await fetch(`/api/notes/subject/${subjectId}/generate`, {
+        method: "POST",
+      });
+      const body = await res.json().catch(() => null);
+
+      if (id !== reqRef.current) return;
+
+      if (res.status === 429) {
+        setIsRateLimited(true);
+        setError(
+          body?.message ??
+            "You've used all your notes builds for today. Try again tomorrow."
+        );
+        return;
+      }
+
+      if (!res.ok) {
+        setError(
+          body?.detail ??
+            body?.error ??
+            "We couldn't generate notes for this subject."
+        );
+        return;
+      }
+
+      const meta = body?.sourceMetadata ?? {};
+      setBlocks(Array.isArray(body?.blocks) ? body.blocks : []);
+      setMetadata({
+        modulesCovered: meta.modulesCovered ?? EMPTY_METADATA.modulesCovered,
+        modulesTotal: meta.modulesTotal ?? EMPTY_METADATA.modulesTotal,
+        moduleBreakpoints: Array.isArray(meta.moduleBreakpoints)
+          ? meta.moduleBreakpoints
+          : [],
+      });
+      // Only cleared on confirmed success — the prior error stays visible
+      // through every other branch above (each of which already set its own
+      // replacement message).
+      setError(null);
+      setIsRateLimited(false);
+    } catch (err) {
+      if (id !== reqRef.current) return;
+      setError(
+        err instanceof Error
+          ? err.message
+          : "We couldn't generate notes for this subject."
+      );
+    } finally {
+      generatingRef.current = false;
+      if (id === reqRef.current) setIsGenerating(false);
+    }
+  }, [subjectId]);
+
+  return {
+    blocks,
+    metadata,
+    isLoading,
+    error,
+    isRateLimited,
+    reload: load,
+    generate,
+    isGenerating,
+  };
 }
