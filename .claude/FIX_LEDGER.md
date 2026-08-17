@@ -33,7 +33,7 @@ runner may touch it — the runner refuses and errors, it does not skip silently
 | CP-15 | pending | | | bundles CP-35's array caps, same file |
 | CP-16 | pending | | | covers both CP-16a (PPT SVG fallback) and CP-16b (Notes PDF Unicode deletion) |
 | CP-17 | pending | | | |
-| CP-18 | pending | | | |
+| CP-18 | done | 7f40c02b33ee277680de3387e8f5e77d0f1555b9 | 2026-08-17 |  |
 | CP-19 | pending | | | |
 | CP-20 | pending | | | shared component, many call sites — does not cover placement pages (needs CP-38) |
 | CP-21 | pending | | | |

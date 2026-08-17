@@ -22,10 +22,24 @@
 #   ./run-fix.sh CP-12            # RESUME: skip everything before CP-12
 #   ./run-fix.sh --one CP-12      # run EXACTLY CP-12, then stop
 #   ./run-fix.sh --yes            # skip the ENTER-to-continue prompt between checkpoints
+#   ./run-fix.sh --allow-push     # let non-HALT checkpoints push after commit (see below)
 #
 # After EVERY checkpoint (not just HALT ones), the runner prints a short summary
 # (status, SHA if committed) and waits for ENTER before starting the next one,
 # unless --yes is passed. --yes may be combined with --one or a resume CP-id.
+#
+# PUSH POLICY (default: nothing auto-pushes, ever):
+#   Every checkpoint — HALT or not — commits locally and stops there by default.
+#   The PreToolUse guard hook physically denies `git push` unless the runner
+#   exported ALLOW_PUSH=1 for that checkpoint's claude -p process, so this is
+#   enforced, not just requested in the prompt. Mirrors run-audit.sh's own
+#   convention: commit locally, report the SHA, human reviews and pushes.
+#   --allow-push is an explicit, run-scoped opt-in: pass it and non-HALT
+#   checkpoints push automatically after commit, same as pre-this-change
+#   behavior. It is NEVER the default and is NOT a per-checkpoint property —
+#   a human must pass it for that specific invocation. HALT checkpoints are
+#   unaffected either way: they always commit-and-stop, then separately ask
+#   ENTER-to-push regardless of --allow-push (unchanged mechanism).
 # -----------------------------------------------------------------------------
 set -uo pipefail
 
@@ -78,17 +92,24 @@ CHECKPOINTS=(
 # ---- arg parsing --------------------------------------------------------------
 ONE_MODE=false
 YES_MODE=false
+ALLOW_PUSH_FLAG=false
 POSITIONAL=()
 for arg in "$@"; do
   case "$arg" in
     --one) ONE_MODE=true ;;
     --yes) YES_MODE=true ;;
+    --allow-push) ALLOW_PUSH_FLAG=true ;;
     *) POSITIONAL+=("$arg") ;;
   esac
 done
 START_FROM="${POSITIONAL[0]:-}"
 if [ "$ONE_MODE" = true ] && [ -z "$START_FROM" ]; then
   echo "--one requires a CP-id, e.g. ./run-fix.sh --one CP-12"; exit 1
+fi
+if [ "$ALLOW_PUSH_FLAG" = true ]; then
+  echo "NOTE: --allow-push is set — non-HALT checkpoints will push to origin/dev after commit."
+else
+  echo "Push policy: no auto-push (default). Every checkpoint commits locally and stops; push yourself when ready. Pass --allow-push to change this for this run."
 fi
 
 # ---- preflight --------------------------------------------------------------
@@ -179,9 +200,12 @@ for entry in "${CHECKPOINTS[@]}"; do
   if [ "$HALT" = "yes" ]; then
     export ALLOW_PUSH=0
     PUSH_INSTR="Commit locally with a clear message. DO NOT push — a human reviews and pushes."
-  else
+  elif [ "$ALLOW_PUSH_FLAG" = true ]; then
     export ALLOW_PUSH=1
     PUSH_INSTR="Commit with a clear message, then push to origin/dev."
+  else
+    export ALLOW_PUSH=0
+    PUSH_INSTR="Commit locally with a clear message. DO NOT push — this run has no auto-push (default); a human reviews and pushes when ready. (Re-run with --allow-push to change this.)"
   fi
 
   PROMPT="You are executing ONE checkpoint of the fix pass. Read CLAUDE_CONTEXT.md first,
@@ -252,8 +276,14 @@ End with a 3-bullet summary including the commit SHA."
     git push origin dev && { echo "pushed $CP to dev."; ledger_update "$CP" "done" "$HEAD_AFTER" "$(date +%Y-%m-%d)"; RESULT_STATUS="done"; }
   fi
 
+  PUSH_NOTE="not pushed — commit is local only"
+  if [ "$RESULT_SHA" != "(none)" ]; then
+    if git branch -r --contains "$RESULT_SHA" 2>/dev/null | grep -q 'origin/dev'; then
+      PUSH_NOTE="pushed to origin/dev"
+    fi
+  fi
   echo ""
-  echo "---- $CP finished: status=$RESULT_STATUS sha=$RESULT_SHA ----"
+  echo "---- $CP finished: status=$RESULT_STATUS sha=$RESULT_SHA ($PUSH_NOTE) ----"
 
   if [ "$ONE_MODE" = true ]; then
     echo "One-shot mode: stopping after $CP."
@@ -267,3 +297,6 @@ done
 
 echo ""
 echo "Run complete. Full ledger: $LEDGER   Per-checkpoint detail: .claude/PROGRESS.md"
+if [ "$ALLOW_PUSH_FLAG" = false ]; then
+  echo "Non-HALT checkpoints were committed locally, NOT pushed (default). Review, then push yourself."
+fi
