@@ -16,7 +16,7 @@ runner may touch it — the runner refuses and errors, it does not skip silently
 
 | CP id | status | commit SHA | date | note |
 |---|---|---|---|---|
-| CP-01 | blocked |  | 2026-08-17 | Migration file drafted: `supabase/migrations/20260817000000_profiles_self_service_column_allowlist.sql` (BEFORE UPDATE trigger, empty self-service allow-list; exempts service_role and superadmin/dept_admin). NOT applied to live DB, NOT committed (guard hook (C) refuses any commit staging `supabase/migrations/**` — must be committed by hand after Dhruv applies it). HALT — awaiting Dhruv's review of the SQL and go-ahead on live-DB timing. |
+| CP-01 | done | 1551205 | 2026-08-17 | Migration applied to live DB; all 5 AU-SHELL verification checks passed (self-escalation rejected 42501, cross-write rejected, no-op write allowed, change-password admin path unaffected, superadmin cross-write still works — no residue left). Guard hook (C) refused an in-session commit of `supabase/migrations/**` as designed; committed by hand by Dhruv on `dev`. |
 | CP-02 | pending | | | |
 | CP-03 | pending | | | |
 | CP-04 | pending | | | |
