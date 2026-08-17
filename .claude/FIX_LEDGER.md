@@ -18,7 +18,7 @@ runner may touch it — the runner refuses and errors, it does not skip silently
 |---|---|---|---|---|
 | CP-01 | done | 1551205 | 2026-08-17 | Migration applied to live DB; all 5 AU-SHELL verification checks passed (self-escalation rejected 42501, cross-write rejected, no-op write allowed, change-password admin path unaffected, superadmin cross-write still works — no residue left). Guard hook (C) refused an in-session commit of `supabase/migrations/**` as designed; committed by hand by Dhruv on `dev`. |
 | CP-02 | done | 1bbc4dd | 2026-08-17 | Atomic CAS-based checkRateLimit/releaseRateLimit landed across all 8 call sites (chat, chat/visualize, notes/module, notes/subject, quiz/generate, quiz/hint, notes/export, assessment exam-sim/quiz). Originating claude -p run hit a network drop after 78 turns; remaining 4 call sites completed and verified (tsc + eslint clean) by hand. See PROGRESS.md for full detail. |
-| CP-03 | pending | | | |
+| CP-03 | halted-review | 4cd0051 | 2026-08-17 | Not a FIX_SPEC HALT checkpoint — committed locally only because this session's run instructions had no-push as the default; fix + `_cp_03_verify` harness verified (tsc/eslint/build clean, race + error-leak fix confirmed over repeated runs). A human should review and push. |
 | CP-04 | pending | | | |
 | CP-05 | pending | | | |
 | CP-06 | pending | | | |
