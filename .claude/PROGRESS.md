@@ -444,3 +444,53 @@ _(entries appended below by each checkpoint session)_
   2. CP-08's `practice/submit` re-grading fix (drafted, held back pending a migration) is now **moot** — that route no longer exists. If CP-08's ledger/PROGRESS entries are read in isolation they'll reference a patch file and migration that this checkpoint deleted; this entry is the record of why.
   3. CP-14 (dashboard placement-readiness widget, `useSupabaseData.ts:263-285` `usePlacementHistory`) still reads the same nonexistent `placement_attempts` table via a **different** file/hook than anything this checkpoint touched — it needs its own fix (repoint to `placement_topic_mastery` or `placement_question_attempts`, per FIX_SPEC.md), not covered here by design (FIX_SPEC scopes it as a separate checkpoint, "decide canonical table alongside CP-13" — the decision this checkpoint makes is: `placement_attempts` is dead, don't resurrect it; CP-14 should point at one of the two real tables instead).
   4. No file-conflict expected with CP-15/CP-16 (resume/PPT/PDF, unrelated files).
+
+### CP-14 — Dashboard placement-readiness widget — 2026-08-17
+- **Commit SHA:** 92d17666df3729ca3b2e4720fb38b54122102d16  (pushed to dev: no)
+- **What was built:** `usePlacementHistory` (`src/hooks/useSupabaseData.ts`) queried `placement_attempts`,
+  a table that never existed (CP-13 confirmed only an orphaned `ALTER TABLE` migration ever referenced
+  it) — the query always errored, the error was swallowed, and the dashboard's "Best Placement Score"
+  and "Placement Readiness" widgets always rendered "Not started" regardless of real student activity.
+  Repointed the hook at the canonical `placement_topic_mastery` table (per-topic `recent_accuracy`,
+  ordered by `last_practiced_at`), added a `cancelled` guard against setState-after-unmount, and now
+  surfaces `.error` as a distinct state instead of conflating it with "no activity yet". The dashboard's
+  "Placement Readiness" list UI (previously per-company attempt rows joined against `placement_companies`,
+  a shape that no longer exists on mastery rows) was rewritten to show recent per-topic/track readiness
+  rows instead (`Domain · Process Management & Scheduling — 50.0% — 15 Aug 2026`, etc.); "Best Placement
+  Score" now reads the max `recent_accuracy` across the student's mastery rows. Also fixed 3 pre-existing
+  `react-hooks/set-state-in-effect` eslint errors in the same file (`useFacultySubjects`,
+  `useSubjectModules`, `useStudentSubjects`) that the commit guard's whole-file eslint gate blocked on —
+  deferred their reset-`setState` calls out of the synchronous effect body and added the same
+  `cancelled`-guard pattern already used elsewhere in the file, no behavior change intended.
+- **Verified (happy path):** Live Playwright session against the running dev server, authenticated as
+  `teststudent@gmail.com` via a real magic-link → `verifyOtp()` session (same pattern as
+  `src/lib/testing/httpHarness.ts`), cookies injected into a real browser context. Confirmed via DB query
+  first that this student has 3 real `placement_topic_mastery` rows. Dashboard render: "Best Placement
+  Score" shows **50%** (not "Not started"); "Placement Readiness" list shows all 3 real topic rows with
+  correct labels/dates/scores (`Domain · Process Management & Scheduling — 50.0% — 15 Aug 2026`,
+  `Aptitude · Time & Work — 50.0% — 08 Jun 2026`, `Aptitude · Seating Arrangement — 16.7% — 08 Jun 2026`).
+  Zero console/page errors.
+- **Verified (unhappy path):**
+  1. **Empty state, real DB:** a freshly created student (zero `placement_topic_mastery` rows, real auth
+     session, not mocked) correctly sees "Start placement prep to see your readiness score" — the empty
+     state is still reachable and distinct from the error state. No page errors.
+  2. **Interrupted flow (same tab):** navigated to `/student/dashboard`, then away to `/student/subjects`
+     150ms later (mid-fetch, before `placement_topic_mastery`'s query resolved), then back to the
+     dashboard. Final mount renders the correct real data, not a stale/blank state left by the aborted
+     first mount's `cancelled` guard. Zero console/page errors.
+  3. **Concurrent/rapid re-entry (same tab):** triggered a `goto` + immediate `reload` before the first
+     navigation settled. Final render still resolves to correct real data. Zero console/page errors.
+  4. **Noted but out of scope:** a two-tab-same-session variant (two browser tabs sharing one auth
+     session both loading the dashboard concurrently) hit a Supabase refresh-token-rotation collision
+     that invalidated the whole session (subjects, quiz average, and placement data all went blank
+     together, not just this widget) — this is pre-existing, app-wide multi-tab auth behavior unrelated
+     to `usePlacementHistory` or this checkpoint's diff, not a regression introduced here. Flagging as a
+     possible separate finding, not fixed in this checkpoint.
+- **Screenshots:** `/tmp/cp14_dashboard.png` (full happy-path dashboard), `/tmp/cp14_readiness_section.png`
+  (Placement Readiness list closeup) — not committed to the repo (scratch verification artifacts, ephemeral
+  temp-dir paths).
+- **Migration needed:** none.
+- **Next checkpoint must know:** no file overlap expected with CP-15/CP-16 (resume/PPT/PDF). CP-08's HALT
+  note (`practice/submit` re-grading held back pending a migration) is unrelated and still pending
+  separately. This commit is **not pushed** — same carried-forward caveat as every checkpoint since CP-03:
+  confirm `origin/dev` state before assuming this or any prior local commit is live.
