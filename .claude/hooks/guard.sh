@@ -95,9 +95,10 @@ if [ -n "$STAGED_LINT_FILES" ]; then
 fi
 
 # --- (D3) build gate: production build must succeed ------------------------
-BUILD_OUT="$(npm run build 2>&1 || true)"
-if printf '%s' "$BUILD_OUT" | grep -q 'Failed to compile'; then
-  echo "GUARD: commit blocked — production build failed:" >&2
+BUILD_OUT="$(npm run build 2>&1)"
+BUILD_EXIT=$?
+if [ "$BUILD_EXIT" -ne 0 ]; then
+  echo "GUARD: commit blocked — production build failed (exit $BUILD_EXIT):" >&2
   printf '%s\n' "$BUILD_OUT" | tail -40 >&2
   exit 2
 fi
