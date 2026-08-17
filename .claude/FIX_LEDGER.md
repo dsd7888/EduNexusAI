@@ -40,7 +40,7 @@ runner may touch it — the runner refuses and errors, it does not skip silently
 | CP-22 | done | 856aa7464b4e2832442b657e36fb5e6be48cf762 | 2026-08-17 | `setup_complete:true` now requires a valid CGPA (0-10), request-supplied or existing; committed locally only, per this session's no-push default |
 | CP-23 | done | 45d2d3b7ece9536c65eb88aa68bca08fb56dd888 | 2026-08-17 | Added Rule 2b ('drive_ready' confirmatory move) and narrowed Rule 6's hasAnyEligibleDrive to the sprint window; `_cp_23_verify/nextMove.mts` (8 assertions) verified live, incl. two regression/unhappy-path guards; committed locally only, per this session's no-push default |
 | CP-24 | done | 10d3cfc980ad05510e71d7d338619991c50383e1 | 2026-08-17 | isUuid/logCappedError shared helpers in src/lib/api/helpers.ts; committed locally only, per this session's no-push default |
-| CP-25 | done | 7ffe433bf71e2c197e1f9b95af455ea28fc5cbeb | 2026-08-17 | `drawMultilineMathText` (shared.ts) now routes worked-example `problem`/`solution` through `parseMarkdownLite`; markdown pipe tables become real `drawTable()` output instead of literal `\| a \| b \|` text; `_cp_25_verify/verify.mts` (6 assertions) verified; committed locally only, per this session's no-push default |
+| CP-25 | done | 21f163062372013d7248443751d939e6cafb0bfc | 2026-08-17 | `drawMultilineMathText` (shared.ts) now routes worked-example `problem`/`solution` through `parseMarkdownLite`; markdown pipe tables become real `drawTable()` output instead of literal `\ |
 | CP-26 | pending | | | |
 | CP-27 | pending | | | large — own initiative, pairs with CP-38 |
 | CP-28 | pending | | | |
