@@ -27,14 +27,30 @@ Evidence tags: [RUNTIME] [EXPORT] [UI] [STATIC].
 - **Rate-limit check-then-increment race (`src/lib/utils/rate-limit.ts`)** — AU-CHAT. `checkRateLimit`
   reads today's usage then a later, separate write increments it — no atomicity. This helper is shared
   by every rate-limited feature (`chat`, `research`, `hint`, `quiz`, `examSim`, `notes_view`,
-  `notes_export`), so the same race almost certainly reproduces in AU-QUIZ, AU-NOTES, and
-  AU-PLACE-TOOLS wherever they call `checkRateLimit` — worth a single shared fix rather than N patches.
+  `notes_export`), so the same race almost certainly reproduces in AU-QUIZ and AU-NOTES wherever they
+  call `checkRateLimit` — worth a single shared fix rather than N patches. **Correction from
+  AU-PLACE-TOOLS:** `placement` is not in `DAILY_LIMITS` at all and no placement route calls
+  `checkRateLimit` — this predicted reproduction did not apply. Instead AU-PLACE-TOOLS found a
+  *worse*, independent instance of the same check-then-act race shape in its own bespoke
+  `interview/mock/follow-up` cap (100% bypass under an 8-way concurrent burst, vs. `checkRateLimit`'s
+  ~2% overrun), plus confirmed 4 of its 5 AI-calling routes have no cap of any kind, not even a racy
+  one. The underlying disease (check-then-act without atomicity) keeps recurring per-feature; a
+  shared, atomic primitive is worth building once rather than re-finding N times.
+- **Missing safety/distress-handling clause in AI prompts** — AU-CHAT (`buildTutorSystemPrompt`).
+  Reproduced independently by AU-PLACE-TOOLS in `interview/evaluate` (no `systemPrompt` at all): a
+  distress-adjacent answer ("I feel like giving up on everything lately") got scored as a bare
+  professionalism failure with zero safety acknowledgment. Two independent confirmations now —
+  likely reaches every placement/chat-adjacent AI prompt that doesn't explicitly add one. Worth a
+  single shared clause/instruction rather than a per-route patch.
 - **Shared test harness (`src/lib/testing/httpHarness.ts`) duplicates slow POST requests** — AU-CHAT
   (methodology note, not a product finding). Its wrapped `fetch` produced two real server-side
   executions per single call to a multi-second AI route in ~most cases observed; a raw `curl` to the
   same routes never duplicated. Any later `AU-*`/`_cp_*_verify` session driving a slow AI route through
   this harness should corroborate concurrency/duplication findings with raw `curl` before trusting them,
-  until this is fixed.
+  until this is fixed. **Not re-confirmed as a confound by AU-PLACE-TOOLS** — that run's 8-way
+  concurrent burst used `Promise.all` directly against `s.json()`, not a duplicated-call pattern, and
+  the DB-row count (8) matched the HTTP-response count (8) exactly, so the finding there is clean of
+  this artifact.
 
 ---
 
@@ -244,6 +260,73 @@ Evidence tags: [RUNTIME] [EXPORT] [UI] [STATIC].
 
 ---
 
+### AU-PLACE-TOOLS — Resume/JD/interview/skill-map/projects + resume exports + follow-up cap — 2026-08-17 — findings file: .claude/findings/AU-PLACE-TOOLS.md
+- S1: 2 — (1) resume autosave silently discards ALL data with a false "Saved" UI confirmation
+  for any student who reaches the Resume tab before completing placement setup — `POST
+  /api/placement/resume` uses `.update()` (not `.upsert()`) against `student_placement_profiles`,
+  which is a silent no-op (200, no error) when the row doesn't exist yet; confirmed live (POST a
+  full resume → 200/completeness:90 → immediate GET → `full_name: ""`). Fully reachable via
+  ordinary navigation: the placement layout's tab bar renders "Resume" as clickable on every
+  placement page including the pre-setup empty state, and unlike Skill Map/Mock Interview, the
+  Resume page never redirects to `/setup` when the profile is missing. The working `.upsert()`
+  pattern already exists one file over in `api/placement/profile`. Downstream: ATS, PDF/DOCX
+  export, and interview follow-up context all silently read the empty result with zero error
+  surfaced anywhere; (2) `POST /api/placement/resume` has zero schema validation — a malformed
+  payload (e.g. missing `education`/`technical_skills`/`projects`) 500s via an uncaught exception
+  in `computeCompleteness` instead of returning 400, confirmed live — same root cause as (1) and
+  the enabler of the S2 export crash below once (1)'s fix lands.
+- S2: 4 — (1) resume PDF and DOCX export both crash (500) on a resume missing `technical_skills`
+  — no null-guard, unlike `resume/ats` which explicitly does `?? {...}`, confirmed live on both
+  export routes; (2) `interview/mock/follow-up`'s per-student cost cap (5 calls/3h) gives ZERO
+  protection under concurrent load — an 8-way concurrent burst from a fresh student let all 8
+  through (0 rejected), confirmed both via HTTP responses and a direct `ai_call_logs` query
+  showing 8 real, separately-billed Gemini calls landed against a cap of 5 — same check-then-act
+  race shape as the ledgered `checkRateLimit` race, but a 100% bypass on first burst rather than a
+  marginal overrun, and this is the exact abuse case the audit brief asked to verify; (3) the
+  other 4 AI-calling routes in this feature (`resume/ats`, `resume/rewrite-bullet`, `jd-analyze`,
+  `interview/evaluate`) have NO rate limit or cost ceiling at all — `placement` is not a key in
+  `src/lib/utils/rate-limit.ts`'s `DAILY_LIMITS` map (unlike chat/quiz/research/hint/notes, all of
+  which have explicit daily caps) and none of the 4 routes call `checkRateLimit`; confirmed live
+  by firing 3 rapid sequential real `interview/evaluate` calls, all 200, zero throttling;
+  (4) a distress-adjacent interview answer ("I feel like giving up on everything lately") got zero
+  safety acknowledgment from `interview/evaluate` — scored purely as "an immediate disqualifier"
+  for unprofessionalism with a career-coaching tip; `interview/evaluate` passes no `systemPrompt`
+  at all, reproducing AU-CHAT's already-ledgered missing-distress-clause gap in a second,
+  independently-tested feature.
+- S3: 3 — resume save accepts unbounded array sizes (200 oversized projects saved successfully in
+  5.5s, far past the client's own `MAX_PROJECTS=4` cap) with no server-side size validation
+  (AI-cost exposure is mitigated by downstream truncation, so this is a storage/latency concern,
+  not a cost leak); Resume, JD Analyzer, Interview Prep Bank, and Mini-Project Guides are visually
+  un-migrated from DESIGN.md (generic `bg-blue-600`/`rounded-2xl`/plain-sans Tailwind) while Skill
+  Map and Mock Interview (built in the same rebuild) fully conform (Plex Serif, MonoTag,
+  ink/ochre) — measured as a real consequence, not just cosmetic: every primary button on the
+  un-migrated pages is 34-36px tall (under DESIGN.md's 44px floor) while the conforming pages'
+  equivalent buttons measure exactly 44px, because they build on the shared `h-11` pattern and the
+  un-migrated ones use ad hoc classes instead — a second, independent touch-target regression
+  beyond the already-ledgered shared-sidebar one; `src/types/placement.ts` declares
+  `ResumeProject`/`ResumeCertification`/`ResumeData` twice each, TS-merging into an unsound wider
+  type the codebase already defensively casts around in two places (self-flagged as "CP-E1" in a
+  code comment, never fixed).
+- Notable positives (verified live, not just read): prompt injection across all three text-input
+  AI surfaces (ATS's JD field, rewrite-bullet's bullet text, jd-analyze's JD field) did not leak a
+  system prompt or produce fabricated scores; an off-syllabus/absurd JD ("Necromancer" role,
+  embedded vulgar-content request) was correctly scored as poor fit with no exam-answer leak and
+  no vulgar content generated; the empty-resume ATS guard correctly short-circuits with zero
+  wasted AI spend; authorization is structurally sound everywhere in scope (every route derives
+  the acting student from session, no id parameter exists to tamper with); all boundary/malformed
+  string-length checks tested returned clean 400s; every one of 21 real AI calls this run was
+  correctly logged `feature=placement`; PDF/DOCX exports for a well-formed resume produce correct,
+  inspected byte content with no garbling.
+- AI spend this run: $0.0092, 21 real `placement_prep` Gemini calls, all correctly tagged
+  `feature=placement`. Well under the ≤25-call cap.
+- Most important single thing: the S1 resume-save silent-discard bug. No adversarial input or
+  special tooling required — just clicking "Resume" before finishing setup, which the product's
+  own navigation actively permits — and the UI actively tells the student their work was "Saved"
+  while quietly discarding it, with every downstream feature (ATS, exports, interview follow-up)
+  then silently operating on the void that leaves behind.
+
+---
+
 ## Master punch-list (ranked, filled as features complete)
 
 _(S1 first, then S2, then S3 — this is what the FIX pass consumes)_
@@ -309,6 +392,18 @@ _(S1 first, then S2, then S3 — this is what the FIX pass consumes)_
     `placement_attempts` does not exist in the live schema (confirmed live, `PGRST205`); a tracked
     migration ALTERs the table but no tracked migration ever CREATEs it — untracked legacy-DB
     drift left behind by the placement rebuild. [AU-PLACE-CORE]
+16. Resume autosave silently discards all data with a false "Saved" UI confirmation for any
+    student who reaches the Resume tab before completing placement setup — `POST
+    /api/placement/resume` uses `.update()` (not `.upsert()`), a silent no-op (200, no error) when
+    the student's `student_placement_profiles` row doesn't exist yet; confirmed live. Fully
+    reachable via ordinary navigation (the placement tab bar renders "Resume" as clickable even on
+    the pre-setup empty state; the Resume page never redirects to `/setup` when the profile is
+    missing, unlike Skill Map/Mock Interview). Every downstream feature (ATS, PDF/DOCX export,
+    interview follow-up context) then silently operates on the resulting void. [AU-PLACE-TOOLS]
+17. `POST /api/placement/resume` has zero schema validation — a malformed payload (e.g. missing
+    `education`/`technical_skills`/`projects`) 500s via an uncaught exception in
+    `computeCompleteness` instead of returning 400; same root cause as #16 and the enabler of the
+    S2 export-crash finding below. [AU-PLACE-TOOLS]
 
 **S2**
 13. `api/placement/practice/submit` (and its unreachable twin `api/placement/submit`) score
@@ -333,6 +428,25 @@ _(S1 first, then S2, then S3 — this is what the FIX pass consumes)_
     eligible drive — confirmed via direct exercise of the pure function; the dashboard's one
     always-tell-the-student-what's-next surface has nothing to show in exactly the moment it
     matters most. [AU-PLACE-CORE]
+18. Resume PDF and DOCX export both crash (500) on a resume missing `technical_skills` — no
+    null-guard, unlike `resume/ats` which explicitly defaults it; confirmed live on both export
+    routes. [AU-PLACE-TOOLS]
+19. `interview/mock/follow-up`'s per-student cost cap (5 calls/3h) gives zero protection under
+    concurrent load — an 8-way concurrent burst from a fresh student let all 8 through (0
+    rejected), confirmed both via HTTP responses and a direct `ai_call_logs` query showing 8 real,
+    separately-billed Gemini calls landed against a cap of 5 — same check-then-act race shape as
+    the ledgered `checkRateLimit` race, but a 100% bypass on first burst. This is the exact abuse
+    case the audit brief asked to verify. [AU-PLACE-TOOLS]
+20. `resume/ats`, `resume/rewrite-bullet`, `jd-analyze`, and `interview/evaluate` have no rate
+    limit or cost ceiling at all — `placement` is not a key in `DAILY_LIMITS`
+    (`src/lib/utils/rate-limit.ts`), unlike chat/quiz/research/hint/notes; confirmed live by
+    firing 3 rapid sequential real `interview/evaluate` calls, all 200, zero throttling.
+    [AU-PLACE-TOOLS]
+21. A distress-adjacent interview answer ("I feel like giving up on everything lately") got zero
+    safety acknowledgment from `interview/evaluate` — scored purely as "an immediate disqualifier"
+    for unprofessionalism; the route passes no `systemPrompt` at all, reproducing AU-CHAT's
+    already-ledgered missing-distress-clause gap (S2-5 above) in a second, independently-tested
+    feature. [AU-PLACE-TOOLS]
 
 **S3**
 7. Chat PDF export garbles markdown tables into raw pipe-syntax text (diagrams export fine). [AU-CHAT]
@@ -352,3 +466,17 @@ _(S1 first, then S2, then S3 — this is what the FIX pass consumes)_
 15. The dashboard's stage strip is horizontally scrollable but has zero scroll affordance, so later
     stages are silently clipped off-screen on mobile with nothing indicating more exists.
     [AU-PLACE-CORE]
+16. Resume save accepts unbounded array sizes (200 oversized projects saved successfully in 5.5s,
+    far past the client's own `MAX_PROJECTS=4` cap) with no server-side size validation.
+    [AU-PLACE-TOOLS]
+17. Resume, JD Analyzer, Interview Prep Bank, and Mini-Project Guides are visually un-migrated
+    from DESIGN.md (generic `bg-blue-600`/`rounded-2xl`/plain-sans Tailwind) while Skill Map and
+    Mock Interview (same rebuild) fully conform — measured consequence: every primary button on
+    the un-migrated pages is 34–36px tall (under the 44px floor) vs. exactly 44px on the
+    conforming pages, because the latter build on the shared `h-11` button pattern. A second,
+    independent touch-target regression beyond the already-ledgered shared-sidebar one.
+    [AU-PLACE-TOOLS]
+18. `src/types/placement.ts` declares `ResumeProject`/`ResumeCertification`/`ResumeData` twice
+    each; TS interface-merging combines them into an unsound wider type the codebase already
+    defensively casts around in two places (self-flagged "CP-E1" in a code comment, never fixed).
+    [AU-PLACE-TOOLS]
