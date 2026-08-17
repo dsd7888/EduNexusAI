@@ -37,11 +37,14 @@ when you're ready to run it.
 **Finding:** RLS "own profile" UPDATE policy restricts row, not columns. Any student can
 `.update({role:'superadmin'})` on their own row via the ordinary `createBrowserClient()`, and
 `proxy.ts`/`requireRole()` trust that same column — full server-side auth bypass.
-**Fix:** Add a `WITH CHECK` clause (or `BEFORE UPDATE` trigger) on `profiles` rejecting any
-UPDATE from a non-admin session that changes `role`, `department`, or any other
-admin-controlled column. Only self-service columns (currently: none, the profile UI is
-read-only — confirm with Dhruv whether `full_name` etc. should be added to the allow-list)
-pass through the "own profile" policy.
+**Fix:** Add a `WITH CHECK` clause (or `BEFORE UPDATE` trigger) on `profiles` using an
+allow-list, not a block-list. **Decided (Dhruv):** the self-service column allow-list
+starts EMPTY — the "own profile" UPDATE policy permits row-match only (`auth.uid()=id`),
+zero columns writable by a non-admin session. The profile UI is confirmed read-only today
+and no live feature depends on student-writable columns, so there is nothing to allow-list
+yet. Admin/superadmin role retains full write access as before (unchanged). Adding a future
+self-service field (e.g. `full_name`) is a small, separate follow-up once a real editing
+feature exists — not part of this fix.
 **Verify:** Re-run AU-SHELL's `priv_escalation.ts` shape — disposable student account attempts
 `.update({role:'superadmin'})` on itself, expect rejection. Then attempt the cross-write
 (`priv_escalation_crosswrite.ts` shape) — student A writing student B's row — expect rejection.
@@ -52,12 +55,18 @@ actively using. Confirm timing with Dhruv (off-peak window recommended).
 Prompt: "Fix the profiles RLS privilege-escalation gap. Read CLAUDE_CONTEXT.md first.
 The 'Users can update own profile' policy on `profiles` (auth.uid()=id) restricts the row but
 not the columns, letting any student rewrite their own role to superadmin. Write a migration
-adding a WITH CHECK clause or BEFORE UPDATE trigger that rejects non-admin UPDATEs touching
-`role`/`department` (confirm the full admin-controlled column list by reading the profiles
-schema). Do NOT apply the migration — HALT and show me the SQL first. Once I approve, apply it,
-then verify: as a disposable test student, attempt `.update({role:'superadmin'}).eq('id', self)`
-via the anon-key browser client and confirm it's rejected; attempt writing another user's row
-and confirm rejection. tsc/eslint/build clean, commit with SHA, confirm push."
+adding a WITH CHECK clause or BEFORE UPDATE trigger that enforces an ALLOW-LIST, not a
+block-list: a non-admin UPDATE (auth.uid()=id, role not in admin roles) must be rejected unless
+it touches ZERO columns beyond row-match — the self-service allow-list is deliberately EMPTY
+(decided: profile UI is read-only today, no live feature needs student-writable columns).
+Admin/superadmin sessions retain full write access, unchanged. Do NOT apply the migration —
+HALT and show me the SQL first. Once I approve, apply it, then verify: as a disposable test
+student, attempt `.update({role:'superadmin'}).eq('id', self)` via the anon-key browser client
+and confirm it's rejected; attempt writing another user's row and confirm rejection; attempt a
+no-op-shaped self update (e.g. re-writing an existing column to its own value) and confirm it's
+also rejected since the allow-list is empty. tsc/eslint/build clean, commit with SHA, confirm
+push. Note for later: adding a future self-service field (e.g. full_name) to the allow-list is
+a small, separate follow-up once a real profile-editing feature exists — not part of this fix."
 ```
 
 ### CP-02 — Atomic `checkRateLimit` (fixes chat/research/hint/quiz/examSim/notes_view/notes_export)
