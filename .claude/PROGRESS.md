@@ -737,3 +737,100 @@ _(entries appended below by each checkpoint session)_
      <sha>` reachability and which branch/worktree it lives on before trusting the ledger row.
   4. If a future checkpoint (or CP-27/CP-38 design-migration work) starts exercising `true_false` through
      a live preset for the first time, capture the screenshots this checkpoint could not.
+
+### CP-19 — Desktop sidebar collapse (student shell) — 2026-08-17
+- **Commit SHAs:** `be9bf57e53e40754f1cc2b7c2c767244e5994f07` (fix + verify harness),
+  `0a7db2c` (ledger status/SHA record). Both committed locally only, per this session's
+  no-push default — not pushed.
+- **Not HALT-gated:** CP-19 carries no HALT marker in FIX_SPEC.md (client-only UI port, no
+  schema/RLS/DB write-path change).
+- **Repo-state verification:** confirmed live before editing — `FacultyShell.tsx`
+  (`src/components/layout/FacultyShell.tsx`) already had a working collapse pattern
+  (`collapsed` state + `faculty_nav_collapsed` localStorage key, `PanelLeftClose`/
+  `PanelLeftOpen` toggle, `w-16`/`w-64` aside width, `ml-16`/`ml-64` main margin,
+  auto-recollapse on pathname change during render) and `NavLink.tsx` already accepted
+  `icon`/`collapsed` props built exactly for this rail pattern — confirming FIX_SPEC.md's
+  "not a new feature, a port" framing. `(student)/layout.tsx` had none of this: its desktop
+  `<aside>` was a fixed `lg:w-64` with no collapse affordance, and its `SidebarContent` used
+  `NavLink` in icon+`<span>`-children form rather than the `icon` prop.
+- **What was built (`(student)/layout.tsx` only):** `SidebarContent` refactored to a shared
+  `NAV_ITEMS` array (`icon`/`label`/`href`) rendered via `NavLink`'s `icon`+`collapsed` props;
+  gained optional `collapsed`/`onToggleCollapse` props. The desktop `<aside>` instance passes
+  real `collapsed` state + a `toggleCollapsed` handler (localStorage key
+  `student_nav_collapsed`, mirroring `faculty_nav_collapsed`'s naming); the mobile-drawer
+  `<aside>` instance passes neither, so `collapsed` defaults to `false` and the
+  `onToggleCollapse` toggle button never renders there — mobile drawer keeps its original
+  always-expanded, X-to-close behavior, unchanged. `<main>`'s left margin now tracks
+  `collapsed` (`lg:ml-16`/`lg:ml-64`) with the same `transition-[margin] duration-200`
+  FacultyShell uses. Auto-recollapse-on-navigate (`prevPathname` render-time comparison) was
+  ported verbatim.
+- **Lint fix beyond a pure port:** `FacultyShell.tsx`'s original pattern
+  (`useEffect(() => { const saved = localStorage.getItem(...); if (saved === "true")
+  setCollapsed(true); }, [])`) trips `react-hooks/set-state-in-effect` — a **pre-existing**,
+  currently-unfixed lint error in `FacultyShell.tsx` itself (confirmed live: `npx eslint
+  src/components/layout/FacultyShell.tsx` still reports it on this session's HEAD). The
+  commit guard's step (D2) gates on eslint for *staged* files only (legacy debt in untouched
+  files doesn't block), but this checkpoint's port put the same pattern into a file this
+  session *does* stage — so it had to be clean. Fixed by deferring the `localStorage` read +
+  `setCollapsed` call through a microtask (`Promise.resolve().then(() => {...})`) inside the
+  same effect, the same technique already used elsewhere in this codebase
+  (`useSupabaseData.ts`'s `useFacultySubjects`/etc., per CP-14's note) to satisfy this rule
+  without changing observable behavior — re-ran the Playwright harness after the change and
+  confirmed identical pass/fail results. **`FacultyShell.tsx` itself was not touched or
+  fixed** (out of scope for CP-19); a future session touching that file will hit the same
+  guard gate and can reuse this exact fix.
+- **Verified (happy path):** `_cp_19_verify/ui.mts` (new harness, same magic-link-cookie
+  auth pattern as `_cp_08_verify/ui.mts`/`_cp_12_verify`) driven against a live `npm run dev`
+  session as `teststudent@gmail.com`. Confirmed: expanded rail measures 256px (`w-64`),
+  toggle click collapses it to 64px (`w-16`), nav-item label text (`Dashboard`) is not
+  visible while collapsed, the preference persists to `localStorage` under
+  `student_nav_collapsed`, and a full page reload after collapsing still renders the rail
+  collapsed (reads the persisted value on mount).
+- **Verified (unhappy path):**
+  1. **Interrupted flow** — clicked the toggle to re-expand, then immediately (before the
+     click's re-render settles) triggered a real in-app client-side navigation (clicking a
+     `NavLink` inside the still-mounted aside, not a hard `page.goto` reload) to
+     `/student/subjects`. Confirmed the rail deterministically lands collapsed (64px) after
+     the navigation completes — the ported auto-recollapse-on-pathname-change logic wins the
+     race, not an inconsistent half-applied toggle state. (First harness draft used
+     `page.goto` for this step, which performs a hard reload and fully remounts the
+     component — that masked the actual interrupted-click race entirely, since a fresh mount
+     just reads localStorage rather than racing the in-flight toggle. Corrected to a real
+     client-side `Link` click before trusting the result.)
+  2. **Concurrent action** — fired two toggle clicks back-to-back via `Promise.all` (rapid
+     double-click). Confirmed the rail settles at a valid, fully-applied width (either 64px
+     or 256px, never a torn/intermediate state) with no console or page errors — two
+     overlapping toggles resolve to one deterministic final state, not a race that leaves the
+     width and the label-visibility out of sync.
+  3. Also confirmed the mobile drawer (500px viewport) never renders a collapse toggle button
+     (`title="Collapse menu"`/`"Expand menu"` selectors both absent) and still renders its
+     original `aria-label="Close menu"` X button — the port did not leak the desktop-only
+     affordance into the mobile drawer.
+- **Gate status:** `tsc --noEmit` clean (repo-wide). `npx eslint` on the touched file: zero
+  errors/warnings (see lint-fix note above). `npm run build`: exits clean, no route/compile
+  regressions. Commit-guard hook's own D1(tsc)/D2(eslint-on-staged)/D3(build) gates all
+  passed live when the commit was made (no `--no-verify` used).
+- **Migration needed:** none — pure client-component UI port, no DB/schema/API contract
+  change.
+- **Screenshots:** none captured this session — this is a fix-pass checkpoint (`FIX_SPEC.md`),
+  not one of the SPEC.md-driven placement-rebuild UI checkpoints that mandate desktop/mobile/
+  light/dark screenshots + a DESIGN.md conformance note. A future session wanting visual
+  confirmation can drive `_cp_19_verify/ui.mts`'s same auth pattern and add
+  `page.screenshot()` calls at the collapsed/expanded states.
+- **Next checkpoint must know:**
+  1. Both commits are **not pushed**. Same unresolved caveat carried forward from CP-03
+     through CP-18: confirm what `origin/dev` currently has before assuming this or any prior
+     checkpoint is live.
+  2. The same **pre-existing uncommitted CP-08 changes** flagged by CP-15/CP-16/CP-17 are
+     still present and still untouched by this session (`api/placement/prep/{generate,
+     submit}/route.ts`, `student/placement/prep/[track]/practice/page.tsx`,
+     `src/types/placement.ts`) — still `pending` in `FIX_LEDGER.md`.
+  3. `FacultyShell.tsx` still carries the un-fixed `react-hooks/set-state-in-effect` lint
+     error this checkpoint worked around locally in `(student)/layout.tsx` — any session that
+     later stages `FacultyShell.tsx` for an unrelated change will hit the same commit-guard
+     block and can apply the identical `Promise.resolve().then(...)` deferral.
+  4. CP-20 (touch-target floor) explicitly lists `(student)/layout.tsx`'s mobile hamburger as
+     one of its call sites — that session should be aware this checkpoint changed the file's
+     `SidebarContent`/nav-item structure (now a `NAV_ITEMS` array + shared `NavLink` render)
+     so its diff context will look different from what CP-20 was scoped against when
+     FIX_SPEC.md was written.
