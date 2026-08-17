@@ -26,6 +26,7 @@ import {
   MATH_CHEM_NOTATION_GUIDE,
   repairGeminiJsonEscapes,
 } from "@/lib/text/latexSegments";
+import { svgCodeToPngBytes } from "@/lib/pdf/builder";
 
 // ── TYPES ──────────────────────────────────────────────────
 
@@ -903,19 +904,6 @@ function stripMd(text: string): string {
     .trim();
 }
 
-function svgToBase64(svg: string): string {
-  const cleaned = svg
-    .replace(/<!--[\s\S]*?-->/g, "")
-    .replace(/\r\n/g, " ")
-    .replace(/\r/g, " ")
-    .replace(/\n/g, " ")
-    .trim();
-  const withNs = cleaned.includes("xmlns=")
-    ? cleaned
-    : cleaned.replace("<svg", '<svg xmlns="http://www.w3.org/2000/svg"');
-  return `data:image/svg+xml;base64,${Buffer.from(withNs, "utf-8").toString("base64")}`;
-}
-
 export function isValidSVG(svg: string): boolean {
   return Boolean(svg && svg.length > 100 && svg.includes("<svg") && svg.includes("viewBox"));
 }
@@ -1727,7 +1715,7 @@ export async function generatePPTXBuffer(
         const col2 = overviewBullets.slice(half);
 
         const overviewBulletBase = {
-          bullet: { code: "2022", indent: 15 } as any,
+          bullet: { code: "2022", indent: 15 },
           fontSize: 13,
           color: "1e293b",
           breakLine: true,
@@ -1866,13 +1854,13 @@ export async function generatePPTXBuffer(
               bullets.map((b) => ({
                 text: capBullet(b),
                 options: {
-                  bullet: { code: "2022", indent: 15 } as any,
+                  bullet: { code: "2022", indent: 15 },
                   fontSize,
                   color: "1e293b",
                   breakLine: true,
                   paraSpaceBefore,
                   paraSpaceAfter,
-                } as any,
+                },
               })),
               {
                 x: ZONE.body.x,
@@ -2037,16 +2025,47 @@ export async function generatePPTXBuffer(
             sizing: { type: "contain", w: ZONE.body.w, h: imgAreaH },
           });
         }
-        // PRIORITY 2: SVG diagram
+        // PRIORITY 2: SVG diagram — rasterized to PNG (pptxgenjs writes
+        // whatever bytes it's given into a part it labels image/png; handing
+        // it raw SVG produces a media file that lies about its own format).
         else if (isValidSVG(slideData.svgCode ?? "")) {
-          slide.addImage({
-            data: svgToBase64(slideData.svgCode!),
-            x: ZONE.body.x,
-            y: ZONE.body.y,
-            w: ZONE.body.w,
-            h: imgAreaH,
-            sizing: { type: "contain", w: ZONE.body.w, h: imgAreaH },
-          });
+          const pngBytes = await svgCodeToPngBytes(slideData.svgCode!);
+          if (pngBytes) {
+            slide.addImage({
+              data: `data:image/png;base64,${Buffer.from(pngBytes).toString("base64")}`,
+              x: ZONE.body.x,
+              y: ZONE.body.y,
+              w: ZONE.body.w,
+              h: imgAreaH,
+              sizing: { type: "contain", w: ZONE.body.w, h: imgAreaH },
+            });
+          } else {
+            slideData._needsReview = true;
+            slide.addShape("rect", {
+              x: ZONE.body.x,
+              y: ZONE.body.y,
+              w: ZONE.body.w,
+              h: imgAreaH,
+              fill: { color: "F1F5F9" },
+              line: { color: "CBD5E1", width: 1 },
+            });
+            slide.addText(
+              `📊 ${cap(slideData.diagramCaption ?? slideData.title, 300)}`,
+              {
+                x: 0.7,
+                y: ZONE.body.y + 0.5,
+                w: 8.6,
+                h: imgAreaH - 1,
+                fontSize: 13,
+                color: "075985",
+                fontFace: "Calibri",
+                valign: "middle",
+                wrap: true,
+                autoFit: true,
+                lineSpacingMultiple: 1.6,
+              }
+            );
+          }
         }
         // PRIORITY 3: Mermaid code — render via mermaid.ink
         else if (slideData.mermaidCode) {
@@ -2273,9 +2292,12 @@ export async function generatePPTXBuffer(
 
         // Right: technical side — SVG from batch (rightVisual is a hint, not markup)
         const svgSource = slideData.svgCode ?? "";
-        if (isValidSVG(svgSource)) {
+        const rightPngBytes = isValidSVG(svgSource)
+          ? await svgCodeToPngBytes(svgSource)
+          : null;
+        if (rightPngBytes) {
           slide.addImage({
-            data: svgToBase64(svgSource),
+            data: `data:image/png;base64,${Buffer.from(rightPngBytes).toString("base64")}`,
             x: rightX,
             y: imgY,
             w: panelW,
@@ -2438,7 +2460,7 @@ export async function generatePPTXBuffer(
                   breakLine: true,
                   paraSpaceBefore: 5,
                   bold: false,
-                } as any,
+                },
               })),
               {
                 x: ZONE.body.x,
@@ -2713,7 +2735,7 @@ export async function generatePPTXBuffer(
                 color: C.white,
                 breakLine: true,
                 paraSpaceBefore: 10,
-              } as any,
+              },
             })),
             {
               x: 0.7,

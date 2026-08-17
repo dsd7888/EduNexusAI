@@ -5,6 +5,7 @@ import {
   type PDFImage,
   type PDFPage,
   type PDFFont,
+  type Color,
 } from "pdf-lib";
 import { parseMarkdownLite } from "@/lib/text/markdownLite";
 import { extractLatexSegments, hasLatex } from "@/lib/text/latexSegments";
@@ -159,7 +160,7 @@ type FontBundle = {
   boldItalic: PDFFont;
 };
 
-function sanitizeForPDF(text: string): string {
+export function sanitizeForPDF(text: string): string {
   if (!text) return "";
   return text
     // Currency
@@ -224,8 +225,18 @@ function sanitizeForPDF(text: string): string {
     // Normalize control characters so pdf-lib/Helvetica doesn't crash
     .replace(/[\r\n\t]+/g, " ")
     .replace(/[\u0000-\u001F]/g, " ")
-    // Remove any remaining non-latin characters Helvetica cannot render
-    .replace(/[^\x00-\x7F]/g, "");
+    // Any remaining non-latin characters Helvetica cannot render become a
+    // visible placeholder (matches src/lib/qpaper/builder.ts's sanitize()
+    // convention) instead of silently vanishing.
+    .replace(/[^\x00-\x7F]/g, (char) => {
+      console.warn(
+        `[pdf] sanitizeForPDF: replacing unrenderable character U+${char
+          .codePointAt(0)!
+          .toString(16)
+          .toUpperCase()} with '?'`
+      );
+      return "?";
+    });
 }
 
 export class PDFBuilder {
@@ -637,7 +648,7 @@ export class PDFBuilder {
   }
 
   // Draw a filled rectangle
-  drawRect(x: number, y: number, w: number, h: number, color: any) {
+  drawRect(x: number, y: number, w: number, h: number, color: Color) {
     this.currentPage.drawRectangle({
       x,
       y: this.py(y) - h,
@@ -653,7 +664,7 @@ export class PDFBuilder {
     options: {
       font?: PDFFont;
       size?: number;
-      color?: any;
+      color?: Color;
       x?: number;
       maxWidth?: number;
       lineHeight?: number;
@@ -1285,7 +1296,7 @@ export class PDFBuilder {
   }
 
   // Colored badge label
-  badge(label: string, bgColor: any, textColor = COLORS.white) {
+  badge(label: string, bgColor: Color, textColor = COLORS.white) {
     const size = 9;
     const pad = 6;
     const safeLabel = this.sanitize(label);
