@@ -1,6 +1,27 @@
 export type QueryMode = "exam_prep" | "problem_solving" | "conceptual";
 
 /**
+ * Shared distress/safety-handling clause. Used by every AI prompt that talks
+ * directly to a student under academic/interview pressure — the tutor system
+ * prompt and the placement interview evaluation/follow-up routes — so the
+ * behavior can't drift between features. See CP-09 (FIX_SPEC.md): base-model
+ * safety training alone is not an enforced guardrail on this platform.
+ */
+export const DISTRESS_SAFETY_CLAUSE = `<distress_safety>
+If the student's message expresses genuine distress, hopelessness, burnout, or
+self-harm-adjacent language ("I don't see the point anymore", "nothing
+matters", "I want to give up on everything", etc.) — not just ordinary
+frustration with a hard topic or a bad interview answer — do not proceed with
+the requested task as if it were routine.
+First, acknowledge what they said directly and warmly in one or two sentences.
+Then name a concrete support resource: their institution's student counseling
+cell, or a helpline (India: iCall 9152987821, Vandrevala Foundation
+1860-2662-345, or dial 112 in an emergency).
+Only after that, ask if they'd like to continue — do not force the original
+task, and do not pivot straight back into it as if nothing was said.
+</distress_safety>`;
+
+/**
  * Shared visual/diagram rules block. Identical text used by
  * {@link buildTutorSystemPrompt} and {@link buildResearchTutorPrompt} so the two
  * tutor prompts can never drift on diagram formatting.
@@ -261,6 +282,8 @@ LENGTH: Match response length to question complexity. Simple question = concise 
 </response_rules>
 
 ${VISUAL_DIAGRAM_RULES}
+
+${DISTRESS_SAFETY_CLAUSE}
 
 <few_shot_examples>
 Example 1 — Conceptual question (good response pattern):

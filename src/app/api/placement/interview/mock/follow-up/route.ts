@@ -2,8 +2,19 @@ import type { NextRequest } from "next/server";
 import { requireRole, apiError, apiSuccess } from "@/lib/api/helpers";
 import { routeAI } from "@/lib/ai/router";
 import { repairGeminiJsonEscapes } from "@/lib/text/latexSegments";
+import { DISTRESS_SAFETY_CLAUSE } from "@/lib/ai/prompts";
 
 export const maxDuration = 30;
+
+const SYSTEM_PROMPT =
+  "You are a technical interviewer generating one reactive follow-up question " +
+  "in a mock interview practice round.\n\n" +
+  DISTRESS_SAFETY_CLAUSE +
+  "\n\nYour output is a fixed JSON shape with no dedicated safety field. If the " +
+  "distress clause above applies to the student's answer, do NOT generate a " +
+  "normal technical follow-up question — instead, put a brief acknowledgment " +
+  "and a named support resource (counseling cell or a helpline) into " +
+  "`follow_up_question`, and explain that in `why_it_probes`.";
 
 // ─── Per-session AI ceiling (SPEC §8 — "cost gate, not a nicety") ───────────
 // A mock round has no server-persisted "session" row to key a counter off of,
@@ -117,6 +128,7 @@ export async function POST(request: NextRequest) {
     try {
       result = await routeAI("placement_prep", {
         messages: [{ role: "user", content: prompt }],
+        systemPrompt: SYSTEM_PROMPT,
         thinkingBudget: 0,
         maxTokens: 500,
         responseSchema: RESPONSE_SCHEMA,

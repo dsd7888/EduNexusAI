@@ -2,8 +2,19 @@ import type { NextRequest } from "next/server";
 import { requireRole, apiError, apiSuccess } from "@/lib/api/helpers";
 import { routeAI } from "@/lib/ai/router";
 import { checkRateLimit, releaseRateLimit, RATE_LIMITS } from "@/lib/utils/rate-limit";
+import { DISTRESS_SAFETY_CLAUSE } from "@/lib/ai/prompts";
 
 export const maxDuration = 30;
+
+const SYSTEM_PROMPT =
+  "You are an interview coach evaluating a fresher's practice answer for campus " +
+  "placement. Be direct and honest about interview performance.\n\n" +
+  DISTRESS_SAFETY_CLAUSE +
+  "\n\nYour output is a fixed JSON shape with no dedicated safety field. If the " +
+  "distress clause above applies to this answer, you MUST still put the " +
+  "acknowledgment and the named support resource (by name, e.g. the counseling " +
+  "cell or a helpline) inside `primary_issue` and/or `one_tip` — do not omit it " +
+  "just because there's no separate field for it.";
 
 const RESPONSE_SCHEMA = {
   type: "object",
@@ -116,6 +127,7 @@ export async function POST(request: NextRequest) {
     try {
       result = await routeAI("placement_prep", {
         messages: [{ role: "user", content: prompt }],
+        systemPrompt: SYSTEM_PROMPT,
         thinkingBudget: 0,
         maxTokens: 1500,
         responseSchema: RESPONSE_SCHEMA,
