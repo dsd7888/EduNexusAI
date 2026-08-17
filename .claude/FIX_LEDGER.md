@@ -37,7 +37,7 @@ runner may touch it — the runner refuses and errors, it does not skip silently
 | CP-19 | done | 05b4cbe42028b0223202206dab0b7efcfed75786 | 2026-08-17 | ported FacultyShell's collapse pattern into the student shell; `_cp_19_verify/ui.mts` verified live incl. nav-interrupted toggle + rapid-double-click; committed locally only, per this session's no-push default |
 | CP-20 | done | 9f2f1328370ab11c1bfa1f47004dfe10c543d79b | 2026-08-17 | mobile shell + chat composer/header only — does not cover placement pages (needs CP-38); committed locally only, per this session's no-push default |
 | CP-21 | done | 7616911e41ed3ebacb9037dd764e8a0de4348f65 | 2026-08-17 | resume PDF/DOCX export null-guards; committed locally only, per this session's no-push default |
-| CP-22 | pending | | | |
+| CP-22 | done | 3ba986adfb44fe6490705828bffa9c14a7f34d48 | 2026-08-17 | `setup_complete:true` now requires a valid CGPA (0-10), request-supplied or existing; committed locally only, per this session's no-push default |
 | CP-23 | pending | | | |
 | CP-24 | pending | | | |
 | CP-25 | pending | | | |
