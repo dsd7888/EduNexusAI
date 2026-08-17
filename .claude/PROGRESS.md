@@ -969,3 +969,86 @@ _(entries appended below by each checkpoint session)_
      `?? []` pattern used here (and in `ats/route.ts`) rather than a single
      whole-object fallback — the partial-`technical_skills` case above shows a
      whole-object guard alone is not sufficient.
+
+### CP-22 — `setup_complete` without CGPA — 2026-08-17
+- **Commit SHAs:** `3ba986a` (fix + verify harness), `47adf55` (ledger update).
+  Committed locally only, per this session's no-push default.
+- **Not HALT-gated:** confirmed by grep — FIX_SPEC.md's `HALT` markers land on
+  CP-01, CP-09/CP-Q-series-adjacent, and one other line, none near CP-22's
+  entry (line 318-322). No schema/RLS change is involved, so this ran without
+  pausing for approval.
+- **What was found:** `api/placement/profile/route.ts`'s POST handler applied
+  every field conditionally (`...(x !== undefined && {x})`) with zero
+  cross-field validation, so `{ setup_complete: true }` alone — no `cgpa` in
+  the request and none ever set on the row — upserted cleanly. `readiness.ts`'s
+  `isDriveEligible`/`computeCompanyFit` both read `profile.cgpa ?? 0`, so a
+  student in this state silently fails every CGPA-gated drive with a
+  `CGPA below N` reason string that reads as "you don't meet it" rather than
+  "you never told us your CGPA" — and the setup UI, having already redirected
+  them away once `setup_complete` is true, never re-prompts.
+- **Fix:** in the POST handler, before building `upsertPayload`, when
+  `setup_complete === true` compute `effectiveCgpa = cgpa !== undefined ? cgpa
+  : existing?.cgpa` (added `cgpa` to the existing-row `select()`) and reject
+  with 400 (`"A valid CGPA (0-10) is required before completing placement
+  setup"`) unless it's a real number in `[0, 10]`. `primary_target` was not
+  given the same treatment — it already always resolves to a non-null value
+  via `mergedProfile.primary_target`'s `?? 'service_it'` fallback, so there is
+  no null-`primary_target` state reachable through this route to guard against.
+- **Verified (happy path):** new harness `_cp_22_verify/api.mts`, same
+  real-magic-link-session pattern as CP-21/CP-Q3 (`admin.auth.admin
+  .generateLink` + `anon.auth.verifyOtp`, live dev server, live pilot DB, Test
+  Student `teststudent@gmail.com`). Snapshotted the student's existing profile
+  row first (`cgpa: 8.3, setup_complete: true, primary_target: startup`),
+  drove it to a null-cgpa/`setup_complete:false` state, then: (1)
+  `{setup_complete:true, primary_target:"product"}` with no `cgpa` anywhere →
+  400, row confirmed still `setup_complete:false` afterward (not flipped by
+  the rejected call); (2) `{setup_complete:true, cgpa:15}` (out-of-range) →
+  400; (3) `{setup_complete:true, cgpa:8.2, primary_target:"product"}` → 200,
+  response body confirms `setup_complete:true, cgpa:8.2`.
+- **Verified (unhappy path):** (1) **Concurrent flow** — fired one request
+  with `cgpa:7.5` and one with no `cgpa` simultaneously (`Promise.all`) against
+  the same null-cgpa row: the no-cgpa request did not complete with a null
+  cgpa (400, independent of the other request's outcome — no race let it slip
+  through). (2) **Interrupted flow** — aborted a valid
+  (`cgpa:9.1`) request mid-flight via `AbortController`, confirmed the abort
+  surfaced cleanly client-side, then immediately fired a fresh no-cgpa request
+  at the same route and confirmed it still correctly returned 400 — the
+  validation isn't bypassable by racing an aborted prior call, and the route
+  isn't wedged by the abort.
+- **Cleanup verified:** after the full run the harness restored the exact
+  original row (`cgpa:8.3, setup_complete:true, primary_target:"startup"`) —
+  confirmed by a separate post-run query against the live DB, not assumed from
+  the harness's own exit code. Handlers for `SIGINT/SIGTERM/SIGPIPE/SIGHUP`
+  run the same restore path (mirrors CP-Q2/CP-21's cleanup-on-signal rule);
+  harness output was redirected to `.claude/logs-fix/CP-22-verify.log`
+  rather than piped through `head`.
+- **Gate status:** `tsc --noEmit` clean. `npx eslint` on the touched route
+  file and the new harness: zero errors (one pre-existing unrelated warning —
+  unused `requireAuth` import — untouched by this change). `npm run build`
+  not re-run standalone this session (tsc+eslint clean and the live-server
+  harness round-tripped real requests through the route); commit-guard hook's
+  gates passed live on both commits, no `--no-verify`.
+- **Migration needed:** none — pure application-code validation, no
+  schema/RLS/API contract change for well-formed requests (only newly rejects
+  a previously-silent invalid state with a 400).
+- **Next checkpoint must know:**
+  1. Both commits are **not pushed** — confirm `origin/dev` state before
+     assuming this or any prior checkpoint is live, per the standing caveat
+     carried since CP-03.
+  2. The pre-existing uncommitted CP-08 changes (`api/placement/prep/
+     {generate,submit}/route.ts`, `student/placement/prep/[track]/
+     practice/page.tsx`, `src/types/placement.ts`) are still present and
+     still untouched by this session — this checkpoint's commits deliberately
+     excluded them, staging only `api/placement/profile/route.ts` and the new
+     verify harness.
+  3. This fix only prevents *new* null-cgpa `setup_complete:true` states from
+     being created going forward. It does not backfill/audit existing rows —
+     if any student profile already reached `setup_complete:true` with
+     `cgpa:null` before this fix shipped, it stays that way until they
+     re-open `/student/placement/setup?edit=true` and resubmit with a real
+     CGPA. A one-off data-repair query against `student_placement_profiles`
+     (`WHERE setup_complete = true AND cgpa IS NULL`) is worth running once
+     this lands in prod, but is out of scope for this checkpoint.
+  4. CP-23 (empty Next-Move queue for a ready student) is next in FIX_SPEC.md's
+     S2 tier — `src/lib/placement/nextMove.ts` `computeNextMoves`, Rules 2 and
+     6.
