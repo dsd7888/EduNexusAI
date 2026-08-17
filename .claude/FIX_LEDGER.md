@@ -34,7 +34,7 @@ runner may touch it — the runner refuses and errors, it does not skip silently
 | CP-16 | done | b925851c00e965129fa80091c50b65862592cada | 2026-08-17 | covers both CP-16a (PPT SVG fallback rasterization) and CP-16b (Notes PDF Unicode substitution); committed locally only, per this session's no-push default |
 | CP-17 | done | ccb9f44cfafd064de29de7f4b887df09e44182c3 | 2026-08-17 | committed locally only, per this session's no-push default |
 | CP-18 | done | 7f40c02b33ee277680de3387e8f5e77d0f1555b9 | 2026-08-17 |  |
-| CP-19 | done | be9bf57e53e40754f1cc2b7c2c767244e5994f07 | 2026-08-17 | ported FacultyShell's collapse pattern into the student shell; `_cp_19_verify/ui.mts` verified live incl. nav-interrupted toggle + rapid-double-click; committed locally only, per this session's no-push default |
+| CP-19 | done | 05b4cbe42028b0223202206dab0b7efcfed75786 | 2026-08-17 | ported FacultyShell's collapse pattern into the student shell; `_cp_19_verify/ui.mts` verified live incl. nav-interrupted toggle + rapid-double-click; committed locally only, per this session's no-push default |
 | CP-20 | pending | | | shared component, many call sites — does not cover placement pages (needs CP-38) |
 | CP-21 | pending | | | |
 | CP-22 | pending | | | |
