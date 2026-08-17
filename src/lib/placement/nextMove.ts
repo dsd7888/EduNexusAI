@@ -23,6 +23,7 @@ export type StageId =
 export type MoveKind =
   | "setup"
   | "drive_sprint"
+  | "drive_ready"
   | "drift_return"
   | "weak_dimension"
   | "resume"
@@ -215,16 +216,26 @@ export function computeNextMoves(state: NextMoveState, now: Date = new Date()): 
     .filter((d) => d.daysRemaining >= 0)
     .sort((a, b) => a.daysRemaining - b.daysRemaining);
 
+  let nearestReadyInWindowDrive: { drive: NextMoveDrive; daysRemaining: number } | null = null;
+  let sprintMoveCount = 0;
+
   for (const { drive, daysRemaining } of eligibleDrives) {
     if (daysRemaining > DRIVE_SPRINT_WINDOW_DAYS) continue;
     const weakest = weightedWeakestDimensions(profile, drive.company_type).find(
       (d) => !coveredDimensions.has(d)
     );
-    if (!weakest) continue;
+    if (!weakest) {
+      if (!nearestReadyInWindowDrive) nearestReadyInWindowDrive = { drive, daysRemaining };
+      continue;
+    }
     const score = dimensionScore(profile, weakest);
-    if (score >= DRIVE_SPRINT_SCORE_THRESHOLD) continue;
+    if (score >= DRIVE_SPRINT_SCORE_THRESHOLD) {
+      if (!nearestReadyInWindowDrive) nearestReadyInWindowDrive = { drive, daysRemaining };
+      continue;
+    }
 
     coveredDimensions.add(weakest);
+    sprintMoveCount++;
     moves.push({
       stage: "drive_sprint",
       kind: "drive_sprint",
@@ -233,6 +244,24 @@ export function computeNextMoves(state: NextMoveState, now: Date = new Date()): 
       href: DIMENSION_HREF[weakest],
       urgency: "high",
       tags: [`${drive.company_name} · ${daysRemaining}d`, `${DIMENSION_LABELS[weakest]} ${score}/100`],
+    });
+  }
+
+  // Rule 2b — an eligible drive is in the sprint window but nothing about it
+  // is weak (either every relevant dimension already scored above the sprint
+  // threshold, or every relevant dimension was already covered by a stronger
+  // drive's move above): surface a confirmatory move instead of silently
+  // dropping this drive from the queue.
+  if (sprintMoveCount === 0 && nearestReadyInWindowDrive) {
+    const { drive, daysRemaining } = nearestReadyInWindowDrive;
+    moves.push({
+      stage: "drive_sprint",
+      kind: "drive_ready",
+      title: `You're on track for ${drive.company_name}`,
+      reason: `${drive.company_name} is ${daysRemaining} day${daysRemaining === 1 ? "" : "s"} away and none of your relevant skills are below the sprint threshold — keep them sharp.`,
+      href: "/student/placement/companies",
+      urgency: "medium",
+      tags: [`${drive.company_name} · ${daysRemaining}d`, "On track"],
     });
   }
 
@@ -302,8 +331,13 @@ export function computeNextMoves(state: NextMoveState, now: Date = new Date()): 
     });
   }
 
-  // Rule 6 — fallback: everything is strong and nothing is coming up.
-  const hasAnyEligibleDrive = eligibleDrives.length > 0;
+  // Rule 6 — fallback: everything is strong and nothing is coming up. "Coming
+  // up" means within the sprint window — an eligible drive months out isn't
+  // actionable yet and shouldn't suppress this fallback (that gap is what
+  // left a ready student with an empty queue whenever their only eligible
+  // drive sat outside DRIVE_SPRINT_WINDOW_DAYS; Rule 2b above covers the
+  // in-window/no-weak-spot case, this covers the out-of-window case).
+  const hasAnyEligibleDrive = eligibleDrives.some((d) => d.daysRemaining <= DRIVE_SPRINT_WINDOW_DAYS);
   const allReady = DIMENSIONS.every((d) => dimensionScore(profile, d) >= ALL_READY_THRESHOLD);
   if (allReady && !hasAnyEligibleDrive) {
     moves.push({
