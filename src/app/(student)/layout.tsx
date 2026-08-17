@@ -8,7 +8,6 @@ import {
   Brain,
   Clock,
   GraduationCap,
-  History,
   LayoutDashboard,
   MessageSquare,
   Menu,
@@ -70,10 +69,6 @@ function SidebarContent({ onNavigate }: { onNavigate: () => void }) {
         <NavLink href="/student/placement">
           <Target className="size-4" />
           <span>Placement</span>
-        </NavLink>
-        <NavLink href="/student/placement/history">
-          <History className="size-4" />
-          <span>Test History</span>
         </NavLink>
         <NavLink href="/student/history">
           <Clock className="size-4" />

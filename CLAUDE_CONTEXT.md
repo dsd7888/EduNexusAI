@@ -223,7 +223,7 @@ role_scope: id, user_id, school, department (null = entire school), created_at
 - `study_notes` (Notes v2, CP-N1): id, subject_id, module_id (NULL for subject scope), scope ('module'/'subject'), version, content_hash, blocks (jsonb — typed NoteBlock[]), source_metadata (jsonb), is_stale, generated_by, tokens_used, cost_inr, created_at — versioned typed study material. A row is servable ONLY when `is_stale = false` AND `content_hash` matches the current source hash; the flag alone is never sufficient. Uniqueness is TWO PARTIAL indexes, not one constraint (a plain UNIQUE leaves `module_id IS NULL` rows unconstrained — SQL treats NULLs as distinct). RLS: superadmin all; students read via `subject_offerings` on branch; faculty read via `faculty_assignments`; dean/hod via `role_scope`; faculty-tier UPDATE is restricted to `is_stale` by a column GRANT, since RLS cannot restrict columns. See CP_N1_NOTES_ENGINE.md.
 
 ### Placement Tables
-- `placement_companies`, `placement_question_bank`, `practice_question_bank`, `student_question_history`, `placement_attempts`
+- `placement_companies`, `placement_question_bank`, `practice_question_bank`, `student_question_history` (`placement_attempts` never existed as a real table — CP-13 deleted the dead code that referenced it)
 
 ### System Tables
 - `semantic_cache`: id, subject_id, module_id, query_text, query_embedding vector(3072), response, hit_count, last_used_at
@@ -281,7 +281,7 @@ edunexus-ai/
 │   │   ├── (student)/student/
 │   │   │   ├── dashboard/ + subjects/ + chat/[subjectId]/ ✅
 │   │   │   ├── quiz/ + history/ + profile/         ✅
-│   │   │   └── placement/ (page, test, history, practice) ✅
+│   │   │   └── placement/ (page) ✅ — legacy test/history/practice subsystem deleted in CP-13
 │   │   ├── e/[code]/                               ✅ Public explainer permalink
 │   │   └── api/
 │   │       ├── auth/callback/                      ✅
@@ -309,8 +309,7 @@ edunexus-ai/
 │   │       ├── ppt-refine/extract/ + refine/ + refine-slide/ ✅ refine-slide = single-slide chat
 │   │       ├── refine/                             ✅ Text Refinement tab backend
 │   │       ├── explainer/generate/ + list/ + [id]/ ✅ (routes exist, UI under development)
-│   │       ├── placement/generate/ + submit/ + export/ ✅
-│   │       └── placement/practice/generate/ + submit/ + export/ ✅
+│   │       └── placement/ (see §16 API route inventory — legacy generate/submit/export + practice/* deleted in CP-13)
 │   ├── components/ui/ + layout/ + chat/ + ppt/ + ErrorBoundary.tsx ✅
 │   ├── components/layout/FacultyShell.tsx           ✅ collapsible faculty nav shell
 │   ├── components/RichQuestionText.tsx             ✅ renders AI question text (table/list/bold via markdownLite + KaTeX/mhchem math, incl. MCQ options)
@@ -357,7 +356,7 @@ edunexus-ai/
 ├── supabase/migrations/
 │   ├── 20260218100000_subject_content.sql          ✅ applied
 │   ├── 20260218100001_subject_content_created_by.sql ✅ applied
-│   ├── 20260328120000_placement_attempts_detail_columns.sql ✅ applied
+│   ├── 20260328120000_placement_attempts_detail_columns.sql ⚠️ orphaned — ALTERs a `placement_attempts` table no migration ever CREATEd; the legacy test/practice subsystem that wrote to it was deleted in CP-13
 │   ├── 20260521000000_structured_syllabus.sql      ✅ applied
 │   ├── 20260523000000_qpaper_templates.sql         ✅ applied
 │   ├── 20260524000000_pyq_questions.sql            ✅ applied

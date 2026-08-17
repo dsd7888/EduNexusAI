@@ -1,11 +1,6 @@
 // Static, hand-authored external-practice pointers, keyed by track + exact
 // TRACK_SECTIONS topic label (src/lib/placement/tracks.ts). Zero AI cost,
 // zero external API calls — curated links only, refreshed by hand.
-//
-// Deliberately NOT keyed by PRACTICE_MODULES (src/lib/placement/modules.ts) —
-// that catalog backs a different route (/student/placement/practice/[moduleId])
-// and uses different id/label strings than the topics students actually click
-// through /student/placement/prep/[track]/practice.
 
 export interface PracticeResource {
   label: string;
