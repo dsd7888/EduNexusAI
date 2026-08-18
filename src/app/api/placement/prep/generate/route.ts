@@ -217,6 +217,20 @@ function shuffle<T>(arr: T[]): T[] {
   return a;
 }
 
+// CP-08: the pre-answer response must never carry the answer key — a client
+// that reads the network tab (or the React state) before locking in an
+// answer would otherwise see `correct_answer`/`explanation` outright.
+// `/api/placement/prep/submit` re-attaches both, per question, only after
+// grading.
+function stripAnswerKey<T extends { correct_answer?: unknown; explanation?: unknown }>(
+  q: T
+): Omit<T, "correct_answer" | "explanation"> {
+  const rest = { ...q } as Record<string, unknown>;
+  delete rest.correct_answer;
+  delete rest.explanation;
+  return rest as Omit<T, "correct_answer" | "explanation">;
+}
+
 function isValidGenerated(q: unknown): boolean {
   if (!q || typeof q !== "object") return false;
   const c = q as Record<string, unknown>;
@@ -404,7 +418,7 @@ export async function POST(request: NextRequest) {
             questions: [
               ...shuffle(mcqBank).slice(0, 4),
               ...shuffle(fcBank).slice(0, 4),
-            ],
+            ].map(stripAnswerKey),
             topic: cleanTopic,
             track: validTrack,
             difficulty: difficultyToServe,
@@ -438,7 +452,7 @@ export async function POST(request: NextRequest) {
 
         if (bankCandidates.length >= 6) {
           return apiSuccess({
-            questions: shuffle(bankCandidates).slice(0, 6),
+            questions: shuffle(bankCandidates).slice(0, 6).map(stripAnswerKey),
             topic: cleanTopic,
             track: validTrack,
             difficulty: difficultyToServe,
@@ -575,7 +589,7 @@ export async function POST(request: NextRequest) {
           is_active: true,
         }));
         return apiSuccess({
-          questions: fallback,
+          questions: fallback.map(stripAnswerKey),
           topic: cleanTopic,
           track: validTrack,
           difficulty: difficultyToServe,
@@ -585,7 +599,7 @@ export async function POST(request: NextRequest) {
       }
 
       return apiSuccess({
-        questions: shuffle(insertedRows as PlacementBankQuestion[]).slice(0, 6),
+        questions: shuffle(insertedRows as PlacementBankQuestion[]).slice(0, 6).map(stripAnswerKey),
         topic: cleanTopic,
         track: validTrack,
         difficulty: difficultyToServe,
@@ -758,7 +772,7 @@ async function generateFillCodeMix(
       quality_score: null, company_context: null, generated_at: now, is_active: true,
     }));
     return apiSuccess({
-      questions: [...fallbackMcq, ...fallbackFc],
+      questions: [...fallbackMcq, ...fallbackFc].map(stripAnswerKey),
       topic, track, difficulty,
       source: "generated",
       generated_at: now,
@@ -766,7 +780,7 @@ async function generateFillCodeMix(
   }
 
   return apiSuccess({
-    questions: insertedRows as PlacementBankQuestion[],
+    questions: (insertedRows as PlacementBankQuestion[]).map(stripAnswerKey),
     topic, track, difficulty,
     source: "generated",
     generated_at: now,

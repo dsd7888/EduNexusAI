@@ -122,10 +122,18 @@ export async function POST(request: NextRequest) {
       ...new Set(validAttempts.map((a) => a.question_id)),
     ];
 
+    // Per-question answer key + explanation, keyed by question_id — this is
+    // the ONLY place the client is allowed to learn correct_answer/explanation
+    // (CP-08: /prep/generate never ships it pre-answer).
+    const grading: Record<
+      string,
+      { correct_answer: string; explanation: string; is_correct: boolean }
+    > = {};
+
     if (distinctQuestionIds.length > 0) {
       const { data: answerRows, error: answerFetchError } = await adminClient
         .from("placement_question_bank")
-        .select("id, correct_answer")
+        .select("id, correct_answer, explanation")
         .in("id", distinctQuestionIds);
 
       if (answerFetchError) {
@@ -137,13 +145,16 @@ export async function POST(request: NextRequest) {
       }
 
       const answerMap = new Map(
-        (answerRows ?? []).map((r) => [r.id as string, r.correct_answer as string])
+        (answerRows ?? []).map((r) => [
+          r.id as string,
+          { correct_answer: r.correct_answer as string, explanation: r.explanation as string },
+        ])
       );
 
       let unknownQuestionCount = 0;
       for (const att of validAttempts) {
-        const correctAnswer = answerMap.get(att.question_id);
-        if (correctAnswer === undefined) {
+        const answerKey = answerMap.get(att.question_id);
+        if (answerKey === undefined) {
           // Unknown/forged question_id — can't be graded; exclude from
           // scoring entirely rather than trusting anything the client sent.
           unknownQuestionCount += 1;
@@ -155,7 +166,12 @@ export async function POST(request: NextRequest) {
           !att.is_skipped &&
           att.selected_answer !== null &&
           normalizeAnswerKey(att.selected_answer) ===
-            normalizeAnswerKey(correctAnswer);
+            normalizeAnswerKey(answerKey.correct_answer);
+        grading[att.question_id] = {
+          correct_answer: answerKey.correct_answer,
+          explanation: answerKey.explanation,
+          is_correct: att.is_correct,
+        };
       }
 
       if (unknownQuestionCount > 0) {
@@ -303,6 +319,7 @@ export async function POST(request: NextRequest) {
           "easy",
         readiness_updated: false,
         warnings,
+        grading,
       });
     }
 
@@ -489,6 +506,7 @@ export async function POST(request: NextRequest) {
       new_difficulty: newDifficulty,
       readiness_updated: readinessUpdated,
       warnings,
+      grading,
     });
   } catch (error) {
     logCappedError("[placement-submit] Error:", error);

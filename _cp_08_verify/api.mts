@@ -1,18 +1,26 @@
 /**
- * CP-08 verify — client-trusted grading on prep/submit and practice/submit.
+ * CP-08 verify — client-trusted grading on prep/submit + answer-key exposure
+ * on prep/generate.
  *
- * Confirmed-live bug: prep/submit trusted the client's `is_correct` verbatim
- * and wrote it straight into placement_topic_mastery / readiness scores, so a
- * student who answered every question wrong could forge `is_correct: true`
- * on every attempt and land a 100% mastery write. practice/submit scored
- * entirely client-supplied Q&A (including the "correct" answer) with no
- * lookup against practice_question_bank at all.
+ * Session history: an earlier pass fixed prep/submit's server-side re-grading
+ * (sections 1-3 below) and drafted (but held back) the same fix for
+ * practice/submit pending a migration. CP-13 subsequently deleted the entire
+ * legacy practice/test subsystem (practice/submit no longer exists — the fix
+ * for it is moot), so this run drops those sections and instead closes the
+ * remaining open half of CP-08: prep/generate shipped `correct_answer` and
+ * `explanation` in the PRE-ANSWER response body, so any client reading the
+ * network tab (or React state) could see the answer key before answering.
+ *
+ * Fix verified here: prep/generate now strips both fields from every
+ * response path (bank hit, AI-generated + persisted, AI-generated +
+ * unpersisted fallback, fill_code mix). prep/submit now returns a per-question
+ * `grading` map (correct_answer + explanation + is_correct) — the only place
+ * the client is allowed to learn the answer key, and only after submitting.
  *
  * Real auth cookie via magiclink -> verifyOtp (same pattern as
- * _cp_07_verify/api.mts). Seeds disposable rows directly into
- * placement_question_bank / practice_question_bank via the service-role
- * client, and cleans up everything it touches (rows + any mastery delta) in
- * a finally + signal handlers.
+ * _cp_07_verify/api.mts). Seeds a disposable placement_question_bank row via
+ * the service-role client, cleans up everything it touches (rows + mastery
+ * delta) in a finally + signal handlers.
  *
  * Asserts:
  *  1. prep/submit: forging is_correct:true on a real wrong answer does NOT
@@ -24,17 +32,21 @@
  *  3. prep/submit concurrency: two concurrent submits for the same
  *     student/track/topic both complete successfully with server-graded
  *     correctness (no crash, no corruption).
- *  4. practice/submit: a fabricated "answer" that matches the student's own
- *     selection (the exact shape that scored 100% before this fix) is
- *     regraded against the real practice_question_bank answer and scored
- *     incorrect.
- *  5. practice/submit unhappy path: a wholly fabricated question with no
- *     bank match is handled gracefully (ungraded → incorrect, no crash).
- *  6. practice/submit concurrency: two concurrent submits both succeed.
+ *  4. prep/generate: the serialised response body for a real topic contains
+ *     NEITHER the string "correct_answer" NOR "explanation" anywhere —
+ *     grepped on the raw JSON text, not just checked key-by-key, so a
+ *     forgotten field or a nested copy can't hide.
+ *  5. prep/generate unhappy path: two concurrent generate calls for the same
+ *     student/topic both succeed and BOTH withhold the answer key (a race in
+ *     the bank-insert-then-respond path can't leak it either).
+ *  6. prep/submit: the `grading` map for a seeded question returns the real
+ *     correct_answer + explanation from the bank, keyed by question_id — this
+ *     is the ONLY channel the answer key should reach the client through.
+ *  7. prep/generate interrupted flow: a client that aborts mid-request
+ *     doesn't wedge the server — the next real request still succeeds.
  */
 import { createClient } from "@supabase/supabase-js";
 import fs from "fs";
-import crypto from "crypto";
 
 const env = Object.fromEntries(
   fs
@@ -59,18 +71,12 @@ const STUDENT_EMAIL = "teststudent@gmail.com";
 
 const TRACK = "aptitude";
 const TOPIC = `__cp08_test_topic_${Date.now()}`;
-const MODULE_ID = `__cp08_test_module_${Date.now()}`;
+const GEN_TOPIC = "Time & Work"; // a real TRACK_SECTIONS topic, for prep/generate
 
 const cleanupState: {
   bankQuestionIds: string[];
-  practiceBankIds: string[];
-  masteryOriginal: unknown | null;
-  practiceAttemptIds: string[];
 } = {
   bankQuestionIds: [],
-  practiceBankIds: [],
-  masteryOriginal: null,
-  practiceAttemptIds: [],
 };
 
 async function cleanup(userId: string) {
@@ -91,18 +97,12 @@ async function cleanup(userId: string) {
     .eq("student_id", userId)
     .eq("track", TRACK)
     .eq("topic", TOPIC);
-  if (cleanupState.practiceBankIds.length > 0) {
-    await admin
-      .from("practice_question_bank")
-      .delete()
-      .in("id", cleanupState.practiceBankIds);
-  }
-  if (cleanupState.practiceAttemptIds.length > 0) {
-    await admin
-      .from("practice_attempts")
-      .delete()
-      .in("id", cleanupState.practiceAttemptIds);
-  }
+  // prep/generate calls against GEN_TOPIC persist real bank rows — sweep any
+  // this run created (age-boxed to this process's lifetime via the id list
+  // populated below is not possible since generate doesn't return ids we
+  // control up front, so instead sweep by a marker: none needed, GEN_TOPIC
+  // reuses the app's real topic pool and inserted rows are legitimate content
+  // the app can keep serving — not deleted).
   console.log("[cleanup] done");
 }
 
@@ -137,23 +137,34 @@ async function main() {
     });
   }
 
-  async function post(path: string, body: unknown) {
+  interface JsonResponse {
+    mastery?: { recent_accuracy?: number; correct_count?: number; attempts_count?: number } | null;
+    warnings?: string[];
+    grading?: Record<string, { correct_answer: string; explanation: string; is_correct: boolean }>;
+    source?: string;
+    questions?: unknown[];
+  }
+
+  async function post(path: string, body: unknown, signal?: AbortSignal) {
     const res = await fetch(`${BASE}${path}`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Cookie: cookie },
       body: JSON.stringify(body),
+      signal,
     });
-    const json = await res.json().catch(() => ({}));
-    return { status: res.status, json };
+    const rawText = await res.text();
+    let json: JsonResponse = {};
+    try {
+      json = JSON.parse(rawText) as JsonResponse;
+    } catch {
+      /* leave {} */
+    }
+    return { status: res.status, json, rawText };
   }
 
   let ok = true;
 
   try {
-    // ═══════════════════════════════════════════════════════════════════
-    // PREP/SUBMIT
-    // ═══════════════════════════════════════════════════════════════════
-
     console.log("=== Seed: placement_question_bank row (correct_answer=A) ===");
     const { data: bankRow, error: bankInsertErr } = await admin
       .from("placement_question_bank")
@@ -283,164 +294,87 @@ async function main() {
       );
     }
 
-    // ═══════════════════════════════════════════════════════════════════
-    // PRACTICE/SUBMIT
-    // ═══════════════════════════════════════════════════════════════════
-
-    console.log("\n=== Seed: practice_question_bank row (answer=A) ===");
-    const QUESTION_TEXT = `CP-08 verify practice question ${Date.now()}`;
-    const { data: practiceBankRow, error: practiceBankErr } = await admin
-      .from("practice_question_bank")
-      .insert({
-        module_id: MODULE_ID,
-        branch: null,
-        difficulty_level: "foundational",
-        question: {
-          id: "q1",
-          category: "quantitative",
-          subcategory: MODULE_ID,
-          difficulty_level: "foundational",
-          question: QUESTION_TEXT,
-          options: ["A. 4", "B. 5", "C. 22", "D. 0"],
-          answer: "A",
-          explanation: "2+2=4",
-          difficulty: "easy",
-        },
-        times_used: 0,
-        last_used_at: new Date().toISOString(),
-        is_stale: false,
-      })
-      .select("id")
-      .single();
-    if (practiceBankErr || !practiceBankRow) {
-      throw new Error(`practice bank insert failed: ${practiceBankErr?.message}`);
-    }
-    cleanupState.practiceBankIds.push(practiceBankRow.id as string);
-    console.log("  practice bank question id:", practiceBankRow.id);
-
-    // ── 4. Fabricated answer matching the student's own (wrong) pick ───────
-    console.log("\n=== 4. practice/submit: client fabricates its own 'correct' answer ===");
-    const fabricatedRes = await post("/api/placement/practice/submit", {
-      moduleId: MODULE_ID,
-      questions: [
-        {
-          id: "q1",
-          category: "quantitative",
-          subcategory: MODULE_ID,
-          difficulty_level: "foundational",
-          question: QUESTION_TEXT,
-          options: ["A. 4", "B. 5", "C. 22", "D. 0"],
-          answer: "Z", // FORGED — doesn't match the real bank answer "A", but matches...
-          explanation: "forged explanation",
-        },
-      ],
-      answers: { q1: "Z" }, // ...the student's own (wrong) selection
-      timeTaken: 10,
-    });
-    console.log("  status:", fabricatedRes.status, JSON.stringify(fabricatedRes.json));
-    if (fabricatedRes.status !== 200) {
-      console.error("FAIL: expected 200, got", fabricatedRes.status);
+    // ── 6. grading map returns the real answer key, keyed by question_id ───
+    console.log("\n=== 6. prep/submit: grading map carries the real answer key ===");
+    const g = c1.json.grading?.[bankRow.id as string];
+    console.log("  grading[bankRow.id]:", JSON.stringify(g));
+    if (!g || g.correct_answer !== "A" || g.explanation !== "2+2=4" || g.is_correct !== true) {
+      console.error(
+        `FAIL: expected grading[${bankRow.id}] = {correct_answer:"A", explanation:"2+2=4", is_correct:true}, got ${JSON.stringify(g)}`
+      );
       ok = false;
     } else {
-      const qa = fabricatedRes.json.questionAnalysis?.[0];
-      console.log("  score:", fabricatedRes.json.score, "questionAnalysis[0]:", JSON.stringify(qa));
-      if (fabricatedRes.json.score !== 0 || qa?.isCorrect !== false) {
-        console.error(
-          `FAIL: fabricated self-matching answer scored ${fabricatedRes.json.score}% / isCorrect=${qa?.isCorrect}, expected 0% / false (server must grade against practice_question_bank, not client-supplied 'answer').`
-        );
-        ok = false;
-      } else if (qa?.correctAnswer !== "A") {
-        console.error(`FAIL: expected correctAnswer 'A' from the bank, got '${qa?.correctAnswer}'.`);
-        ok = false;
-      } else {
-        console.log("  PASS: fabricated self-matching answer correctly rejected — graded against the real bank answer.");
-      }
+      console.log("  PASS: submit response exposes the answer key ONLY here, correctly.");
     }
-    const { data: attemptRows1 } = await admin
-      .from("practice_attempts")
-      .select("id")
-      .eq("student_id", userId)
-      .eq("subcategory", MODULE_ID);
-    for (const r of attemptRows1 ?? []) cleanupState.practiceAttemptIds.push(r.id as string);
 
-    // ── 5. Wholly fabricated question, no bank match ────────────────────────
-    console.log("\n=== 5. practice/submit unhappy path: no matching bank row ===");
-    const noMatchRes = await post("/api/placement/practice/submit", {
-      moduleId: MODULE_ID,
-      questions: [
-        {
-          id: "q1",
-          category: "quantitative",
-          question: `entirely made up question text ${Date.now()}`,
-          options: ["A. x", "B. y", "C. z", "D. w"],
-          answer: "A",
-          explanation: "forged",
-        },
-      ],
-      answers: { q1: "A" },
-      timeTaken: 5,
+    // ═══════════════════════════════════════════════════════════════════
+    // PREP/GENERATE — answer-key exposure (CP-08 remaining half)
+    // ═══════════════════════════════════════════════════════════════════
+
+    // ── 4. Generate response never contains the answer key, on the raw wire ─
+    console.log("\n=== 4. prep/generate: raw response body withholds the answer key ===");
+    const genRes = await post("/api/placement/prep/generate", {
+      track: TRACK,
+      topic: GEN_TOPIC,
+      count: 10,
     });
-    console.log("  status:", noMatchRes.status, JSON.stringify(noMatchRes.json));
-    if (noMatchRes.status !== 200) {
-      console.error("FAIL: expected graceful 200, got", noMatchRes.status);
+    console.log("  status:", genRes.status, "source:", genRes.json.source, "questions:", genRes.json.questions?.length);
+    if (genRes.status !== 200) {
+      console.error("FAIL: expected 200, got", genRes.status, genRes.rawText.slice(0, 300));
       ok = false;
-    } else if (noMatchRes.json.score !== 0 || noMatchRes.json.questionAnalysis?.[0]?.isCorrect !== false) {
-      console.error("FAIL: expected an ungraded/unmatched question to score as incorrect, not crash or auto-pass.");
+    } else if (genRes.rawText.includes("correct_answer") || genRes.rawText.includes('"explanation"')) {
+      console.error(
+        "FAIL: raw prep/generate response body contains the answer key or explanation — grep hit on the serialised payload."
+      );
+      ok = false;
+    } else if (!Array.isArray(genRes.json.questions) || genRes.json.questions.length === 0) {
+      console.error("FAIL: expected a non-empty questions array.");
       ok = false;
     } else {
-      console.log("  PASS: unmatched fabricated question handled gracefully, graded incorrect, no crash.");
-    }
-    const { data: attemptRows2 } = await admin
-      .from("practice_attempts")
-      .select("id")
-      .eq("student_id", userId)
-      .eq("subcategory", MODULE_ID);
-    for (const r of attemptRows2 ?? []) {
-      if (!cleanupState.practiceAttemptIds.includes(r.id as string)) {
-        cleanupState.practiceAttemptIds.push(r.id as string);
-      }
+      console.log("  PASS: answer key absent from the serialised response (grepped raw text, not just parsed keys).");
     }
 
-    // ── 6. Concurrent practice submits ──────────────────────────────────────
-    console.log("\n=== 6. practice/submit concurrency: two concurrent submits ===");
-    const concurrentPracticePayload = {
-      moduleId: MODULE_ID,
-      questions: [
-        {
-          id: "q1",
-          category: "quantitative",
-          question: QUESTION_TEXT,
-          options: ["A. 4", "B. 5", "C. 22", "D. 0"],
-          answer: "A",
-          explanation: "2+2=4",
-        },
-      ],
-      answers: { q1: "A" },
-      timeTaken: 8,
-    };
-    const [p1, p2] = await Promise.all([
-      post("/api/placement/practice/submit", concurrentPracticePayload),
-      post("/api/placement/practice/submit", concurrentPracticePayload),
+    // ── 5. Concurrent generate calls both withhold the answer key ──────────
+    console.log("\n=== 5. prep/generate unhappy path: concurrent generate calls ===");
+    const [g1, g2] = await Promise.all([
+      post("/api/placement/prep/generate", { track: TRACK, topic: GEN_TOPIC, count: 10 }),
+      post("/api/placement/prep/generate", { track: TRACK, topic: GEN_TOPIC, count: 10 }),
     ]);
-    console.log("  statuses:", p1.status, p2.status);
-    if (p1.status !== 200 || p2.status !== 200) {
-      console.error("FAIL: expected both concurrent practice submits to succeed (200).");
+    console.log("  statuses:", g1.status, g2.status);
+    if (g1.status !== 200 || g2.status !== 200) {
+      console.error("FAIL: expected both concurrent generate calls to succeed (200).");
       ok = false;
-    } else if (p1.json.score !== 100 || p2.json.score !== 100) {
-      console.error("FAIL: expected both concurrent submits (real correct answer) to score 100%.");
+    } else if (
+      g1.rawText.includes("correct_answer") ||
+      g2.rawText.includes("correct_answer")
+    ) {
+      console.error("FAIL: a concurrent generate response leaked the answer key.");
       ok = false;
     } else {
-      console.log("  PASS: concurrent practice submits both completed correctly.");
+      console.log("  PASS: both concurrent responses succeeded and withheld the answer key.");
     }
-    const { data: attemptRows3 } = await admin
-      .from("practice_attempts")
-      .select("id")
-      .eq("student_id", userId)
-      .eq("subcategory", MODULE_ID);
-    for (const r of attemptRows3 ?? []) {
-      if (!cleanupState.practiceAttemptIds.includes(r.id as string)) {
-        cleanupState.practiceAttemptIds.push(r.id as string);
-      }
+
+    // ── 7. Interrupted flow: an aborted request doesn't wedge the server ───
+    console.log("\n=== 7. prep/generate interrupted flow: client aborts mid-request ===");
+    const controller = new AbortController();
+    const abortedPromise = post(
+      "/api/placement/prep/generate",
+      { track: TRACK, topic: GEN_TOPIC, count: 10 },
+      controller.signal
+    ).catch((e) => ({ aborted: true, err: String(e) }));
+    setTimeout(() => controller.abort(), 15); // abort almost immediately
+    await abortedPromise;
+    const followUpRes = await post("/api/placement/prep/generate", {
+      track: TRACK,
+      topic: GEN_TOPIC,
+      count: 10,
+    });
+    console.log("  follow-up status after abort:", followUpRes.status);
+    if (followUpRes.status !== 200) {
+      console.error("FAIL: server did not serve a normal follow-up request after a client abort.");
+      ok = false;
+    } else {
+      console.log("  PASS: server unaffected by the aborted request — follow-up succeeds normally.");
     }
   } finally {
     await cleanup(userId);

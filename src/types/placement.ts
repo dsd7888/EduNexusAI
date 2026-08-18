@@ -308,8 +308,12 @@ export interface PlacementBankQuestion {
   difficulty: 'easy' | 'medium' | 'hard';
   question_text: string;
   options: Array<{ key: string; text: string }>;
-  correct_answer: string;
-  explanation: string;
+  // Omitted from /api/placement/prep/generate's response (CP-08: never ship
+  // the answer key pre-answer) — only present when a caller explicitly
+  // re-attaches it, e.g. from /api/placement/prep/submit's per-question
+  // grading map after the student has locked in an answer.
+  correct_answer?: string;
+  explanation?: string;
   times_served: number;
   times_correct: number;
   avg_time_seconds: number | null;

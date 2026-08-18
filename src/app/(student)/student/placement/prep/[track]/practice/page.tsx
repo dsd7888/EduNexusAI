@@ -26,11 +26,18 @@ interface StoredSession {
   generatedAt: string;
 }
 
+type QuestionGrading = {
+  correct_answer: string;
+  explanation: string;
+  is_correct: boolean;
+};
+
 type SubmitResult = {
   mastery: PlacementTopicMastery | null;
   difficulty_changed: boolean;
   new_difficulty: string;
   warnings: string[];
+  grading: Record<string, QuestionGrading>;
 };
 
 const TWO_HOURS_MS = 2 * 60 * 60 * 1000;
@@ -73,13 +80,14 @@ function scoreColorClass(correct: number, total: number): string {
 function isValidQuestion(q: unknown): q is PlacementBankQuestion {
   if (!q || typeof q !== "object") return false;
   const cand = q as Partial<PlacementBankQuestion>;
+  // CP-08: /prep/generate no longer ships correct_answer pre-answer, so
+  // validity here can't check it — question_text + 4 options is all a
+  // trusted-shape check can assert at this point.
   return (
     typeof cand.question_text === "string" &&
     cand.question_text.trim() !== "" &&
     Array.isArray(cand.options) &&
-    cand.options.length === 4 &&
-    typeof cand.correct_answer === "string" &&
-    ["A", "B", "C", "D"].includes(cand.correct_answer)
+    cand.options.length === 4
   );
 }
 
@@ -290,10 +298,13 @@ function PracticeInner() {
       times: Record<number, number>,
       elapsed: number
     ): Promise<SubmitResult | null> => {
+      // is_correct is never trusted server-side (CP-08) — the server
+      // re-grades every attempt against its own answer key, so the client
+      // doesn't even know the correct answer yet to compute this from.
       const attempts = qs.map((qq, i) => ({
         question_id: qq.id,
         selected_answer: answers[i] ?? null,
-        is_correct: answers[i] === qq.correct_answer,
+        is_correct: false,
         is_skipped: answers[i] === undefined,
         time_spent_seconds: times[i] ?? 0,
       }));
@@ -514,9 +525,12 @@ function PracticeInner() {
   }
 
   function retryWrongOnly() {
+    const grading = submitResult?.grading;
+    if (!grading) return;
     const wrong = questions.filter(
       (qq, i) =>
-        selectedAnswers[i] !== undefined && selectedAnswers[i] !== qq.correct_answer
+        selectedAnswers[i] !== undefined &&
+        selectedAnswers[i] !== grading[qq.id]?.correct_answer
     );
     if (wrong.length === 0) return;
     clearStorage();
@@ -636,17 +650,30 @@ function PracticeInner() {
   // ── Phase: Results ────────────────────────────────────────────────────────────
 
   if (sessionComplete) {
-    const correctCount  = questions.filter((qq, i) => selectedAnswers[i] === qq.correct_answer).length;
+    // CP-08: correctness is unknowable client-side until /prep/submit's
+    // server-side re-grading response ("grading") arrives — the generate
+    // response no longer carries correct_answer/explanation at all.
+    const grading = submitResult?.grading ?? null;
+    const gradingReady = grading !== null;
+    const gradingFailed = grading === null && masteryTimedOut;
+
+    const correctCount = gradingReady
+      ? questions.filter((qq) => grading[qq.id]?.is_correct).length
+      : 0;
     const wrongCount    = totalQ - correctCount;
-    const accuracy      = Math.round((correctCount / totalQ) * 100);
-    const ratio         = correctCount / totalQ;
+    const accuracy      = totalQ > 0 ? Math.round((correctCount / totalQ) * 100) : 0;
+    const ratio         = totalQ > 0 ? correctCount / totalQ : 0;
     const avgSeconds    = (timeElapsed / totalQ).toFixed(1);
     const completedMins = Math.floor(timeElapsed / 60);
     const completedSecs = timeElapsed % 60;
 
-    const wrongAnsweredCount = questions.filter(
-      (qq, i) => selectedAnswers[i] !== undefined && selectedAnswers[i] !== qq.correct_answer
-    ).length;
+    const wrongAnsweredCount = gradingReady
+      ? questions.filter(
+          (qq, i) =>
+            selectedAnswers[i] !== undefined &&
+            selectedAnswers[i] !== grading[qq.id]?.correct_answer
+        ).length
+      : 0;
 
     const nextTopic = NEXT_TOPIC[topic];
     const practiceRecs = getPracticeRecs(rawTrack, topic);
@@ -661,61 +688,73 @@ function PracticeInner() {
         </Link>
         {StickyHeader}
 
-        {/* Score card */}
-        <div className="flex flex-col items-center gap-2 rounded-xl border border-gray-200 bg-white py-10 text-center">
-          <span className={cn("text-5xl font-bold", scoreColorClass(correctCount, totalQ))}>
-            {correctCount}/{totalQ}
-          </span>
-          <p className="text-sm text-gray-500">Correct answers</p>
-          <p className="mt-1 text-xl font-medium text-gray-600">{accuracy}% accuracy</p>
-          <p className="mt-1 text-sm text-gray-400">
-            Completed in {completedMins}m {completedSecs}s
-          </p>
-        </div>
-
-        {/* Topic mastery (Addition 2) */}
-        {submitResult === null && !masteryTimedOut ? (
-          <div className="h-20 animate-pulse rounded-lg bg-gray-100" />
-        ) : (
-          <div className="rounded-xl border border-gray-200 p-4">
-            <div className="flex items-center justify-between">
-              <span className="text-sm font-semibold text-gray-700">Topic Mastery</span>
-              <span className="text-xs text-gray-400">{topic}</span>
-            </div>
-
-            <div className="mt-3 flex flex-wrap gap-x-8 gap-y-2">
-              <div>
-                <p className="text-xs text-gray-400">Sessions</p>
-                <p className="text-sm font-semibold text-gray-800">
-                  {submitResult ? submitResult.mastery?.sessions_count ?? 1 : "–"}
-                </p>
-              </div>
-              <div>
-                <p className="text-xs text-gray-400">Accuracy</p>
-                <p className="text-sm font-semibold text-gray-800">
-                  {submitResult
-                    ? `${(submitResult.mastery?.recent_accuracy ?? 0).toFixed(1)}%`
-                    : "–"}
-                </p>
-              </div>
-              <div>
-                <p className="text-xs text-gray-400">Level</p>
-                <p className="text-sm font-semibold text-gray-800">
-                  {submitResult && submitResult.mastery
-                    ? submitResult.mastery.current_difficulty.charAt(0).toUpperCase() +
-                      submitResult.mastery.current_difficulty.slice(1)
-                    : "–"}
-                </p>
-              </div>
-            </div>
-
-            {submitResult?.difficulty_changed && (
-              <div className="mt-3 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-700">
-                🎯 Difficulty upgraded to {submitResult.new_difficulty}! Next session will
-                have harder questions.
-              </div>
-            )}
+        {!gradingReady && !gradingFailed && (
+          <div className="space-y-6">
+            <div className="h-40 animate-pulse rounded-xl bg-gray-100" />
+            <div className="h-20 animate-pulse rounded-lg bg-gray-100" />
           </div>
+        )}
+
+        {gradingFailed && (
+          <div className="rounded-xl border border-amber-200 bg-amber-50 p-6 text-center text-sm text-amber-700">
+            We couldn&apos;t verify your answers right now. Your session was still recorded —
+            check My Progress shortly, or try this topic again.
+          </div>
+        )}
+
+        {gradingReady && (
+          <>
+            {/* Score card */}
+            <div className="flex flex-col items-center gap-2 rounded-xl border border-gray-200 bg-white py-10 text-center">
+              <span className={cn("text-5xl font-bold", scoreColorClass(correctCount, totalQ))}>
+                {correctCount}/{totalQ}
+              </span>
+              <p className="text-sm text-gray-500">Correct answers</p>
+              <p className="mt-1 text-xl font-medium text-gray-600">{accuracy}% accuracy</p>
+              <p className="mt-1 text-sm text-gray-400">
+                Completed in {completedMins}m {completedSecs}s
+              </p>
+            </div>
+
+            {/* Topic mastery (Addition 2) */}
+            <div className="rounded-xl border border-gray-200 p-4">
+              <div className="flex items-center justify-between">
+                <span className="text-sm font-semibold text-gray-700">Topic Mastery</span>
+                <span className="text-xs text-gray-400">{topic}</span>
+              </div>
+
+              <div className="mt-3 flex flex-wrap gap-x-8 gap-y-2">
+                <div>
+                  <p className="text-xs text-gray-400">Sessions</p>
+                  <p className="text-sm font-semibold text-gray-800">
+                    {submitResult?.mastery?.sessions_count ?? 1}
+                  </p>
+                </div>
+                <div>
+                  <p className="text-xs text-gray-400">Accuracy</p>
+                  <p className="text-sm font-semibold text-gray-800">
+                    {(submitResult?.mastery?.recent_accuracy ?? 0).toFixed(1)}%
+                  </p>
+                </div>
+                <div>
+                  <p className="text-xs text-gray-400">Level</p>
+                  <p className="text-sm font-semibold text-gray-800">
+                    {submitResult?.mastery
+                      ? submitResult.mastery.current_difficulty.charAt(0).toUpperCase() +
+                        submitResult.mastery.current_difficulty.slice(1)
+                      : "–"}
+                  </p>
+                </div>
+              </div>
+
+              {submitResult?.difficulty_changed && (
+                <div className="mt-3 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-700">
+                  🎯 Difficulty upgraded to {submitResult.new_difficulty}! Next session will
+                  have harder questions.
+                </div>
+              )}
+            </div>
+          </>
         )}
 
         {/* External-practice resource strip (CP-C1) */}
@@ -743,59 +782,63 @@ function PracticeInner() {
           </div>
         )}
 
-        {/* Post-score guidance (Change 6) */}
-        {ratio >= 0.7 ? (
-          <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-3">
-            <p className="text-sm text-emerald-800">
-              Strong performance on {topic}. Ready to try a harder topic or test under
-              company conditions.
-            </p>
-            <div className="mt-3">
-              {nextTopic ? (
-                <Button
-                  onClick={() => navigateToTopic(nextTopic)}
-                  className="bg-emerald-600 text-white hover:bg-emerald-700"
-                >
-                  Try {nextTopic}
-                </Button>
-              ) : (
-                <Link href={`/student/placement/prep/${rawTrack}`}>
-                  <Button className="bg-emerald-600 text-white hover:bg-emerald-700">
-                    Try Another Topic
+        {gradingReady && (
+          <>
+            {/* Post-score guidance (Change 6) */}
+            {ratio >= 0.7 ? (
+              <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-3">
+                <p className="text-sm text-emerald-800">
+                  Strong performance on {topic}. Ready to try a harder topic or test under
+                  company conditions.
+                </p>
+                <div className="mt-3">
+                  {nextTopic ? (
+                    <Button
+                      onClick={() => navigateToTopic(nextTopic)}
+                      className="bg-emerald-600 text-white hover:bg-emerald-700"
+                    >
+                      Try {nextTopic}
+                    </Button>
+                  ) : (
+                    <Link href={`/student/placement/prep/${rawTrack}`}>
+                      <Button className="bg-emerald-600 text-white hover:bg-emerald-700">
+                        Try Another Topic
+                      </Button>
+                    </Link>
+                  )}
+                </div>
+              </div>
+            ) : ratio >= 0.4 ? (
+              <div className="rounded-lg border border-amber-200 bg-amber-50 p-3">
+                <p className="text-sm text-amber-800">
+                  Moderate performance. Review the explanations below, then retry this topic.
+                </p>
+                <div className="mt-3">
+                  <Button
+                    onClick={handlePracticeAgain}
+                    className="bg-amber-600 text-white hover:bg-amber-700"
+                  >
+                    Retry {topic}
                   </Button>
-                </Link>
-              )}
-            </div>
-          </div>
-        ) : ratio >= 0.4 ? (
-          <div className="rounded-lg border border-amber-200 bg-amber-50 p-3">
-            <p className="text-sm text-amber-800">
-              Moderate performance. Review the explanations below, then retry this topic.
-            </p>
-            <div className="mt-3">
-              <Button
-                onClick={handlePracticeAgain}
-                className="bg-amber-600 text-white hover:bg-amber-700"
-              >
-                Retry {topic}
-              </Button>
-            </div>
-          </div>
-        ) : (
-          <div className="rounded-lg border border-amber-200 bg-amber-50 p-3">
-            <p className="text-sm text-amber-800">
-              This topic needs more work. Study the explanations carefully before retrying.
-            </p>
-            <p className="mt-1 text-xs text-amber-700">Tip: Focus on wrong answers first.</p>
-            <div className="mt-3">
-              <Button
-                onClick={handlePracticeAgain}
-                className="bg-amber-500 text-white hover:bg-amber-600"
-              >
-                Retry {topic}
-              </Button>
-            </div>
-          </div>
+                </div>
+              </div>
+            ) : (
+              <div className="rounded-lg border border-amber-200 bg-amber-50 p-3">
+                <p className="text-sm text-amber-800">
+                  This topic needs more work. Study the explanations carefully before retrying.
+                </p>
+                <p className="mt-1 text-xs text-amber-700">Tip: Focus on wrong answers first.</p>
+                <div className="mt-3">
+                  <Button
+                    onClick={handlePracticeAgain}
+                    className="bg-amber-500 text-white hover:bg-amber-600"
+                  >
+                    Retry {topic}
+                  </Button>
+                </div>
+              </div>
+            )}
+          </>
         )}
 
         {/* Tab-switch warning (Change 12) */}
@@ -806,157 +849,162 @@ function PracticeInner() {
           </div>
         )}
 
-        {/* Performance pills */}
-        <div className="flex flex-wrap justify-center gap-3">
-          <div className="rounded-lg bg-emerald-50 px-5 py-3 text-center">
-            <p className="text-xl font-semibold text-emerald-700">{correctCount}</p>
-            <p className="text-xs text-emerald-600">Correct</p>
-          </div>
-          <div className="rounded-lg bg-amber-50 px-5 py-3 text-center">
-            <p className="text-xl font-semibold text-amber-600">{wrongCount}</p>
-            <p className="text-xs text-amber-500">Wrong</p>
-          </div>
-          <div className="rounded-lg bg-gray-50 px-5 py-3 text-center">
-            <p className="text-xl font-semibold text-gray-600">{avgSeconds}s</p>
-            <p className="text-xs text-gray-500">Avg per Q</p>
-          </div>
-        </div>
+        {gradingReady && (
+          <>
+            {/* Performance pills */}
+            <div className="flex flex-wrap justify-center gap-3">
+              <div className="rounded-lg bg-emerald-50 px-5 py-3 text-center">
+                <p className="text-xl font-semibold text-emerald-700">{correctCount}</p>
+                <p className="text-xs text-emerald-600">Correct</p>
+              </div>
+              <div className="rounded-lg bg-amber-50 px-5 py-3 text-center">
+                <p className="text-xl font-semibold text-amber-600">{wrongCount}</p>
+                <p className="text-xs text-amber-500">Wrong</p>
+              </div>
+              <div className="rounded-lg bg-gray-50 px-5 py-3 text-center">
+                <p className="text-xl font-semibold text-gray-600">{avgSeconds}s</p>
+                <p className="text-xs text-gray-500">Avg per Q</p>
+              </div>
+            </div>
 
-        {/* Review All Answers (Change 11) */}
-        <div>
-          <p className="mb-3 text-sm font-medium text-gray-700">Review All Answers</p>
-          <div className="space-y-2">
-            {questions.map((qq, i) => {
-              const answered  = selectedAnswers[i] !== undefined;
-              const isCorrect = answered && selectedAnswers[i] === qq.correct_answer;
-              const status: "correct" | "wrong" | "skipped" = isCorrect
-                ? "correct"
-                : answered
-                ? "wrong"
-                : "skipped";
-              const isOpen = openReview.has(i);
-              return (
-                <div key={i} className="overflow-hidden rounded-lg border border-gray-200 bg-white">
-                  <button
-                    type="button"
-                    onClick={() => toggleReview(i)}
-                    className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left"
-                  >
-                    <div className="flex min-w-0 items-center gap-3">
-                      <span
-                        className={cn(
-                          "shrink-0 rounded px-2 py-0.5 text-xs font-medium",
-                          status === "correct"
-                            ? "bg-emerald-50 text-emerald-600"
-                            : status === "wrong"
-                            ? "bg-red-50 text-red-500"
-                            : "bg-amber-50 text-amber-600"
-                        )}
+            {/* Review All Answers (Change 11) */}
+            <div>
+              <p className="mb-3 text-sm font-medium text-gray-700">Review All Answers</p>
+              <div className="space-y-2">
+                {questions.map((qq, i) => {
+                  const g            = grading[qq.id];
+                  const answered     = selectedAnswers[i] !== undefined;
+                  const isCorrect    = answered && g !== undefined && selectedAnswers[i] === g.correct_answer;
+                  const status: "correct" | "wrong" | "skipped" = isCorrect
+                    ? "correct"
+                    : answered
+                    ? "wrong"
+                    : "skipped";
+                  const isOpen = openReview.has(i);
+                  return (
+                    <div key={i} className="overflow-hidden rounded-lg border border-gray-200 bg-white">
+                      <button
+                        type="button"
+                        onClick={() => toggleReview(i)}
+                        className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left"
                       >
-                        Q{i + 1}
-                      </span>
-                      {status === "skipped" && (
-                        <span className="shrink-0 rounded bg-amber-50 px-1.5 py-0.5 text-xs font-medium text-amber-600">
-                          Skipped
-                        </span>
-                      )}
-                      <span className="min-w-0 truncate text-sm text-gray-700">
-                        {qq.question_text.slice(0, 60)}
-                        {qq.question_text.length > 60 ? "…" : ""}
-                      </span>
-                    </div>
-                    {isOpen ? (
-                      <ChevronDown className="size-4 shrink-0 text-gray-400" />
-                    ) : (
-                      <ChevronRight className="size-4 shrink-0 text-gray-400" />
-                    )}
-                  </button>
-
-                  {isOpen && (
-                    <div className="space-y-3 border-t border-gray-100 px-4 py-3 text-sm">
-                      {/* Full question text */}
-                      <RichQuestionText
-                        text={qq.question_text}
-                        className="font-medium leading-relaxed text-gray-900"
-                      />
-
-                      {/* fill_code: show code block with blank */}
-                      {qq.question_type === "fill_code" && qq.code_context && (
-                        <div className="rounded-xl bg-gray-900 p-4 font-mono text-sm text-gray-100">
-                          <SyntaxBlock code={qq.code_context.before_blank} />
-                          <div className="my-0.5 rounded bg-blue-900/50 border border-blue-500/50 px-2 py-0.5 text-blue-300 italic">
-                            ← complete this line
-                          </div>
-                          <SyntaxBlock code={qq.code_context.after_blank} />
+                        <div className="flex min-w-0 items-center gap-3">
+                          <span
+                            className={cn(
+                              "shrink-0 rounded px-2 py-0.5 text-xs font-medium",
+                              status === "correct"
+                                ? "bg-emerald-50 text-emerald-600"
+                                : status === "wrong"
+                                ? "bg-red-50 text-red-500"
+                                : "bg-amber-50 text-amber-600"
+                            )}
+                          >
+                            Q{i + 1}
+                          </span>
+                          {status === "skipped" && (
+                            <span className="shrink-0 rounded bg-amber-50 px-1.5 py-0.5 text-xs font-medium text-amber-600">
+                              Skipped
+                            </span>
+                          )}
+                          <span className="min-w-0 truncate text-sm text-gray-700">
+                            {qq.question_text.slice(0, 60)}
+                            {qq.question_text.length > 60 ? "…" : ""}
+                          </span>
                         </div>
-                      )}
+                        {isOpen ? (
+                          <ChevronDown className="size-4 shrink-0 text-gray-400" />
+                        ) : (
+                          <ChevronRight className="size-4 shrink-0 text-gray-400" />
+                        )}
+                      </button>
 
-                      {/* All options, colour-coded */}
-                      <div className="space-y-1.5">
-                        {qq.options.map((opt) => {
-                          const isCorrectOpt    = opt.key === qq.correct_answer;
-                          const isWrongSelected = selectedAnswers[i] === opt.key && !isCorrectOpt;
-                          return (
-                            <div
-                              key={opt.key}
-                              className={cn(
-                                "flex items-center justify-between gap-2 rounded-md border px-3 py-2",
-                                isCorrectOpt
-                                  ? "border-emerald-300 bg-emerald-50"
-                                  : isWrongSelected
-                                  ? "border-red-300 bg-red-50"
-                                  : "border-gray-200"
-                              )}
-                            >
-                              <span className={cn("text-gray-800", qq.question_type === "fill_code" && "font-mono text-sm")}>
-                                <span className="font-medium text-gray-500">{opt.key}.</span>{" "}
-                                {opt.text}
-                              </span>
-                              {isCorrectOpt ? (
-                                <Check className="size-4 shrink-0 text-emerald-600" />
-                              ) : isWrongSelected ? (
-                                <X className="size-4 shrink-0 text-red-500" />
-                              ) : null}
-                            </div>
-                          );
-                        })}
-                      </div>
+                      {isOpen && (
+                        <div className="space-y-3 border-t border-gray-100 px-4 py-3 text-sm">
+                          {/* Full question text */}
+                          <RichQuestionText
+                            text={qq.question_text}
+                            className="font-medium leading-relaxed text-gray-900"
+                          />
 
-                      {/* Explanation */}
-                      {qq.explanation && (
-                        <div className="rounded-lg border border-gray-200 bg-gray-50 p-3">
-                          <p className="mb-1 text-xs font-medium text-gray-500">
-                            💡 Explanation
-                          </p>
-                          <div className="space-y-0.5 text-sm text-gray-700">
-                            {splitExplanation(qq.explanation).map((line, li) => (
-                              <p key={li}>{line}</p>
-                            ))}
-                          </div>
-
-                          {/* fill_code: show complete code with correct line highlighted */}
-                          {qq.question_type === "fill_code" && qq.code_context && (() => {
-                            const correctText = qq.options.find((o) => o.key === qq.correct_answer)?.text ?? "";
-                            return (
-                              <div className="mt-2 rounded-xl bg-gray-900 p-4 font-mono text-sm text-gray-100">
-                                <p className="mb-2 text-xs text-gray-500">Correct code:</p>
-                                <SyntaxBlock code={qq.code_context.before_blank} />
-                                <div className="my-0.5 bg-emerald-900/30 border-l-2 border-emerald-500 pl-2 leading-6">
-                                  {colorLine(correctText, -1)}
-                                </div>
-                                <SyntaxBlock code={qq.code_context.after_blank} />
+                          {/* fill_code: show code block with blank */}
+                          {qq.question_type === "fill_code" && qq.code_context && (
+                            <div className="rounded-xl bg-gray-900 p-4 font-mono text-sm text-gray-100">
+                              <SyntaxBlock code={qq.code_context.before_blank} />
+                              <div className="my-0.5 rounded bg-blue-900/50 border border-blue-500/50 px-2 py-0.5 text-blue-300 italic">
+                                ← complete this line
                               </div>
-                            );
-                          })()}
+                              <SyntaxBlock code={qq.code_context.after_blank} />
+                            </div>
+                          )}
+
+                          {/* All options, colour-coded */}
+                          <div className="space-y-1.5">
+                            {qq.options.map((opt) => {
+                              const isCorrectOpt    = g !== undefined && opt.key === g.correct_answer;
+                              const isWrongSelected = selectedAnswers[i] === opt.key && !isCorrectOpt;
+                              return (
+                                <div
+                                  key={opt.key}
+                                  className={cn(
+                                    "flex items-center justify-between gap-2 rounded-md border px-3 py-2",
+                                    isCorrectOpt
+                                      ? "border-emerald-300 bg-emerald-50"
+                                      : isWrongSelected
+                                      ? "border-red-300 bg-red-50"
+                                      : "border-gray-200"
+                                  )}
+                                >
+                                  <span className={cn("text-gray-800", qq.question_type === "fill_code" && "font-mono text-sm")}>
+                                    <span className="font-medium text-gray-500">{opt.key}.</span>{" "}
+                                    {opt.text}
+                                  </span>
+                                  {isCorrectOpt ? (
+                                    <Check className="size-4 shrink-0 text-emerald-600" />
+                                  ) : isWrongSelected ? (
+                                    <X className="size-4 shrink-0 text-red-500" />
+                                  ) : null}
+                                </div>
+                              );
+                            })}
+                          </div>
+
+                          {/* Explanation */}
+                          {g?.explanation && (
+                            <div className="rounded-lg border border-gray-200 bg-gray-50 p-3">
+                              <p className="mb-1 text-xs font-medium text-gray-500">
+                                💡 Explanation
+                              </p>
+                              <div className="space-y-0.5 text-sm text-gray-700">
+                                {splitExplanation(g.explanation).map((line, li) => (
+                                  <p key={li}>{line}</p>
+                                ))}
+                              </div>
+
+                              {/* fill_code: show complete code with correct line highlighted */}
+                              {qq.question_type === "fill_code" && qq.code_context && (() => {
+                                const correctText = qq.options.find((o) => o.key === g.correct_answer)?.text ?? "";
+                                return (
+                                  <div className="mt-2 rounded-xl bg-gray-900 p-4 font-mono text-sm text-gray-100">
+                                    <p className="mb-2 text-xs text-gray-500">Correct code:</p>
+                                    <SyntaxBlock code={qq.code_context.before_blank} />
+                                    <div className="my-0.5 bg-emerald-900/30 border-l-2 border-emerald-500 pl-2 leading-6">
+                                      {colorLine(correctText, -1)}
+                                    </div>
+                                    <SyntaxBlock code={qq.code_context.after_blank} />
+                                  </div>
+                                );
+                              })()}
+                            </div>
+                          )}
                         </div>
                       )}
                     </div>
-                  )}
-                </div>
-              );
-            })}
-          </div>
-        </div>
+                  );
+                })}
+              </div>
+            </div>
+          </>
+        )}
 
         {/* Actions */}
         <div className="flex flex-wrap gap-3 pb-6">
@@ -966,7 +1014,7 @@ function PracticeInner() {
           >
             Practice Again
           </Button>
-          {wrongAnsweredCount > 0 && (
+          {gradingReady && wrongAnsweredCount > 0 && (
             <Button variant="outline" onClick={retryWrongOnly}>
               Retry Wrong Answers Only
             </Button>
