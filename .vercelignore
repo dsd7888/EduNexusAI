@@ -1,0 +1,16 @@
+# Checkpoint-verification harnesses and audit scratch dirs.
+#
+# These are standalone dev-only scripts, run by hand via `npx tsx
+# _cp_xxx_verify/verify.ts` (see CLAUDE.md) — they are never imported by
+# src/ and are not part of the app. Several import `playwright`, which is
+# deliberately NOT a declared dependency (it would add a heavy install to
+# every production build for no runtime benefit).
+#
+# They are already excluded from type-checking via tsconfig.json's
+# "exclude". Excluding them from the deployment as well is defence in
+# depth: it keeps them out of the build context entirely, so a future
+# tsconfig regression can't turn a dev harness back into a deploy blocker
+# (which is exactly what happened on 2026-08-18 — _cp_08_verify/ui.mts's
+# playwright import failed the production build's TypeScript pass).
+_cp_*_verify
+_audit_*
