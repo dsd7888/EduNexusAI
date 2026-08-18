@@ -1446,3 +1446,86 @@ _(entries appended below by each checkpoint session)_
   fix. If a future checkpoint revisits `PDFBuilder`, note `markdown()` now has zero callers
   repo-wide (kept, not deleted — out of scope for a docs-table fix to also prune a public
   class method with no evidence it's dead-for-good rather than a future extension point).
+
+### CP-29 (a.k.a. CP-29a) — Dark mode unreachable app-wide — 2026-08-18
+- **Commit SHA:** e2d2aaabe06ae19b849d90736cd14938252c2712 (local only — this run has no
+  auto-push; a human reviews and pushes `dev`)
+- **Repo-state finding:** `next-themes` (`^0.4.6`) was already a `package.json` dependency
+  (no new install needed) but had zero usages anywhere in `src/` — no `ThemeProvider`, no
+  toggle. `globals.css` already defines `@custom-variant dark (&:is(.dark *))` plus a full
+  `.dark { ... }` block of shadcn CSS variables (background/foreground/card/sidebar/etc.),
+  and a `dark:` grep across `src/app` + `src/components` found real usages already shipped
+  on: `student/chat` (page + `_components/{CitationList,MessageBubble,QuotaMeter,
+  RecencyNudge,StruggleNudge,SuggestionChips}`), `student/quiz` (page, mastery, results,
+  session, start — all their `_components`), `student/notes/[subjectId]/page.tsx`,
+  `MathToolbar`, `SubjectSearchPicker`, `chat/MermaidDiagram`, most `faculty/*` pages, and
+  several `components/ui/*` primitives (badge/button/input/select/tabs/textarea). None of
+  it was reachable — confirming the finding exactly as scoped ("dark mode unreachable
+  app-wide", not "dark mode missing").
+- **What was built:** `src/components/theme/ThemeProvider.tsx` (thin wrapper re-exporting
+  `next-themes`'s `ThemeProvider`) mounted in `src/app/layout.tsx` around `{children}` +
+  `<Toaster />`, with `attribute="class" defaultTheme="light" enableSystem={false}` and
+  `suppressHydrationWarning` on `<html>` (required by next-themes so the class next-themes
+  sets client-side before hydration doesn't trigger a false-positive mismatch warning).
+  `src/components/theme/ThemeToggle.tsx` is a sun/moon icon button using `useTheme()`;
+  mount-detection uses `useSyncExternalStore` (subscribe no-op, snapshot `true`, server
+  snapshot `false`) rather than `useState` + `useEffect`, matching the precedent already in
+  `notes/[subjectId]/flashcards/page.tsx`'s `usePrefersReducedMotion` — a plain
+  `useEffect(() => setMounted(true), [])` trips this repo's `react-hooks/set-state-in-effect`
+  eslint rule as a hard error, confirmed by first writing it that way and watching `npm run
+  lint` fail on exactly that line. Wired into `src/app/(student)/layout.tsx`'s
+  `SidebarContent` header row (visible whenever the sidebar/mobile-overlay isn't in its
+  icon-only collapsed state — same visibility condition as the existing `UserProfile`/
+  `LogoutButton` block it sits next to), per FIX_SPEC's "student shell nav" scope.
+- **Scope discipline:** did not add any new `dark:` class to dashboard/subjects/profile/
+  history or any placement page — confirmed by diffing only `layout.tsx` (root),
+  `(student)/layout.tsx`, and the two new `theme/` files; no other file touched. Confirmed
+  `notes/[subjectId]/flashcards/page.tsx` is untouched and structurally can't be affected by
+  the new toggle: it hardcodes `bg-night`/`night-surface` (a separate `@custom-variant
+  night-surface (&:is(.night-surface *))`, not `.dark`-gated), so the global toggle has no
+  selector to hook into on that page — verified by code reading, not just assertion.
+- **Verified (happy path):** `tsc --noEmit` clean; `npx eslint` scoped to all 4 changed/new
+  files clean (zero errors/warnings); `npm run build` exits 0, all routes compile (same
+  route list as CP-27/28's baseline). Real browser (Playwright + Chromium,
+  `_cp_29_verify/verify.mts`, same `generateLink`/`verifyOtp` authenticated-session pattern
+  as CP-27/CP-A2) against the live "Test Student" fixture: toggle click flips `<html>`'s
+  class from `light` to `dark` (icon swaps moon→sun, screenshotted), the change persists
+  across a full page reload (`localStorage`, next-themes default), and navigating from
+  `/student/dashboard` (no `dark:` classes — stays visually light, confirmed via screenshot)
+  to `/student/chat` (has `dark:` classes) with dark mode active shows the chat surface
+  visibly repaint dark while the still-unmigrated dashboard shell around it does not — this
+  is the expected/correct behavior per FIX_SPEC's scope boundary, not a bug. Zero console
+  errors across every run.
+- **Verified (unhappy path):** (1) **Interrupted flow** — clicked the toggle (light→dark),
+  then immediately navigated away (`/student/subjects`, `waitUntil: "commit"`, i.e. before
+  the toggle's own effect/localStorage write could be assumed settled) and back to
+  `/student/dashboard`; the `.dark` class was still present after the round-trip and
+  `localStorage` had the correct value — the toggle's state isn't lost by a navigation firing
+  mid-write. (2) **Concurrent** — fired two overlapping clicks on the toggle button via
+  `Promise.all`; the two toggles cancelled out back to the pre-click state (`light` → still
+  `light`) with zero console errors, no torn/intermediate class on `<html>`, matching
+  `next-themes`' `setTheme` being a plain synchronous state setter (no race window to lose
+  a click). Screenshots for both cases in `_cp_29_verify/screens/` (gitignored per
+  `_cp_*_verify/screens/` in `.gitignore`, matching CP-26/27's convention).
+- **Not independently browser-verified:** the flashcards always-dark claim was verified by
+  code reading only (see Scope discipline above), not by loading a live flashcards session
+  with generated notes data mid-toggle — that page requires a subject with completed notes
+  generation to reach, which is out of proportion to an infra-only checkpoint whose own
+  styling this doesn't touch. A future CP-29b+ pass that does touch flashcards-adjacent
+  surfaces should re-confirm this live.
+- **Migration needed:** none.
+- **Next checkpoint must know:**
+  1. Commit `e2d2aaa` is **local only, not pushed** — this run's default. A human needs to
+     review and push `dev` before this is live.
+  2. `.claude/FIX_LEDGER.md`'s CP-29a row is now `done`; CP-29b+ (per-page dark: coverage for
+     dashboard/subjects/profile/history/quiz/most-of-placement) remains `blocked`, bundled
+     with CP-27/CP-38 per the ledger's existing note — the grep list of already-`dark:`-styled
+     vs. not-yet-styled surfaces above is exactly the scope list that checkpoint needs and
+     doesn't have to re-derive.
+  3. The pre-existing uncommitted CP-08 changes and the `.claude/logs-fix/CP-08.*` /
+     `CP-26.*` runner-artifact diffs, plus now-untracked `.claude/logs-fix/CP-27.*` /
+     `CP-28.*` / `CP-29.*`, are still present, still untouched — not part of this checkpoint,
+     same as every prior checkpoint has noted since CP-14.
+  4. `_cp_29_verify/verify.mts` is a reusable template for any future theme-toggle-adjacent
+     browser verification — swap the page list / assertions for new surfaces once CP-29b+
+     starts adding per-page `dark:` classes.
