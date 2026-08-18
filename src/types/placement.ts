@@ -96,37 +96,6 @@ export interface ReadinessScores {
   overall: number;        // weighted composite
 }
 
-// ─── Resume Data ──────────────────────────────────────────────────────────────
-
-export interface ResumeProject {
-  id: string;
-  title: string;
-  tech_stack: string[];
-  description: string;
-  github_url: string | null;
-  live_url: string | null;
-  from_mini_project: boolean;
-}
-
-export interface ResumeCertification {
-  id: string;
-  name: string;
-  issuer: string;
-  year: string;
-  url: string | null;
-}
-
-export interface ResumeData {
-  summary: string;
-  skills: string[];
-  projects: ResumeProject[];
-  certifications: ResumeCertification[];
-  achievements: ResumeAchievement[];
-  linkedin_url: string | null;
-  github_url: string | null;
-  portfolio_url: string | null;
-}
-
 // ─── Student Placement Profile ────────────────────────────────────────────────
 
 export interface StudentPlacementProfile {
@@ -360,6 +329,8 @@ export interface DrillAttempt {
   is_skipped: boolean;
   time_spent_seconds: number;
 }
+
+// ─── Resume Data ──────────────────────────────────────────────────────────────
 
 export interface ResumeEducation {
   degree: string           // "B.Tech"
