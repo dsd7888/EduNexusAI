@@ -1811,3 +1811,60 @@ _(entries appended below by each checkpoint session)_
      `CP-26.*` runner-artifact diffs, plus now-untracked `.claude/logs-fix/CP-27.*` through
      `CP-33.*` and this checkpoint's own `CP-34.*`, are still present, still untouched — not
      part of this checkpoint, same as every prior checkpoint has noted since CP-14.
+
+### CP-35 — Resume unbounded array sizes (bundled into CP-15) — 2026-08-18
+- **Commit SHA:** `60d8a4270286d46f9bfd9a659306413f5a482fee` (CP-15's own commit — no new
+  commit created this session since no code changed).
+- **Finding:** FIX_SPEC.md line 365 / `AU-PLACE-TOOLS.md` [S3][7] — `POST
+  /api/placement/resume` accepted unbounded array sizes; a 200-project payload (each with 50
+  tech-stack entries, 30 padded bullets) saved successfully in ~5.5s with no server-side
+  size validation, bypassing the client's `MAX_PROJECTS=4`/`MAX_BULLETS=3`/etc. UI-only caps.
+  Recommendation: "enforce the same caps server-side that the UI already advertises."
+- **Repo-state check performed:** read `src/app/api/placement/resume/route.ts` in full before
+  editing anything. Found `MAX_PROJECTS`/`MAX_BULLETS`/`MAX_ACHIEVEMENTS`/`MAX_COURSES`
+  constants, a `capArraySizes()` helper, and its call (`const resume: ResumeData =
+  capArraySizes(body.resume)`) already present in the POST handler, plus the `.upsert()` +
+  `validateResumeShape()` fixes from CP-15. Cross-checked against
+  `student/placement/resume/page.tsx`'s client-side `MAX_*` constants (lines 55-58) — the
+  server caps match exactly. This checkpoint's work (per FIX_SPEC.md's own CP-15 entry:
+  "bundle with CP-35's array caps, same file") was already delivered in CP-15's commit
+  `60d8a4270286d46f9bfd9a659306413f5a482fee` (2026-08-17); the ledger row for CP-35 had been
+  left `in-progress` with no SHA even though the fix landed. No further code change needed —
+  this session's job was to verify and close out the ledger entry.
+- **What changed:** no source changes. `.claude/FIX_LEDGER.md`'s CP-35 row updated from
+  `in-progress` (no SHA) to `done`, pointing at CP-15's commit SHA with a note explaining why
+  no new commit exists.
+- **Verified (build/lint):** `npx tsc --noEmit` clean; `npx eslint
+  src/app/api/placement/resume/route.ts` clean.
+- **Verified (behavioral):** extracted the live `capArraySizes()` implementation into a
+  disposable script and ran it against a synthetic oversized payload (200 projects × 30
+  bullets each, 50 achievements, 40 relevant_courses) — confirmed output capped to exactly 4
+  projects (3 bullets each), 5 achievements, 6 courses, matching `MAX_PROJECTS`/`MAX_BULLETS`/
+  `MAX_ACHIEVEMENTS`/`MAX_COURSES` exactly. This reproduces the audit's original repro
+  (`_audit_place_tools/verify.ts` §1b) at the function level without needing a live server +
+  auth session.
+- **Verified (unhappy path — malformed payload, still 400 not 500):** `validateResumeShape()`
+  runs before `capArraySizes()` in the POST handler and returns a named-field 400 for any
+  missing/non-array `education`/`projects`/`internships`/`certifications`/`achievements`/
+  `soft_skills`/`technical_skills` shape — confirmed by reading the handler's call order
+  (shape check happens before cap/compute), so a malformed payload never reaches the
+  cap-and-save path silently.
+- **Verified (unhappy path — concurrent):** `capArraySizes()` (like CP-33's `shuffle()`)
+  returns a fresh object via spread/`.slice()`/`.map()`, never mutates `body.resume` in
+  place; two overlapping POSTs from the same student each get an independent capped copy, and
+  the final DB state is whichever `.upsert()` completes last (same last-write-wins semantics
+  CP-15 already established for the upsert itself, not a new race introduced here).
+- **Migration needed:** none.
+- **Ledger status:** `.claude/FIX_LEDGER.md`'s CP-35 row set to `done`, SHA
+  `60d8a4270286d46f9bfd9a659306413f5a482fee` (CP-15's commit).
+- **Next checkpoint must know:**
+  1. No new commit was created this session — CP-35's fix was already shipped by CP-15 on
+     2026-08-17; this session only closed out the stale ledger row after verifying the code.
+  2. The only change this session made is to `.claude/FIX_LEDGER.md` and this PROGRESS.md
+     entry, both local-only per the no-push default (nothing to push beyond what CP-15
+     already left unpushed, if it was never pushed — check `git log origin/dev -1` before
+     assuming otherwise).
+  3. The pre-existing uncommitted CP-08 changes and the `.claude/logs-fix/CP-08.*` /
+     `CP-26.*` runner-artifact diffs, plus untracked `.claude/logs-fix/CP-27.*` through
+     `CP-34.*` and this checkpoint's own `CP-35.*`, are still present, still untouched — not
+     part of this checkpoint, same as every prior checkpoint has noted since CP-14.
