@@ -16,20 +16,51 @@ import {
   type MathRenderMap,
 } from "@/lib/qpaper/paperMath";
 
-// Brand colors
+// Brand colors — DESIGN.md token values (hex source of truth), converted to
+// pdf-lib's 0-1 rgb(). Neutral tints/shades are derived from `ink` via a
+// standard mix-toward-white/black scale rather than hand-picked, per
+// DESIGN.md's "ink-50 through ink-900 | derive via standard tint/shade scale
+// from ink" rule.
+function hexToRgb01(hex: string): { r: number; g: number; b: number } {
+  const n = parseInt(hex.replace("#", ""), 16);
+  return {
+    r: ((n >> 16) & 255) / 255,
+    g: ((n >> 8) & 255) / 255,
+    b: (n & 255) / 255,
+  };
+}
+function mix(
+  a: { r: number; g: number; b: number },
+  b: { r: number; g: number; b: number },
+  t: number
+) {
+  return { r: a.r + (b.r - a.r) * t, g: a.g + (b.g - a.g) * t, b: a.b + (b.b - a.b) * t };
+}
+const WHITE_MIX = { r: 1, g: 1, b: 1 };
+const BLACK_MIX = { r: 0, g: 0, b: 0 };
+const tint = (c: { r: number; g: number; b: number }, t: number) => mix(c, WHITE_MIX, t);
+const shade = (c: { r: number; g: number; b: number }, t: number) => mix(c, BLACK_MIX, t);
+const toRgb = (c: { r: number; g: number; b: number }) => rgb(c.r, c.g, c.b);
+
+const INK = hexToRgb01("#14293D");
+const PAPER = hexToRgb01("#F5F6F4");
+const OCHRE = hexToRgb01("#C08A2E");
+const MASTERY_GREEN = hexToRgb01("#2F7B5C");
+
 export const COLORS = {
-  primary: rgb(0.145, 0.388, 0.922), // #2563EB
-  dark: rgb(0.118, 0.251, 0.686), // #1E40AF
-  success: rgb(0.086, 0.639, 0.29), // #16A34A
-  text: rgb(0.118, 0.161, 0.235), // #1E293B
-  muted: rgb(0.278, 0.337, 0.424), // #475569
-  light: rgb(0.58, 0.635, 0.71), // #94A3B8
-  bgLight: rgb(0.973, 0.98, 0.988), // #F8FAFC
-  bgAccent: rgb(0.859, 0.906, 0.988), // #DBEAFE
+  primary: toRgb(INK), // #14293D — DESIGN.md `ink`
+  dark: toRgb(shade(INK, 0.25)), // ink-900 tier
+  success: toRgb(MASTERY_GREEN), // #2F7B5C — DESIGN.md `mastery-green`
+  text: toRgb(INK), // ink doubles as primary text per DESIGN.md
+  muted: toRgb(tint(INK, 0.35)), // ink-500 tier — secondary/meta text
+  light: toRgb(tint(INK, 0.55)), // ink-300 tier — faint annotations
+  bgLight: toRgb(PAPER), // #F5F6F4 — DESIGN.md `paper`
+  bgAccent: toRgb(tint(OCHRE, 0.85)), // ochre-50 tier — accent wash
   white: rgb(1, 1, 1),
-  userBubble: rgb(0.231, 0.51, 0.965), // #3B82F6
-  aiBubble: rgb(0.973, 0.98, 0.988), // #F8FAFC
-  border: rgb(0.886, 0.914, 0.941), // #E2E8F0
+  userBubble: toRgb(OCHRE), // #C08A2E — DESIGN.md `ochre`
+  aiBubble: toRgb(PAPER),
+  border: toRgb(tint(INK, 0.82)), // ink-100 tier — hairline dividers
+  onPrimaryMuted: toRgb(tint(INK, 0.9)), // near-paper text over a primary-colored bar
 } as const;
 
 export const PAGE_W = 595; // A4 width in points
@@ -1252,7 +1283,7 @@ export class PDFBuilder {
       y: PAGE_H - 50,
       size: 11,
       font: this.fonts.regular,
-      color: rgb(0.8, 0.88, 1.0),
+      color: COLORS.onPrimaryMuted,
     });
 
     this.y = 72; // below header bar
