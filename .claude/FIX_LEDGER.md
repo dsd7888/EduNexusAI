@@ -43,7 +43,7 @@ runner may touch it — the runner refuses and errors, it does not skip silently
 | CP-25 | done | 21f163062372013d7248443751d939e6cafb0bfc | 2026-08-17 | `drawMultilineMathText` (shared.ts) now routes worked-example `problem`/`solution` through `parseMarkdownLite`; markdown pipe tables become real `drawTable()` output instead of literal `\ |
 | CP-26 | done | 0b9ad28651c30a2b3c9bb3c6178d8bcd3ed598f2 | 2026-08-18 | keep-with-next reservation for MCQ/attempt-any-one/pool headers in qpaper/builder.ts (fix: a8330e7); `_cp_26_verify/verify.mts` reproduces the orphan against pre-fix code and confirms it's gone post-fix |
 | CP-27 | done | 2bcdb24bc459c1ecbb84b0eb9cf9b6970e679ccc | 2026-08-18 | large — own initiative, pairs with CP-38 |
-| CP-28 | pending | | | |
+| CP-28 | done | ac74c3c |  2026-08-18 | one-line swap chat/export → richText() (real table renderer already existed, used by answerKeyGen.ts) |
 | CP-29a | pending | | | Dark-mode infra only — real toggle (next-themes or equivalent), persisted. Does NOT add new dark: classes to unstyled pages. |
 | CP-29b+ | blocked | | | deferred — bundle with CP-27/CP-38, schedule when those are scoped |
 | CP-30 | pending | | | backlog — only act if double-submits show up in production telemetry |
