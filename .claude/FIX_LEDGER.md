@@ -50,7 +50,7 @@ runner may touch it — the runner refuses and errors, it does not skip silently
 | CP-31 | done | 351b8da5c9382f0286872ea865da19d3ee70d642 | 2026-08-18 | color tokens only (ink/paper/ochre/mastery-green swap); IBM Plex font-embed half deferred — needs new npm dep (fontkit) + font binaries not present in repo, awaiting approval per CLAUDE.md |
 | CP-32 | done | 23e64954ce90d09d121abf8cc75751629032f0b5 | 2026-08-18 | prompt-only tightening in notes/prompts.ts (BLOCK_EXAMPLES bad/good pair + explicit "symbol" constraint line), per AU-NOTES S3-2's own low-priority recommendation; no schema/validator change |
 | CP-33 | done | 2d99d621f417fd207aed32e7fd97141f41d2f197 | 2026-08-18 | shuffle(combined) at all 3 return points in prep/generate/route.ts (bank-serve, insert-success, insert-fallback); prior code always ordered all-MCQ-then-all-fill_code |
-| CP-34 | pending | | | |
+| CP-34 | done | PENDING_SHA | 2026-08-18 | scroll-position-aware edge-fade masks (left/right) on StageStrip via scroll+ResizeObserver listeners; no affordance shown when content doesn't overflow; committed locally only, per this session's no-push default |
 | CP-35 | pending | | | bundle into CP-15 |
 | CP-36 | pending | | | |
 | CP-37 | pending | | | |

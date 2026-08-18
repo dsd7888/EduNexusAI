@@ -72,21 +72,58 @@ const STAGE_ORDER: Array<{ id: StageId; label: string; locked: boolean }> = [
 ];
 
 function StageStrip({ current }: { current: StageId }) {
+  const scrollRef = useRef<HTMLOListElement>(null);
+  const [canScrollLeft, setCanScrollLeft] = useState(false);
+  const [canScrollRight, setCanScrollRight] = useState(false);
+
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+
+    const updateFades = () => {
+      setCanScrollLeft(el.scrollLeft > 1);
+      setCanScrollRight(el.scrollLeft + el.clientWidth < el.scrollWidth - 1);
+    };
+
+    updateFades();
+    el.addEventListener("scroll", updateFades, { passive: true });
+    const observer = new ResizeObserver(updateFades);
+    observer.observe(el);
+    return () => {
+      el.removeEventListener("scroll", updateFades);
+      observer.disconnect();
+    };
+  }, []);
+
   return (
-    <ol className="flex items-center gap-2 overflow-x-auto pb-1">
-      {STAGE_ORDER.map((stage, i) => {
-        const isCurrent = !stage.locked && stage.id === current;
-        return (
-          <li key={stage.id} className="flex shrink-0 items-center gap-2">
-            {i > 0 && <span aria-hidden className="h-px w-4 shrink-0 bg-ink-100" />}
-            <MonoTag variant={isCurrent ? "active" : "default"}>
-              {stage.label}
-              {stage.locked ? " · Locked" : isCurrent ? " · Now" : ""}
-            </MonoTag>
-          </li>
-        );
-      })}
-    </ol>
+    <div className="relative">
+      {canScrollLeft && (
+        <div
+          aria-hidden
+          className="pointer-events-none absolute inset-y-0 left-0 z-10 w-8 bg-gradient-to-r from-paper to-transparent"
+        />
+      )}
+      <ol ref={scrollRef} className="flex items-center gap-2 overflow-x-auto pb-1">
+        {STAGE_ORDER.map((stage, i) => {
+          const isCurrent = !stage.locked && stage.id === current;
+          return (
+            <li key={stage.id} className="flex shrink-0 items-center gap-2">
+              {i > 0 && <span aria-hidden className="h-px w-4 shrink-0 bg-ink-100" />}
+              <MonoTag variant={isCurrent ? "active" : "default"}>
+                {stage.label}
+                {stage.locked ? " · Locked" : isCurrent ? " · Now" : ""}
+              </MonoTag>
+            </li>
+          );
+        })}
+      </ol>
+      {canScrollRight && (
+        <div
+          aria-hidden
+          className="pointer-events-none absolute inset-y-0 right-0 z-10 w-8 bg-gradient-to-l from-paper to-transparent"
+        />
+      )}
+    </div>
   );
 }
 
