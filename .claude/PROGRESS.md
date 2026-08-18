@@ -1928,3 +1928,58 @@ _(entries appended below by each checkpoint session)_
      `CP-26.*` runner-artifact diffs, plus untracked `.claude/logs-fix/CP-27.*` through
      `CP-35.*` and this checkpoint's own `CP-36.*`, are still present, still untouched — not
      part of this checkpoint, same as every prior checkpoint has noted since CP-14.
+
+### CP-37 — No `prefers-reduced-motion` handling — 2026-08-18
+- **Commit SHA:** `ce5bdb8`
+- **Finding:** FIX_SPEC.md line 367 — no global `prefers-reduced-motion` media query existed;
+  motion accommodation for OS-level reduce-motion users was ad hoc and only present where a
+  component author remembered to add it.
+- **Repo-state check performed:** grepped for `prefers-reduced-motion` across `src/` before
+  editing. Found two prior partial treatments, neither of which is a global rule and both left
+  untouched by this fix: (1) `RevealPanel.tsx` (quiz session reveal) already uses Tailwind's
+  `motion-reduce:transition-none` / `motion-reduce:delay-0` variants on its grid-row/opacity
+  transitions; (2) the flashcards page (`notes/[subjectId]/flashcards/page.tsx`) has a
+  JS-level `matchMedia("(prefers-reduced-motion: reduce)")` listener driving its own flip/reveal
+  logic. Neither covers the rest of the app (page-level animations, `tw-animate-css` keyframes,
+  shadcn primitive transitions, hover/focus transitions elsewhere), which is the gap CP-37
+  targets — a catch-all, not a replacement for the two existing component-level treatments.
+- **What changed:** `src/app/globals.css` — added one `@media (prefers-reduced-motion: reduce)`
+  block inside `@layer base` (after the existing `body` rule) that forces
+  `animation-duration`/`transition-duration` to `0.01ms`, `animation-iteration-count: 1`, and
+  `scroll-behavior: auto` on `*, *::before, *::after` — collapsing every animation/transition
+  site-wide (including the `scroll-behavior: smooth` already set on `body`) rather than
+  disabling motion piecemeal per component. Net diff: +14 lines, single file.
+- **Verified (build):** `npm run build` — clean production build, all routes compiled.
+- **Verified (lint):** `npx eslint src/app/globals.css` — no errors (Tailwind CSS files report
+  a benign "no matching configuration" info warning, not an error; expected for a `.css` file
+  under eslint's JS/TS-focused flat config).
+- **Verified (behavior, via Playwright against `npm run dev`):** launched a real Chromium
+  context twice — once with `reducedMotion: "no-preference"`, once with `reducedMotion: "reduce"`
+  — injected a test element with a 2s transition + 2s animation and read back
+  `getComputedStyle`. No-preference case: `transitionDuration`/`animationDuration` both read
+  `2s` (rule correctly inert when the OS has no preference — confirms this isn't a global motion
+  kill-switch, only a conditional one) and `body`'s `scrollBehavior` reads `smooth`. Reduced-motion
+  case: both durations collapsed to `1e-05s` (i.e. `0.01ms`) and `scrollBehavior` fell back to
+  `auto`. This directly exercises the media query's actual effect rather than just confirming the
+  CSS parses.
+- **Unhappy-path / concurrent verification — not applicable, explicitly noting why:** this is a
+  declarative, stateless global CSS rule with no JS, no request handler, no async state
+  transition — there is nothing to interrupt mid-flight or race against. The correct
+  verification proxy (per CLAUDE.md's own precedent for CP-36, a prior type-only/CSS-shaped
+  change) is exercising the rule's actual runtime effect under both toggle states, which was
+  done above via Playwright rather than just eyeballing the CSS syntax.
+- **Migration needed:** none.
+- **Ledger status:** `.claude/FIX_LEDGER.md`'s CP-37 row set to `done`, SHA `ce5bdb8`.
+- **Next checkpoint must know:**
+  1. Committed locally only, per this run's no-push default — `git log origin/dev -1` still
+     needs checking before assuming the remote has this or any prior local-only checkpoint.
+  2. This global rule is a catch-all safety net, not a substitute for the two existing
+     component-level treatments (`RevealPanel.tsx`'s `motion-reduce:` classes, flashcards'
+     `matchMedia` JS logic) — both were left untouched and remain correct/non-redundant.
+  3. The pre-existing uncommitted CP-08 changes and the `.claude/logs-fix/CP-08.*` /
+     `CP-26.*` runner-artifact diffs, plus untracked `.claude/logs-fix/CP-27.*` through
+     `CP-36.*` and this checkpoint's own `CP-37.*`, are still present, still untouched — not
+     part of this checkpoint, same as every prior checkpoint has noted since CP-14. CP-38
+     (design migration: Resume/JD/Interview-bank/Projects pages) remains the only item left in
+     the S3 table and is explicitly scoped as "own initiative" — large, multi-file, not a quick
+     follow-up.
