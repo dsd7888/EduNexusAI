@@ -3,7 +3,6 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { FileSearch, Loader2 } from "lucide-react";
-import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
 // ─── Types (match /api/placement/jd-analyze response) ──────────────────────────
@@ -42,7 +41,14 @@ const SAMPLE_JD =
   "Good to have: REST APIs, Git, any web framework. " +
   "CGPA: 7.0 or above. Backlogs: Not allowed.";
 
+const PRIMARY_BUTTON =
+  "inline-flex h-11 items-center justify-center gap-1.5 rounded-8 bg-ink px-5 font-plex-sans text-body font-medium text-paper transition-colors duration-180 ease-out hover:bg-ink-800 disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ink-900 focus-visible:ring-offset-2";
+
 // ─── Style maps ───────────────────────────────────────────────────────────────
+// These are meaningful status/severity signals (fit level, requirement
+// coverage), not decorative chrome — kept as semantic color per DESIGN.md's
+// carve-out for mastery/performance-style indicators, distinct from the
+// ink/paper/ochre primary palette.
 
 const FIT_BANNER: Record<string, string> = {
   strong: "bg-emerald-50 border-emerald-200 text-emerald-800",
@@ -52,8 +58,8 @@ const FIT_BANNER: Record<string, string> = {
 
 const IMPORTANCE_BADGE: Record<Importance, string> = {
   high: "bg-emerald-100 text-emerald-700",
-  medium: "bg-gray-100 text-gray-600",
-  low: "bg-gray-50 text-gray-400",
+  medium: "bg-ink-100 text-ink-600",
+  low: "bg-ink-50 text-ink-400",
 };
 
 interface GroupStyle {
@@ -64,8 +70,7 @@ interface GroupStyle {
 
 const GROUP_STYLES: Record<RequirementCategory, GroupStyle> = {
   knows: {
-    header:
-      "bg-emerald-50 text-emerald-700 border border-emerald-100",
+    header: "bg-emerald-50 text-emerald-700 border border-emerald-100",
     itemBorder: "border-x border-b border-emerald-100",
     label: (c) => `✓ ${c} skills covered`,
   },
@@ -301,7 +306,7 @@ function RequirementGroup({
     <div className="mb-4">
       <div
         className={cn(
-          "rounded-t-lg px-3 py-1.5 text-xs font-medium",
+          "rounded-t-8 px-3 py-1.5 font-plex-sans text-xs font-medium",
           style.header
         )}
       >
@@ -313,14 +318,16 @@ function RequirementGroup({
           className={cn(
             "px-3 py-2.5",
             style.itemBorder,
-            i === items.length - 1 && "rounded-b-lg"
+            i === items.length - 1 && "rounded-b-8"
           )}
         >
           <div className="flex items-start justify-between gap-2">
-            <span className="text-sm font-medium text-gray-800">{req.skill}</span>
+            <span className="font-plex-sans text-body-sm font-medium text-ink">
+              {req.skill}
+            </span>
             <span
               className={cn(
-                "shrink-0 rounded px-1.5 text-xs",
+                "shrink-0 rounded-4 px-1.5 font-plex-sans text-xs",
                 IMPORTANCE_BADGE[req.importance] ?? IMPORTANCE_BADGE.low
               )}
             >
@@ -328,7 +335,7 @@ function RequirementGroup({
             </span>
           </div>
           {req.evidence && (
-            <p className="mt-0.5 text-xs text-gray-500">{req.evidence}</p>
+            <p className="mt-0.5 font-plex-sans text-xs text-ink-500">{req.evidence}</p>
           )}
         </div>
       ))}
@@ -406,8 +413,10 @@ export default function JDAnalyzerPage() {
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-5">
         {/* ── Left panel: Input ── */}
         <div className="lg:col-span-2">
-          <h1 className="text-2xl font-semibold text-gray-900">JD Analyzer</h1>
-          <p className="mt-1 text-sm text-gray-500">
+          <h1 className="font-plex-serif text-display-sm font-semibold text-ink">
+            JD Analyzer
+          </h1>
+          <p className="mt-1 font-plex-sans text-body-sm text-ink-500">
             Paste any job description to see how your academic background maps to
             the role
           </p>
@@ -417,34 +426,37 @@ export default function JDAnalyzerPage() {
               value={jdText}
               onChange={(e) => setJdText(e.target.value.slice(0, MAX_CHARS))}
               placeholder="Paste the full job description here..."
-              className="h-64 w-full resize-none rounded-xl border border-gray-200 p-3 text-sm text-gray-800 focus:border-blue-400 focus:outline-none"
+              className="h-64 w-full resize-none rounded-12 border border-ink-200 bg-paper p-3 font-plex-sans text-body-sm text-ink placeholder:text-ink-400 focus:outline-none focus-visible:ring-2 focus-visible:ring-ink-900"
             />
-            <p className="mt-1 text-right text-xs text-gray-400">
+            <p className="mt-1 text-right font-plex-sans text-xs text-ink-400">
               {jdText.length}/{MAX_CHARS}
             </p>
           </div>
 
-          <Button
+          <button
+            type="button"
             onClick={handleAnalyze}
             disabled={!canAnalyze}
-            className="mt-2 w-full bg-blue-600 text-white hover:bg-blue-700"
+            className={cn(PRIMARY_BUTTON, "mt-2 w-full")}
           >
             {isAnalyzing ? (
               <>
-                <Loader2 className="size-4 animate-spin" />
+                <Loader2 className="size-4 animate-spin" aria-hidden />
                 Analyzing...
               </>
             ) : (
               "Analyze"
             )}
-          </Button>
+          </button>
 
           {error && (
-            <p className="mt-2 text-center text-sm text-amber-600">{error}</p>
+            <p className="mt-2 text-center font-plex-sans text-body-sm text-amber-600">
+              {error}
+            </p>
           )}
 
           {!isAnalyzing && !error && (
-            <p className="mt-2 text-center text-xs text-gray-400">
+            <p className="mt-2 text-center font-plex-sans text-xs text-ink-400">
               Analysis takes ~10 seconds
             </p>
           )}
@@ -452,7 +464,7 @@ export default function JDAnalyzerPage() {
           <button
             type="button"
             onClick={() => setJdText(SAMPLE_JD)}
-            className="mt-3 cursor-pointer text-xs text-blue-500 hover:underline"
+            className="mt-3 cursor-pointer font-plex-sans text-xs text-ink underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ink-900"
           >
             Try a sample JD →
           </button>
@@ -480,12 +492,12 @@ export default function JDAnalyzerPage() {
 
 function EmptyState() {
   return (
-    <div className="flex min-h-[20rem] flex-col items-center justify-center rounded-xl border border-dashed border-gray-200 text-center text-gray-400">
-      <FileSearch className="mb-3 h-12 w-12 text-gray-200" />
-      <p className="text-sm font-medium text-gray-500">
+    <div className="flex min-h-[20rem] flex-col items-center justify-center rounded-12 border border-dashed border-ink-200 text-center text-ink-400">
+      <FileSearch className="mb-3 h-12 w-12 text-ink-200" aria-hidden />
+      <p className="font-plex-sans text-body-sm font-medium text-ink-500">
         Your analysis will appear here
       </p>
-      <p className="text-xs text-gray-400">
+      <p className="font-plex-sans text-xs text-ink-400">
         Paste a job description and click Analyze
       </p>
     </div>
@@ -496,12 +508,12 @@ function EmptyState() {
 
 function ResultsSkeleton() {
   return (
-    <div className="rounded-xl border border-gray-200 p-5">
-      <div className="h-8 w-48 animate-pulse rounded bg-gray-100" />
-      <div className="mt-2 h-4 w-32 animate-pulse rounded bg-gray-100" />
+    <div className="rounded-12 border border-ink-200 p-5">
+      <div className="h-8 w-48 animate-pulse rounded-8 bg-ink-100" />
+      <div className="mt-2 h-4 w-32 animate-pulse rounded-8 bg-ink-100" />
       <div className="mt-6 space-y-3">
         {Array.from({ length: 3 }).map((_, i) => (
-          <div key={i} className="h-2 w-full animate-pulse rounded bg-gray-100" />
+          <div key={i} className="h-2 w-full animate-pulse rounded-8 bg-ink-100" />
         ))}
       </div>
     </div>
@@ -532,13 +544,15 @@ function AnalysisResults({
   const uniqueActions = buildPrepActions(analysis.requirements ?? []);
 
   return (
-    <div className="rounded-xl border border-gray-200 p-5">
+    <div className="rounded-12 border border-ink-200 p-5">
       {/* Header block */}
       <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-          <h2 className="text-xl font-bold text-gray-900">{analysis.job_title}</h2>
+          <h2 className="font-plex-serif text-xl font-bold text-ink">
+            {analysis.job_title}
+          </h2>
           {analysis.experience_level && (
-            <span className="rounded-full bg-blue-50 px-2 py-0.5 text-xs text-blue-700">
+            <span className="rounded-full bg-ink-100 px-2 py-0.5 font-plex-sans text-xs text-ink-700">
               {analysis.experience_level}
             </span>
           )}
@@ -546,24 +560,24 @@ function AnalysisResults({
         <button
           type="button"
           onClick={onNewAnalysis}
-          className="rounded border border-gray-200 px-2 py-1 text-xs text-gray-400 hover:text-gray-600"
+          className="rounded-4 border border-ink-200 px-2 py-1 font-plex-sans text-xs text-ink-400 transition-colors duration-180 ease-out hover:text-ink-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ink-900"
         >
           Clear → New Analysis
         </button>
       </div>
       {analysis.company_name && (
-        <p className="text-sm text-gray-500">{analysis.company_name}</p>
+        <p className="font-plex-sans text-body-sm text-ink-500">{analysis.company_name}</p>
       )}
 
       {/* Overall fit banner */}
       {analysis.fit_summary && (
-        <div className={cn("mt-3 rounded-lg border px-4 py-3 text-sm", fitClass)}>
+        <div className={cn("mt-3 rounded-8 border px-4 py-3 font-plex-sans text-body-sm", fitClass)}>
           {analysis.fit_summary}
         </div>
       )}
 
       {/* Requirements breakdown */}
-      <h3 className="mb-3 mt-6 text-sm font-semibold text-gray-700">
+      <h3 className="mb-3 mt-6 font-plex-sans text-body-sm font-semibold text-ink-700">
         Skills &amp; Knowledge Match
       </h3>
       {GROUP_ORDER.map((cat) => (
@@ -573,16 +587,16 @@ function AnalysisResults({
       {/* Action items */}
       {(analysis.action_items ?? []).length > 0 && (
         <>
-          <h3 className="mb-3 mt-6 text-sm font-semibold text-gray-700">
+          <h3 className="mb-3 mt-6 font-plex-sans text-body-sm font-semibold text-ink-700">
             Your Action Plan
           </h3>
           <ol className="space-y-2.5">
             {analysis.action_items.map((item, i) => (
               <li key={i} className="flex items-start gap-3">
-                <span className="mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-full bg-blue-600 text-xs text-white">
+                <span className="mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-full bg-ink font-plex-sans text-xs text-paper">
                   {i + 1}
                 </span>
-                <span className="text-sm text-gray-700">{item}</span>
+                <span className="font-plex-sans text-body-sm text-ink-700">{item}</span>
               </li>
             ))}
           </ol>
@@ -590,8 +604,8 @@ function AnalysisResults({
       )}
 
       {/* Recommended prep */}
-      <div className="mt-6 border-t border-gray-100 pt-4">
-        <h3 className="mb-3 text-sm font-semibold text-gray-700">
+      <div className="mt-6 border-t border-ink-100 pt-4">
+        <h3 className="mb-3 font-plex-sans text-body-sm font-semibold text-ink-700">
           Recommended Next Steps
         </h3>
         {uniqueActions.length > 0 ? (
@@ -600,7 +614,7 @@ function AnalysisResults({
               <Link
                 key={i}
                 href={action.href}
-                className="group flex items-start justify-between rounded-lg border border-gray-200 p-3 transition-colors hover:border-blue-300 hover:bg-blue-50/30"
+                className="group flex items-start justify-between rounded-8 border border-ink-200 p-3 transition-colors duration-180 ease-out hover:border-ink-400 hover:bg-ink-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ink-900"
               >
                 <div className="flex items-start gap-3">
                   <span
@@ -609,20 +623,20 @@ function AnalysisResults({
                       action.priority === "immediate"
                         ? "bg-amber-500"
                         : action.priority === "soon"
-                          ? "bg-blue-400"
-                          : "bg-gray-300"
+                          ? "bg-ochre"
+                          : "bg-ink-300"
                     )}
                   />
                   <div>
-                    <p className="text-sm font-medium text-gray-800">
+                    <p className="font-plex-sans text-body-sm font-medium text-ink">
                       {action.label}
                     </p>
-                    <p className="mt-0.5 text-xs text-gray-500">
+                    <p className="mt-0.5 font-plex-sans text-xs text-ink-500">
                       {action.description}
                     </p>
                   </div>
                 </div>
-                <span className="ml-3 shrink-0 text-sm text-blue-600 transition-transform group-hover:translate-x-0.5">
+                <span className="ml-3 shrink-0 font-plex-sans text-body-sm text-ink transition-transform duration-180 ease-out group-hover:translate-x-0.5">
                   →
                 </span>
               </Link>
@@ -631,7 +645,7 @@ function AnalysisResults({
         ) : (
           <Link
             href="/student/placement/prep/aptitude"
-            className="text-sm text-blue-600 hover:underline"
+            className="font-plex-sans text-body-sm text-ink underline-offset-2 hover:underline"
           >
             Start with Aptitude prep →
           </Link>

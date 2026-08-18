@@ -5,6 +5,7 @@ import {
   useEffect,
   useRef,
   useState,
+  useSyncExternalStore,
   type ReactNode,
 } from "react";
 import Link from "next/link";
@@ -17,7 +18,6 @@ import {
   Trash2,
 } from "lucide-react";
 import { toast } from "sonner";
-import { Button } from "@/components/ui/button";
 import { MonoTag } from "@/components/ui/mono-tag";
 import { cn } from "@/lib/utils";
 import { createBrowserClient } from "@/lib/db/supabase-browser";
@@ -60,6 +60,21 @@ const MAX_COURSES = 6;
 const JD_STORAGE_KEY = "jd_analysis_last";
 const JD_STORAGE_TTL_MS = 2 * 60 * 60 * 1000;
 
+function hasStoredJDSnapshot(): boolean {
+  try {
+    const stored = sessionStorage.getItem(JD_STORAGE_KEY);
+    if (!stored) return false;
+    const parsed = JSON.parse(stored) as { jdText?: string; savedAt?: number };
+    return (
+      Boolean(parsed.jdText) &&
+      Boolean(parsed.savedAt) &&
+      Date.now() - (parsed.savedAt ?? 0) < JD_STORAGE_TTL_MS
+    );
+  } catch {
+    return false;
+  }
+}
+
 const CERT_SUGGESTIONS: Array<{ name: string; issuer: string }> = [
   { name: "Google Cloud Fundamentals", issuer: "Google Cloud" },
   { name: "AWS Cloud Practitioner", issuer: "Amazon Web Services" },
@@ -72,6 +87,12 @@ const ACHIEVEMENT_PLACEHOLDERS = [
   "Solved 50+ problems on LeetCode",
   "Won 2nd place in college hackathon (team of 4)",
 ];
+
+const PRIMARY_BUTTON =
+  "inline-flex h-11 items-center justify-center gap-1.5 rounded-8 bg-ink px-5 font-plex-sans text-body font-medium text-paper transition-colors duration-180 ease-out hover:bg-ink-800 disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ink-900 focus-visible:ring-offset-2";
+
+const SECONDARY_BUTTON =
+  "inline-flex h-11 items-center justify-center gap-1.5 rounded-8 border border-ink-200 px-5 font-plex-sans text-body font-medium text-ink transition-colors duration-180 ease-out hover:bg-ink-50 disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ink-900 focus-visible:ring-offset-2";
 
 // ─── Factories ────────────────────────────────────────────────────────────────
 
@@ -215,17 +236,17 @@ function TagInput({
   }
 
   return (
-    <div className="flex flex-wrap items-center gap-1.5 rounded-lg border border-gray-200 p-2 focus-within:border-blue-400">
+    <div className="flex flex-wrap items-center gap-1.5 rounded-8 border border-ink-200 p-2 focus-within:border-ink-400">
       {values.map((v, i) => (
         <span
           key={`${v}-${i}`}
-          className="inline-flex items-center gap-1 rounded-full bg-gray-100 px-2 py-0.5 text-xs text-gray-700"
+          className="font-plex-sans inline-flex items-center gap-1 rounded-full bg-ink-100 px-2 py-0.5 text-xs text-ink-700"
         >
           {v}
           <button
             type="button"
             onClick={() => onChange(values.filter((_, idx) => idx !== i))}
-            className="text-gray-400 hover:text-gray-700"
+            className="rounded-4 text-ink-400 transition-colors duration-180 ease-out hover:text-ink-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ink-900"
             aria-label={`Remove ${v}`}
           >
             ×
@@ -246,7 +267,7 @@ function TagInput({
         onBlur={() => add(draft)}
         disabled={atMax}
         placeholder={values.length === 0 ? placeholder : ""}
-        className="min-w-[7rem] flex-1 bg-transparent text-sm text-gray-800 outline-none placeholder:text-gray-400"
+        className="font-plex-sans min-w-[7rem] flex-1 bg-transparent text-body-sm text-ink outline-none placeholder:text-ink-400"
       />
     </div>
   );
@@ -270,7 +291,7 @@ function SuggestionChips({
           key={s}
           type="button"
           onClick={() => onPick(s)}
-          className="rounded-full border border-gray-200 px-2 py-0.5 text-xs text-gray-500 hover:border-blue-300 hover:text-blue-600"
+          className="font-plex-sans rounded-full border border-ink-200 px-2 py-0.5 text-xs text-ink-500 transition-colors duration-180 ease-out hover:border-ink-400 hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ink-900"
         >
           + {s}
         </button>
@@ -298,14 +319,14 @@ function Field({
 }) {
   return (
     <label className="block">
-      <span className="mb-1 block text-xs font-medium text-gray-600">{label}</span>
+      <span className="font-plex-sans mb-1 block text-xs font-medium text-ink-600">{label}</span>
       <input
         type={type}
         value={value ?? ""}
         onChange={(e) => onChange(e.target.value)}
         onBlur={onBlur}
         placeholder={placeholder}
-        className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm text-gray-800 outline-none focus:border-blue-400 placeholder:text-gray-400"
+        className="font-plex-sans w-full rounded-8 border border-ink-200 px-3 py-2 text-body-sm text-ink outline-none focus:border-ink-400 placeholder:text-ink-400"
       />
     </label>
   );
@@ -331,7 +352,7 @@ function VariantCards({
   }, []);
 
   return (
-    <div className="mt-2 rounded-lg border border-blue-100 bg-blue-50/40 p-2">
+    <div className="mt-2 rounded-8 border border-ink-100 bg-ink-50 p-2">
       {tailored && (
         <MonoTag className="mb-1.5">Tailored to your JD</MonoTag>
       )}
@@ -341,16 +362,16 @@ function VariantCards({
             key={i}
             style={{ transitionDelay: `${i * 150}ms` }}
             className={cn(
-              "flex flex-col rounded-lg border border-gray-200 bg-white p-2 transition-all duration-150 ease-out",
+              "flex flex-col rounded-8 border border-ink-200 bg-paper p-2 transition-all duration-150 ease-out",
               shown ? "translate-y-0 opacity-100" : "translate-y-2 opacity-0"
             )}
           >
-            <p className="text-sm text-gray-800">{v.text}</p>
-            <p className="mt-1 text-xs text-blue-600">{v.improvement}</p>
+            <p className="font-plex-sans text-body-sm text-ink">{v.text}</p>
+            <p className="font-plex-sans mt-1 text-xs text-ink-500">{v.improvement}</p>
             <button
               type="button"
               onClick={() => onUse(v.text)}
-              className="mt-2 w-full rounded-md border border-blue-500 px-2 py-1 text-xs font-medium text-blue-600 hover:bg-blue-50"
+              className="font-plex-sans mt-2 w-full rounded-4 border border-ink-900 px-2 py-1 text-xs font-medium text-ink transition-colors duration-180 ease-out hover:bg-ink-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ink-900"
             >
               Use this
             </button>
@@ -361,7 +382,7 @@ function VariantCards({
         <button
           type="button"
           onClick={onKeep}
-          className="text-xs text-gray-400 hover:text-gray-600"
+          className="font-plex-sans text-xs text-ink-400 hover:text-ink-600 transition-colors duration-180 ease-out focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ink-900"
         >
           Keep original
         </button>
@@ -393,7 +414,7 @@ function ScoreRing({ score }: { score: number }) {
           {score}
         </text>
       </svg>
-      <span className="mt-1 text-xs font-medium text-gray-500">ATS Match Score</span>
+      <span className="font-plex-sans mt-1 text-xs font-medium text-ink-500">ATS Match Score</span>
     </div>
   );
 }
@@ -429,7 +450,7 @@ function BulletList({
 }) {
   return (
     <div className="space-y-2">
-      <span className="block text-xs font-medium text-gray-600">
+      <span className="font-plex-sans block text-xs font-medium text-ink-600">
         Bullets ({bullets.length}/{MAX_BULLETS})
       </span>
       {bullets.map((b, idx) => {
@@ -444,13 +465,13 @@ function BulletList({
                 value={b}
                 onChange={(e) => onChangeBullet(idx, e.target.value)}
                 placeholder="Built X that did Y, reducing Z by N%"
-                className="min-h-[2.25rem] flex-1 resize-y rounded-lg border border-gray-200 px-3 py-2 text-sm text-gray-800 outline-none focus:border-blue-400 placeholder:text-gray-400"
+                className="font-plex-sans min-h-[2.25rem] flex-1 resize-y rounded-8 border border-ink-200 px-3 py-2 text-body-sm text-ink outline-none focus:border-ink-400 placeholder:text-ink-400"
               />
               <button
                 type="button"
                 onClick={() => onRewrite(bulletKey, b, context)}
                 disabled={isLoading || !b.trim()}
-                className="mt-0.5 inline-flex shrink-0 items-center gap-1 rounded-md border border-blue-200 px-2 py-1.5 text-xs font-medium text-blue-600 hover:bg-blue-50 disabled:opacity-40"
+                className="font-plex-sans mt-0.5 inline-flex shrink-0 items-center gap-1 rounded-4 border border-ink-200 px-2 py-1.5 text-xs font-medium text-ink transition-colors duration-180 ease-out hover:bg-ink-50 disabled:opacity-40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ink-900"
               >
                 {isLoading ? (
                   <Loader2 className="size-3.5 animate-spin" />
@@ -462,14 +483,14 @@ function BulletList({
               <button
                 type="button"
                 onClick={() => onRemoveBullet(idx)}
-                className="mt-1.5 shrink-0 text-gray-300 hover:text-red-500"
+                className="mt-1.5 shrink-0 rounded-4 text-ink-300 transition-colors duration-180 ease-out hover:text-red-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ink-900"
                 aria-label="Remove bullet"
               >
                 <Trash2 className="size-3.5" />
               </button>
             </div>
             {isLoading && (
-              <div className="mt-2 h-16 animate-pulse rounded-lg bg-gray-100" />
+              <div className="mt-2 h-16 animate-pulse rounded-8 bg-ink-100" />
             )}
             {isRewriting && bulletVariants && (
               <VariantCards
@@ -486,7 +507,7 @@ function BulletList({
         <button
           type="button"
           onClick={onAddBullet}
-          className="text-xs text-blue-600 hover:underline"
+          className="font-plex-sans text-xs text-ink underline-offset-2 hover:underline transition-colors duration-180 ease-out focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ink-900"
         >
           + Add bullet
         </button>
@@ -1023,7 +1044,7 @@ export default function ResumeBuilderPage() {
   if (loading || !resume) {
     return (
       <div className="flex min-h-[60vh] items-center justify-center">
-        <Loader2 className="size-8 animate-spin text-blue-500" />
+        <Loader2 className="size-8 animate-spin text-ink-500" />
       </div>
     );
   }
@@ -1044,17 +1065,17 @@ export default function ResumeBuilderPage() {
               type="button"
               onClick={() => setActiveSection(s.id)}
               className={cn(
-                "flex w-full items-center justify-between rounded-md px-3 py-2 text-left text-sm transition-colors",
+                "flex w-full items-center justify-between rounded-4 px-3 py-2 text-left font-plex-sans text-body-sm transition-colors duration-180 ease-out focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ink-900",
                 active
-                  ? "border-l-2 border-blue-600 bg-blue-50 text-blue-700"
-                  : "border-l-2 border-transparent text-gray-600 hover:bg-gray-50"
+                  ? "border-l-2 border-ochre bg-ink-50 text-ink-700"
+                  : "border-l-2 border-transparent text-ink-600 hover:bg-ink-50"
               )}
             >
               <span>{s.label}</span>
               <span
                 className={cn(
                   "size-2 rounded-full",
-                  has ? "bg-emerald-500" : "bg-gray-200"
+                  has ? "bg-emerald-500" : "bg-ink-200"
                 )}
               />
             </button>
@@ -1065,12 +1086,12 @@ export default function ResumeBuilderPage() {
   );
 
   const completenessFooter = (
-    <div className="mt-4 border-t border-gray-100 pt-4">
-      <div className="mb-1 flex items-center justify-between text-xs text-gray-500">
+    <div className="mt-4 border-t border-ink-100 pt-4">
+      <div className="font-plex-sans mb-1 flex items-center justify-between text-xs text-ink-500">
         <span>Completeness</span>
-        <span className="font-medium text-gray-700">{completeness}%</span>
+        <span className="font-medium text-ink-700">{completeness}%</span>
       </div>
-      <div className="h-2 w-full overflow-hidden rounded-full bg-gray-100">
+      <div className="h-2 w-full overflow-hidden rounded-full bg-ink-100">
         <div
           className={cn(
             "h-full rounded-full transition-all duration-500",
@@ -1078,32 +1099,32 @@ export default function ResumeBuilderPage() {
               ? "bg-emerald-500"
               : completeness >= 40
                 ? "bg-amber-500"
-                : "bg-gray-300"
+                : "bg-ink-300"
           )}
           style={{ width: `${completeness}%` }}
         />
       </div>
       <div className="mt-3 space-y-2">
-        <Button
-          variant="outline"
+        <button
+          type="button"
           disabled={!canExport || exporting !== null}
           onClick={() => void handleExport("pdf")}
-          className="w-full gap-2"
+          className={cn(SECONDARY_BUTTON, "w-full")}
         >
-          {exporting === "pdf" && <Loader2 className="size-4 animate-spin" />}
+          {exporting === "pdf" && <Loader2 className="size-4 animate-spin" aria-hidden />}
           Download PDF
-        </Button>
-        <Button
-          variant="outline"
+        </button>
+        <button
+          type="button"
           disabled={!canExport || exporting !== null}
           onClick={() => void handleExport("docx")}
-          className="w-full gap-2"
+          className={cn(SECONDARY_BUTTON, "w-full")}
         >
-          {exporting === "docx" && <Loader2 className="size-4 animate-spin" />}
+          {exporting === "docx" && <Loader2 className="size-4 animate-spin" aria-hidden />}
           Download Word
-        </Button>
+        </button>
         {!canExport && (
-          <p className="text-center text-xs text-gray-400">
+          <p className="font-plex-sans text-center text-xs text-ink-400">
             Reach 40% to enable downloads
           </p>
         )}
@@ -1116,12 +1137,12 @@ export default function ResumeBuilderPage() {
       {/* Header */}
       <div className="mb-4 flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-semibold text-gray-900">Resume Builder</h1>
-          <p className="mt-1 text-sm text-gray-500">
+          <h1 className="font-plex-serif text-display-sm font-semibold text-ink">Resume Builder</h1>
+          <p className="mt-1 font-plex-sans text-body-sm text-ink-500">
             Build an ATS-friendly fresher resume and match it to any job description.
           </p>
         </div>
-        <span className="text-xs text-gray-400">
+        <span className="font-plex-sans text-xs text-ink-400">
           {saveStatus === "saving"
             ? "Saving…"
             : saveStatus === "saved"
@@ -1142,16 +1163,16 @@ export default function ResumeBuilderPage() {
                 type="button"
                 onClick={() => setActiveSection(s.id)}
                 className={cn(
-                  "flex shrink-0 items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs",
+                  "flex shrink-0 items-center gap-1.5 rounded-full border px-3 py-1.5 font-plex-sans text-xs transition-colors duration-180 ease-out focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ink-900",
                   active
-                    ? "border-blue-600 bg-blue-50 text-blue-700"
-                    : "border-gray-200 text-gray-600"
+                    ? "border-ochre bg-ink-50 text-ink-700"
+                    : "border-ink-200 text-ink-600"
                 )}
               >
                 <span
                   className={cn(
                     "size-1.5 rounded-full",
-                    has ? "bg-emerald-500" : "bg-gray-300"
+                    has ? "bg-emerald-500" : "bg-ink-300"
                   )}
                 />
                 {s.label}
@@ -1170,11 +1191,11 @@ export default function ResumeBuilderPage() {
 
         {/* Main editor */}
         <main className="lg:col-span-6">
-          <div className="rounded-xl border border-gray-200 bg-white p-5">
+          <div className="rounded-12 border border-ink-200 bg-paper p-5">
             {/* ── Personal ── */}
             {activeSection === "personal" && (
               <div className="space-y-4">
-                <h2 className="text-sm font-semibold text-gray-700">Personal Info</h2>
+                <h2 className="font-plex-sans text-body-sm font-semibold text-ink-700">Personal Info</h2>
                 <Field
                   label="Full Name"
                   value={resume.full_name}
@@ -1225,7 +1246,7 @@ export default function ResumeBuilderPage() {
             {/* ── Education ── */}
             {activeSection === "education" && (
               <div className="space-y-4">
-                <h2 className="text-sm font-semibold text-gray-700">Education</h2>
+                <h2 className="font-plex-sans text-body-sm font-semibold text-ink-700">Education</h2>
                 <div className="grid gap-4 sm:grid-cols-2">
                   <Field
                     label="Degree"
@@ -1258,7 +1279,7 @@ export default function ResumeBuilderPage() {
                   />
                 </div>
                 <div>
-                  <span className="mb-1 block text-xs font-medium text-gray-600">
+                  <span className="font-plex-sans mb-1 block text-xs font-medium text-ink-600">
                     Relevant Courses (max {MAX_COURSES})
                   </span>
                   <TagInput
@@ -1284,9 +1305,9 @@ export default function ResumeBuilderPage() {
             {/* ── Skills ── */}
             {activeSection === "skills" && (
               <div className="space-y-4">
-                <h2 className="text-sm font-semibold text-gray-700">Skills</h2>
+                <h2 className="font-plex-sans text-body-sm font-semibold text-ink-700">Skills</h2>
                 <div>
-                  <span className="mb-1 block text-xs font-medium text-gray-600">
+                  <span className="font-plex-sans mb-1 block text-xs font-medium text-ink-600">
                     Languages
                   </span>
                   <TagInput
@@ -1296,7 +1317,7 @@ export default function ResumeBuilderPage() {
                   />
                 </div>
                 <div>
-                  <span className="mb-1 block text-xs font-medium text-gray-600">
+                  <span className="font-plex-sans mb-1 block text-xs font-medium text-ink-600">
                     Frameworks &amp; Libraries
                   </span>
                   <TagInput
@@ -1306,7 +1327,7 @@ export default function ResumeBuilderPage() {
                   />
                 </div>
                 <div>
-                  <span className="mb-1 block text-xs font-medium text-gray-600">
+                  <span className="font-plex-sans mb-1 block text-xs font-medium text-ink-600">
                     Tools
                   </span>
                   <TagInput
@@ -1316,7 +1337,7 @@ export default function ResumeBuilderPage() {
                   />
                 </div>
                 <div>
-                  <span className="mb-1 block text-xs font-medium text-gray-600">
+                  <span className="font-plex-sans mb-1 block text-xs font-medium text-ink-600">
                     Core Concepts
                   </span>
                   <TagInput
@@ -1331,7 +1352,7 @@ export default function ResumeBuilderPage() {
                       updateSkillCategory("concepts", [...ts.concepts, s])
                     }
                   />
-                  <p className="mt-2 text-xs text-amber-600">
+                  <p className="font-plex-sans mt-2 text-xs text-amber-600">
                     Only add concepts you can discuss confidently in an interview.
                   </p>
                 </div>
@@ -1342,13 +1363,13 @@ export default function ResumeBuilderPage() {
             {activeSection === "projects" && (
               <div className="space-y-4">
                 <div className="flex items-center justify-between">
-                  <h2 className="text-sm font-semibold text-gray-700">
+                  <h2 className="font-plex-sans text-body-sm font-semibold text-ink-700">
                     Projects ({resume.projects.length}/{MAX_PROJECTS})
                   </h2>
                 </div>
 
                 {resume.projects.length === 0 && (
-                  <p className="rounded-lg border border-dashed border-gray-200 p-4 text-center text-sm text-gray-400">
+                  <p className="font-plex-sans rounded-8 border border-dashed border-ink-200 p-4 text-center text-body-sm text-ink-400">
                     Add your strongest projects. Quality over quantity — 2 solid
                     projects beat 4 weak ones.
                   </p>
@@ -1359,7 +1380,7 @@ export default function ResumeBuilderPage() {
                   return (
                     <div
                       key={p.id}
-                      className="overflow-hidden rounded-lg border border-gray-200"
+                      className="overflow-hidden rounded-8 border border-ink-200"
                     >
                       {/* Collapsed header */}
                       <div className="flex items-start justify-between gap-3 px-4 py-3">
@@ -1373,15 +1394,15 @@ export default function ResumeBuilderPage() {
                               return n;
                             })
                           }
-                          className="flex min-w-0 flex-1 items-start gap-2 text-left"
+                          className="flex min-w-0 flex-1 items-start gap-2 rounded-4 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ink-900"
                         >
                           {isOpen ? (
-                            <ChevronDown className="mt-0.5 size-4 shrink-0 text-gray-400" />
+                            <ChevronDown className="mt-0.5 size-4 shrink-0 text-ink-400" />
                           ) : (
-                            <ChevronRight className="mt-0.5 size-4 shrink-0 text-gray-400" />
+                            <ChevronRight className="mt-0.5 size-4 shrink-0 text-ink-400" />
                           )}
                           <div className="min-w-0">
-                            <p className="truncate text-sm font-medium text-gray-800">
+                            <p className="font-plex-sans truncate text-body-sm font-medium text-ink">
                               {p.title || "Untitled project"}
                             </p>
                             {!isOpen && (
@@ -1391,7 +1412,7 @@ export default function ResumeBuilderPage() {
                                     {p.tech_stack.slice(0, 5).map((t) => (
                                       <span
                                         key={t}
-                                        className="rounded-full bg-gray-100 px-1.5 py-0.5 text-[11px] text-gray-600"
+                                        className="font-plex-sans rounded-full bg-ink-100 px-1.5 py-0.5 text-[11px] text-ink-600"
                                       >
                                         {t}
                                       </span>
@@ -1401,7 +1422,7 @@ export default function ResumeBuilderPage() {
                                 {p.bullets.slice(0, 2).map((b, i) => (
                                   <p
                                     key={i}
-                                    className="mt-1 truncate text-xs text-gray-500"
+                                    className="font-plex-sans mt-1 truncate text-xs text-ink-500"
                                   >
                                     • {b}
                                   </p>
@@ -1413,7 +1434,7 @@ export default function ResumeBuilderPage() {
                         <button
                           type="button"
                           onClick={() => removeProject(p.id)}
-                          className="shrink-0 text-gray-300 hover:text-red-500"
+                          className="shrink-0 rounded-4 text-ink-300 transition-colors duration-180 ease-out hover:text-red-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ink-900"
                           aria-label="Delete project"
                         >
                           <Trash2 className="size-4" />
@@ -1422,14 +1443,14 @@ export default function ResumeBuilderPage() {
 
                       {/* Expanded form */}
                       {isOpen && (
-                        <div className="space-y-3 border-t border-gray-100 px-4 py-3">
+                        <div className="space-y-3 border-t border-ink-100 px-4 py-3">
                           <Field
                             label="Title"
                             value={p.title}
                             onChange={(v) => updateProject(p.id, { title: v })}
                           />
                           <div>
-                            <span className="mb-1 block text-xs font-medium text-gray-600">
+                            <span className="font-plex-sans mb-1 block text-xs font-medium text-ink-600">
                               Tech Stack
                             </span>
                             <TagInput
@@ -1501,29 +1522,29 @@ export default function ResumeBuilderPage() {
                   );
                 })}
 
-                <Button
-                  variant="outline"
+                <button
+                  type="button"
                   onClick={addProject}
                   disabled={resume.projects.length >= MAX_PROJECTS}
-                  className="gap-1"
+                  className={SECONDARY_BUTTON}
                 >
-                  <Plus className="size-4" />
+                  <Plus className="size-4" aria-hidden />
                   Add Project
-                </Button>
+                </button>
               </div>
             )}
 
             {/* ── Internships ── */}
             {activeSection === "internships" && (
               <div className="space-y-4">
-                <h2 className="text-sm font-semibold text-gray-700">Internships</h2>
+                <h2 className="font-plex-sans text-body-sm font-semibold text-ink-700">Internships</h2>
 
                 {resume.internships.length === 0 && (
-                  <div className="rounded-lg border border-dashed border-gray-200 p-4 text-center">
-                    <p className="text-sm font-medium text-gray-600">
+                  <div className="rounded-8 border border-dashed border-ink-200 p-4 text-center">
+                    <p className="font-plex-sans text-body-sm font-medium text-ink-600">
                       No internships yet
                     </p>
-                    <p className="mt-1 text-xs text-gray-400">
+                    <p className="font-plex-sans mt-1 text-xs text-ink-400">
                       Internship experience strengthens your profile significantly.
                       Even a 1-month internship counts.
                     </p>
@@ -1535,7 +1556,7 @@ export default function ResumeBuilderPage() {
                   return (
                     <div
                       key={it.id}
-                      className="overflow-hidden rounded-lg border border-gray-200"
+                      className="overflow-hidden rounded-8 border border-ink-200"
                     >
                       <div className="flex items-start justify-between gap-3 px-4 py-3">
                         <button
@@ -1548,25 +1569,25 @@ export default function ResumeBuilderPage() {
                               return n;
                             })
                           }
-                          className="flex min-w-0 flex-1 items-start gap-2 text-left"
+                          className="flex min-w-0 flex-1 items-start gap-2 rounded-4 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ink-900"
                         >
                           {isOpen ? (
-                            <ChevronDown className="mt-0.5 size-4 shrink-0 text-gray-400" />
+                            <ChevronDown className="mt-0.5 size-4 shrink-0 text-ink-400" />
                           ) : (
-                            <ChevronRight className="mt-0.5 size-4 shrink-0 text-gray-400" />
+                            <ChevronRight className="mt-0.5 size-4 shrink-0 text-ink-400" />
                           )}
                           <div className="min-w-0">
-                            <p className="truncate text-sm font-medium text-gray-800">
+                            <p className="font-plex-sans truncate text-body-sm font-medium text-ink">
                               {it.role || "Role"}{" "}
                               {it.company && (
-                                <span className="text-gray-400">· {it.company}</span>
+                                <span className="text-ink-400">· {it.company}</span>
                               )}
                             </p>
                             {!isOpen &&
                               it.bullets.slice(0, 2).map((b, i) => (
                                 <p
                                   key={i}
-                                  className="mt-1 truncate text-xs text-gray-500"
+                                  className="font-plex-sans mt-1 truncate text-xs text-ink-500"
                                 >
                                   • {b}
                                 </p>
@@ -1576,7 +1597,7 @@ export default function ResumeBuilderPage() {
                         <button
                           type="button"
                           onClick={() => removeInternship(it.id)}
-                          className="shrink-0 text-gray-300 hover:text-red-500"
+                          className="shrink-0 rounded-4 text-ink-300 transition-colors duration-180 ease-out hover:text-red-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ink-900"
                           aria-label="Delete internship"
                         >
                           <Trash2 className="size-4" />
@@ -1584,7 +1605,7 @@ export default function ResumeBuilderPage() {
                       </div>
 
                       {isOpen && (
-                        <div className="space-y-3 border-t border-gray-100 px-4 py-3">
+                        <div className="space-y-3 border-t border-ink-100 px-4 py-3">
                           <div className="grid gap-3 sm:grid-cols-2">
                             <Field
                               label="Company"
@@ -1653,33 +1674,33 @@ export default function ResumeBuilderPage() {
                   );
                 })}
 
-                <Button variant="outline" onClick={addInternship} className="gap-1">
-                  <Plus className="size-4" />
+                <button type="button" onClick={addInternship} className={SECONDARY_BUTTON}>
+                  <Plus className="size-4" aria-hidden />
                   Add Internship
-                </Button>
+                </button>
               </div>
             )}
 
             {/* ── Certifications ── */}
             {activeSection === "certifications" && (
               <div className="space-y-4">
-                <h2 className="text-sm font-semibold text-gray-700">
+                <h2 className="font-plex-sans text-body-sm font-semibold text-ink-700">
                   Certifications
                 </h2>
 
                 {resume.certifications.map((c) => (
                   <div
                     key={c.id}
-                    className="space-y-3 rounded-lg border border-gray-200 p-3"
+                    className="space-y-3 rounded-8 border border-ink-200 p-3"
                   >
                     <div className="flex items-start justify-between gap-2">
-                      <span className="text-xs font-medium text-gray-500">
+                      <span className="font-plex-sans text-xs font-medium text-ink-500">
                         Certification
                       </span>
                       <button
                         type="button"
                         onClick={() => removeCertification(c.id)}
-                        className="text-gray-300 hover:text-red-500"
+                        className="rounded-4 text-ink-300 transition-colors duration-180 ease-out hover:text-red-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ink-900"
                         aria-label="Delete certification"
                       >
                         <Trash2 className="size-4" />
@@ -1715,24 +1736,24 @@ export default function ResumeBuilderPage() {
                   </div>
                 ))}
 
-                <Button
-                  variant="outline"
+                <button
+                  type="button"
                   onClick={() => addCertification()}
-                  className="gap-1"
+                  className={SECONDARY_BUTTON}
                 >
-                  <Plus className="size-4" />
+                  <Plus className="size-4" aria-hidden />
                   Add Certification
-                </Button>
+                </button>
 
                 <div>
-                  <p className="mb-1 text-xs text-gray-400">Popular for freshers:</p>
+                  <p className="font-plex-sans mb-1 text-xs text-ink-400">Popular for freshers:</p>
                   <div className="flex flex-wrap gap-1.5">
                     {CERT_SUGGESTIONS.map((s) => (
                       <button
                         key={s.name}
                         type="button"
                         onClick={() => addCertification(s.name, s.issuer)}
-                        className="rounded-full border border-gray-200 px-2 py-0.5 text-xs text-gray-500 hover:border-blue-300 hover:text-blue-600"
+                        className="font-plex-sans rounded-full border border-ink-200 px-2 py-0.5 text-xs text-ink-500 transition-colors duration-180 ease-out hover:border-ink-400 hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ink-900"
                       >
                         + {s.name}
                       </button>
@@ -1745,7 +1766,7 @@ export default function ResumeBuilderPage() {
             {/* ── Achievements ── */}
             {activeSection === "achievements" && (
               <div className="space-y-4">
-                <h2 className="text-sm font-semibold text-gray-700">
+                <h2 className="font-plex-sans text-body-sm font-semibold text-ink-700">
                   Achievements ({resume.achievements.length}/{MAX_ACHIEVEMENTS})
                 </h2>
 
@@ -1768,12 +1789,12 @@ export default function ResumeBuilderPage() {
                       placeholder={
                         achPlaceholders[a.id] ?? ACHIEVEMENT_PLACEHOLDERS[0]
                       }
-                      className="flex-1 rounded-lg border border-gray-200 px-3 py-2 text-sm text-gray-800 outline-none focus:border-blue-400 placeholder:text-gray-400"
+                      className="font-plex-sans flex-1 rounded-8 border border-ink-200 px-3 py-2 text-body-sm text-ink outline-none focus:border-ink-400 placeholder:text-ink-400"
                     />
                     <button
                       type="button"
                       onClick={() => removeAchievement(a.id)}
-                      className="shrink-0 text-gray-300 hover:text-red-500"
+                      className="shrink-0 rounded-4 text-ink-300 transition-colors duration-180 ease-out hover:text-red-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ink-900"
                       aria-label="Delete achievement"
                     >
                       <Trash2 className="size-4" />
@@ -1781,20 +1802,20 @@ export default function ResumeBuilderPage() {
                   </div>
                 ))}
 
-                <p className="text-xs text-gray-400">
+                <p className="font-plex-sans text-xs text-ink-400">
                   Be specific. &lsquo;Won hackathon&rsquo; &lt; &lsquo;Won 2nd place
                   among 40 teams&rsquo;
                 </p>
 
-                <Button
-                  variant="outline"
+                <button
+                  type="button"
                   onClick={addAchievement}
                   disabled={resume.achievements.length >= MAX_ACHIEVEMENTS}
-                  className="gap-1"
+                  className={SECONDARY_BUTTON}
                 >
-                  <Plus className="size-4" />
+                  <Plus className="size-4" aria-hidden />
                   Add Achievement
-                </Button>
+                </button>
               </div>
             )}
           </div>
@@ -1848,26 +1869,18 @@ function AtsPanel({
   onApplyBullet: (original: string, suggested: string) => void;
   onClearAnalysis: () => void;
 }) {
-  const [hasStoredJD, setHasStoredJD] = useState(false);
-
-  useEffect(() => {
-    try {
-      const stored = sessionStorage.getItem(JD_STORAGE_KEY);
-      if (stored) {
-        const parsed = JSON.parse(stored) as { jdText?: string; savedAt?: number };
-        setHasStoredJD(
-          Boolean(parsed.jdText) &&
-            Boolean(parsed.savedAt) &&
-            Date.now() - (parsed.savedAt ?? 0) < JD_STORAGE_TTL_MS
-        );
-      }
-    } catch {
-      /* ignore */
-    }
-  }, []);
+  // Reads sessionStorage as an external store (no subscription — the value
+  // only needs to be checked once, on mount) rather than useState+useEffect,
+  // which avoids the extra cascading render react-hooks/set-state-in-effect
+  // flags (same pattern as ThemeToggle's useMounted).
+  const hasStoredJD = useSyncExternalStore(
+    () => () => {},
+    hasStoredJDSnapshot,
+    () => false
+  );
 
   const wrap = (children: ReactNode) => (
-    <div className="rounded-xl border border-gray-200 bg-white p-4 lg:sticky lg:top-4">
+    <div className="rounded-12 border border-ink-200 bg-paper p-4 lg:sticky lg:top-4">
       {children}
     </div>
   );
@@ -1877,8 +1890,8 @@ function AtsPanel({
   if (isAnalyzing) {
     return wrap(
       <div className="flex min-h-[16rem] flex-col items-center justify-center gap-3 text-center">
-        <Loader2 className="size-7 animate-spin text-blue-500" />
-        <p className="text-sm text-gray-500">Scoring your resume…</p>
+        <Loader2 className="size-7 animate-spin text-ink-500" />
+        <p className="font-plex-sans text-body-sm text-ink-500">Scoring your resume…</p>
       </div>
     );
   }
@@ -1887,10 +1900,10 @@ function AtsPanel({
     return wrap(
       <div className="flex flex-col gap-3">
         <div>
-          <h3 className="text-sm font-semibold text-gray-700">
+          <h3 className="font-plex-sans text-body-sm font-semibold text-ink-700">
             Attach a Job Description
           </h3>
-          <p className="mb-3 text-xs text-gray-400">
+          <p className="font-plex-sans mb-3 text-xs text-ink-400">
             Paste any JD to get ATS score and gap analysis
           </p>
         </div>
@@ -1899,26 +1912,27 @@ function AtsPanel({
           onChange={(e) => setJdText(e.target.value)}
           placeholder="Paste the full job description here..."
           maxLength={5000}
-          className="h-56 w-full resize-none rounded-xl border border-gray-200 p-3 text-sm text-gray-700 placeholder:text-gray-400 focus:border-blue-400 focus:outline-none"
+          className="font-plex-sans h-56 w-full resize-none rounded-12 border border-ink-200 p-3 text-body-sm text-ink-700 placeholder:text-ink-400 focus:border-ink-400 focus:outline-none"
         />
-        <p className="text-right text-xs text-gray-400">
+        <p className="font-plex-sans text-right text-xs text-ink-400">
           {jdText.length}/5000 characters
         </p>
-        {error && <p className="text-xs text-amber-600">{error}</p>}
-        <Button
+        {error && <p className="font-plex-sans text-xs text-amber-600">{error}</p>}
+        <button
+          type="button"
           onClick={onAnalyze}
           disabled={jdText.trim().length < 50}
-          className="w-full bg-blue-600 text-white hover:bg-blue-700"
+          className={cn(PRIMARY_BUTTON, "w-full")}
         >
           Analyze Resume
-        </Button>
+        </button>
         {hasStoredJD && (
           <p
             role="button"
             tabIndex={0}
             onClick={onUseLastJD}
             onKeyDown={(e) => e.key === "Enter" && onUseLastJD()}
-            className="cursor-pointer text-center text-sm text-blue-600 hover:underline"
+            className="font-plex-sans cursor-pointer text-center text-body-sm text-ink underline-offset-2 hover:underline"
           >
             Use last JD Analyzer result →
           </p>
@@ -1931,22 +1945,22 @@ function AtsPanel({
     return wrap(
       <div>
         <div className="mb-4 flex items-center justify-between gap-2">
-          <p className="max-w-[70%] truncate text-xs text-gray-400">{jdPreview}</p>
+          <p className="font-plex-sans max-w-[70%] truncate text-xs text-ink-400">{jdPreview}</p>
           <button
             type="button"
             onClick={onClearAnalysis}
-            className="shrink-0 text-xs text-blue-600 hover:underline"
+            className="font-plex-sans shrink-0 text-xs text-ink underline-offset-2 hover:underline transition-colors duration-180 ease-out focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ink-900"
           >
             Change JD
           </button>
         </div>
-        <div className="rounded-xl border border-amber-200 bg-amber-50 p-6 text-center">
-          <p className="mb-3 text-sm font-medium text-gray-700">
+        <div className="rounded-12 border border-amber-200 bg-amber-50 p-6 text-center">
+          <p className="font-plex-sans mb-3 text-body-sm font-medium text-ink-700">
             Your resume needs content before ATS analysis
           </p>
           <ul className="space-y-1 text-left">
             {analysis.ats_tips.map((tip, i) => (
-              <li key={i} className="text-sm text-gray-600">
+              <li key={i} className="font-plex-sans text-body-sm text-ink-600">
                 • {tip}
               </li>
             ))}
@@ -1955,7 +1969,7 @@ function AtsPanel({
         <button
           type="button"
           onClick={onReanalyze}
-          className="mt-4 w-full text-center text-xs text-blue-500 hover:underline"
+          className="font-plex-sans mt-4 w-full text-center text-xs text-ink-500 underline-offset-2 hover:underline transition-colors duration-180 ease-out focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ink-900"
         >
           Re-analyze after adding content
         </button>
@@ -1970,11 +1984,11 @@ function AtsPanel({
     <div className="space-y-4">
       {/* JD anchor */}
       <div className="flex items-center justify-between gap-2">
-        <p className="max-w-[70%] truncate text-xs text-gray-400">{jdPreview}</p>
+        <p className="font-plex-sans max-w-[70%] truncate text-xs text-ink-400">{jdPreview}</p>
         <button
           type="button"
           onClick={onClearAnalysis}
-          className="shrink-0 text-xs text-blue-600 hover:underline"
+          className="font-plex-sans shrink-0 text-xs text-ink underline-offset-2 hover:underline transition-colors duration-180 ease-out focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ink-900"
         >
           Change JD
         </button>
@@ -1985,36 +1999,36 @@ function AtsPanel({
 
       {/* Keyword coverage */}
       <div>
-        <h3 className="text-sm font-semibold text-gray-700">Keyword Coverage</h3>
+        <h3 className="font-plex-sans text-body-sm font-semibold text-ink-700">Keyword Coverage</h3>
         <div className="mt-2 space-y-2">
           <div>
-            <p className="mb-1 text-xs text-gray-500">Found ({found.length})</p>
+            <p className="font-plex-sans mb-1 text-xs text-ink-500">Found ({found.length})</p>
             <div className="flex flex-wrap gap-1">
               {found.slice(0, 8).map((k, i) => (
                 <span
                   key={`${k.keyword}-${i}`}
-                  className="rounded-full bg-emerald-50 px-2 py-0.5 text-xs text-emerald-700"
+                  className="font-plex-sans rounded-full bg-emerald-50 px-2 py-0.5 text-xs text-emerald-700"
                 >
                   {k.keyword}
                 </span>
               ))}
               {found.length > 8 && (
-                <span className="text-xs text-gray-400">
+                <span className="font-plex-sans text-xs text-ink-400">
                   + {found.length - 8} more
                 </span>
               )}
               {found.length === 0 && (
-                <span className="text-xs text-gray-400">None matched yet</span>
+                <span className="font-plex-sans text-xs text-ink-400">None matched yet</span>
               )}
             </div>
           </div>
           <div>
-            <p className="mb-1 text-xs text-gray-500">Missing ({missing.length})</p>
+            <p className="font-plex-sans mb-1 text-xs text-ink-500">Missing ({missing.length})</p>
             <div className="flex flex-wrap gap-1">
               {missing.slice(0, 8).map((k, i) => (
                 <span
                   key={`${k.keyword}-${i}`}
-                  className="inline-flex items-center gap-1 rounded-full bg-slate-50 px-2 py-0.5 text-xs text-slate-600"
+                  className="font-plex-sans inline-flex items-center gap-1 rounded-full bg-slate-50 px-2 py-0.5 text-xs text-slate-600"
                 >
                   {k.importance === "high" && (
                     <span className="size-1.5 rounded-full bg-amber-500" />
@@ -2023,7 +2037,7 @@ function AtsPanel({
                 </span>
               ))}
               {missing.length > 8 && (
-                <span className="text-xs text-gray-400">
+                <span className="font-plex-sans text-xs text-ink-400">
                   + {missing.length - 8} more
                 </span>
               )}
@@ -2034,25 +2048,25 @@ function AtsPanel({
 
       {/* Bullet quality */}
       <div>
-        <h3 className="text-sm font-semibold text-gray-700">Bullet Quality</h3>
+        <h3 className="font-plex-sans text-body-sm font-semibold text-ink-700">Bullet Quality</h3>
         {analysis.bullet_issues.length === 0 ? (
-          <p className="mt-1 text-sm text-emerald-600">✓ All bullets look strong</p>
+          <p className="font-plex-sans mt-1 text-body-sm text-emerald-600">✓ All bullets look strong</p>
         ) : (
           <div className="mt-2 space-y-2">
             {analysis.bullet_issues.map((b, i) => (
-              <div key={i} className="rounded-lg border border-gray-200 p-3">
-                <p className="truncate text-xs text-gray-500">
+              <div key={i} className="rounded-8 border border-ink-200 p-3">
+                <p className="font-plex-sans truncate text-xs text-ink-500">
                   {b.original.slice(0, 60)}
                   {b.original.length > 60 ? "…" : ""}
                 </p>
-                <p className="mt-0.5 text-xs text-amber-600">{b.issue}</p>
-                <p className="mt-1 text-sm font-medium text-gray-800">
+                <p className="font-plex-sans mt-0.5 text-xs text-amber-600">{b.issue}</p>
+                <p className="font-plex-sans mt-1 text-body-sm font-medium text-ink">
                   {b.suggested}
                 </p>
                 <button
                   type="button"
                   onClick={() => onApplyBullet(b.original, b.suggested)}
-                  className="mt-2 rounded-md border border-blue-500 px-2 py-1 text-xs font-medium text-blue-600 hover:bg-blue-50"
+                  className="font-plex-sans mt-2 rounded-4 border border-ink-900 px-2 py-1 text-xs font-medium text-ink transition-colors duration-180 ease-out hover:bg-ink-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ink-900"
                 >
                   Apply
                 </button>
@@ -2066,29 +2080,29 @@ function AtsPanel({
           that would sound hollow if said out loud to a human interviewer. */}
       <div>
         <div className="flex items-center gap-1.5">
-          <h3 className="text-sm font-semibold text-gray-700">Interviewer Lens</h3>
+          <h3 className="font-plex-sans text-body-sm font-semibold text-ink-700">Interviewer Lens</h3>
           <MonoTag>Human read</MonoTag>
         </div>
         {analysis.interviewer_lens.length === 0 ? (
-          <p className="mt-1 text-sm text-emerald-600">
+          <p className="font-plex-sans mt-1 text-body-sm text-emerald-600">
             ✓ Nothing reads as hollow to an interviewer
           </p>
         ) : (
           <div className="mt-2 space-y-2">
             {analysis.interviewer_lens.map((h, i) => (
-              <div key={i} className="rounded-lg border border-gray-200 p-3">
-                <p className="truncate text-xs text-gray-500">
+              <div key={i} className="rounded-8 border border-ink-200 p-3">
+                <p className="font-plex-sans truncate text-xs text-ink-500">
                   {h.original.slice(0, 60)}
                   {h.original.length > 60 ? "…" : ""}
                 </p>
-                <p className="mt-0.5 text-xs text-amber-600">{h.problem}</p>
-                <p className="mt-1 text-sm font-medium text-gray-800">
+                <p className="font-plex-sans mt-0.5 text-xs text-amber-600">{h.problem}</p>
+                <p className="font-plex-sans mt-1 text-body-sm font-medium text-ink">
                   {h.suggested}
                 </p>
                 <button
                   type="button"
                   onClick={() => onApplyBullet(h.original, h.suggested)}
-                  className="mt-2 rounded-md border border-blue-500 px-2 py-1 text-xs font-medium text-blue-600 hover:bg-blue-50"
+                  className="font-plex-sans mt-2 rounded-4 border border-ink-900 px-2 py-1 text-xs font-medium text-ink transition-colors duration-180 ease-out hover:bg-ink-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ink-900"
                 >
                   Apply
                 </button>
@@ -2101,28 +2115,28 @@ function AtsPanel({
       {/* Skill gaps */}
       {analysis.skill_gap_actions.length > 0 && (
         <div>
-          <h3 className="text-sm font-semibold text-gray-700">Skills to Add</h3>
+          <h3 className="font-plex-sans text-body-sm font-semibold text-ink-700">Skills to Add</h3>
           <div className="mt-2 space-y-2">
             {analysis.skill_gap_actions.map((g, i) => (
-              <div key={i} className="rounded-lg border border-gray-200 p-3">
+              <div key={i} className="rounded-8 border border-ink-200 p-3">
                 <div className="flex items-center justify-between gap-2">
-                  <span className="text-sm font-medium text-gray-800">
+                  <span className="font-plex-sans text-body-sm font-medium text-ink">
                     {g.skill}
                   </span>
                   {g.time_estimate && (
-                    <span className="shrink-0 rounded-full bg-gray-100 px-2 py-0.5 text-xs text-gray-600">
+                    <span className="font-plex-sans shrink-0 rounded-full bg-ink-100 px-2 py-0.5 text-xs text-ink-600">
                       {g.time_estimate}
                     </span>
                   )}
                 </div>
-                <p className="mt-1 text-sm text-gray-600">{g.how_to_add}</p>
+                <p className="font-plex-sans mt-1 text-body-sm text-ink-600">{g.how_to_add}</p>
                 <div className="mt-2 flex flex-wrap items-center gap-3">
                   {g.resource_url && (
                     <a
                       href={g.resource_url}
                       target="_blank"
                       rel="noreferrer"
-                      className="text-xs text-blue-600 hover:underline"
+                      className="font-plex-sans text-xs text-ink underline-offset-2 hover:underline"
                     >
                       Learn →
                     </a>
@@ -2132,7 +2146,7 @@ function AtsPanel({
                       href={`/student/placement/prep/${g.prep_track}/practice?topic=${encodeURIComponent(
                         g.prep_topic
                       )}&from=resume`}
-                      className="text-xs text-blue-600 hover:underline"
+                      className="font-plex-sans text-xs text-ink underline-offset-2 hover:underline"
                     >
                       Practice in EduNexus →
                     </Link>
@@ -2147,8 +2161,8 @@ function AtsPanel({
       {/* Quick wins */}
       {analysis.ats_tips.length > 0 && (
         <div>
-          <h3 className="text-sm font-semibold text-gray-700">Quick Wins</h3>
-          <ol className="mt-2 list-decimal space-y-1 pl-5 text-sm text-gray-600">
+          <h3 className="font-plex-sans text-body-sm font-semibold text-ink-700">Quick Wins</h3>
+          <ol className="font-plex-sans mt-2 list-decimal space-y-1 pl-5 text-body-sm text-ink-600">
             {analysis.ats_tips.map((t, i) => (
               <li key={i}>{t}</li>
             ))}
@@ -2157,11 +2171,11 @@ function AtsPanel({
       )}
 
       {/* Re-analyze */}
-      <div className="border-t border-gray-100 pt-3">
+      <div className="border-t border-ink-100 pt-3">
         <button
           type="button"
           onClick={onReanalyze}
-          className="w-full text-center text-sm text-blue-600 hover:underline"
+          className="font-plex-sans w-full text-center text-body-sm text-ink underline-offset-2 hover:underline transition-colors duration-180 ease-out focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ink-900"
         >
           Re-analyze
         </button>

@@ -5,6 +5,7 @@ import Link from "next/link";
 import { Loader2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { createBrowserClient } from "@/lib/db/supabase-browser";
+import { MonoTag } from "@/components/ui/mono-tag";
 import {
   MINI_PROJECTS,
   getProjectsForBranch,
@@ -13,9 +14,12 @@ import {
 
 type DifficultyFilter = "all" | "beginner" | "intermediate";
 
+// Difficulty is a meaningful status signal (not decorative chrome), so it
+// keeps semantic color per DESIGN.md's mastery/performance-indicator carve-out
+// — emerald for beginner (easy/mastered-adjacent), amber for intermediate.
 const DIFFICULTY_BADGE: Record<MiniProject["difficulty"], string> = {
   beginner: "bg-emerald-50 text-emerald-700",
-  intermediate: "bg-blue-50 text-blue-700",
+  intermediate: "bg-amber-50 text-amber-800",
 };
 
 export default function MiniProjectsPage() {
@@ -78,7 +82,7 @@ export default function MiniProjectsPage() {
   if (loading) {
     return (
       <div className="flex min-h-[60vh] items-center justify-center">
-        <Loader2 className="size-8 animate-spin text-blue-500" />
+        <Loader2 className="size-8 animate-spin text-ink-400" aria-hidden />
       </div>
     );
   }
@@ -87,8 +91,10 @@ export default function MiniProjectsPage() {
     <div className="max-w-5xl space-y-6">
       {/* Header */}
       <div>
-        <h1 className="text-2xl font-semibold text-gray-900">Mini-Project Guides</h1>
-        <p className="mt-1 text-sm text-gray-500">
+        <h1 className="font-plex-serif text-display-sm font-semibold text-ink">
+          Mini-Project Guides
+        </h1>
+        <p className="mt-1 font-plex-sans text-body-sm text-ink-500">
           Build real projects that interviewers ask about. Each guide connects to
           your syllabus.
         </p>
@@ -108,10 +114,10 @@ export default function MiniProjectsPage() {
             type="button"
             onClick={() => setFilter(t.id)}
             className={cn(
-              "rounded-full border px-3 py-1.5 text-sm transition-colors",
+              "min-h-11 rounded-8 border px-3 py-1.5 font-plex-sans text-body-sm transition-colors duration-180 ease-out focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ink-900 focus-visible:ring-offset-2",
               filter === t.id
-                ? "border-blue-600 bg-blue-50 text-blue-700"
-                : "border-gray-200 text-gray-600 hover:bg-gray-50"
+                ? "border-ochre bg-paper text-ink-900"
+                : "border-ink-200 text-ink-600 hover:bg-ink-50"
             )}
           >
             {t.label}
@@ -121,10 +127,10 @@ export default function MiniProjectsPage() {
 
       {/* Cards grid */}
       {showingAllFallback && (
-        <p className="text-xs text-gray-400">Showing all projects</p>
+        <p className="font-plex-sans text-xs text-ink-400">Showing all projects</p>
       )}
       {visibleProjects.length === 0 ? (
-        <p className="rounded-lg border border-dashed border-gray-200 p-6 text-center text-sm text-gray-400">
+        <p className="rounded-8 border border-dashed border-ink-200 p-6 text-center font-plex-sans text-body-sm text-ink-400">
           No projects match this filter.
         </p>
       ) : (
@@ -132,44 +138,39 @@ export default function MiniProjectsPage() {
           {visibleProjects.map((p) => (
             <div
               key={p.id}
-              className="bg-white border border-gray-100 rounded-2xl overflow-hidden shadow-sm flex flex-col"
+              className="flex flex-col overflow-hidden rounded-8 border border-ink-100 bg-paper"
             >
               {/* Card body */}
               <div className="flex-1 p-5">
                 <span
                   className={cn(
-                    "inline-block rounded-full px-2 py-0.5 text-xs font-medium capitalize",
+                    "inline-block rounded-4 px-2 py-0.5 font-plex-sans text-xs font-medium capitalize",
                     DIFFICULTY_BADGE[p.difficulty]
                   )}
                 >
                   {p.difficulty}
                 </span>
-                <h2 className="mt-2 text-lg font-semibold text-gray-900">
+                <h2 className="mt-2 font-plex-sans text-body font-semibold text-ink">
                   {p.title}
                 </h2>
-                <p className="text-xs text-gray-500 mt-1 mb-3 leading-relaxed">
+                <p className="mb-3 mt-1 font-plex-sans text-xs leading-relaxed text-ink-500">
                   {p.tagline}
                 </p>
 
                 <div className="flex flex-wrap gap-1.5">
                   {p.tech_stack.map((t) => (
-                    <span
-                      key={t}
-                      className="rounded bg-gray-100 px-2 py-0.5 text-xs text-gray-600"
-                    >
-                      {t}
-                    </span>
+                    <MonoTag key={t}>{t}</MonoTag>
                   ))}
                 </div>
 
-                <p className="mt-3 text-xs text-gray-400">
+                <p className="mt-3 font-plex-sans text-xs text-ink-400">
                   ~{p.estimated_days} days · {p.steps.length} steps
                 </p>
 
                 {p.prerequisite_subjects.length > 0 && (
-                  <div className="text-xs text-gray-400 mt-2">
+                  <div className="mt-2 font-plex-sans text-xs text-ink-400">
                     Uses your subjects:{" "}
-                    <span className="text-gray-600">
+                    <span className="text-ink-600">
                       {p.prerequisite_subjects.slice(0, 2).join(", ")}
                     </span>
                   </div>
@@ -177,16 +178,16 @@ export default function MiniProjectsPage() {
               </div>
 
               {/* Card footer */}
-              <div className="border-t border-gray-100 px-5 py-3 flex items-center justify-between">
-                <span className="text-xs text-gray-400">
+              <div className="flex items-center justify-between border-t border-ink-100 px-5 py-3">
+                <span className="font-plex-sans text-xs text-ink-400">
                   Adds:{" "}
-                  <span className="text-gray-600">
+                  <span className="text-ink-600">
                     {p.skills_to_add.slice(0, 2).join(", ")}
                   </span>
                 </span>
                 <Link
                   href={`/student/placement/projects/${p.id}`}
-                  className="text-sm text-blue-600 font-medium"
+                  className="font-plex-sans text-body-sm font-medium text-ink underline-offset-2 transition-colors duration-180 ease-out hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ink-900"
                 >
                   Start guide →
                 </Link>
