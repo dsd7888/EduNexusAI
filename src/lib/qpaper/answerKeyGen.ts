@@ -19,7 +19,11 @@ import { routeAI } from "@/lib/ai/router";
 import { estimateMaxOutputTokens } from "@/lib/ai/tokenBudget";
 import { createPDFBuilder, COLORS } from "@/lib/pdf/builder";
 import { renderPaperMath } from "@/lib/qpaper/paperMath";
-import { MATH_CHEM_NOTATION_GUIDE } from "@/lib/text/latexSegments";
+import {
+  MATH_CHEM_NOTATION_GUIDE,
+  hasResidualControlChars,
+  repairGeminiJsonEscapes,
+} from "@/lib/text/latexSegments";
 import type {
   AssembledPaper,
   GeneratedQuestion,
@@ -280,7 +284,9 @@ function normalizeSlotKey(raw: string): string {
 }
 
 function parseAnswerKeyArray(raw: string): AnswerKeyEntry[] | null {
-  let text = stripCodeFences(String(raw ?? "").trim());
+  // §13: repair the Gemini escape collision BEFORE parsing — answer-key model
+  // answers are the most formula-dense text this product generates.
+  let text = repairGeminiJsonEscapes(stripCodeFences(String(raw ?? "").trim()));
   // Trim to outermost [...] in case the model wrapped in prose.
   const first = text.indexOf("[");
   const last = text.lastIndexOf("]");
@@ -300,7 +306,19 @@ function parseAnswerKeyArray(raw: string): AnswerKeyEntry[] | null {
       }
       normalizeEntryText(e);
     }
-    return entries;
+    // §13 layer 2: an entry still carrying raw control characters survived a
+    // Gemini escape collision the pre-parse repair did not cover. Drop it —
+    // an answer key is the one artifact an evaluator marks against, so a
+    // garbled model answer is worse than a visibly missing one. The caller's
+    // existing "entry not found for slot" path then reports the gap.
+    const clean = entries.filter((e) => {
+      if (!hasResidualControlChars(e)) return true;
+      console.error(
+        `[answerKeyGen] REJECTED entry ${e?.slotKey ?? "(no slotKey)"} — residual control characters (escape corruption)`
+      );
+      return false;
+    });
+    return clean;
   } catch {
     return null;
   }

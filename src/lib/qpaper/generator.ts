@@ -1,4 +1,5 @@
 import { PDFDocument, rgb, StandardFonts } from "pdf-lib";
+import { repairGeminiJsonEscapes } from "@/lib/text/latexSegments";
 
 // ── TYPES ──────────────────────────────────────────────────
 
@@ -328,7 +329,8 @@ export function parseQPaperResponse(rawText: string): GeneratedQPaper | null {
     const first = cleaned.indexOf("{");
     const last = cleaned.lastIndexOf("}");
     if (first === -1 || last === -1) return null;
-    cleaned = cleaned.slice(first, last + 1);
+    // §13: repair the Gemini escape collision before parsing the paper body.
+    cleaned = repairGeminiJsonEscapes(cleaned.slice(first, last + 1));
     const parsed = JSON.parse(cleaned) as GeneratedQPaper;
     if (!parsed.sections || !Array.isArray(parsed.sections)) return null;
     return parsed;

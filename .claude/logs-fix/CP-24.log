@@ -1,0 +1,5 @@
+CP-24 is complete.
+
+- Added shared `isUuid`/`logCappedError` helpers (`src/lib/api/helpers.ts`), rejected non-UUID `subjectIds` in `routeHandler.ts` + `engine.ts`, and validated `topic` against `TRACK_SECTIONS`' fixed labels in `prep/submit/route.ts` — all catch-block logging now goes through `logCappedError` to bound any raw upstream error body.
+- Verified via `_cp_24_verify/verify.mts` (12 pure-function assertions incl. injection-shaped rejects and an unhappy-path 5KB HTML-error truncation check), plus clean `tsc`/`eslint`/`npm run build`; carefully isolated the commit from unrelated pre-existing CP-08 uncommitted changes in `prep/submit/route.ts` by staging a hand-built blob rather than the whole file.
+- Committed locally at `10d3cfc980ad05510e71d7d338619991c50383e1` (not pushed, per this run's default); `FIX_LEDGER.md` and `PROGRESS.md` updated — next up is CP-25.

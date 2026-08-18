@@ -1,0 +1,5 @@
+CP-15 is complete.
+
+- Fixed `src/app/api/placement/resume/route.ts`: `.update()` → `.upsert({student_id, resume_data, resume_completeness}, {onConflict: 'student_id'})` (fixes silent no-op for new students), added `validateResumeShape()` (400 with named field instead of an uncaught-throw 500), and `capArraySizes()` mirroring the client's `MAX_PROJECTS=4`/`MAX_BULLETS=3`/`MAX_ACHIEVEMENTS=5`/`MAX_COURSES=6` caps server-side.
+- Verified live against the real dev server + DB (`_cp_15_verify/api.mts`, 16/16 assertions passing): fresh-student upsert, malformed-payload 400s, 200-project payload capped both in the response *and* the persisted row, and two concurrent POSTs landing one consistent value with no crash/corruption. `tsc`, `eslint`, and `npm run build` all clean.
+- Committed locally only (not pushed, per this run's default): `60d8a4270286d46f9bfd9a659306413f5a482fee`. Pre-existing uncommitted CP-08 changes found in the working tree were left untouched; PROGRESS.md updated with full detail for the next session.

@@ -116,7 +116,7 @@ export async function POST(request: Request) {
         for (const part of parts) {
           if (part.type === "text") {
             if (part.content.trim()) {
-              builder.markdown(part.content, 11);
+              builder.richText(part.content, { size: 11 });
             }
           } else if (part.type === "mermaid") {
             const pngBytes = await fetchMermaidAsPng(part.content);

@@ -1,0 +1,19 @@
+[setup] study_notes rows before: 0
+[PASS] GET on zero-coverage subject returns 500 no_module_notes (unchanged)
+[PASS] POST /generate returns 200
+[PASS] response carries a non-empty blocks array
+[PASS] modulesGenerated > 0
+[PASS] modulesFailed is empty
+[PASS] sourceMetadata.modulesTotal reflects all 5 modules
+[PASS] real module-scope rows landed in study_notes
+[PASS] exactly one subject-scope row landed
+[PASS] GET after generate returns 200
+[PASS] GET after generate serves from cache
+[PASS] GET after generate returns the same non-empty blocks
+[PASS] concurrent generate call A succeeds
+[PASS] concurrent generate call B succeeds
+[info] study_notes rows before concurrent pair: 6, after: 6
+[PASS] nonexistent subject returns 404
+
+ALL PASS
+[cleanup] study_notes rows after cleanup: 0

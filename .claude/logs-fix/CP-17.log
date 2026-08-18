@@ -1,0 +1,6 @@
+Working tree is clean except the pre-existing CP-08 leftovers (untouched, as prior sessions left them). Per instructions, this run has no auto-push, so I'm stopping here without pushing.
+
+**Summary:**
+- Fixed CP-17: `AnswerInput.tsx` had no `true_false` render branch, so it fell through the MCQ `options.map()` path against an empty options array — zero controls, unanswerable question. Added a dedicated two-button (True/False) branch matching MCQ's selection/reveal styling, plus keyboard shortcuts (1/T, 2/F). Committed as `3cc6115`, ledger/progress update as `ccb9f44`.
+- Verified via a new `_cp_17_verify/verify.tsx` harness that SSR-renders the real component (11 assertions): happy path (2 buttons now render, correct labelling/coloring), and two unhappy paths — interrupted flow (advancing to a fresh question doesn't leak stale selection) and concurrent/locked state (disabled instance still renders both controls rather than going blank). `tsc`/`eslint`/`build` all clean.
+- Not HALT-gated (no schema/RLS change); not pushed per this run's default. Next checkpoint should note the untouched pre-existing CP-08 changes still sitting in the working tree, and that `CP-18`'s ledger SHA isn't reachable from `dev`'s current history (flagged, not investigated).

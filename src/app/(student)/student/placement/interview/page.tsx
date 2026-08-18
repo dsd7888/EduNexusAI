@@ -1,7 +1,10 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import Link from "next/link";
 import { Loader2, X } from "lucide-react";
+import { cn } from "@/lib/utils";
+import { MonoTag, type MonoTagVariant } from "@/components/ui/mono-tag";
 import {
   INTERVIEW_QUESTIONS,
   type InterviewQuestion,
@@ -27,16 +30,12 @@ const CATEGORY_LABELS: Record<InterviewQuestionCategory, string> = {
   stress: "Stress",
 };
 
+// Difficulty dot is a meaningful signal, not decoration — kept semantic
+// (never red for a performance-adjacent indicator, per DESIGN.md).
 const DIFFICULTY_DOT: Record<InterviewQuestion["difficulty"], string> = {
   easy: "bg-emerald-400",
   medium: "bg-amber-400",
   hard: "bg-slate-400",
-};
-
-const ROUND_BADGE: Record<InterviewRound, string> = {
-  hr: "bg-purple-100 text-purple-700",
-  technical: "bg-blue-100 text-blue-700",
-  aptitude_discussion: "bg-gray-100 text-gray-700",
 };
 
 const ROUND_LABELS: Record<InterviewRound, string> = {
@@ -44,6 +43,20 @@ const ROUND_LABELS: Record<InterviewRound, string> = {
   technical: "Technical",
   aptitude_discussion: "Aptitude",
 };
+
+const PRIMARY_BUTTON =
+  "inline-flex h-11 items-center justify-center gap-1.5 rounded-8 bg-ink px-5 font-plex-sans text-body font-medium text-paper transition-colors duration-180 ease-out hover:bg-ink-800 disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ink-900 focus-visible:ring-offset-2";
+
+const SECONDARY_BUTTON =
+  "inline-flex h-11 items-center justify-center gap-1.5 rounded-8 border border-ink-200 px-5 font-plex-sans text-body font-medium text-ink transition-colors duration-180 ease-out hover:bg-ink-50 disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ink-900 focus-visible:ring-offset-2";
+
+function scoreVariant(score: number): MonoTagVariant {
+  // Never red for a performance indicator, per DESIGN.md — low scores stay
+  // on the neutral `default` tag rather than escalating to brick-red.
+  if (score >= 7) return "mastery-fill";
+  if (score >= 4) return "amber-fill";
+  return "default";
+}
 
 function wordCount(text: string): number {
   return text.trim() === "" ? 0 : text.trim().split(/\s+/).length;
@@ -136,33 +149,41 @@ export default function InterviewPrepPage() {
   }
 
   return (
-    <div className="min-h-screen bg-white">
+    <div className="min-h-screen bg-paper">
       <div className="mx-auto max-w-6xl px-4 py-6">
-        <div className="mb-6">
-          <h1 className="text-2xl font-bold text-gray-900">
-            Interview Prep Bank
-          </h1>
-          <p className="mt-1 text-sm text-gray-500">
-            Practice common placement interview questions with structured
-            feedback
-          </p>
+        <div className="mb-6 flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h1 className="font-plex-serif text-display-sm font-semibold text-ink">
+              Interview Prep Bank
+            </h1>
+            <p className="mt-1 font-plex-sans text-body-sm text-ink-500">
+              Practice common placement interview questions with structured
+              feedback
+            </p>
+          </div>
+          <Link
+            href="/student/placement/interview/mock"
+            className={cn(PRIMARY_BUTTON, "shrink-0")}
+          >
+            Run a mock round
+          </Link>
         </div>
 
         {/* JD Context Banner */}
         {jdContext && (
-          <div className="mb-4 flex items-center justify-between rounded-lg border border-blue-200 bg-blue-50 px-4 py-2">
-            <span className="text-sm text-blue-700">
+          <div className="mb-4 flex items-center justify-between rounded-8 border border-ink-200 bg-ink-50 px-4 py-2">
+            <span className="font-plex-sans text-body-sm text-ink-700">
               Preparing for:{" "}
-              <span className="font-medium">{jdContext}</span> role · Questions
+              <span className="font-medium text-ink">{jdContext}</span> role · Questions
               tailored to this role
             </span>
             <button
               type="button"
               onClick={() => setJdContext(null)}
-              className="ml-3 text-blue-500 hover:text-blue-700"
+              className="ml-3 rounded-4 text-ink-500 transition-colors duration-180 ease-out hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ink-900"
               aria-label="Dismiss"
             >
-              <X className="size-4" />
+              <X className="size-4" aria-hidden />
             </button>
           </div>
         )}
@@ -171,17 +192,18 @@ export default function InterviewPrepPage() {
           {/* ── Left: Question Browser ── */}
           <div className="lg:col-span-2">
             {/* Round tabs */}
-            <div className="mb-3 flex gap-1 border-b border-gray-200">
+            <div className="mb-3 flex gap-1 border-b border-ink-200">
               {(["all", "hr", "technical"] as const).map((r) => (
                 <button
                   key={r}
                   type="button"
                   onClick={() => setSelectedRound(r)}
-                  className={`px-3 py-2 text-sm font-medium transition-colors ${
+                  className={cn(
+                    "min-h-11 px-3 py-2 font-plex-sans text-body-sm font-medium transition-colors duration-180 ease-out focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ink-900",
                     selectedRound === r
-                      ? "border-b-2 border-blue-600 text-blue-600"
-                      : "text-gray-500 hover:text-gray-700"
-                  }`}
+                      ? "border-b-2 border-ochre text-ink-900"
+                      : "text-ink-500 hover:text-ink-700"
+                  )}
                 >
                   {r === "all" ? "All" : r === "hr" ? "HR" : "Technical"}
                 </button>
@@ -197,7 +219,7 @@ export default function InterviewPrepPage() {
                     e.target.value as InterviewQuestionCategory | "all"
                   )
                 }
-                className="w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-700 focus:border-blue-400 focus:outline-none"
+                className="w-full rounded-8 border border-ink-200 bg-paper px-3 py-2 font-plex-sans text-body-sm text-ink-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-ink-900"
               >
                 <option value="all">All Categories</option>
                 {(
@@ -213,7 +235,7 @@ export default function InterviewPrepPage() {
             {/* Question list */}
             <div className="space-y-2">
               {filteredQuestions.length === 0 && (
-                <p className="py-6 text-center text-sm text-gray-400">
+                <p className="py-6 text-center font-plex-sans text-body-sm text-ink-400">
                   No questions match this filter.
                 </p>
               )}
@@ -222,29 +244,29 @@ export default function InterviewPrepPage() {
                   key={q.id}
                   type="button"
                   onClick={() => selectQuestion(q)}
-                  className={`w-full rounded-lg border p-3 text-left transition-colors ${
+                  className={cn(
+                    "w-full rounded-8 border p-3 text-left transition-colors duration-180 ease-out focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ink-900",
                     activeQuestion?.id === q.id
-                      ? "border-blue-500 bg-blue-50"
-                      : "border-gray-200 hover:border-gray-300 hover:bg-gray-50"
-                  }`}
+                      ? "border-ochre bg-paper"
+                      : "border-ink-200 hover:border-ink-400 hover:bg-ink-50"
+                  )}
                 >
                   <div className="flex items-start gap-2">
                     <span
-                      className={`mt-1.5 size-2 shrink-0 rounded-full ${DIFFICULTY_DOT[q.difficulty]}`}
+                      className={cn(
+                        "mt-1.5 size-2 shrink-0 rounded-full",
+                        DIFFICULTY_DOT[q.difficulty]
+                      )}
                     />
                     <div className="min-w-0 flex-1">
-                      <p className="text-sm text-gray-800 leading-snug">
+                      <p className="font-plex-sans text-body-sm leading-snug text-ink">
                         {q.question.length > 80
                           ? q.question.slice(0, 80) + "…"
                           : q.question}
                       </p>
                       <div className="mt-1.5 flex items-center gap-1.5">
-                        <span
-                          className={`rounded-full px-2 py-0.5 text-xs font-medium ${ROUND_BADGE[q.round]}`}
-                        >
-                          {ROUND_LABELS[q.round]}
-                        </span>
-                        <span className="text-xs text-gray-400">
+                        <MonoTag>{ROUND_LABELS[q.round]}</MonoTag>
+                        <span className="font-plex-sans text-xs text-ink-400">
                           {CATEGORY_LABELS[q.category]}
                         </span>
                       </div>
@@ -259,10 +281,10 @@ export default function InterviewPrepPage() {
           <div className="lg:col-span-3">
             {!activeQuestion ? (
               <div className="flex h-64 flex-col items-center justify-center text-center">
-                <p className="text-gray-400">
+                <p className="font-plex-sans text-body text-ink-400">
                   Select a question to start practicing
                 </p>
-                <p className="mt-1 text-sm text-gray-400">
+                <p className="mt-1 font-plex-sans text-body-sm text-ink-400">
                   Start with Introduction questions — they set the tone
                 </p>
               </div>
@@ -271,39 +293,35 @@ export default function InterviewPrepPage() {
                 {/* Question header */}
                 <div>
                   <div className="mb-2 flex items-center gap-2">
-                    <span
-                      className={`rounded-full px-2 py-0.5 text-xs font-medium ${ROUND_BADGE[activeQuestion.round]}`}
-                    >
-                      {ROUND_LABELS[activeQuestion.round]}
-                    </span>
-                    <span className="text-xs text-gray-500">
+                    <MonoTag>{ROUND_LABELS[activeQuestion.round]}</MonoTag>
+                    <span className="font-plex-sans text-xs text-ink-500">
                       {CATEGORY_LABELS[activeQuestion.category]}
                     </span>
-                    <span className="text-xs text-gray-400 capitalize">
+                    <span className="font-plex-sans text-xs capitalize text-ink-400">
                       · {activeQuestion.difficulty}
                     </span>
                   </div>
-                  <h2 className="text-lg font-semibold text-gray-900">
+                  <h2 className="font-plex-serif text-display-sm font-semibold text-ink">
                     {activeQuestion.question}
                   </h2>
                 </div>
 
                 {/* Why they ask this */}
-                <div className="rounded-lg border border-amber-200 bg-amber-50 p-3">
-                  <p className="mb-1 text-xs font-medium text-amber-700">
+                <div className="rounded-8 border border-amber-200 bg-amber-50 p-3">
+                  <p className="mb-1 font-plex-sans text-xs font-medium text-amber-700">
                     Why interviewers ask this
                   </p>
-                  <p className="text-sm text-gray-700">
+                  <p className="font-plex-sans text-body-sm text-ink-700">
                     {activeQuestion.why_asked}
                   </p>
                 </div>
 
                 {/* Answer framework */}
-                <div className="rounded-lg border border-blue-200 bg-blue-50 p-3">
-                  <p className="mb-1 text-xs font-medium text-blue-700">
+                <div className="rounded-8 border border-ink-200 bg-ink-50 p-3">
+                  <p className="mb-1 font-plex-sans text-xs font-medium text-ink-600">
                     How to structure your answer
                   </p>
-                  <p className="text-sm text-gray-700">
+                  <p className="font-plex-sans text-body-sm text-ink-700">
                     {activeQuestion.answer_framework}
                   </p>
                 </div>
@@ -311,31 +329,31 @@ export default function InterviewPrepPage() {
                 {/* Dos and Don'ts */}
                 <div className="grid grid-cols-2 gap-3">
                   <div>
-                    <p className="mb-2 text-xs font-medium text-emerald-700">
+                    <p className="mb-2 font-plex-sans text-xs font-medium text-emerald-700">
                       ✓ Do
                     </p>
                     <ul className="space-y-1.5">
                       {activeQuestion.dos.map((d, i) => (
                         <li key={i} className="flex items-start gap-1.5">
-                          <span className="mt-0.5 text-emerald-500 text-xs">
+                          <span className="mt-0.5 text-xs text-emerald-500">
                             ✓
                           </span>
-                          <span className="text-sm text-gray-700">{d}</span>
+                          <span className="font-plex-sans text-body-sm text-ink-700">{d}</span>
                         </li>
                       ))}
                     </ul>
                   </div>
                   <div>
-                    <p className="mb-2 text-xs font-medium text-amber-700">
+                    <p className="mb-2 font-plex-sans text-xs font-medium text-amber-700">
                       ✗ Avoid
                     </p>
                     <ul className="space-y-1.5">
                       {activeQuestion.donts.map((d, i) => (
                         <li key={i} className="flex items-start gap-1.5">
-                          <span className="mt-0.5 text-amber-500 text-xs">
+                          <span className="mt-0.5 text-xs text-amber-500">
                             ✗
                           </span>
-                          <span className="text-sm text-gray-700">{d}</span>
+                          <span className="font-plex-sans text-body-sm text-ink-700">{d}</span>
                         </li>
                       ))}
                     </ul>
@@ -346,7 +364,7 @@ export default function InterviewPrepPage() {
                 <button
                   type="button"
                   onClick={() => setPracticeMode(true)}
-                  className="w-full rounded-xl bg-blue-600 py-2.5 text-sm font-medium text-white transition-colors hover:bg-blue-700"
+                  className={cn(PRIMARY_BUTTON, "w-full")}
                 >
                   Practice answering →
                 </button>
@@ -356,16 +374,12 @@ export default function InterviewPrepPage() {
                 {/* Question header */}
                 <div>
                   <div className="mb-2 flex items-center gap-2">
-                    <span
-                      className={`rounded-full px-2 py-0.5 text-xs font-medium ${ROUND_BADGE[activeQuestion.round]}`}
-                    >
-                      {ROUND_LABELS[activeQuestion.round]}
-                    </span>
-                    <span className="text-xs text-gray-500">
+                    <MonoTag>{ROUND_LABELS[activeQuestion.round]}</MonoTag>
+                    <span className="font-plex-sans text-xs text-ink-500">
                       {CATEGORY_LABELS[activeQuestion.category]}
                     </span>
                   </div>
-                  <h2 className="text-lg font-semibold text-gray-900">
+                  <h2 className="font-plex-serif text-display-sm font-semibold text-ink">
                     {activeQuestion.question}
                   </h2>
                 </div>
@@ -376,17 +390,17 @@ export default function InterviewPrepPage() {
                     value={studentAnswer}
                     onChange={(e) => setStudentAnswer(e.target.value)}
                     placeholder={`Write your answer here. \nAim for 100-150 words for HR questions.`}
-                    className="h-40 w-full resize-none rounded-xl border border-gray-200 p-3 text-sm text-gray-800 focus:border-blue-400 focus:outline-none"
+                    className="h-40 w-full resize-none rounded-8 border border-ink-200 bg-paper p-3 font-plex-sans text-body-sm text-ink placeholder:text-ink-400 focus:outline-none focus-visible:ring-2 focus-visible:ring-ink-900"
                   />
                   <div className="mt-1 flex items-center justify-end">
                     {wCount < 30 ? (
-                      <span className="text-xs text-amber-500">Too short</span>
+                      <span className="font-plex-sans text-xs text-amber-600">Too short</span>
                     ) : wCount > 200 ? (
-                      <span className="text-xs text-amber-500">
+                      <span className="font-plex-sans text-xs text-amber-600">
                         Too long — keep it concise
                       </span>
                     ) : (
-                      <span className="text-xs text-gray-400">
+                      <span className="font-plex-sans text-xs text-ink-400">
                         {wCount} words
                       </span>
                     )}
@@ -399,10 +413,10 @@ export default function InterviewPrepPage() {
                     type="button"
                     onClick={handleEvaluate}
                     disabled={studentAnswer.trim().length < 20 || isEvaluating}
-                    className="flex flex-1 items-center justify-center gap-2 rounded-xl bg-blue-600 py-2.5 text-sm font-medium text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
+                    className={cn(PRIMARY_BUTTON, "flex-1")}
                   >
                     {isEvaluating && (
-                      <Loader2 className="size-4 animate-spin" />
+                      <Loader2 className="size-4 animate-spin" aria-hidden />
                     )}
                     Get Feedback
                   </button>
@@ -412,7 +426,7 @@ export default function InterviewPrepPage() {
                       setPracticeMode(false);
                       setEvaluation(null);
                     }}
-                    className="rounded-xl border border-gray-200 px-4 py-2.5 text-sm text-gray-600 transition-colors hover:bg-gray-50"
+                    className={SECONDARY_BUTTON}
                   >
                     ← Back to question
                   </button>
@@ -420,57 +434,49 @@ export default function InterviewPrepPage() {
 
                 {/* Evaluation result */}
                 {evaluation && (
-                  <div className="space-y-4 rounded-xl border border-gray-200 bg-white p-4">
+                  <div className="space-y-4 rounded-12 border border-ink-200 bg-paper p-4">
                     {/* Score */}
                     <div className="flex items-baseline gap-2">
-                      <span
-                        className={`text-3xl font-bold ${
-                          evaluation.score >= 7
-                            ? "text-emerald-600"
-                            : evaluation.score >= 4
-                              ? "text-amber-600"
-                              : "text-slate-500"
-                        }`}
-                      >
+                      <MonoTag variant={scoreVariant(evaluation.score)}>
                         {evaluation.score}/10
-                      </span>
-                      <span className="text-sm text-gray-400">
+                      </MonoTag>
+                      <span className="font-plex-sans text-body-sm text-ink-400">
                         Practice Score
                       </span>
                     </div>
 
                     {/* What worked / Primary issue */}
                     <div className="grid grid-cols-2 gap-3">
-                      <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-3">
-                        <p className="mb-1 text-xs font-medium text-emerald-700">
+                      <div className="rounded-8 border border-emerald-200 bg-emerald-50 p-3">
+                        <p className="mb-1 font-plex-sans text-xs font-medium text-emerald-700">
                           What worked
                         </p>
-                        <p className="text-sm text-gray-700">
+                        <p className="font-plex-sans text-body-sm text-ink-700">
                           {evaluation.what_worked}
                         </p>
                       </div>
-                      <div className="rounded-lg border border-amber-200 bg-amber-50 p-3">
-                        <p className="mb-1 text-xs font-medium text-amber-700">
+                      <div className="rounded-8 border border-amber-200 bg-amber-50 p-3">
+                        <p className="mb-1 font-plex-sans text-xs font-medium text-amber-700">
                           Primary issue
                         </p>
-                        <p className="text-sm text-gray-700">
+                        <p className="font-plex-sans text-body-sm text-ink-700">
                           {evaluation.primary_issue}
                         </p>
                       </div>
                     </div>
 
                     {/* Improved answer */}
-                    <div className="rounded-xl border border-gray-200 bg-gray-50 p-4">
-                      <p className="mb-2 text-xs font-medium text-gray-500">
+                    <div className="rounded-8 border border-ink-100 bg-ink-50 p-4">
+                      <p className="mb-2 font-plex-sans text-xs font-medium text-ink-500">
                         Stronger version
                       </p>
-                      <p className="text-sm italic leading-relaxed text-gray-700">
+                      <p className="font-plex-sans text-body-sm italic leading-relaxed text-ink-700">
                         {evaluation.improved_answer}
                       </p>
                     </div>
 
                     {/* One tip */}
-                    <p className="text-sm text-gray-600">
+                    <p className="font-plex-sans text-body-sm text-ink-600">
                       💡 {evaluation.one_tip}
                     </p>
 
@@ -481,7 +487,7 @@ export default function InterviewPrepPage() {
                         setStudentAnswer("");
                         setEvaluation(null);
                       }}
-                      className="w-full rounded-xl border border-gray-200 py-2 text-sm text-gray-600 transition-colors hover:bg-gray-50"
+                      className={cn(SECONDARY_BUTTON, "w-full")}
                     >
                       Try again →
                     </button>

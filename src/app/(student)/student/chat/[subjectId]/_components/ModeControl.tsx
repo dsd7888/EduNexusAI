@@ -35,7 +35,7 @@ export function ModeControl({ value, onChange, disabled }: Props) {
             disabled={disabled}
             onClick={() => onChange(optValue)}
             className={cn(
-              "flex items-center gap-1 rounded-full px-2.5 py-1.5 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50",
+              "flex min-h-11 items-center gap-1 rounded-full px-2.5 py-1.5 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50",
               active
                 ? isResearch
                   ? "bg-indigo-600 text-white shadow-sm"

@@ -9,7 +9,7 @@ import {
   type VizType,
 } from "@/lib/ai/vizPrompts";
 import { createAdminClient } from "@/lib/db/supabase-server";
-import { checkRateLimit, RATE_LIMITS } from "@/lib/utils/rate-limit";
+import { checkRateLimit, releaseRateLimit, RATE_LIMITS } from "@/lib/utils/rate-limit";
 import { requireAuth, apiError } from "@/lib/api/helpers";
 import type { NextRequest } from "next/server";
 
@@ -94,6 +94,10 @@ function parseClientClassification(value: unknown): VizClassification | null {
 }
 
 export async function POST(request: NextRequest) {
+  // Hoisted above the try so the outer catch can release a reservation made
+  // partway through — let/const declared inside `try {}` aren't visible in
+  // its `catch` block.
+  let releaseReservation: (() => Promise<void>) | null = null;
   try {
     // ── 1. Auth — students only ──────────────────────────────────────────
     const authResult = await requireAuth();
@@ -180,6 +184,7 @@ export async function POST(request: NextRequest) {
       userId: user.id,
       eventType: "hint",
       limit: RATE_LIMITS.hint,
+      subjectId,
     });
 
     if (!rateCheck.allowed) {
@@ -192,6 +197,11 @@ export async function POST(request: NextRequest) {
         { status: 429 }
       );
     }
+    // From here on a slot is reserved; any early return must release it —
+    // quota tracks work delivered, not attempted (see § 7 below).
+    releaseReservation = () =>
+      releaseRateLimit({ userId: user.id, eventType: "hint", subjectId });
+    const release = () => releaseReservation!();
 
     const jobId = crypto.randomUUID();
     const logContext = {
@@ -232,6 +242,7 @@ export async function POST(request: NextRequest) {
         parsed = JSON.parse(classifyResponse.content);
       } catch (err) {
         console.error("[chat/visualize] classifier JSON parse failed:", err);
+        await release();
         return apiError("Could not classify this content", 502);
       }
 
@@ -241,6 +252,7 @@ export async function POST(request: NextRequest) {
           "[chat/visualize] classifier returned an unusable shape:",
           classifyResponse.content.slice(0, 200)
         );
+        await release();
         return apiError("Could not classify this content", 502);
       }
       classification = validated;
@@ -277,6 +289,7 @@ export async function POST(request: NextRequest) {
         payload = normalizeMermaid(String(parsed.mermaid ?? ""));
       } catch (err) {
         console.error("[chat/visualize] diagram JSON parse failed:", err);
+        await release();
         return apiError("Could not build this visualization", 502);
       }
     } else {
@@ -284,42 +297,13 @@ export async function POST(request: NextRequest) {
     }
 
     if (!payload) {
+      await release();
       return apiError("Could not build this visualization", 502);
     }
 
-    // ── 7. Quota — one decrement per successful build ────────────────────
-    // Deliberately after generation: a failed build must not cost the student a
-    // visualization. Mirrors the chat route's "no quota for cache hits" stance —
-    // quota tracks work delivered, not work attempted.
-    try {
-      const today = new Date().toISOString().slice(0, 10);
-      const { data: existingUsage } = await adminClient
-        .from("usage_analytics")
-        .select("id, event_count")
-        .eq("date", today)
-        .eq("user_id", profile.id)
-        .eq("subject_id", subjectId)
-        .eq("event_type", "hint")
-        .maybeSingle();
-
-      if (existingUsage) {
-        await adminClient
-          .from("usage_analytics")
-          .update({ event_count: (existingUsage.event_count ?? 0) + 1 })
-          .eq("id", existingUsage.id);
-      } else {
-        await adminClient.from("usage_analytics").insert({
-          date: today,
-          user_id: profile.id,
-          subject_id: subjectId,
-          event_type: "hint",
-          event_count: 1,
-        });
-      }
-    } catch (err) {
-      // Never fail a delivered visualization over an analytics write.
-      console.error("[chat/visualize] usage_analytics error:", err);
-    }
+    // ── 7. Quota — reserved atomically in the check above (§4); nothing to
+    // record here on success. A failed build released it above instead, so
+    // quota still tracks work delivered, not work attempted.
 
     return Response.json({
       vizType: classification.vizType,
@@ -329,6 +313,9 @@ export async function POST(request: NextRequest) {
     });
   } catch (error) {
     console.error("[chat/visualize] error:", error);
+    if (releaseReservation) {
+      await releaseReservation().catch(() => {});
+    }
     return apiError("Failed to build visualization", 500);
   }
 }

@@ -26,8 +26,21 @@ const ANSWER_KEY_TOKENS_PER_Q: Record<string, number> = {
   long_answer: 3800, descriptive: 3200, descriptive_with_or: 9000,
 };
 
+// Profile for STUDENT ASSESSMENT generation (Assessment Engine, CP-Q1).
+// Deliberately mid-way between "generation" and "answer_key": a quiz question
+// ships with a teaching explanation (longer than the qbank profile's brief
+// model answer) but not a full marking scheme (far shorter than answer_key).
+// MSQ and NAT cost more than MCQ for structural reasons, not stylistic ones —
+// an MSQ carries 5 options plus a justification per correct option, and a NAT
+// explanation must show the calculation that reaches the number.
+const ASSESSMENT_TOKENS_PER_Q: Record<string, number> = {
+  mcq: 400, true_false: 300, short: 400, match: 500,
+  msq: 600, multiple_correct: 600, nat: 600,
+};
+
 const DEFAULT_GEN = 300;
 const DEFAULT_KEY = 700;
+const DEFAULT_ASSESSMENT = 450;
 const SAFETY_MULTIPLIER = 1.35;
 const FIXED_OVERHEAD = 600;
 const FLOOR = 2048;
@@ -45,11 +58,21 @@ const LATEX_VERBOSITY_MULTIPLIER = 1.25;
 
 export function estimateMaxOutputTokens(
   slots: { type: QType; count: number }[],
-  profile: "generation" | "answer_key" = "generation",
+  profile: "generation" | "answer_key" | "assessment" = "generation",
   opts?: { latexVerbose?: boolean }
 ): number {
-  const table = profile === "answer_key" ? ANSWER_KEY_TOKENS_PER_Q : GEN_TOKENS_PER_Q;
-  const fallback = profile === "answer_key" ? DEFAULT_KEY : DEFAULT_GEN;
+  const table =
+    profile === "answer_key"
+      ? ANSWER_KEY_TOKENS_PER_Q
+      : profile === "assessment"
+        ? ASSESSMENT_TOKENS_PER_Q
+        : GEN_TOKENS_PER_Q;
+  const fallback =
+    profile === "answer_key"
+      ? DEFAULT_KEY
+      : profile === "assessment"
+        ? DEFAULT_ASSESSMENT
+        : DEFAULT_GEN;
   const raw = slots.reduce(
     (sum, s) => sum + (table[s.type] ?? fallback) * s.count,
     0

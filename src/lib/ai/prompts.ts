@@ -1,6 +1,27 @@
 export type QueryMode = "exam_prep" | "problem_solving" | "conceptual";
 
 /**
+ * Shared distress/safety-handling clause. Used by every AI prompt that talks
+ * directly to a student under academic/interview pressure — the tutor system
+ * prompt and the placement interview evaluation/follow-up routes — so the
+ * behavior can't drift between features. See CP-09 (FIX_SPEC.md): base-model
+ * safety training alone is not an enforced guardrail on this platform.
+ */
+export const DISTRESS_SAFETY_CLAUSE = `<distress_safety>
+If the student's message expresses genuine distress, hopelessness, burnout, or
+self-harm-adjacent language ("I don't see the point anymore", "nothing
+matters", "I want to give up on everything", etc.) — not just ordinary
+frustration with a hard topic or a bad interview answer — do not proceed with
+the requested task as if it were routine.
+First, acknowledge what they said directly and warmly in one or two sentences.
+Then name a concrete support resource: their institution's student counseling
+cell, or a helpline (India: iCall 9152987821, Vandrevala Foundation
+1860-2662-345, or dial 112 in an emergency).
+Only after that, ask if they'd like to continue — do not force the original
+task, and do not pivot straight back into it as if nothing was said.
+</distress_safety>`;
+
+/**
  * Shared visual/diagram rules block. Identical text used by
  * {@link buildTutorSystemPrompt} and {@link buildResearchTutorPrompt} so the two
  * tutor prompts can never drift on diagram formatting.
@@ -262,6 +283,8 @@ LENGTH: Match response length to question complexity. Simple question = concise 
 
 ${VISUAL_DIAGRAM_RULES}
 
+${DISTRESS_SAFETY_CLAUSE}
+
 <few_shot_examples>
 Example 1 — Conceptual question (good response pattern):
 Student: "What's the difference between heat and work in thermodynamics?"
@@ -417,65 +440,6 @@ Output format:
 - Return ONLY a valid JSON array of 4 strings.
 - Do not include any explanation or text outside the JSON.
 - Example format: ["Prompt 1", "Prompt 2", "Prompt 3", "Prompt 4"].`;
-}
-
-export function buildQuickNotesPrompt(options: {
-  topicLabel: string;
-  subjectName: string;
-  syllabusContent: string;
-  moduleName: string | null;
-}): string {
-  const { topicLabel, subjectName, syllabusContent, moduleName } = options;
-  const scope = moduleName
-    ? `module "${moduleName}"`
-    : `the subject "${subjectName}"`;
-
-  return `Generate comprehensive quick notes for ${scope}.
-
-Syllabus content:
-${syllabusContent}
-
-Format the notes exactly as:
-
-# ${topicLabel}
-
-## Key Concepts
-- Bullet points of core ideas, definitions, formulas
-
-## Important Formulas / Rules
-- List all key formulas with brief explanation
-
-## Quick Summary
-- 3-5 sentence overview of the entire topic
-
-## Remember For Exams
-- Most important points to memorize
-
-VISUAL DIAGRAMS (include when genuinely useful for the topic):
-For spatial/structural/algorithm/graph content → use SVG:
-\`\`\`svg
-<svg viewBox="0 0 800 400" xmlns="http://www.w3.org/2000/svg">
-  <rect width="800" height="400" fill="#F8FAFC"/>
-  <!-- diagram content with text labels -->
-</svg>
-\`\`\`
-CRITICAL: The opening line must be exactly \`\`\`svg (three backticks + svg).
-Never write <svg> directly in your response text without the fence.
-Never use any other fence name like \`\`\`xml or \`\`\`html for SVG content.
-
-For process/flow/decision content → use Mermaid:
-\`\`\`mermaid
-graph TD
-    A[Start] --> B[Step 1]
-\`\`\`
-
-Rules for both: one diagram maximum in the entire notes output, placed 
-after the relevant section text, never before. For Mermaid: 4-8 nodes, 
-no parentheses/underscores/curly braces in edge labels, max 4 words per 
-edge label. For SVG: viewBox="0 0 800 400", white background, all 
-elements labeled with <text> tags, no external refs, no scripts.
-
-Be concise but complete. Use markdown formatting. Return only the markdown notes.`;
 }
 
 /**

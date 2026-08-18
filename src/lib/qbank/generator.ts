@@ -9,11 +9,13 @@
 
 import { routeAI } from "@/lib/ai/router";
 import { estimateMaxOutputTokens } from "@/lib/ai/tokenBudget";
-import { hasUnsupportedNotation } from "@/lib/text/latexSegments";
 import {
-  archetypeHintForSubject,
-  classifySubjectFamily,
-} from "@/lib/qpaper/archetypes";
+  hasResidualControlChars,
+  hasUnsupportedNotation,
+  repairGeminiJsonEscapes,
+  MATH_CHEM_NOTATION_GUIDE,
+} from "@/lib/text/latexSegments";
+import { archetypeHintForSubject } from "@/lib/qpaper/archetypes";
 import type {
   Difficulty,
   GenerationSlot,
@@ -59,7 +61,20 @@ export interface GeneratedBankQuestion {
   module_id: string | null;
 }
 
-const SYSTEM_PROMPT = `You are an expert question setter for Indian engineering university examinations. Generate questions that test genuine understanding, not just memorization. Questions must be unambiguous, self-contained, and academically rigorous.`;
+// The notation guide was missing here entirely — not gated, absent. Q Bank both
+// generates math-bearing questions AND polices their notation on the way out
+// (`hasUnsupportedNotation` below flags malformed math as needs-review), so
+// without this it was marking work against a convention it never taught. Every
+// sibling generator (Q Paper sections, answer keys, Notes, lab manuals) states
+// it; see the MATH_CHEM_NOTATION_GUIDE header in latexSegments.ts.
+const SYSTEM_PROMPT = `You are an expert question setter for Indian engineering university examinations. Generate questions that test genuine understanding, not just memorization. Questions must be unambiguous, self-contained, and academically rigorous.
+
+When a question, option, or model answer contains mathematics or chemistry, write
+the notation using this exact convention so it renders correctly in the Q Bank UI
+and in every exported paper (these math/chemistry delimiters are required and are
+NOT considered "markdown"):
+
+${MATH_CHEM_NOTATION_GUIDE}`;
 
 // ─── Prompt assembly ───────────────────────────────────────────────────────
 
@@ -151,10 +166,14 @@ interface RawGen {
 }
 
 function parseJsonArray(raw: string): RawGen[] | null {
-  const cleaned = raw
-    .replace(/```json\s*/gi, "")
-    .replace(/```\s*/gi, "")
-    .trim();
+  // §13: repair the Gemini escape collision before parsing (and before the
+  // brace-salvage path below) — generated stems and model answers carry LaTeX.
+  const cleaned = repairGeminiJsonEscapes(
+    raw
+      .replace(/```json\s*/gi, "")
+      .replace(/```\s*/gi, "")
+      .trim(),
+  );
   const first = cleaned.indexOf("[");
   const last = cleaned.lastIndexOf("]");
   const slice =
@@ -241,7 +260,9 @@ async function generateSlot(
       maxTokens: estimateMaxOutputTokens(
         [{ type: slot.question_type, count: slot.count }],
         "generation",
-        { latexVerbose: classifySubjectFamily(ctx.subject_name) !== null }
+        // Lockstep with the notation guide in SYSTEM_PROMPT: every subject is
+        // now told to emit LaTeX, so every subject needs the output headroom.
+        { latexVerbose: true }
       ),
       logContext: {
         ...logContext,
@@ -298,7 +319,23 @@ async function generateSlot(
       }
     }
 
-    return questions;
+    // §13 layer 2: this generator has no all-or-nothing validation floor to
+    // fall back on, so the per-ITEM equivalent lives here — a question whose
+    // text still carries raw control characters survived a Gemini escape
+    // collision that the pre-parse repair did not cover, and is DROPPED rather
+    // than persisted as silently-broken math. Unlike the notation warning
+    // above (a visibility flag), this is a hard reject: the stored string
+    // would render as garbled literal text with no way for faculty to tell
+    // what the formula was meant to be.
+    const clean = questions.filter((q) => {
+      if (!hasResidualControlChars(q)) return true;
+      console.error(
+        `[qbank generate] REJECTED — residual control chars (escape corruption) — slot type=${slot.question_type} marks=${slot.marks}: ${JSON.stringify(q.question_text.slice(0, 120))}`
+      );
+      return false;
+    });
+
+    return clean;
   } catch (err) {
     const message = err instanceof Error ? err.message : "unknown error";
     console.warn(`[qbank generate] slot call failed: ${message}`);

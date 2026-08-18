@@ -1,0 +1,11 @@
+[setup] student d4a32a8a-cc85-4ac2-bd14-ea6896ec150a branch=CSE
+[setup] inScope=43003036-429f-43f7-b416-f300650a1eab outOfScope=36c2359e-5e7d-4099-a22f-cbc6651baeb8
+[PASS] out-of-scope subject rejected with 403
+[PASS] 403 response carries no questions array
+[PASS] in-scope subject still succeeds (200)
+[PASS] in-scope subject returns questions
+[PASS] mixed in-scope/out-of-scope exam-sim request rejected with 403
+[PASS] concurrent out-of-scope request A rejected
+[PASS] concurrent out-of-scope request B rejected
+
+ALL PASS

@@ -67,6 +67,55 @@ verification that would catch a missing one must be run before calling the work
 done. **If an unhappy-path case was not exercised, the completion report must say
 so explicitly** rather than implying full coverage.
 
+### Checkpoint verification harnesses (`_cp_*_verify/`)
+
+Backend checkpoints ship a standalone harness (`npx tsx _cp_q2_verify/verify.ts`)
+rather than a manual click-through. Three rules, each learned by breaking it:
+
+- **Execute `after()`, do not discard it.** `routeAI` logs every call to
+  `ai_call_logs` via `after()`. A harness whose `workAsyncStorage` shim
+  swallows the callback makes any "which AI tasks ran?" assertion pass over an
+  empty table — vacuously. The CP-Q2 shim invokes it; real spend then lands in
+  `ai_call_logs`, which is where it belongs. Copy that shim, not the CP-Q1 one.
+- **Clean up on signals, not just in `finally`.** A `finally` block does not run
+  when the process is signalled, and piping a harness through `head` SIGPIPE-kills
+  it mid-run. That left a subject half-mutated once, and the *next* run
+  snapshotted the contaminated state as its "original" and faithfully restored
+  the wrong thing. Register `SIGINT/SIGTERM/SIGPIPE/SIGHUP` handlers that run the
+  same cleanup, and redirect harness output to a file instead of piping it.
+- **Verify the cleanup, don't assume it.** After a run, query the touched tables
+  for residue and say so in the report.
+
+#### RLS verification: the four-assertion template
+
+Any harness claiming "role X cannot read table Y" MUST have all four of these.
+Reference implementation: `_cp_q3_verify/key_exposure.ts` (CP-Q3 Part 1,
+`quiz_session_keys`). Three of the four exist because the obvious one-assertion
+version passes for the wrong reasons.
+
+1. **A real client for the role under test** — anon key plus a genuine user JWT,
+   the same object a browser holds. Mint it with
+   `admin.auth.admin.generateLink({type:'magiclink'})` → `client.auth.verifyOtp()`
+   so no password needs to live in `.env.local`. A service-role client with a
+   `.eq()` filter proves nothing: it tests your WHERE clause, not the policy.
+2. **A positive control** — assert the service role CAN read the row. Without it
+   "returns []" passes identically against a table that is simply empty, and an
+   empty table is the most likely state of a freshly-migrated one.
+3. **Empty AND no error.** PostgREST returns `[]` with **no error** when RLS
+   matches no policy (§14). An *error* means something else broke — bad JWT,
+   missing table, typo'd name — and must never be scored as "blocked". Assert
+   both halves separately so a green run can't hide a broken query.
+4. **A canary string, and grep the serialised payload for it.** Checking that a
+   column or property is absent is weaker than it looks: the value can survive
+   inside a nested blob, a joined row, or a field you forgot to enumerate. Put a
+   unique sentinel in the secret at seed time and assert it appears nowhere in
+   `JSON.stringify(response)`.
+
+Plus the counterpart assertion whenever the fix was "split the table" rather
+than "remove the policy": prove the role STILL reads what it legitimately
+should. A test suite that only proves things are blocked passes just as well
+against an outage.
+
 ## Stack
 
 Next.js 16 (App Router, React 19) · TypeScript (strict) · Tailwind v4 · shadcn/ui
@@ -123,7 +172,8 @@ via the `srcDoc` attribute (the chat page component, `InteractiveHtmlViewer`).
 ## Load-bearing constraints (do not "fix" these)
 
 Each was discovered through debugging; changing it reintroduces a known bug. Full table
-with reasons is §17 of `CLAUDE_CONTEXT.md`.
+with reasons is **§19 (Architectural Decisions)** of `CLAUDE_CONTEXT.md`. (This cite read
+§17 until CP-N4 — §17 is the Active Feature Roadmap, a different section entirely.)
 
 - Auth middleware is `src/proxy.ts`, **never** `middleware.ts` (Next.js 16).
 - Layout files are pure UI — no auth checks (prevents redirect loops).
@@ -154,3 +204,20 @@ with reasons is §17 of `CLAUDE_CONTEXT.md`.
 - Env vars: `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`,
   `SUPABASE_SERVICE_ROLE_KEY`, `GOOGLE_GENERATIVE_AI_API_KEY`,
   `PRIMARY_AI_PROVIDER=gemini`. SQL schema changes go in `supabase/migrations/`.
+
+
+
+
+Automated placement-rebuild runs (read every session)
+
+When a session is launched by run-spec.sh to execute a single checkpoint of .claude/SPEC.md, these rules are in force:
+
+Read .claude/PROGRESS.md first, then .claude/SPEC.md (esp. §0), then this file. Do the work for the one named checkpoint only. Do not start the next one.
+Trust the repo, not descriptions. git/grep to verify state before editing. If SPEC.md says "already exists" and the repo disagrees, follow the repo and note it.
+Every new AI call goes through routeAI (so it is cost-logged), with responseSchema, repairGeminiJsonEscapes at the parse site, and an explicit thinkingConfig. No new npm dependencies without a note asking for approval.
+Commits are gated by a hook (.claude/hooks/guard.sh). It will refuse a commit that introduces new TypeScript errors, and refuse to commit a schema migration. Do not fight the hook. If a commit is refused for tsc errors, fix the errors.
+If a checkpoint needs a schema migration: create the migration file, then STOP. Append a note to .claude/PROGRESS.md that a migration awaits manual application. Do not loop trying to commit it — the hook will keep refusing (by design).
+Pushing: only push when told to in the prompt (non-HALT checkpoints). On HALT checkpoints, commit locally and do not push; a human reviews and pushes.
+UI checkpoints must produce screenshots (desktop + mobile, light + dark where supported) and a short DESIGN.md conformance note, per SPEC §0. State measured contrast for any text you introduced.
+Report unhappy-path checks, not just happy path (interrupted flow, empty data, concurrent action, ineligible student, empty bank).
+Last action, always: append a dated entry to .claude/PROGRESS.md in the documented format, including the commit SHA.

@@ -86,7 +86,7 @@ export function Composer({
             onClick={onSend}
             disabled={isDisabled || !value.trim()}
             size="sm"
-            className="h-8 gap-1.5 rounded-full px-4"
+            className="min-h-11 gap-1.5 rounded-full px-4"
           >
             {isSending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5" />}
             <span className="hidden sm:inline">Send</span>

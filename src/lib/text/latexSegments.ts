@@ -244,6 +244,205 @@ function isAsciiLetter(code: number): boolean {
   return (code >= 65 && code <= 90) || (code >= 97 && code <= 122);
 }
 
+function isLowerAsciiLetter(code: number): boolean {
+  return code >= 97 && code <= 122;
+}
+
+// ── The PRE-parse escape repair (single source of truth) ─────────────────────
+//
+// HEURISTIC REPAIR FOR A KNOWN MODEL-DECODING FAILURE MODE — NOT a general JSON
+// sanitizer. Do not extend it into one, and do not reach for it to "clean up"
+// arbitrary malformed JSON.
+//
+// `\f` `\b` `\v` are never legitimate in generated prose or formulae, so a letter
+// after one is always a LaTeX command that lost its escaping backslash.
+const NEVER_LEGIT_ESCAPE = new Set(["f", "b", "v"]);
+
+// `\t` `\n` `\r` ARE legitimate whitespace, so they are whitelist-gated: the
+// escape is only treated as a broken command when the text right after it
+// completes a real LaTeX/mhchem command. Keys are the escape letter; values are
+// the command MINUS that first letter (`\theta` → "heta"). Longest-first so
+// `\rightarrow` wins over `\right` and `\textbf` over `\text`.
+const LATEX_COMMAND_REMAINDERS: Record<string, string[]> = {
+  t: ["extbf", "extit", "extrm", "hicksim", "heta", "imes", "ilde", "race",
+      "anh", "frac", "ext", "an", "au", "op", "o"],
+  n: ["ormalsize", "onumber", "ewline", "olimits", "earrow", "abla", "otin",
+      "eq", "ot", "eg", "u", "e"],
+  r: ["ightleftharpoons", "ightharpoonup", "ightarrow", "angle", "ight",
+      "floor", "vert", "ceil", "ho", "ad", "m", "e"],
+};
+for (const k of Object.keys(LATEX_COMMAND_REMAINDERS)) {
+  LATEX_COMMAND_REMAINDERS[k].sort((a, b) => b.length - a.length);
+}
+
+// The complete set of characters JSON allows after a backslash. A backslash
+// followed by ANYTHING else is not valid JSON at all, so `JSON.parse` throws —
+// that is the LOUD twin of the silent corruption this module repairs, and it has
+// exactly one cause here: an unescaped LaTeX command (`\cdot`, `\end`, `\ce`,
+// `\Omega`, `\alpha`, …). Escaping those is unambiguously correct: it can only
+// turn a guaranteed parse failure into a correct parse, never alter a string
+// that would otherwise have parsed.
+const VALID_JSON_ESCAPES = new Set(['"', "\\", "/", "b", "f", "n", "r", "t", "u"]);
+
+/**
+ * Would `\<letter>` here be a LaTeX command rather than a real escape?
+ * `after` is the index just past the escape letter.
+ */
+function looksLikeLatexCommand(letter: string, raw: string, after: number): boolean {
+  // Not a legal JSON escape → cannot be anything but a stray LaTeX backslash.
+  if (!VALID_JSON_ESCAPES.has(letter)) return true;
+  if (NEVER_LEGIT_ESCAPE.has(letter)) return isAsciiLetter(raw.charCodeAt(after));
+  const remainders = LATEX_COMMAND_REMAINDERS[letter];
+  if (!remainders) return false;
+  for (const rem of remainders) {
+    if (!raw.startsWith(rem, after)) continue;
+    // Word boundary: the command must END here. Without this, a REAL newline
+    // before the word "under" would match `\nu` + "nder", and a real carriage
+    // return before "hot" would match `\rho` + "t". Requiring a non-lowercase
+    // char after the remainder rejects both while still matching `\nu $`,
+    // `\rho}`, `\text{`, `\times `.
+    if (isLowerAsciiLetter(raw.charCodeAt(after + rem.length))) continue;
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Repair the Gemini JSON-escape collision BEFORE `JSON.parse`.
+ *
+ * Under a responseSchema, Gemini sometimes emits a SINGLE backslash before a
+ * LaTeX command whose first letter is also a JSON short escape:
+ *
+ *     "$\frac{dQ}{dt}$"   ← one backslash, not two
+ *
+ * `JSON.parse` does NOT throw on this — `\f` is a valid JSON escape — so it
+ * silently decodes to form-feed + "rac{dQ}{dt}" and the formula is destroyed
+ * with no error anywhere. Same for \b \n \r \t (and \v, which is not even legal
+ * JSON and so throws instead).
+ *
+ * Running this on the RAW response first turns `\frac` into `\\frac`, so the
+ * parse yields the backslash the model meant. Pre-parse is deliberate: the
+ * earlier post-parse repair had to walk `$…$` spans to decide what was safe to
+ * touch, and a model-emitted `$` NESTED inside `\text{…}` desynced that walk,
+ * leaving real corruption unrepaired (observed in lab_manual_cache). Operating
+ * on the raw string needs no span or delimiter reasoning at all.
+ *
+ * Output is still valid JSON — this only ever INSERTS a backslash, never removes
+ * one, and never looks inside an already-escaped `\\` pair.
+ */
+export function repairGeminiJsonEscapes(raw: string): string {
+  if (!raw || !raw.includes("\\")) return raw;
+  let out = "";
+  let i = 0;
+  const n = raw.length;
+  while (i < n) {
+    if (raw[i] !== "\\") {
+      out += raw[i];
+      i += 1;
+      continue;
+    }
+    const next = raw[i + 1];
+    // An escaped backslash consumes BOTH chars — never inspect what follows it,
+    // or `\\frac` (already correct) would gain a third backslash.
+    if (next === "\\") {
+      out += "\\\\";
+      i += 2;
+      continue;
+    }
+    if (next && looksLikeLatexCommand(next, raw, i + 2)) {
+      out += "\\\\" + next; // `\f` → `\\f`, which parses back to a literal `\f`
+      i += 2;
+      continue;
+    }
+    out += raw[i];
+    i += 1;
+  }
+  return out;
+}
+
+/**
+ * DETECTION half, sharing the one whitelist above so the scanner and the repair
+ * can never disagree about what counts as corruption.
+ *
+ * Finds text where the collision ALREADY happened — i.e. a decoded control
+ * character followed by a LaTeX command remainder. Used by the corruption
+ * scanner (`scripts/scan-escape-corruption.ts`) against stored rows, and by the
+ * post-generation regression harness.
+ *
+ * Severity mirrors how plausibly the control character could be real content:
+ *  - `certain`: 0x08 / 0x0B / 0x0C, which never legitimately appear.
+ *  - `likely` : 0x09 / 0x0A / 0x0D followed by a whitelisted command remainder,
+ *               word-boundary checked so a real newline before "under" or a real
+ *               tab before "total" is NOT flagged.
+ */
+const CTRL_CODE_TO_ESCAPE_LETTER: Record<number, string> = {
+  8: "b", 9: "t", 10: "n", 11: "v", 12: "f", 13: "r",
+};
+
+export interface EscapeCorruptionHit {
+  severity: "certain" | "likely";
+  index: number;
+  /** Best reconstruction of what the model meant, e.g. `\frac`. */
+  command: string;
+}
+
+export function findEscapeCorruption(text: string): EscapeCorruptionHit[] {
+  if (!text) return [];
+  const hits: EscapeCorruptionHit[] = [];
+  for (let i = 0; i < text.length; i++) {
+    const letter = CTRL_CODE_TO_ESCAPE_LETTER[text.charCodeAt(i)];
+    if (!letter) continue;
+    if (!isAsciiLetter(text.charCodeAt(i + 1))) continue;
+    if (NEVER_LEGIT_ESCAPE.has(letter)) {
+      hits.push({
+        severity: "certain",
+        index: i,
+        command: `\\${letter}${text.slice(i + 1, i + 11)}`,
+      });
+      continue;
+    }
+    // Same whitelist + boundary rule the repair uses, applied one char later
+    // (the control char has replaced the `\` + letter pair).
+    const remainders = LATEX_COMMAND_REMAINDERS[letter] ?? [];
+    for (const rem of remainders) {
+      if (!text.startsWith(rem, i + 1)) continue;
+      if (isLowerAsciiLetter(text.charCodeAt(i + 1 + rem.length))) continue;
+      hits.push({ severity: "likely", index: i, command: `\\${letter}${rem}` });
+      break;
+    }
+  }
+  return hits;
+}
+
+// Control characters that have NO legitimate reason to appear in a formula or a
+// plain-explanation field. Tab (9), newline (10) and carriage return (13) are
+// excluded — those are real formatting in worked examples and code scaffolds.
+// Anything else in \x00-\x1F is a residue of the escape collision above.
+function isIllegalControlChar(code: number): boolean {
+  return (code >= 0 && code <= 8) || code === 11 || code === 12 ||
+    (code >= 14 && code <= 31);
+}
+
+/**
+ * Post-parse guard (layer 2). After `repairGeminiJsonEscapes` + `JSON.parse`,
+ * any surviving illegal control character means the repair did not catch a
+ * corruption variant. Callers treat a true result as a validation failure and
+ * reject the item rather than storing silently-broken math.
+ */
+export function hasResidualControlChars(value: unknown): boolean {
+  if (typeof value === "string") {
+    for (let i = 0; i < value.length; i++) {
+      if (isIllegalControlChar(value.charCodeAt(i))) return true;
+    }
+    return false;
+  }
+  if (Array.isArray(value)) return value.some(hasResidualControlChars);
+  if (value && typeof value === "object") {
+    return Object.values(value as Record<string, unknown>).some(hasResidualControlChars);
+  }
+  return false;
+}
+
 // Symbol commands Gemini Flash sometimes mis-writes with a `\text` prefix — it
 // emits `\textDelta` / `\text{\textapprox}` where it means `\Delta` / `\approx`,
 // producing an undefined command that KaTeX can't render. A CLOSED list (not a
@@ -376,38 +575,90 @@ function findClosing(text: string, from: number, delimiter: "$" | "$$"): number 
  * signs ("$1,400, $3,000, …"). Only applies to the ambiguous SINGLE-`$` case —
  * `$$…$$` block math and bare `\ce{…}` are unambiguous and never routed here.
  *
+ * ── PHILOSOPHY: accept-by-default (flipped Aug 2026) ──
+ * This function ORIGINALLY did the opposite: it rejected a span unless it matched
+ * one of four positive math signals (structural marker; lone ≤3-char variable;
+ * operator-plus-letter relation; hyphen-chain). That reject-by-default design was
+ * chosen to protect against USD-style currency prose ("$1,400, $3,000, …") being
+ * mis-rendered as italic math. It stopped converging: three genuine math shapes
+ * were found leaking to students as literal `$…$` in a SINGLE session — bare
+ * quantity+unit ("0.48 A", "24 A"), bare variable / prime lists ("A, B, C",
+ * "A', B', C'"), and function/relation/boolean notation ("F(A, B, C)", "A'BC").
+ * Each needed its own new rule, and the reject list kept growing.
+ *
+ * The flip was made on live-DB evidence, not preference:
+ *   • Corpus scan (faculty_question_bank, study_notes, chat_messages,
+ *     generated_content — every table that actually stores generated `$…$` text;
+ *     PPT/Lab-Manual live only as Storage files): 686 single-`$` candidates,
+ *     of which the old classifier rejected 17. Of those 17, ~10 were genuine math
+ *     wrongly rejected and 6 were PROSE fragments that were only ever candidates
+ *     because of a CASCADING mispair — once a real math span like "$A, B, C$" is
+ *     rejected, the segmenter's delimiters shift by one and it swallows the
+ *     following prose plus the next math span into one giant literal run.
+ *   • The currency scenario this function was built to prevent has ZERO real
+ *     occurrences in the corpus: no `N,NNN`/`N.NN` reject, and zero texts with
+ *     two-or-more bare "$<digits>" sequences. Consistent with an INR-based
+ *     (`cost_inr`) Indian-engineering platform — USD-style dollar prose does not
+ *     occur in real generated content.
+ *   • Re-running the scan with an accept-by-default classifier dropped rejects
+ *     17 → 1 (the sole survivor being "$*$", correctly literal). Every prose
+ *     fragment vanished because accepting the real math re-aligns the delimiters
+ *     and the cascade never starts. So the flip does not turn prose into math —
+ *     it removes the misalignment that produced the prose candidates.
+ *
  * `inner` is the already-trimmed text between the two dollars. It counts as math
- * when it carries at least one genuine math signal:
+ * UNLESS it matches a specific enumerated non-math shape:
  *
- *   1. A structural LaTeX marker — a backslash command (`\cup`, `\frac`, `\{`),
- *      a superscript `^`, a subscript `_`, or a brace `{`/`}`. None of these ever
- *      occur inside a currency amount, so their presence is decisive.
- *   2. A lone variable / symbol — a short (≤3 char) token with no whitespace that
- *      contains a letter and isn't purely digits: "x", "n", "ab", "R". This keeps
- *      minimal real formulae like `$x$` and `$n$` rendering as math.
- *   3. A simple relation between symbols — an algebraic operator (`= < > + * / |`)
- *      together with a letter: "a = b", "x > 0", "a+b". The letter requirement is
- *      what keeps digit-only currency fragments ("5 + ", "1,400,") literal.
+ *   1. (Fast path, always math — unchanged.) A structural LaTeX marker: a
+ *      backslash command (`\cup`, `\frac`, `\,`, `\{`), a superscript `^`, a
+ *      subscript `_`, or a brace `{`/`}`. Unambiguous and correct under either
+ *      philosophy, so it short-circuits first.
+ *   2. (Non-math.) A PURE currency/number fragment — only digits, commas, periods,
+ *      whitespace and `+`/`-`: "1,400", "3,000", "4.50", "5 + ", "5-10". This is the
+ *      whole non-math class and subsumes the old currency/range guards. It is keyed
+ *      on the number shape, NOT on "no letter", on purpose: a lone math SYMBOL span
+ *      like "$*$" (a binary operation) or "$=$" also has no letter but IS math, and
+ *      rejecting it would re-trigger the exact cascade the flip exists to kill — a
+ *      rejected span shifts the delimiters and swallows the following prose plus the
+ *      next math span into one literal run (verified live on the abstract-algebra
+ *      "$G$ … binary operation $*$ … $(G, *)$ …" row).
+ *   3. (Non-math exception among letter-bearing spans.) A numeric RANGE followed by
+ *      a trailing word/unit: "3-5 kg", "10-15 students", "5-10 marks". These carry
+ *      a letter, so only this explicit guard keeps them literal. It is anchored to
+ *      the RANGE shape (`\d+-\d+` then whitespace+word) on purpose: a single
+ *      quantity+unit like "0.48 A" or "24 A" has no hyphen-range and so falls
+ *      through to math. That distinction — range-vs-not — is the ONLY thing
+ *      separating "3-5 kg" (literal) from "0.48 A" (math); a looser "number near a
+ *      word" heuristic would wrongly swallow the quantity+unit case, so do not
+ *      widen this to one.
  *
- * Anything else — spans that are just digits, commas, spaces and prose words —
- * is rejected, so the dollars stay literal text.
+ * Everything else that carries a letter is math. Known, deliberate residuals:
+ * a single number+word with no range ("5 marks") renders as math, and a
+ * hypothetical USD span with a letter between two dollars ("$5 or $10") would too
+ * — both accepted because the range guard is intentionally narrow and neither
+ * shape occurs in the live corpus.
  */
 function isInlineMathContent(inner: string): boolean {
   const s = inner.trim();
   if (!s) return false;
 
-  // 1. Unambiguous structural LaTeX markers.
+  // 1. Unambiguous structural LaTeX markers — always math (fast path, unchanged).
   if (/[\\^_{}]/.test(s)) return true;
 
-  // 2. A lone variable / symbol (e.g. "$x$", "$n$").
-  if (!/\s/.test(s) && s.length <= 3 && /[a-zA-Z]/.test(s) && !/^[\d.,]+$/.test(s)) {
-    return true;
-  }
+  // 2. A pure currency/number fragment (only digits, comma, period, whitespace,
+  //    +/-) → not math. Keyed on the number shape, NOT on "has no letter", so a
+  //    lone math symbol like "$*$" or "$=$" still counts as math (rejecting it
+  //    would re-trigger the cascade). Subsumes the old "$1,400$"/"$5-10$"/"$5 + $".
+  if (/^[\d.,\s+\-]+$/.test(s)) return false;
 
-  // 3. A simple relation/operation between symbols (e.g. "$a = b$", "$x > 0$").
-  if (/[=<>+*/|]/.test(s) && /[a-zA-Z]/.test(s)) return true;
+  // 3. Enumerated non-math exception: a numeric RANGE + trailing word/unit
+  //    ("3-5 kg", "10-15 students"). Anchored to the range shape so a single
+  //    quantity+unit ("0.48 A", "24 A") does NOT match and falls through to math.
+  if (/^\d+(?:\.\d+)?-\d+(?:\.\d+)?\s+[A-Za-z]/.test(s)) return false;
 
-  return false;
+  // Accept-by-default: anything left (a letter-bearing span, or a non-number
+  // symbol span like "$*$"/"$=$") is math.
+  return true;
 }
 
 /** Given the index of an opening `{`, return the index of its matching `}`, or -1. */
@@ -503,6 +754,46 @@ export function hasUnsupportedNotation(
  * Import this into: AI prompt fragments, the CSV template documentation, and any
  * in-app help text. Keeping it a single exported constant guarantees "what we
  * tell faculty" can never drift from "what we tell the AI".
+ *
+ * ── INJECT IT UNCONDITIONALLY. DO NOT GATE IT ON SUBJECT FAMILY. ────────────
+ *
+ * Every generation site injects this guide for EVERY subject. It is written as
+ * conditional instruction ("when the content contains mathematics or
+ * chemistry, write it this way"), so a subject with no math simply never
+ * triggers it — the model does not invent formulae to use it.
+ *
+ * This was measured, not assumed (Aug 2026). Notes, Q Paper sections, answer
+ * keys and lab manuals had always injected it unconditionally; Quiz/Assessment,
+ * `natVerify` and PPT gated it on `classifySubjectFamily(...) !== null ||
+ * hasLatex(syllabus)`, and Q Bank omitted it entirely. Against the live pilot
+ * DB that gate passed for 2 of 17 subjects:
+ *
+ *   - `hasLatex(syllabus)` was TRUE for 0 of 17 subjects and 0 of 106 module
+ *     descriptions. Syllabus text is reconstructed prose from the structured
+ *     tables and contains no LaTeX, so that OR-clause could never fire.
+ *   - Only subject NAMES matching the keyword regex passed — "mathematics iii"
+ *     and one "chemical process" subject. Electrical, Electronics, Network
+ *     Analysis, Electrical Machines and Data Structures all failed it.
+ *   - The cost was measured on SOEEC1010 (Basics of Electrical & Electronics),
+ *     one subject across two surfaces: Notes, which injects unconditionally,
+ *     produced 477 correct math spans ($\\frac{V_P}{V_S} = \\frac{N_P}{N_S}$,
+ *     $I^2R$); Q Bank, which injected nothing, produced 0 across 17 questions
+ *     and wrote "R1 = 10 Ω" as plain text. Across every AI-generated Q Bank row
+ *     for a subject the regex missed: 0 of 92 carried LaTeX.
+ *   - The feared downside did not appear. Automobile Engineering, a low-formula
+ *     subject, produced only 4 math spans across 4 note rows under
+ *     unconditional injection — all of them real formulae. Output scales to the
+ *     content, not to the presence of the guide.
+ *
+ * A broader keyword list would have re-introduced the same fragility one rung
+ * up. If you are tempted to re-add a gate, you need new evidence that beats the
+ * measurement above. `classifySubjectFamily()` stays scoped to archetype-hint
+ * gating (`qpaper/archetypes.ts`), which is a genuinely family-specific concern.
+ *
+ * Whatever budget knob accompanies this guide (`latexVerbose` in
+ * `tokenBudget.ts`) must be set on the SAME terms — instructing a subject to
+ * emit LaTeX on a non-LaTeX output budget is the truncation failure that knob
+ * exists to prevent.
  */
 export const MATH_CHEM_NOTATION_GUIDE = `MATH & CHEMISTRY NOTATION
 

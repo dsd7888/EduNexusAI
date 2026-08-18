@@ -47,9 +47,23 @@ export async function POST(request: NextRequest) {
     // Fetch existing scores (or default to 0 for first setup)
     const { data: existing } = await adminClient
       .from('student_placement_profiles')
-      .select('readiness_aptitude, readiness_verbal, readiness_domain, readiness_coding, readiness_communication, primary_target')
+      .select('readiness_aptitude, readiness_verbal, readiness_domain, readiness_coding, readiness_communication, primary_target, cgpa')
       .eq('student_id', user.id)
       .maybeSingle();
+
+    if (setup_complete === true) {
+      const effectiveCgpa = cgpa !== undefined ? cgpa : existing?.cgpa;
+      if (
+        effectiveCgpa === null ||
+        effectiveCgpa === undefined ||
+        typeof effectiveCgpa !== 'number' ||
+        Number.isNaN(effectiveCgpa) ||
+        effectiveCgpa < 0 ||
+        effectiveCgpa > 10
+      ) {
+        return apiError('A valid CGPA (0-10) is required before completing placement setup', 400);
+      }
+    }
 
     const mergedProfile = {
       readiness_aptitude:      existing?.readiness_aptitude      ?? 0,

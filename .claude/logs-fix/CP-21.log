@@ -1,0 +1,6 @@
+`origin/dev` is far behind (last at CP-02) — confirms local-only, not pushed, as instructed. Pre-existing CP-08 diffs remain untouched, as they belong to prior sessions.
+
+**Summary:**
+- Added `?? []`/`?? {...}` null-guards to `src/app/api/placement/resume/export/{pdf,docx}/route.ts` for `technical_skills` (including per-field, not just whole-object), `education[0]`, `projects`, `internships`, `certifications`, `achievements`, and their nested arrays (`tech_stack`, `bullets`, `relevant_courses`) — matching the pattern already used in `resume/ats/route.ts`.
+- Verified via new harness `_cp_21_verify/api.mts` against the live dev server + real auth session: fully-missing fields, partially-missing `technical_skills` (caught a real gap — whole-object fallback alone still crashed on `ts.frameworks/tools/concepts`, fixed), a concurrent PDF+DOCX export pair, and an interrupted/aborted request followed by a successful retry. `tsc`, `eslint`, and `npm run build` all clean.
+- Commits: `f6d77ab` (fix + harness), `7616911` (ledger + PROGRESS.md) — both local-only on `dev`, not pushed.

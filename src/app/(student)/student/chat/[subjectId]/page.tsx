@@ -16,6 +16,16 @@ import { StruggleNudge } from "./_components/StruggleNudge";
 import { extractTrailingChip } from "./_components/helpers";
 import { sendChatMessage } from "./_components/streamClient";
 import type { RequestedMode, SubjectRow, UiMessage } from "./_components/types";
+import {
+  buildPrefillMessage,
+  sweepQuizPrefills,
+  takeQuizPrefill,
+} from "@/lib/assessment/chatHandoff";
+import {
+  buildNotesPrefillMessage,
+  sweepNotesHandoffs,
+  takeNotesHandoff,
+} from "@/lib/notes/chat-handoff";
 
 const QUOTA_LIMITS = { chat: 50, research: 10 } as const;
 
@@ -431,6 +441,82 @@ export default function StudentSubjectChatPage() {
     runExchange(text, mode);
   };
 
+  // ── "Ask AI why" handoff from a quiz reveal (CP-Q3 Part 4) ──────────────
+  // The payload is in sessionStorage under a short token; only the token
+  // travels in the URL (see lib/assessment/chatHandoff.ts for why — a raw
+  // prefill would truncate on long stems and leak wrong answers into history
+  // and access logs).
+  //
+  // window.location.search rather than useSearchParams(): this page is a
+  // client route with no Suspense boundary of its own, and useSearchParams
+  // would force one. A one-shot read inside an effect is the right shape
+  // anyway — nothing here needs to re-render on a search-param change.
+  //
+  // Fires once. takeQuizPrefill() is read-and-DELETE and prefillFiredRef
+  // guards the double-invoked development effect, so a refresh cannot
+  // re-submit the same question and burn another chat quota unit.
+  const prefillFiredRef = useRef(false);
+  useEffect(() => {
+    if (prefillFiredRef.current) return;
+    // Wait for the session to exist so the turn is attributed to it rather
+    // than racing session creation.
+    if (!sessionId || !hasSyllabus) return;
+
+    sweepQuizPrefills();
+    const token = new URLSearchParams(window.location.search).get("prefill");
+    if (!token) return;
+
+    const payload = takeQuizPrefill(token);
+    // Strip the token from the URL either way — a spent or stale token in the
+    // address bar invites a confusing refresh.
+    const url = new URL(window.location.href);
+    url.searchParams.delete("prefill");
+    window.history.replaceState({}, "", url.toString());
+
+    if (!payload) return;
+    prefillFiredRef.current = true;
+
+    const text = buildPrefillMessage(payload);
+    // Populate the composer before sending, so the student sees what was asked
+    // on their behalf rather than an answer to an invisible question.
+    setInputValue(text);
+    runExchange(text, mode);
+    setInputValue("");
+  }, [sessionId, hasSyllabus, mode, runExchange]);
+
+  // ── "Ask about this" handoff from a notes block (CP-N4 Part 5) ──────────
+  // Same token-in-URL, payload-in-sessionStorage shape as the quiz handoff
+  // above, and read-and-DELETE for the same reason.
+  //
+  // BUT IT PREFILLS WITHOUT SENDING, which is the one deliberate difference.
+  // "Explain why I got this wrong" is a closed question with one answer, so
+  // auto-sending it is doing the student a favour. "Explain this concept
+  // further" is open — they may want to narrow it, redirect it, or add what
+  // they already understand first. Sending it for them spends a chat quota
+  // unit on a question they did not finish asking.
+  //
+  // Consequently this does NOT need the session to exist yet (nothing is being
+  // attributed to a turn) and does NOT need a fired-once ref to protect quota.
+  // The destructive read is what makes it idempotent: React's double-invoked
+  // development effect finds nothing on its second pass.
+  useEffect(() => {
+    if (!hasSyllabus) return;
+
+    sweepNotesHandoffs();
+    const key = new URLSearchParams(window.location.search).get("notesHandoff");
+    if (!key) return;
+
+    const payload = takeNotesHandoff(key);
+    // Strip the key either way — a spent token in the address bar invites a
+    // refresh that silently does nothing.
+    const url = new URL(window.location.href);
+    url.searchParams.delete("notesHandoff");
+    window.history.replaceState({}, "", url.toString());
+
+    if (!payload) return;
+    setInputValue(buildNotesPrefillMessage(payload));
+  }, [hasSyllabus]);
+
   const onSuggestionSelect = (text: string) => runExchange(text, mode);
 
   const onRetry = useCallback(
@@ -578,7 +664,7 @@ export default function StudentSubjectChatPage() {
       : { used: quotaChat, limit: QUOTA_LIMITS.chat, label: "Chat" };
 
   return (
-    <div className="flex h-[calc(100vh-7rem)] flex-col">
+    <div className="flex h-full flex-col">
       <ChatHeader
         subject={subject}
         isResumed={isResumed}

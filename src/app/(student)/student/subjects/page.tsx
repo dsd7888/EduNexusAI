@@ -1,80 +1,61 @@
 "use client";
 
-import MarkdownRenderer from "@/components/chat/MarkdownRenderer";
 import { createBrowserClient } from "@/lib/db/supabase-browser";
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
-import {
-  Card,
-  CardDescription,
-  CardFooter,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
+import { MonoTag } from "@/components/ui/mono-tag";
 import { CardSkeleton } from "@/components/layout/PageSkeleton";
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
 import { ArrowUpDown, BookOpen, MessageSquare } from "lucide-react";
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { buildProcessedSubjectGroups } from "@/lib/student/subjectGroups";
 import { cn } from "@/lib/utils";
 import { useStudentSubjects, type SubjectRow } from "@/hooks/useSupabaseData";
+import SubjectSearchPicker from "@/components/SubjectSearchPicker";
 
 function SubjectCard({
   subject,
   isCurrent,
-  onOpenNotes,
 }: {
   subject: SubjectRow;
   isCurrent: boolean;
-  onOpenNotes: (id: string) => void;
 }) {
   return (
-    <Card
+    <div
       className={cn(
-        "rounded-lg border p-4 transition-shadow hover:shadow-md sm:p-6",
-        isCurrent && "border-primary/40"
+        "flex flex-col justify-between gap-3 rounded-8 border border-ink-200 bg-paper p-4 transition-colors duration-180 ease-out hover:border-ink-400 sm:p-6",
+        isCurrent && "border-ochre"
       )}
     >
-      <CardHeader className="p-0 pb-3 sm:pb-4">
-        <Badge variant="secondary" className="w-fit font-mono text-xs">
-          {subject.code}
-        </Badge>
-        <CardTitle className="mt-2 text-lg font-semibold leading-snug">
+      <div className="space-y-2">
+        <MonoTag className="w-fit">{subject.code}</MonoTag>
+        <p className="font-plex-sans text-body font-semibold leading-snug text-ink">
           {subject.name}
-        </CardTitle>
-      </CardHeader>
-      <CardFooter className="p-0 pt-2 sm:pt-3">
-        <div className="flex w-full flex-col gap-2 sm:flex-row">
-          {/* Chat is the primary action — filled and given more width so the
-              hierarchy reads at a glance; Notes/Quiz are clearly secondary. */}
-          <Button asChild size="sm" className="min-w-[80px] flex-[1.5]">
-            <Link href={`/student/chat/${subject.id}`}>
-              <MessageSquare className="mr-1 size-4" />
-              Chat
-            </Link>
-          </Button>
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            className="min-w-[80px] flex-1"
-            onClick={() => onOpenNotes(subject.id)}
-          >
-            <BookOpen className="mr-1 size-4" />
-            Notes
-          </Button>
-          <Button asChild variant="outline" size="sm" className="min-w-[80px] flex-1">
-            <Link href={`/student/quiz?subjectId=${subject.id}`}>Quiz</Link>
-          </Button>
-        </div>
-      </CardFooter>
-    </Card>
+        </p>
+      </div>
+      <div className="flex flex-col gap-2 sm:flex-row">
+        {/* Chat is the primary action — filled and given more width so the
+            hierarchy reads at a glance; Notes/Quiz are clearly secondary. */}
+        <Link
+          href={`/student/chat/${subject.id}`}
+          className="flex min-h-11 min-w-[80px] flex-[1.5] items-center justify-center gap-1 rounded-8 bg-ink px-3 font-plex-sans text-body-sm font-medium text-paper transition-colors duration-180 ease-out hover:bg-ink-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ink-900 focus-visible:ring-offset-2"
+        >
+          <MessageSquare className="size-4" />
+          Chat
+        </Link>
+        <Link
+          href={`/student/notes/${subject.id}`}
+          className="flex min-h-11 min-w-[80px] flex-1 items-center justify-center gap-1 rounded-8 border border-ink-200 px-3 font-plex-sans text-body-sm font-medium text-ink-700 transition-colors duration-180 ease-out hover:border-ink-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ink-900 focus-visible:ring-offset-2"
+        >
+          <BookOpen className="size-4" />
+          Notes
+        </Link>
+        <Link
+          href={`/student/quiz?subjectId=${subject.id}`}
+          className="flex min-h-11 min-w-[80px] flex-1 items-center justify-center rounded-8 border border-ink-200 px-3 font-plex-sans text-body-sm font-medium text-ink-700 transition-colors duration-180 ease-out hover:border-ink-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ink-900 focus-visible:ring-offset-2"
+        >
+          Quiz
+        </Link>
+      </div>
+    </div>
   );
 }
 
@@ -93,17 +74,10 @@ export default function StudentSubjectsPage() {
   );
   const [sortOrder, setSortOrder] = useState<"asc" | "desc">("asc");
 
-  // Quick Notes modal state
-  const [notesSubjectId, setNotesSubjectId] = useState<string | null>(null);
-  const [notesMode, setNotesMode] = useState<"subject" | "module">("subject");
-  const [selectedModuleId, setSelectedModuleId] = useState("");
-  const [modules, setModules] = useState<
-    { id: string; name: string; module_number: number }[]
-  >([]);
-  const [notesContent, setNotesContent] = useState("");
-  const [notesLoading, setNotesLoading] = useState(false);
-  const [notesFromCache, setNotesFromCache] = useState(false);
-  const [copied, setCopied] = useState(false);
+  // Search narrows the grid to one subject rather than navigating — this page's
+  // value is the three actions on the card (Chat / Notes / Quiz), so search
+  // should get the student to that card, not past it.
+  const [focusedSubjectId, setFocusedSubjectId] = useState<string | null>(null);
 
   const fetchProfile = useCallback(async () => {
     setLoadingProfile(true);
@@ -146,152 +120,36 @@ export default function StudentSubjectsPage() {
     [semester]
   );
 
+  const visibleSubjects = useMemo(
+    () =>
+      focusedSubjectId
+        ? subjects.filter((s) => s.id === focusedSubjectId)
+        : subjects,
+    [subjects, focusedSubjectId]
+  );
+
   const processedGroups = useMemo(
     () =>
       buildProcessedSubjectGroups(
-        subjects,
+        visibleSubjects,
         groupBy,
         sortOrder,
         profile.semester
       ),
-    [subjects, groupBy, sortOrder, profile.semester]
+    [visibleSubjects, groupBy, sortOrder, profile.semester]
   );
 
-  const activeSubject =
-    notesSubjectId != null
-      ? subjects.find((s) => s.id === notesSubjectId) ?? null
+  const focusedSubject =
+    focusedSubjectId != null
+      ? subjects.find((s) => s.id === focusedSubjectId) ?? null
       : null;
-
-  const handleOpenNotes = (subjectId: string) => {
-    setNotesSubjectId(subjectId);
-    setNotesMode("subject");
-    setSelectedModuleId("");
-    setModules([]);
-    setNotesContent("");
-    setNotesFromCache(false);
-    setNotesLoading(false);
-    setCopied(false);
-  };
-
-  useEffect(() => {
-    if (!notesSubjectId || notesMode !== "module") return;
-    if (modules.length > 0) return;
-    const run = async () => {
-      try {
-        const supabase = createBrowserClient();
-        const { data, error } = await supabase
-          .from("modules")
-          .select("id, name, module_number")
-          .eq("subject_id", notesSubjectId)
-          .order("module_number");
-        if (!error && data) {
-          setModules(
-            (data as any[]).map((m) => ({
-              id: m.id as string,
-              name: m.name as string,
-              module_number: m.module_number as number,
-            }))
-          );
-        }
-      } catch (err) {
-        console.error("[subjects/notes] module load error:", err);
-      }
-    };
-    run();
-  }, [notesSubjectId, notesMode, modules.length]);
-
-  const handleGenerateNotes = async () => {
-    if (!notesSubjectId) return;
-    setNotesLoading(true);
-    try {
-      const params = new URLSearchParams();
-      params.set("subjectId", notesSubjectId);
-      if (notesMode === "module" && selectedModuleId) {
-        params.set("moduleId", selectedModuleId);
-      }
-      const res = await fetch(`/api/notes?${params.toString()}`);
-      const json = await res.json().catch(() => null);
-      if (!res.ok || !json) {
-        throw new Error(json?.error ?? "Failed to load notes");
-      }
-      setNotesContent(String(json.notes ?? ""));
-      setNotesFromCache(Boolean(json.fromCache));
-    } catch (err) {
-      console.error(err);
-      alert(
-        err instanceof Error ? err.message : "Failed to load quick notes"
-      );
-    } finally {
-      setNotesLoading(false);
-    }
-  };
-
-  const handleExportNotesPDF = async () => {
-    if (!activeSubject || !notesContent) return;
-    const topicName =
-      notesMode === "module"
-        ? modules.find((m) => m.id === selectedModuleId)?.name ??
-          activeSubject.name
-        : activeSubject.name;
-    try {
-      const res = await fetch("/api/notes/export", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          notesContent,
-          subjectName: activeSubject.name,
-          topicName,
-        }),
-      });
-      if (!res.ok) {
-        const json = await res.json().catch(() => null);
-        throw new Error(json?.error ?? "Failed to export PDF");
-      }
-      const blob = await res.blob();
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = "quick-notes.pdf";
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      URL.revokeObjectURL(url);
-    } catch (err) {
-      console.error(err);
-      alert(
-        err instanceof Error ? err.message : "Failed to export quick notes"
-      );
-    }
-  };
-
-  const handleCopyNotes = async () => {
-    if (!notesContent) return;
-    try {
-      await navigator.clipboard.writeText(notesContent);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    } catch {
-      // ignore
-    }
-  };
-
-  const handleCloseNotes = () => {
-    setNotesSubjectId(null);
-    setNotesMode("subject");
-    setSelectedModuleId("");
-    setModules([]);
-    setNotesContent("");
-    setNotesFromCache(false);
-    setNotesLoading(false);
-    setCopied(false);
-  };
 
   return (
     <div className="space-y-8">
       <div>
-        <h1 className="text-2xl font-semibold tracking-tight">{`Hi ${name} 👋`}</h1>
-        <p className="text-muted-foreground text-sm">
-          Branch: {branch ?? "—"} | Semester {semester ?? "—"}
+        <h1 className="font-plex-serif text-display-sm font-semibold text-ink">{`Hi ${name}`}</h1>
+        <p className="mt-1 font-plex-sans text-body-sm text-ink-500">
+          Branch: {branch ?? "—"} · Semester {semester ?? "—"}
         </p>
       </div>
 
@@ -302,29 +160,52 @@ export default function StudentSubjectsPage() {
           ))}
         </div>
       ) : showEmptyState ? (
-        <Card>
-          <CardHeader>
-            <CardTitle>No subjects found</CardTitle>
-            <CardDescription>
-              No subjects found for your branch. Please contact your admin.
-            </CardDescription>
-          </CardHeader>
-        </Card>
+        <div className="rounded-8 border border-ink-200 bg-paper p-4">
+          <p className="font-plex-sans text-body-sm font-semibold text-ink">No subjects found</p>
+          <p className="mt-1 font-plex-sans text-body-sm text-ink-500">
+            No subjects found for your branch. Please contact your admin.
+          </p>
+        </div>
       ) : (
         <div className="space-y-6">
+          {/* filterByBranch={false}: this page has always shown every semester
+              of the student's branch (see useStudentSubjects — semester is a
+              readiness gate there, not a filter). Narrowing search to the
+              current semester would make it find fewer subjects than the grid
+              below already displays. */}
+          <SubjectSearchPicker
+            filterByBranch={false}
+            placeholder="Search your subjects…"
+            onSelect={(s) => setFocusedSubjectId(s.id)}
+          />
+
+          {focusedSubject ? (
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="font-plex-sans text-body-sm text-ink-500">Showing</span>
+              <MonoTag>{focusedSubject.code}</MonoTag>
+              <button
+                type="button"
+                onClick={() => setFocusedSubjectId(null)}
+                className="rounded-4 font-plex-sans text-body-sm text-ink-500 underline-offset-2 transition-colors duration-180 ease-out hover:text-ink-900 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ink-900"
+              >
+                Show all subjects
+              </button>
+            </div>
+          ) : null}
+
           <div className="flex flex-wrap items-center gap-2">
-            <span className="text-sm text-muted-foreground">Group by:</span>
-            <div className="flex overflow-hidden rounded-md border text-xs font-medium">
+            <span className="font-plex-sans text-body-sm text-ink-500">Group by:</span>
+            <div className="flex overflow-hidden rounded-8 border border-ink-200 font-plex-sans text-body-sm font-medium">
               {(["semester", "code", "none"] as const).map((opt) => (
                 <button
                   key={opt}
                   type="button"
                   onClick={() => setGroupBy(opt)}
                   className={cn(
-                    "px-3 py-1.5 transition-colors",
+                    "min-h-11 px-3 py-1.5 transition-colors duration-180 ease-out",
                     groupBy === opt
-                      ? "bg-primary text-primary-foreground"
-                      : "text-muted-foreground hover:bg-muted"
+                      ? "bg-ink text-paper"
+                      : "text-ink-500 hover:bg-ink-50"
                   )}
                 >
                   {opt === "semester"
@@ -340,7 +221,7 @@ export default function StudentSubjectsPage() {
               onClick={() =>
                 setSortOrder((o) => (o === "asc" ? "desc" : "asc"))
               }
-              className="flex items-center gap-1 rounded border px-2 py-1.5 text-xs text-muted-foreground transition-colors hover:text-foreground"
+              className="flex min-h-11 items-center gap-1 rounded-8 border border-ink-200 px-2 py-1.5 font-plex-sans text-body-sm text-ink-500 transition-colors duration-180 ease-out hover:text-ink-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ink-900"
             >
               <ArrowUpDown className="size-3" />
               {sortOrder === "asc" ? "A → Z" : "Z → A"}
@@ -354,22 +235,18 @@ export default function StudentSubjectsPage() {
                   <div className="flex items-center gap-2">
                     <h3
                       className={cn(
-                        "text-sm font-semibold uppercase tracking-wide",
+                        "font-plex-sans text-label font-semibold uppercase tracking-[0.04em]",
                         group.isCurrent
-                          ? "text-primary"
-                          : "text-muted-foreground"
+                          ? "text-ochre"
+                          : "text-ink-500"
                       )}
                     >
                       {group.label}
                     </h3>
-                    {group.isCurrent ? (
-                      <span className="rounded-full border border-primary/20 bg-primary/10 px-2 py-0.5 text-[10px] font-medium text-primary">
-                        Current
-                      </span>
-                    ) : null}
+                    {group.isCurrent ? <MonoTag variant="active">Current</MonoTag> : null}
                   </div>
-                  <div className="h-px flex-1 bg-border" />
-                  <span className="text-xs text-muted-foreground">
+                  <div className="h-px flex-1 bg-ink-100" />
+                  <span className="font-plex-sans text-xs text-ink-500">
                     {group.items.length} subject
                     {group.items.length !== 1 ? "s" : ""}
                   </span>
@@ -381,7 +258,6 @@ export default function StudentSubjectsPage() {
                     key={s.id}
                     subject={s}
                     isCurrent={(s.semester ?? 0) === (profile?.semester ?? 0)}
-                    onOpenNotes={handleOpenNotes}
                   />
                 ))}
               </div>
@@ -389,118 +265,6 @@ export default function StudentSubjectsPage() {
           ))}
         </div>
       )}
-      <Dialog open={notesSubjectId !== null} onOpenChange={(open) => {
-        if (!open) handleCloseNotes();
-      }}>
-        <DialogContent className="max-w-3xl">
-          <DialogHeader>
-            <DialogTitle>
-              {activeSubject
-                ? `Quick Notes — ${activeSubject.name} (${activeSubject.code})`
-                : "Quick Notes"}
-            </DialogTitle>
-          </DialogHeader>
-          <div className="mt-2 space-y-4">
-            <div className="flex items-center gap-2">
-              <Button
-                type="button"
-                size="sm"
-                variant={notesMode === "subject" ? "default" : "outline"}
-                onClick={() => {
-                  setNotesMode("subject");
-                  setSelectedModuleId("");
-                }}
-              >
-                📖 Full Subject
-              </Button>
-              <Button
-                type="button"
-                size="sm"
-                variant={notesMode === "module" ? "default" : "outline"}
-                onClick={() => setNotesMode("module")}
-              >
-                📑 By Module
-              </Button>
-            </div>
-
-            {notesMode === "module" && (
-              <div className="space-y-2">
-                <label className="text-xs font-medium text-muted-foreground">
-                  Module
-                </label>
-                <select
-                  className="w-full rounded-md border bg-background px-2 py-1 text-sm"
-                  value={selectedModuleId}
-                  onChange={(e) => setSelectedModuleId(e.target.value)}
-                >
-                  <option value="">Select a module</option>
-                  {modules.map((m) => (
-                    <option key={m.id} value={m.id}>
-                      Module {m.module_number}: {m.name}
-                    </option>
-                  ))}
-                </select>
-              </div>
-            )}
-
-            <div className="space-y-2">
-              <Button
-                type="button"
-                className="w-full"
-                onClick={handleGenerateNotes}
-                disabled={
-                  notesLoading ||
-                  !notesSubjectId ||
-                  (notesMode === "module" && !selectedModuleId)
-                }
-              >
-                {notesLoading ? "Generating notes..." : "Generate Notes"}
-              </Button>
-              {notesLoading && (
-                <p className="text-xs text-muted-foreground">
-                  {notesFromCache
-                    ? "⚡ Loading from cache..."
-                    : "Please wait while notes are generated..."}
-                </p>
-              )}
-            </div>
-
-            {notesContent && (
-              <div className="space-y-3">
-                <div className="flex items-center justify-between gap-2">
-                  <Badge
-                    variant={notesFromCache ? "secondary" : "default"}
-                    className="text-xs"
-                  >
-                    {notesFromCache ? "⚡ Cached" : "✨ Freshly Generated"}
-                  </Badge>
-                  <div className="flex gap-2">
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      onClick={handleCopyNotes}
-                    >
-                      {copied ? "Copied!" : "Copy Text"}
-                    </Button>
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      onClick={handleExportNotesPDF}
-                    >
-                      Export PDF
-                    </Button>
-                  </div>
-                </div>
-                <div className="max-h-[60vh] overflow-y-auto rounded-md border p-3 text-sm">
-                  <MarkdownRenderer content={notesContent} />
-                </div>
-              </div>
-            )}
-          </div>
-        </DialogContent>
-      </Dialog>
     </div>
   );
 }

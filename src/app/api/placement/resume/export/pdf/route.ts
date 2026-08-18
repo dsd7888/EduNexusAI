@@ -75,8 +75,13 @@ function bulletLines(bullets: string[], prefix: string): RNode[] {
 // ─── PDF document ─────────────────────────────────────────────────────────────
 
 function buildResumeDocument(resume: ResumeData) {
-  const ts = resume.technical_skills;
-  const edu = resume.education[0];
+  const ts = resume.technical_skills ?? {
+    languages: [],
+    frameworks: [],
+    tools: [],
+    concepts: [],
+  };
+  const edu = (resume.education ?? [])[0];
 
   const contactBits = [
     resume.email,
@@ -112,10 +117,10 @@ function buildResumeDocument(resume: ResumeData) {
       sectionHeader("Education"),
       text(eduBits.join("   |   "), styles.body, "edu-line"),
     ];
-    if (edu.relevant_courses.length > 0) {
+    if ((edu.relevant_courses ?? []).length > 0) {
       eduChildren.push(
         text(
-          `Relevant Coursework: ${edu.relevant_courses.join(", ")}`,
+          `Relevant Coursework: ${(edu.relevant_courses ?? []).join(", ")}`,
           styles.body,
           "edu-courses"
         )
@@ -126,10 +131,10 @@ function buildResumeDocument(resume: ResumeData) {
 
   // Technical Skills
   const skillRows: Array<[string, string[]]> = [
-    ["Languages", ts.languages],
-    ["Frameworks", ts.frameworks],
-    ["Tools", ts.tools],
-    ["Concepts", ts.concepts],
+    ["Languages", ts.languages ?? []],
+    ["Frameworks", ts.frameworks ?? []],
+    ["Tools", ts.tools ?? []],
+    ["Concepts", ts.concepts ?? []],
   ];
   if (skillRows.some(([, list]) => list.length > 0)) {
     const skillChildren: RNode[] = [sectionHeader("Technical Skills")];
@@ -148,9 +153,10 @@ function buildResumeDocument(resume: ResumeData) {
   }
 
   // Projects
-  if (resume.projects.length > 0) {
+  const projects = resume.projects ?? [];
+  if (projects.length > 0) {
     const projChildren: RNode[] = [sectionHeader("Projects")];
-    resume.projects.forEach((p, idx) => {
+    projects.forEach((p, idx) => {
       const entry: RNode[] = [
         el(
           View,
@@ -159,19 +165,20 @@ function buildResumeDocument(resume: ResumeData) {
           p.duration ? el(Text, { style: styles.duration }, p.duration) : null
         ),
       ];
-      if (p.tech_stack.length > 0) {
-        entry.push(text(`Tech: ${p.tech_stack.join(", ")}`, styles.italic, "tech"));
+      if ((p.tech_stack ?? []).length > 0) {
+        entry.push(text(`Tech: ${(p.tech_stack ?? []).join(", ")}`, styles.italic, "tech"));
       }
-      entry.push(...bulletLines(p.bullets, "pb"));
+      entry.push(...bulletLines(p.bullets ?? [], "pb"));
       projChildren.push(el(View, { key: `proj-${idx}`, style: styles.entry }, entry));
     });
     sections.push(el(View, { key: "projects", style: styles.section }, projChildren));
   }
 
   // Internships
-  if (resume.internships.length > 0) {
+  const internships = resume.internships ?? [];
+  if (internships.length > 0) {
     const internChildren: RNode[] = [sectionHeader("Internships")];
-    resume.internships.forEach((it, idx) => {
+    internships.forEach((it, idx) => {
       const heading = [it.role, it.company].filter(Boolean).join(", ") || "Internship";
       const entry: RNode[] = [
         el(
@@ -184,7 +191,7 @@ function buildResumeDocument(resume: ResumeData) {
       if (it.location) {
         entry.push(text(it.location, styles.italic, "loc"));
       }
-      entry.push(...bulletLines(it.bullets, "ib"));
+      entry.push(...bulletLines(it.bullets ?? [], "ib"));
       internChildren.push(
         el(View, { key: `intern-${idx}`, style: styles.entry }, entry)
       );
@@ -195,9 +202,10 @@ function buildResumeDocument(resume: ResumeData) {
   }
 
   // Certifications
-  if (resume.certifications.length > 0) {
+  const certifications = resume.certifications ?? [];
+  if (certifications.length > 0) {
     const certChildren: RNode[] = [sectionHeader("Certifications")];
-    resume.certifications.forEach((c, idx) => {
+    certifications.forEach((c, idx) => {
       const bits = [c.name, c.issuer, c.year].filter((v) => v && v.trim());
       certChildren.push(text(bits.join("   |   "), styles.body, `cert-${idx}`));
     });
@@ -207,11 +215,12 @@ function buildResumeDocument(resume: ResumeData) {
   }
 
   // Achievements
-  if (resume.achievements.length > 0) {
+  const achievements = resume.achievements ?? [];
+  if (achievements.length > 0) {
     const achChildren: RNode[] = [sectionHeader("Achievements")];
     achChildren.push(
       ...bulletLines(
-        resume.achievements.map((a) => a.text),
+        achievements.map((a) => a.text),
         "ach"
       )
     );

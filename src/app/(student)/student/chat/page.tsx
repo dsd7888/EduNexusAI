@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { ArrowUpDown, BookOpen, MessageSquare } from "lucide-react";
 
@@ -17,6 +17,7 @@ import {
 import { createBrowserClient } from "@/lib/db/supabase-browser";
 import { buildProcessedSubjectGroups } from "@/lib/student/subjectGroups";
 import { cn } from "@/lib/utils";
+import SubjectSearchPicker from "@/components/SubjectSearchPicker";
 
 type ChatSubject = {
   id: string;
@@ -45,6 +46,30 @@ export default function StudentChatHubPage() {
     "semester"
   );
   const [sortOrder, setSortOrder] = useState<"asc" | "desc">("asc");
+
+  // Search on this page navigates — starting a chat IS the page's only action,
+  // so getting the student to the card and making them click again is a step
+  // with no decision in it.
+  const [blockedSubject, setBlockedSubject] = useState<{
+    code: string;
+    name: string;
+  } | null>(null);
+
+  const startChat = useCallback(
+    (subject: { id: string; code: string; name: string }) => {
+      // Honour the same content gate the cards do. contentBySubject is filled
+      // asynchronously, so `undefined` means "still checking" — navigate
+      // anyway rather than blocking on a check the student didn't ask for; the
+      // chat page has its own empty state. Only an explicit `false` stops us.
+      if (contentBySubject[subject.id] === false) {
+        setBlockedSubject({ code: subject.code, name: subject.name });
+        return;
+      }
+      setBlockedSubject(null);
+      router.push(`/student/chat/${subject.id}`);
+    },
+    [contentBySubject, router]
+  );
 
   const processedGroups = useMemo(
     () =>
@@ -207,6 +232,25 @@ export default function StudentChatHubPage() {
         </Card>
       ) : (
         <div className="space-y-6">
+          {/* filterByBranch={false} for the same reason as /student/subjects:
+              the grid below shows every semester of the branch, so search must
+              reach all of it. */}
+          <SubjectSearchPicker
+            filterByBranch={false}
+            placeholder="Search a subject to start chatting…"
+            onSelect={(s) => startChat(s)}
+          />
+
+          {blockedSubject ? (
+            // Amber, never red (§16) — missing content is the platform's gap,
+            // not the student's mistake.
+            <p className="text-sm text-amber-600 dark:text-amber-500">
+              {blockedSubject.code} — {blockedSubject.name} has no syllabus
+              content loaded yet, so chat can&apos;t be grounded in it. Content
+              coming soon.
+            </p>
+          ) : null}
+
           <div className="flex flex-wrap items-center gap-2">
             <span className="text-sm text-muted-foreground">Group by:</span>
             <div className="flex overflow-hidden rounded-md border text-xs font-medium">

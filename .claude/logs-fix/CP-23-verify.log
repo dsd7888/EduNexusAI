@@ -1,0 +1,25 @@
+PASS: Case 1: ready student with an in-window eligible drive gets a non-empty queue
+PASS: Case 1: queue includes a confirmatory 'drive_ready' move
+PASS: Case 1: no false drive_sprint move fabricated (nothing is actually weak)
+[
+  {
+    "stage": "drive_sprint",
+    "kind": "drive_ready",
+    "title": "You're on track for Wipro",
+    "reason": "Wipro is 7 days away and none of your relevant skills are below the sprint threshold — keep them sharp.",
+    "href": "/student/placement/companies",
+    "urgency": "medium",
+    "tags": [
+      "Wipro · 7d",
+      "On track"
+    ]
+  }
+]
+PASS: Case 2: a genuinely weak relevant dimension still produces a real drive_sprint move
+PASS: Case 2: confirmatory move does not fire alongside a real sprint move for the same drive
+PASS: Case 3: no eligible drives at all -> no drive_ready move fabricated
+PASS: Case 3: existing weak_dimension rule still fires normally when there's no drive in play
+PASS: Case 4: out-of-window drive does not trigger a drive_ready confirmatory move
+PASS: Case 4: old Rule 6 fallback still reachable when the only drive is outside the sprint window
+
+CP-23 verify: ALL PASSED

@@ -1,7 +1,8 @@
 import type { NextRequest } from "next/server";
 import { createAdminClient } from "@/lib/db/supabase-server";
-import { requireRole, apiError, apiSuccess } from "@/lib/api/helpers";
+import { requireRole, apiError, apiSuccess, logCappedError } from "@/lib/api/helpers";
 import { recomputeOverall } from "@/lib/placement/readiness";
+import { TRACK_SECTIONS, type Track } from "@/lib/placement/tracks";
 import type { DrillAttempt, PlacementTarget } from "@/types/placement";
 
 export const maxDuration = 30;
@@ -17,6 +18,9 @@ const VALID_TRACKS = new Set<string>([
 
 const UUID_RE = /^[0-9a-f-]{36}$/i;
 
+// Client `is_correct` is NEVER trusted — parsed here only to satisfy the
+// DrillAttempt shape; it is overwritten below from a server-side bank lookup
+// before any grading, stats, or mastery calculation happens.
 function parseValidAttempts(raw: unknown[]): DrillAttempt[] {
   const valid: DrillAttempt[] = [];
 
@@ -31,7 +35,7 @@ function parseValidAttempts(raw: unknown[]): DrillAttempt[] {
       question_id: questionId,
       selected_answer:
         typeof att.selected_answer === "string" ? att.selected_answer : null,
-      is_correct: att.is_correct === true,
+      is_correct: false,
       is_skipped: att.is_skipped === true,
       time_spent_seconds:
         typeof att.time_spent_seconds === "number" ? att.time_spent_seconds : 0,
@@ -39,6 +43,10 @@ function parseValidAttempts(raw: unknown[]): DrillAttempt[] {
   }
 
   return valid;
+}
+
+function normalizeAnswerKey(v: string | null | undefined): string {
+  return (v ?? "").trim().toUpperCase();
 }
 
 function resolveSessionDuration(raw: unknown): number {
@@ -86,6 +94,15 @@ export async function POST(request: NextRequest) {
     if (!topicTrimmed || topicTrimmed.length > 100) {
       return apiError("topic must be a non-empty string up to 100 characters", 400);
     }
+    // topic is meant to be one of TRACK_SECTIONS' fixed labels for this track,
+    // never arbitrary client text — reject anything else before it reaches a
+    // query (same bug class as the assessment engine's subjectIds finding).
+    const knownTopicsForTrack = new Set(
+      TRACK_SECTIONS[track as Track].flatMap((section) => section.topics)
+    );
+    if (!knownTopicsForTrack.has(topicTrimmed)) {
+      return apiError("topic is not a recognized topic for this track", 400);
+    }
 
     const validAttempts = parseValidAttempts(attempts);
     const companyCtx =
@@ -96,6 +113,73 @@ export async function POST(request: NextRequest) {
     const warnings: string[] = [];
 
     const adminClient = createAdminClient();
+
+    // ── Step 0: Server-side re-grading (never trust client `is_correct`) ──────
+    // A forged `is_correct: true` on an all-wrong session must not reach the
+    // mastery/readiness writes below — look up the canonical answer for every
+    // submitted question_id and recompute correctness from that.
+    const distinctQuestionIds = [
+      ...new Set(validAttempts.map((a) => a.question_id)),
+    ];
+
+    // Per-question answer key + explanation, keyed by question_id — this is
+    // the ONLY place the client is allowed to learn correct_answer/explanation
+    // (CP-08: /prep/generate never ships it pre-answer).
+    const grading: Record<
+      string,
+      { correct_answer: string; explanation: string; is_correct: boolean }
+    > = {};
+
+    if (distinctQuestionIds.length > 0) {
+      const { data: answerRows, error: answerFetchError } = await adminClient
+        .from("placement_question_bank")
+        .select("id, correct_answer, explanation")
+        .in("id", distinctQuestionIds);
+
+      if (answerFetchError) {
+        console.error(
+          "[placement-submit] Answer-key fetch error:",
+          answerFetchError
+        );
+        return apiError("Failed to load question data", 500);
+      }
+
+      const answerMap = new Map(
+        (answerRows ?? []).map((r) => [
+          r.id as string,
+          { correct_answer: r.correct_answer as string, explanation: r.explanation as string },
+        ])
+      );
+
+      let unknownQuestionCount = 0;
+      for (const att of validAttempts) {
+        const answerKey = answerMap.get(att.question_id);
+        if (answerKey === undefined) {
+          // Unknown/forged question_id — can't be graded; exclude from
+          // scoring entirely rather than trusting anything the client sent.
+          unknownQuestionCount += 1;
+          att.is_skipped = true;
+          att.is_correct = false;
+          continue;
+        }
+        att.is_correct =
+          !att.is_skipped &&
+          att.selected_answer !== null &&
+          normalizeAnswerKey(att.selected_answer) ===
+            normalizeAnswerKey(answerKey.correct_answer);
+        grading[att.question_id] = {
+          correct_answer: answerKey.correct_answer,
+          explanation: answerKey.explanation,
+          is_correct: att.is_correct,
+        };
+      }
+
+      if (unknownQuestionCount > 0) {
+        warnings.push(
+          `${unknownQuestionCount} attempt${unknownQuestionCount === 1 ? "" : "s"} referenced an unknown question and were excluded from grading`
+        );
+      }
+    }
 
     // ── Step 1: Insert attempts (best-effort, parallel) ───────────────────────
     const insertResults = await Promise.allSettled(
@@ -206,6 +290,10 @@ export async function POST(request: NextRequest) {
     }
 
     // ── Step 3: Upsert placement_topic_mastery (critical path) ─────────────────
+    // CP-05: delegated to an atomic RPC (advisory-lock-guarded upsert) instead
+    // of a JS read-then-write — two concurrent submits for the same
+    // (student_id, track, topic) previously raced on a stale read and lost one
+    // submission's contribution to the accumulator (sessions_count, etc.).
     const sessionAttempted = answeredAttempts.length;
     const sessionCorrect = validAttempts.filter((a) => a.is_correct).length;
     const sessionAccuracy =
@@ -213,20 +301,20 @@ export async function POST(request: NextRequest) {
         ? (sessionCorrect / Math.max(sessionAttempted, 1)) * 100
         : 0;
 
-    const { data: existingMastery, error: masteryFetchError } = await adminClient
-      .from("placement_topic_mastery")
-      .select("*")
-      .eq("student_id", user.id)
-      .eq("track", track)
-      .eq("topic", topicTrimmed)
-      .maybeSingle();
-
-    if (masteryFetchError) {
-      console.error("[placement-submit] Mastery fetch error:", masteryFetchError);
-      return apiError("Failed to load mastery record", 500);
-    }
-
     if (sessionAttempted === 0) {
+      const { data: existingMastery, error: masteryFetchError } = await adminClient
+        .from("placement_topic_mastery")
+        .select("*")
+        .eq("student_id", user.id)
+        .eq("track", track)
+        .eq("topic", topicTrimmed)
+        .maybeSingle();
+
+      if (masteryFetchError) {
+        console.error("[placement-submit] Mastery fetch error:", masteryFetchError);
+        return apiError("Failed to load mastery record", 500);
+      }
+
       return apiSuccess({
         mastery: existingMastery ?? null,
         difficulty_changed: false,
@@ -235,109 +323,35 @@ export async function POST(request: NextRequest) {
           "easy",
         readiness_updated: false,
         warnings,
+        grading,
       });
     }
 
-    let masteryData: unknown;
-    let difficultyChanged = false;
-    let newDifficulty: Difficulty = "easy";
-
-    if (existingMastery) {
-      const prevAttempts = existingMastery.attempts_count ?? 0;
-      const prevCorrect = existingMastery.correct_count ?? 0;
-      const prevSessions = existingMastery.sessions_count ?? 0;
-      const prevAccuracy = existingMastery.recent_accuracy ?? 0;
-      const currentDiff =
-        (existingMastery.current_difficulty as Difficulty | undefined) ?? "easy";
-
-      const newAttempts = prevAttempts + sessionAttempted;
-      const newCorrect = prevCorrect + sessionCorrect;
-      const newSessions = prevSessions + 1;
-
-      const weightExisting = Math.min(prevAttempts, 20);
-      const weightNew = sessionAttempted;
-      const newAccuracy =
-        (prevAccuracy * weightExisting + sessionAccuracy * weightNew) /
-        Math.max(weightExisting + weightNew, 1);
-
-      let newDiff: Difficulty = currentDiff;
-      if (
-        newAccuracy >= 70 &&
-        newAttempts >= 10 &&
-        currentDiff === "easy" &&
-        newSessions >= 2
-      ) {
-        newDiff = "medium";
-      } else if (
-        newAccuracy >= 70 &&
-        newAttempts >= 10 &&
-        currentDiff === "medium" &&
-        newSessions >= 2
-      ) {
-        newDiff = "hard";
-      } else if (
-        newAccuracy < 40 &&
-        newAttempts >= 5 &&
-        currentDiff === "hard"
-      ) {
-        newDiff = "medium";
-      } else if (
-        newAccuracy < 40 &&
-        newAttempts >= 5 &&
-        currentDiff === "medium"
-      ) {
-        newDiff = "easy";
+    const { data: masteryRpcData, error: masteryRpcError } = await adminClient.rpc(
+      "upsert_placement_topic_mastery",
+      {
+        p_student_id: user.id,
+        p_track: track,
+        p_topic: topicTrimmed,
+        p_session_attempted: sessionAttempted,
+        p_session_correct: sessionCorrect,
+        p_session_accuracy: sessionAccuracy,
       }
+    );
 
-      difficultyChanged = newDiff !== currentDiff;
-      newDifficulty = newDiff;
-
-      const { data: updated, error: updateError } = await adminClient
-        .from("placement_topic_mastery")
-        .update({
-          attempts_count: newAttempts,
-          correct_count: newCorrect,
-          sessions_count: newSessions,
-          recent_accuracy: Math.round(newAccuracy * 100) / 100,
-          current_difficulty: newDiff,
-          last_practiced_at: new Date().toISOString(),
-        })
-        .eq("student_id", user.id)
-        .eq("track", track)
-        .eq("topic", topicTrimmed)
-        .select()
-        .single();
-
-      if (updateError) {
-        console.error("[placement-submit] Mastery update error:", updateError);
-        return apiError("Failed to update mastery", 500);
-      }
-      masteryData = updated;
-    } else {
-      newDifficulty = "easy";
-
-      const { data: inserted, error: insertError } = await adminClient
-        .from("placement_topic_mastery")
-        .insert({
-          student_id: user.id,
-          track,
-          topic: topicTrimmed,
-          attempts_count: sessionAttempted,
-          correct_count: sessionCorrect,
-          sessions_count: 1,
-          recent_accuracy: Math.round(sessionAccuracy * 100) / 100,
-          current_difficulty: "easy",
-          last_practiced_at: new Date().toISOString(),
-        })
-        .select()
-        .single();
-
-      if (insertError) {
-        console.error("[placement-submit] Mastery insert error:", insertError);
-        return apiError("Failed to create mastery record", 500);
-      }
-      masteryData = inserted;
+    if (masteryRpcError || !masteryRpcData) {
+      console.error("[placement-submit] Mastery upsert RPC error:", masteryRpcError);
+      return apiError("Failed to update mastery", 500);
     }
+
+    const { mastery: masteryData, prev_difficulty: prevDifficulty } =
+      masteryRpcData as {
+        mastery: { current_difficulty: Difficulty } & Record<string, unknown>;
+        prev_difficulty: Difficulty | null;
+      };
+    const newDifficulty: Difficulty = masteryData.current_difficulty ?? "easy";
+    const difficultyChanged =
+      prevDifficulty !== null && prevDifficulty !== newDifficulty;
 
     // ── Step 4: Recompute readiness scores from mastery (non-fatal) ────────────
     let readinessUpdated = false;
@@ -421,12 +435,10 @@ export async function POST(request: NextRequest) {
       new_difficulty: newDifficulty,
       readiness_updated: readinessUpdated,
       warnings,
+      grading,
     });
   } catch (error) {
-    console.error(
-      "[placement-submit] Error:",
-      error instanceof Error ? error.message : error
-    );
+    logCappedError("[placement-submit] Error:", error);
     return apiError("Internal server error", 500);
   }
 }

@@ -1,0 +1,44 @@
+Committed locally (not pushed, per instructions). Now presenting the HALT for CP-01.
+
+## CP-01 — HALT: review this SQL before I (or anyone) applies it to the live DB
+
+**Migration file** (not committed — the guard hook unconditionally refuses to commit anything under `supabase/migrations/**`): `supabase/migrations/20260817000000_profiles_self_service_column_allowlist.sql`
+
+```sql
+CREATE OR REPLACE FUNCTION enforce_profiles_self_service_allowlist()
+RETURNS TRIGGER LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$
+BEGIN
+  IF auth.role() = 'service_role' THEN RETURN NEW; END IF;
+  IF get_my_role() IN ('superadmin', 'dept_admin') THEN RETURN NEW; END IF;
+
+  IF NEW.role IS DISTINCT FROM OLD.role
+     OR NEW.department IS DISTINCT FROM OLD.department
+     OR NEW.branch IS DISTINCT FROM OLD.branch
+     OR NEW.semester IS DISTINCT FROM OLD.semester
+     OR NEW.email IS DISTINCT FROM OLD.email
+     OR NEW.full_name IS DISTINCT FROM OLD.full_name
+     OR NEW.must_change_password IS DISTINCT FROM OLD.must_change_password
+  THEN
+    RAISE EXCEPTION 'profiles: self-service updates cannot change role, department, branch, semester, email, full_name, or must_change_password (self-service allow-list is empty)'
+      USING ERRCODE = '42501';
+  END IF;
+  RETURN NEW;
+END; $$;
+
+CREATE TRIGGER profiles_enforce_self_service_allowlist
+  BEFORE UPDATE ON profiles FOR EACH ROW
+  EXECUTE FUNCTION enforce_profiles_self_service_allowlist();
+```
+
+**Design:** empty self-service allow-list, exactly as you decided in the prior CP-01 session. Two exemptions, both matching *already-trusted* access paths (grants nothing new):
+- `service_role` — I grepped every `profiles` write in `src/`; there's exactly one, `POST /api/auth/change-password`, which uses `createAdminClient()` to clear its own `must_change_password` flag. Without this exemption that route breaks.
+- `superadmin`/`dept_admin` (via the existing `get_my_role()` helper) — mirrors the pre-existing "Admins can update all profiles" policy.
+
+**One open question I did not resolve unilaterally:** FIX_SPEC's verify step asks to confirm a *no-op-shaped* self-update (rewriting a column to its own current value) is also rejected "since the allow-list is empty." My `IS DISTINCT FROM` check only blocks actual value changes — a true no-op write would pass through. Two ways to close this: keep as-is (only real changes are blocked, matches the actual security goal) or make it stricter (block *any* UPDATE from a non-admin session on their own row regardless of value equality). Your call — flagged rather than guessed.
+
+Not applied to the DB, not run against the audit harnesses (`priv_escalation.ts`/`priv_escalation_crosswrite.ts`) yet — that only makes sense once it's live.
+
+**Summary:**
+- Migration drafted at `supabase/migrations/20260817000000_profiles_self_service_column_allowlist.sql`, **not applied, not committed**.
+- `.claude/FIX_LEDGER.md` + `.claude/PROGRESS.md` updated and committed locally at `db5bfd8` (not pushed).
+- Waiting on your review of the SQL above (especially the no-op-write question) and go-ahead on live-DB timing before anything is applied.

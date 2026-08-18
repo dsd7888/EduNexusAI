@@ -1,0 +1,6 @@
+CP-06 halted at the schema-migration gate, matching CP-05's precedent. Migration file left untracked for manual review/application, per CLAUDE.md's rule. Not pushing (no-push default, and this checkpoint has no app-code commit to push anyway).
+
+**Summary:**
+- Confirmed live: `interview/mock/follow-up`'s cap check counts `ai_call_logs` rows, which `routeAI`'s `after()` hook writes *after* the response is sent — so a concurrent burst reads the same pre-call count on every request (worse than ordinary TOCTOU: 100% bypass, not just stale-read).
+- Drafted `supabase/migrations/20260817020000_interview_followup_atomic_cap.sql`: a new `interview_followup_reservations` table + `reserve_interview_followup()` RPC using a per-user `pg_advisory_xact_lock` (same technique as CP-05's mastery upsert) to make count-check-and-reserve atomic — untracked, AWAITING MANUAL APPLICATION, no app code touched this session.
+- Committed only the ledger update (`blocked`) and a detailed `PROGRESS.md` handoff — commit **`3cccd79`** — covering the exact route rewiring, the new release-on-failure requirement (a stricter guarantee than today's behavior, confirmed via `router.ts`), and the `_cp_06_verify` plan for whoever resumes after the migration is applied.

@@ -1,0 +1,14 @@
+[check] error/empty state before generate visible: true
+[check] navigated away mid-generate, zero console errors so far: false [
+  'Failed to load resource: the server responded with a status of 500 (Internal Server Error)',
+  'Failed to load resource: the server responded with a status of 404 ()'
+]
+[check] after navigating back, notes header visible: true still-empty: false
+[check] FINAL: notes rendered after generate flow: true
+[info] study_notes rows before any double-click probe: 6
+
+console errors total: 2 [
+  'Failed to load resource: the server responded with a status of 500 (Internal Server Error)',
+  'Failed to load resource: the server responded with a status of 404 ()'
+]
+[db] final study_notes row count: 6

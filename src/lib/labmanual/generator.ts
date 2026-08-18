@@ -20,6 +20,7 @@ import { routeAI } from "@/lib/ai/router";
 import { validateCoOrNull } from "@/lib/qpaper/sectionGen";
 import {
   MATH_CHEM_NOTATION_GUIDE,
+  repairGeminiJsonEscapes,
   repairGeminiMathEscapes,
 } from "@/lib/text/latexSegments";
 import { buildModuleDigest, type SubjectContext } from "@/lib/subjectContext";
@@ -972,7 +973,14 @@ export function buildOnePracticalSection(
 // ─── JSON parse ──────────────────────────────────────────────────────────────
 
 function parseJsonObject(text: string): Record<string, unknown> | null {
-  const trimmed = String(text ?? "").trim();
+  // §13: repair the Gemini escape collision BEFORE parsing. This is the fix
+  // that the post-parse `repairGeminiMathEscapes` below could not make: that
+  // one walks `$…$` spans to decide what is safe to touch, and a model-emitted
+  // `$` nested inside `\text{…}` desyncs the walk, so tab-corrupted `\text`
+  // landed "outside" every span and survived (observed in lab_manual_cache).
+  // Repairing pre-parse needs no span reasoning at all, and reaches
+  // scaffold.body / solution, which cleanProse deliberately never touched.
+  const trimmed = repairGeminiJsonEscapes(String(text ?? "").trim());
   try {
     const parsed = JSON.parse(trimmed);
     if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {

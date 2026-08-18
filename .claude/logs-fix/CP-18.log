@@ -1,0 +1,5 @@
+CP-18 is done and pushed.
+
+- **Fix:** `(student)/layout.tsx`'s `main` gained `h-dvh` (real bounded height); the chat page's magic-number `h-[calc(100vh-7rem)]` became `h-full`, deriving height from actual flex ancestry instead of a viewport guess that never matched either breakpoint's padding.
+- **Verified:** Real-browser DOM geometry checks (Playwright, live Supabase session) proved the old code left an inconsistent gap (88px desktop / 32px mobile) below the composer; the fix produces a consistent, intentional 24px (`pb-6`) at both breakpoints, and held under an interrupted navigation and a concurrent viewport-resize race.
+- **Commit:** `735d562` (fix) + `7f40c02` (progress log), both pushed to `origin/dev`.

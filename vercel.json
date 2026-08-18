@@ -21,12 +21,14 @@
     "src/app/api/syllabus/audit/suggest/route.ts": { "maxDuration": 60, "memory": 1024 },
     "src/app/api/syllabus/audit/export/route.ts": { "maxDuration": 60, "memory": 1024 },
     "src/app/api/syllabus/audit/apply/route.ts": { "maxDuration": 30, "memory": 1024 },
+    "src/app/api/notes/module/[moduleId]/route.ts": { "maxDuration": 60, "memory": 1024 },
+    "src/app/api/notes/module/[moduleId]/regenerate/route.ts": { "maxDuration": 60, "memory": 1024 },
+    "src/app/api/notes/subject/[subjectId]/route.ts": { "maxDuration": 60, "memory": 1024 },
+    "src/app/api/notes/subject/[subjectId]/regenerate/route.ts": { "maxDuration": 300, "memory": 1024 },
+    "src/app/api/notes/subject/[subjectId]/generate/route.ts": { "maxDuration": 300, "memory": 1024 },
     "src/app/api/chat/route.ts": { "maxDuration": 60, "memory": 1024 },
     "src/app/api/chat/visualize/route.ts": { "maxDuration": 120, "memory": 1024 },
     "src/app/api/refine/route.ts": { "maxDuration": 30, "memory": 1024 },
-    "src/app/api/quiz/generate/route.ts": { "maxDuration": 60, "memory": 1024 },
-    "src/app/api/placement/generate/route.ts": { "maxDuration": 300, "memory": 1024 },
-    "src/app/api/placement/practice/generate/route.ts": { "maxDuration": 60, "memory": 1024 },
     "src/app/api/placement/prep/generate/route.ts": { "maxDuration": 60, "memory": 1024 },
     "src/app/api/placement/prep/submit/route.ts": { "maxDuration": 30, "memory": 1024 },
     "src/app/api/placement/jd-analyze/route.ts": { "maxDuration": 60, "memory": 1024 },
@@ -44,7 +46,15 @@
     "src/app/api/ppt-refine/refine/route.ts": { "maxDuration": 300, "memory": 1024 },
     "src/app/api/ppt-refine/refine-slide/route.ts": { "maxDuration": 120, "memory": 1024 },
     "src/app/api/generate/ppt/rebuild/route.ts": { "maxDuration": 60, "memory": 1024 },
-    "src/app/api/admin/classify-module-co/route.ts": { "maxDuration": 300, "memory": 1024 }
+    "src/app/api/admin/classify-module-co/route.ts": { "maxDuration": 300, "memory": 1024 },
+    "src/app/api/admin/classify-module-quant/route.ts": { "maxDuration": 300, "memory": 1024 },
+    "src/app/api/assessment/quick/route.ts": { "maxDuration": 120, "memory": 1024 },
+    "src/app/api/assessment/mastery/route.ts": { "maxDuration": 180, "memory": 1024 },
+    "src/app/api/assessment/exam-sim/route.ts": { "maxDuration": 300, "memory": 1024 },
+    "src/app/api/assessment/submit/route.ts": { "maxDuration": 60, "memory": 1024 },
+    "src/app/api/cron/refresh-analytics-snapshots/route.ts": { "maxDuration": 300, "memory": 1024 },
+    "src/app/api/cron/refresh-placement-cohort-snapshots/route.ts": { "maxDuration": 60, "memory": 1024 },
+    "src/app/api/faculty/analytics/subject/[subjectId]/route.ts": { "maxDuration": 60, "memory": 1024 }
   },
   "crons": [
     {
@@ -54,6 +64,18 @@
     {
       "path": "/api/cron/storage-snapshot",
       "schedule": "0 1 * * *"
+    },
+    {
+      "path": "/api/cron/abandon-stale-assessments",
+      "schedule": "0 */6 * * *"
+    },
+    {
+      "path": "/api/cron/refresh-analytics-snapshots",
+      "schedule": "0 3 * * *"
+    },
+    {
+      "path": "/api/cron/refresh-placement-cohort-snapshots",
+      "schedule": "0 3 * * *"
     }
   ]
 }

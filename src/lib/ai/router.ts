@@ -20,6 +20,15 @@ const TASK_TO_MODEL: Record<string, "flash" | "pro"> = {
   chat_viz_diagram: "flash", // Mermaid source only; Pro buys nothing (cf. routeDiagramModel)
   chat_viz_plot: "pro", // computed-plot HTML: formula → sampled points → SVG
   quiz_gen: "flash",
+  // Assessment Engine (CP-Q1): ONE batch of ≤5 student quiz questions per call,
+  // narrow per-type responseSchema, thinkingBudget 0. Separate task from
+  // quiz_gen so the old single-call route keeps its own budget and its cost is
+  // still distinguishable in ai_call_logs after CP-Q3 swaps the route.
+  quiz_gen_v2: "flash",
+  // Gate 2 of NAT integrity (CP-Q2): one independent solve-then-compare pass
+  // per generated NAT item. Small prompt (question + module excerpt, never the
+  // full syllabus), small output — hence the 1024 ceiling below.
+  nat_verify: "flash",
   placement_prep: "flash",
   ppt_gen: "flash",
   ppt_diagram: "pro", // diagram-only PPT batches — Pro produces better SVG/diagram code
@@ -36,11 +45,18 @@ const TASK_TO_MODEL: Record<string, "flash" | "pro"> = {
   qbank_generate: "flash",
   qbank_tag: "flash",
   module_co_classify: "flash",
+  // Module → quantitative/conceptual classification (CP-Q1.5). Dual-pass, one
+  // call per pass per subject, narrow responseSchema. Gate 1 of NAT integrity.
+  module_quant_classify: "flash",
   qbank_image_question: "flash",
   lesson_plan_gen: "flash",
   lab_manual_gen: "flash", // per-practical lab manual section
   lab_path_gen: "flash", // lab manual learning-path proposal
   syllabus_audit: "flash", // ONE call per subject: fix proposals + AI-only findings
+  // Notes v2 (CP-N1): ONE call per module producing 4-12 typed content blocks
+  // against a narrow anyOf responseSchema. Flash — the work is structuring
+  // syllabus content the prompt already supplies, not reasoning about it.
+  notes_gen_module: "flash",
 };
 
 const DEFAULT_MODEL: "flash" | "pro" = "flash";
@@ -135,6 +151,15 @@ function resolveChatParams(task: string, params: ChatParams): ChatParams {
             ? 32768
             : task === "quiz_gen"
               ? 8192
+              : // quiz_gen_v2 always passes an explicit estimateMaxOutputTokens
+                // value (tokenBudget "assessment" profile); this default only
+                // applies if a caller ever omits it.
+                task === "quiz_gen_v2"
+                ? 4096
+              : // nat_verify: ≤60-word working + one number + ≤25-word reason.
+                // 1024 is generous for that and caps a runaway verifier.
+                task === "nat_verify"
+                ? 1024
               : task === "placement_prep"
                 ? 6000
                 : task === "qpaper_gen"
@@ -191,7 +216,25 @@ function resolveChatParams(task: string, params: ChatParams): ChatParams {
                                             // string maxLength-capped in the schema.
                                             task === "syllabus_audit"
                                             ? 4096
-                                            : 4096),
+                                            : // Notes v2 module notes: up to 12
+                                              // blocks, every string
+                                              // maxLength-capped in the schema.
+                                              // A formula block with a worked
+                                              // example is the largest of the
+                                              // three, so budget for a full set
+                                              // of them.
+                                              //
+                                              // 16384, not 8192: measured. The
+                                              // outer array carries no maxItems
+                                              // (it blows Gemini's constraint
+                                              // state limit — see
+                                              // MODULE_NOTES_RESPONSE_SCHEMA),
+                                              // so a dense module like
+                                              // SOEEC1010 M1 ran to 8182 output
+                                              // tokens and truncated mid-JSON.
+                                              task === "notes_gen_module"
+                                              ? 16384
+                                              : 4096),
   };
 }
 

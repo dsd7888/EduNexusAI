@@ -1,0 +1,5 @@
+Locally committed, not pushed (per the no-push default). Summary:
+
+- **Fix:** Added `assertAssessmentSubjectAccess` (`src/lib/assessment/access.ts`), mirroring `notes/access.ts`'s branch-scoping rule, and wired it into `handleAssessmentRequest` before any rate-limit/generation work — an out-of-scope subject request now 403s instead of returning a real scored quiz.
+- **Verified live over HTTP** via `_cp_10_verify/api.mts`: out-of-scope rejected (403, no questions), in-scope still succeeds (positive control), a mixed in-scope+out-of-scope exam-sim request rejected outright (not silently narrowed), and two concurrent out-of-scope requests both reject — all 7 assertions pass. tsc/eslint/build clean; no migration needed.
+- **Commit SHA:** `8762333086cd4fea309007580284d1e8235f76b3` on `dev`, **not pushed** (no-push default); `.claude/PROGRESS.md` updated with full detail for the next checkpoint.

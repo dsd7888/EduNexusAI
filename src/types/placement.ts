@@ -96,37 +96,6 @@ export interface ReadinessScores {
   overall: number;        // weighted composite
 }
 
-// ─── Resume Data ──────────────────────────────────────────────────────────────
-
-export interface ResumeProject {
-  id: string;
-  title: string;
-  tech_stack: string[];
-  description: string;
-  github_url: string | null;
-  live_url: string | null;
-  from_mini_project: boolean;
-}
-
-export interface ResumeCertification {
-  id: string;
-  name: string;
-  issuer: string;
-  year: string;
-  url: string | null;
-}
-
-export interface ResumeData {
-  summary: string;
-  skills: string[];
-  projects: ResumeProject[];
-  certifications: ResumeCertification[];
-  achievements: ResumeAchievement[];
-  linkedin_url: string | null;
-  github_url: string | null;
-  portfolio_url: string | null;
-}
-
 // ─── Student Placement Profile ────────────────────────────────────────────────
 
 export interface StudentPlacementProfile {
@@ -308,8 +277,12 @@ export interface PlacementBankQuestion {
   difficulty: 'easy' | 'medium' | 'hard';
   question_text: string;
   options: Array<{ key: string; text: string }>;
-  correct_answer: string;
-  explanation: string;
+  // Omitted from /api/placement/prep/generate's response (CP-08: never ship
+  // the answer key pre-answer) — only present when a caller explicitly
+  // re-attaches it, e.g. from /api/placement/prep/submit's per-question
+  // grading map after the student has locked in an answer.
+  correct_answer?: string;
+  explanation?: string;
   times_served: number;
   times_correct: number;
   avg_time_seconds: number | null;
@@ -356,6 +329,8 @@ export interface DrillAttempt {
   is_skipped: boolean;
   time_spent_seconds: number;
 }
+
+// ─── Resume Data ──────────────────────────────────────────────────────────────
 
 export interface ResumeEducation {
   degree: string           // "B.Tech"
@@ -457,6 +432,12 @@ export interface ATSAnalysis {
     prep_topic: string | null
   }>
   ats_tips: string[]         // 3-5 general tips specific to this JD
+  interviewer_lens: Array<{
+    section: string          // "projects[0].bullets[1]"
+    original: string
+    problem: string          // why a human interviewer would find this hollow/probe it
+    suggested: string        // concrete-metric or specific-scope rewrite
+  }>
   _empty?: boolean
 }
 

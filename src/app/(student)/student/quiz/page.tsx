@@ -1,22 +1,29 @@
 "use client";
 
-import {
-  Accordion,
-  AccordionContent,
-  AccordionItem,
-  AccordionTrigger,
-} from "@/components/ui/accordion";
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-  AlertDialogTrigger,
-} from "@/components/ui/alert-dialog";
+/**
+ * /student/quiz — the assessment landing (CP-Q3 Parts 2, 3 and 6).
+ *
+ * Three mode cards, each carrying the student's own signal for that mode; the
+ * resumable-sessions strip; the streak in the header. Subject selection is the
+ * shared SubjectSearchPicker (Part 2), in multi mode.
+ *
+ * All per-student data comes from ONE request to /api/assessment/landing —
+ * see that route for why it isn't four client queries.
+ *
+ * The previous 1,766-line quiz page lived at /student/quiz/legacy as the
+ * one-week pilot fallback. The pilot window closed and the route was deleted
+ * in CP-N4 Part 0 — this landing is now the only quiz entry point.
+ */
+
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import Link from "next/link";
+import { useSearchParams } from "next/navigation";
+import { Gauge, Timer, Zap } from "lucide-react";
+
+import SubjectSearchPicker, {
+  MAX_MULTI_SUBJECTS,
+} from "@/components/SubjectSearchPicker";
+import type { SubjectRow } from "@/hooks/useSupabaseData";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -26,1741 +33,262 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import { Checkbox } from "@/components/ui/checkbox";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { Progress } from "@/components/ui/progress";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
-import { Separator } from "@/components/ui/separator";
-import { Skeleton } from "@/components/ui/skeleton";
-import { Switch } from "@/components/ui/switch";
-import { Textarea } from "@/components/ui/textarea";
-import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
-import type { QuizQuestion } from "@/lib/quiz/generator";
-import { createBrowserClient } from "@/lib/db/supabase-browser";
-import {
-  AlertTriangle,
-  Brain,
-  CheckCircle2,
-  Clock,
-  Lightbulb,
-  Loader2,
-  XCircle,
-} from "lucide-react";
-import Link from "next/link";
-import { useSearchParams } from "next/navigation";
-import {
-  Suspense,
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
+import type { LandingSignals } from "@/lib/assessment/landingSignals";
 import { cn } from "@/lib/utils";
+import ContinueStrip from "./_components/ContinueStrip";
+import ModeSignal from "./_components/ModeSignal";
+import StreakBadge from "./_components/StreakBadge";
 
-type View = "setup" | "taking" | "results" | "history";
+type ModeKey = "quick" | "mastery" | "exam_sim";
 
-type SubjectRow = {
-  id: string;
-  name: string;
-  code: string;
-  semester: number;
-  department: string;
-};
-
-type ModuleRow = {
-  id: string;
-  name: string;
-  module_number: number;
-  subject_id: string;
-  subject_name: string;
-  subject_code: string;
-};
-
-type BreakdownItem = {
-  questionId: string;
-  question: string;
-  type: string;
-  studentAnswer: string;
-  correctAnswer: string;
-  correct: boolean;
-  explanation?: string;
-  difficulty?: string;
-  unit?: string;
-};
-
-type HintState = {
-  text: string | null;
-  isLoading: boolean;
-  used: boolean;
-};
-
-type HistoryAttempt = {
-  id: string;
-  score: number;
-  timeTaken: number | null;
-  createdAt: string;
-  subjectName: string;
-  title: string;
-  breakdown: BreakdownItem[];
-  correctCount: number;
-  totalCount: number;
-};
-
-const QUESTION_COUNTS = [5, 10, 15, 20] as const;
-const DIFFICULTIES = ["easy", "medium", "hard", "mixed"] as const;
-const QUESTION_TYPE_OPTS = [
-  { id: "mcq", label: "Multiple Choice" },
-  { id: "true_false", label: "True / False" },
-  { id: "short", label: "Short Answer" },
-  { id: "multiple_correct", label: "Multiple Correct" },
-  { id: "match", label: "Match the Following" },
-] as const;
-
-function formatElapsed(seconds: number): string {
-  const m = Math.floor(seconds / 60);
-  const s = seconds % 60;
-  return `${m.toString().padStart(2, "0")}:${s.toString().padStart(2, "0")}`;
+interface ModeCard {
+  key: ModeKey;
+  label: string;
+  icon: typeof Zap;
+  range: string;
+  pitch: string;
+  bullets: string[];
+  /** Distinct accent per card — the three modes must not read as one list. */
+  accent: string;
+  /** exam_sim is the only multi-subject mode (CP-Q2 §2). */
+  multiSubject: boolean;
 }
 
-function truncate(str: string, len: number): string {
-  if (str.length <= len) return str;
-  return str.slice(0, len) + "...";
-}
+const MODES: ModeCard[] = [
+  {
+    key: "quick",
+    label: "Quick Check",
+    icon: Zap,
+    range: "5–20 questions",
+    pitch: "Great for a 2-minute confidence check.",
+    bullets: ["One subject or module", "Immediate feedback per question"],
+    accent: "border-sky-500/40 hover:border-sky-500/70",
+    multiSubject: false,
+  },
+  {
+    key: "mastery",
+    label: "Module Mastery",
+    icon: Gauge,
+    range: "10–30 questions",
+    pitch: "Tracks your progress across sessions.",
+    bullets: [
+      "One subject, adaptive difficulty",
+      "Immediate feedback per question",
+    ],
+    accent: "border-violet-500/40 hover:border-violet-500/70",
+    multiSubject: false,
+  },
+  {
+    key: "exam_sim",
+    label: "Exam Simulation",
+    icon: Timer,
+    range: "up to 100 questions",
+    pitch: "Timed and sectioned, like the real thing.",
+    bullets: ["Multi-subject, GATE preset available", "Feedback at the end"],
+    accent: "border-amber-500/40 hover:border-amber-500/70",
+    multiSubject: true,
+  },
+];
 
-const activeQuizGenerations = new Set<string>();
-
-// Thin wrapper: Next requires a Suspense boundary around any component
-// that calls useSearchParams (StudentQuizPageInner reads ?subjectId=).
-// No fallback → renders identically; no UI or logic change.
-export default function StudentQuizPage() {
-  return (
-    <Suspense>
-      <StudentQuizPageInner />
-    </Suspense>
-  );
-}
-
-function StudentQuizPageInner() {
-  // ── SETUP STATE ────────────────────────────────────────────
-  const [subjects, setSubjects] = useState<SubjectRow[]>([]);
-  const [modules, setModules] = useState<ModuleRow[]>([]);
-  const [selectedSubjectIds, setSelectedSubjectIds] = useState<string[]>([]);
+function AssessmentLanding() {
   const searchParams = useSearchParams();
-  const subjectPresetApplied = useRef(false);
-  const [loadingModules, setLoadingModules] = useState(false);
-  const [questionCount, setQuestionCount] = useState(10);
-  const [difficulty, setDifficulty] = useState<"easy" | "medium" | "hard" | "mixed">("mixed");
-  const [questionTypes, setQuestionTypes] = useState<
-    ("mcq" | "true_false" | "short" | "multiple_correct" | "match")[]
-  >(["mcq"]);
-  const [selectedTopics, setSelectedTopics] = useState<string[]>([]);
-  const [focusTopic, setFocusTopic] = useState("");
-  const focusTopicPresetApplied = useRef(false);
-  const [socraticMode, setSocraticMode] = useState(false);
-  const [isGenerating, setIsGenerating] = useState(false);
-  // Inline (not toast) validation: show immediately under the CTA when the
-  // student hits Generate with no subject picked, instead of a toast that
-  // vanishes before they read it.
-  const [subjectError, setSubjectError] = useState(false);
-  const [subjectName, setSubjectName] = useState("");
 
-  // ── TAKING STATE ───────────────────────────────────────────
-  const [view, setView] = useState<View>("setup");
-  const [quizId, setQuizId] = useState<string | null>(null);
-  const [questions, setQuestions] = useState<QuizQuestion[]>([]);
-  const [currentIndex, setCurrentIndex] = useState(0);
-  const [answers, setAnswers] = useState<Record<string, string>>({});
-  const [elapsed, setElapsed] = useState(0);
-  const [isSubmitting, setIsSubmitting] = useState(false);
-  const [showEndQuizDialog, setShowEndQuizDialog] = useState(false);
-  const [hints, setHints] = useState<Record<string, HintState>>({});
-  const [quizTabWarning, setQuizTabWarning] = useState(false);
-  /** Wall-clock start for elapsed timer (restore on resume). */
-  const [quizSessionStart, setQuizSessionStart] = useState<number | null>(null);
-  const [inProgressQuiz, setInProgressQuiz] = useState<{
-    quizId: string;
-    questionsAnswered: number;
-    total: number;
-    savedAt: number;
-  } | null>(null);
-
-  const quizStorageKey = quizId ? `quiz_session_${quizId}` : null;
-
-  // ── RESULTS STATE ──────────────────────────────────────────
-  const [score, setScore] = useState(0);
-  const [correctCount, setCorrectCount] = useState(0);
-  const [totalCount, setTotalCount] = useState(0);
-  const [breakdown, setBreakdown] = useState<BreakdownItem[]>([]);
-  const [resultsElapsed, setResultsElapsed] = useState(0);
-  const [resultsPage, setResultsPage] = useState(1);
-  const RESULTS_PER_PAGE = 10;
-  const breakdownRef = useRef<HTMLDivElement | null>(null);
-  // ── HISTORY STATE ──────────────────────────────────────────
-  const [historyAttempts, setHistoryAttempts] = useState<HistoryAttempt[]>([]);
-  const [loadingHistory, setLoadingHistory] = useState(false);
-  const [historyLoaded, setHistoryLoaded] = useState(false);
-
-  const fetchProfileAndSubjects = useCallback(async () => {
-    const supabase = createBrowserClient();
-    const {
-      data: { user },
-      error: authError,
-    } = await supabase.auth.getUser();
-    if (authError || !user) return;
-
-    const { data: profile } = await supabase
-      .from("profiles")
-      .select("branch")
-      .eq("id", user.id)
-      .single();
-
-    const branch = (profile as { branch?: string } | null)?.branch ?? null;
-    if (branch == null) return;
-
-    // Resolved via subject_offerings — a subject's content can be offered under
-    // multiple branches/semesters, so branch/semester live on the offering, not
-    // the subjects row itself.
-    const { data: offerings, error } = await supabase
-      .from("subject_offerings")
-      .select("semester, subject:subjects(id, code, name, department)")
-      .eq("branch", branch);
-
-    if (!error && offerings) {
-      type OfferingRow = {
-        semester: number;
-        subject: { id: string; code: string; name: string; department: string } | null;
-      };
-      const subs = (offerings as unknown as OfferingRow[])
-        .filter((r) => r.subject)
-        .map((r) => ({
-          id: r.subject!.id,
-          code: r.subject!.code,
-          name: r.subject!.name,
-          department: r.subject!.department,
-          semester: r.semester,
-        }))
-        .sort((a, b) => a.semester - b.semester || a.name.localeCompare(b.name));
-      setSubjects(subs as SubjectRow[]);
-    }
-  }, []);
-
-  const fetchModules = useCallback(async (ids: string[]) => {
-    if (!ids.length) {
-      setModules([]);
-      return;
-    }
-    setLoadingModules(true);
-    try {
-      const supabase = createBrowserClient();
-      const { data, error } = await supabase
-        .from("modules")
-        .select("id, name, module_number, subject_id, subjects(name, code)")
-        .in("subject_id", ids)
-        .order("subject_id", { ascending: true })
-        .order("module_number", { ascending: true });
-      if (!error && data) {
-        const rows: ModuleRow[] = (data as any[]).map((m) => {
-          const subj = m.subjects as { name: string; code: string } | null;
-          return {
-            id: m.id as string,
-            name: m.name as string,
-            module_number: m.module_number as number,
-            subject_id: m.subject_id as string,
-            subject_name: subj?.name ?? "Subject",
-            subject_code: subj?.code ?? "",
-          };
-        });
-        rows.sort((a, b) => {
-          const an = a.subject_name.toLowerCase();
-          const bn = b.subject_name.toLowerCase();
-          if (an !== bn) return an.localeCompare(bn);
-          return a.module_number - b.module_number;
-        });
-        setModules(rows);
-      } else {
-        setModules([]);
-      }
-    } finally {
-      setLoadingModules(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    fetchProfileAndSubjects();
-  }, [fetchProfileAndSubjects]);
-
-  // Pre-select a subject when arriving via ?subjectId= (e.g. the chat
-  // struggle-nudge "Try quiz" link). Applied once, after subjects load,
-  // and only if the param matches one of the student's subjects.
-  useEffect(() => {
-    if (subjectPresetApplied.current) return;
-    const presetSubjectId = searchParams.get("subjectId");
-    if (!presetSubjectId || subjects.length === 0) return;
-    if (!subjects.some((s) => s.id === presetSubjectId)) return;
-    subjectPresetApplied.current = true;
-    setSelectedSubjectIds([presetSubjectId]);
-  }, [searchParams, subjects]);
-
-  // Pre-fill the focus topic when arriving via ?focusTopic= (chat
-  // struggle-nudge "Quick check" link). Applied once, independent of subjects
-  // loading since it's a free-text field with no validity check needed.
-  useEffect(() => {
-    if (focusTopicPresetApplied.current) return;
-    const presetFocusTopic = searchParams.get("focusTopic");
-    if (!presetFocusTopic) return;
-    focusTopicPresetApplied.current = true;
-    setFocusTopic(presetFocusTopic);
-  }, [searchParams]);
-
-  const computeBreakdown = useCallback(
-    (qs: QuizQuestion[], ans: Record<string, string>) => {
-      let correct = 0;
-      const items: BreakdownItem[] = qs.map((q) => {
-        const rawStudent = String(ans[q.id] ?? "").trim();
-        const rawCorrect = String(q.correctAnswer ?? "").trim();
-
-        let isCorrect = false;
-
-        if (q.type === "multiple_correct") {
-          const splitAndSort = (val: string) =>
-            val
-              .split("|")
-              .map((s) => s.trim().toLowerCase())
-              .filter(Boolean)
-              .sort();
-          const sArr = splitAndSort(rawStudent);
-          const cArr = splitAndSort(rawCorrect);
-          isCorrect =
-            sArr.length > 0 &&
-            sArr.length === cArr.length &&
-            sArr.every((v, i) => v === cArr[i]);
-        } else {
-          const studentAns = rawStudent.toLowerCase();
-          const correctAns = rawCorrect.toLowerCase();
-          isCorrect = studentAns === correctAns;
-        }
-
-        if (isCorrect) correct++;
-
-        return {
-          questionId: q.id,
-          question: q.question,
-          type: q.type,
-          studentAnswer: ans[q.id] ?? "",
-          correctAnswer: q.correctAnswer,
-          correct: isCorrect,
-          explanation: q.explanation,
-          difficulty: q.difficulty,
-          unit: q.unit,
-        };
-      });
-
-      return { correct, total: qs.length, breakdown: items };
-    },
-    []
+  // Deep links that used to land on the old setup page (`?subjectId=` from the
+  // chat struggle nudge and the /student/subjects Quiz button) still work: the
+  // subject arrives preselected instead of dead-ending on the legacy route.
+  const presetSubjectId = searchParams.get("subjectId");
+  const initialSelected = useMemo(
+    () => (presetSubjectId ? [presetSubjectId] : []),
+    [presetSubjectId]
   );
+  // `?mode=` preselects a card's accent — used by the results page's "Try
+  // another" CTA (Part 5) to bring the student back to the mode they just ran.
+  const presetMode = searchParams.get("mode") as ModeKey | null;
+  // `?modules=` (mastery mode only) — the results page's "Practice your weak
+  // areas" CTA. Passed straight through to /student/quiz/start's moduleIds,
+  // which already scopes mastery-session generation to specific modules
+  // (CP-Q2) — no module-picker UI is needed for this handoff, the CTA already
+  // knows exactly which modules it wants.
+  const presetModules = (searchParams.get("modules") ?? "")
+    .split(",")
+    .map((m) => m.trim())
+    .filter(Boolean);
 
-  const fetchHistory = useCallback(async () => {
-    setLoadingHistory(true);
-    try {
-      const supabase = createBrowserClient();
-      const {
-        data: { user },
-      } = await supabase.auth.getUser();
-      if (!user) {
-        setHistoryAttempts([]);
-        setHistoryLoaded(true);
-        return;
-      }
+  const [selected, setSelected] = useState<SubjectRow[]>([]);
+  const [signals, setSignals] = useState<LandingSignals | null>(null);
+  const [loadingSignals, setLoadingSignals] = useState(true);
+  const [signalsError, setSignalsError] = useState<string | null>(null);
 
-      const { data, error } = await supabase
-        .from("quiz_attempts")
-        .select(
-          "id, score, time_taken, created_at, answers, quizzes(title, questions, subject_id, subjects(name))"
-        )
-        .eq("student_id", user.id)
-        .order("created_at", { ascending: false })
-        .limit(5);
+  const handleChange = useCallback((subjects: SubjectRow[]) => {
+    setSelected(subjects);
+  }, []);
 
-      if (error || !data) {
-        setHistoryAttempts([]);
-        setHistoryLoaded(true);
-        return;
-      }
-
-      const attempts: HistoryAttempt[] = (data as any[]).map((row) => {
-        const quizRel = row.quizzes as any;
-        const qs = ((quizRel?.questions ?? []) as QuizQuestion[]) || [];
-        const answers =
-          (row.answers as Record<string, string> | null) ?? {};
-        const { correct, total, breakdown } = computeBreakdown(qs, answers);
-        const subjectName: string =
-          (Array.isArray(quizRel?.subjects)
-            ? quizRel.subjects[0]?.name
-            : quizRel?.subjects?.name) ?? "Subject";
-
-        return {
-          id: row.id as string,
-          score: row.score ?? 0,
-          timeTaken: row.time_taken ?? null,
-          createdAt: row.created_at as string,
-          subjectName,
-          title: quizRel?.title ?? "Quiz",
-          breakdown,
-          correctCount: correct,
-          totalCount: total,
-        };
-      });
-
-      setHistoryAttempts(attempts);
-      setHistoryLoaded(true);
-    } catch (err) {
-      console.error("[student/quiz] history load error:", err);
-      setHistoryAttempts([]);
-      setHistoryLoaded(true);
-    } finally {
-      setLoadingHistory(false);
-    }
-  }, [computeBreakdown]);
-
+  // ── landing signals ───────────────────────────────────────────────────────
+  // Guarded with a mounted flag: this page is a common back-navigation target,
+  // and a response landing after unmount would set state on a dead component.
+  const mounted = useRef(true);
   useEffect(() => {
-    if (selectedSubjectIds.length > 0) {
-      fetchModules(selectedSubjectIds);
-      const names = subjects
-        .filter((s) => selectedSubjectIds.includes(s.id))
-        .map((s) => s.name);
-      setSubjectName(names.join(", "));
-    } else {
-      setModules([]);
-      setSubjectName("");
-    }
-  }, [selectedSubjectIds, fetchModules, subjects]);
-
-  const modulesBySubject = useMemo(() => {
-    const map = new Map<
-      string,
-      {
-        subjectId: string;
-        subjectName: string;
-        subjectCode: string;
-        modules: ModuleRow[];
-      }
-    >();
-
-    for (const mod of modules) {
-      const key = mod.subject_id;
-      if (!map.has(key)) {
-        map.set(key, {
-          subjectId: key,
-          subjectName: mod.subject_name,
-          subjectCode: mod.subject_code,
-          modules: [],
-        });
-      }
-      map.get(key)!.modules.push(mod);
-    }
-    return Array.from(map.values());
-  }, [modules]);
-
-  const toggleQuestionType = (
-    id: "mcq" | "true_false" | "short" | "multiple_correct" | "match"
-  ) => {
-    setQuestionTypes((prev) => {
-      const next = prev.includes(id)
-        ? prev.filter((t) => t !== id)
-        : [...prev, id];
-      return next.length > 0 ? next : prev;
-    });
-  };
-
-  const toggleTopic = (name: string) => {
-    setSelectedTopics((prev) =>
-      prev.includes(name) ? prev.filter((t) => t !== name) : [...prev, name]
-    );
-  };
-
-  const generateQuiz = useCallback(async () => {
-    if (!selectedSubjectIds.length) return;
-    const lockKey = `quiz_${[...selectedSubjectIds].sort().join("_")}`;
-    if (activeQuizGenerations.has(lockKey)) return;
-    activeQuizGenerations.add(lockKey);
-    setIsGenerating(true);
-    try {
-      const res = await fetch("/api/quiz/generate", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          subjectIds: selectedSubjectIds,
-          questionCount,
-          difficulty,
-          questionTypes,
-          selectedTopics: selectedTopics.length > 0 ? selectedTopics : undefined,
-          focusTopic: focusTopic.trim() || undefined,
-        }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data?.error ?? "Failed to generate");
-      const qs = (data.questions ?? []) as QuizQuestion[];
-      const hintInit: Record<string, HintState> = {};
-      qs.forEach((q) => {
-        hintInit[q.id] = { text: null, isLoading: false, used: false };
-      });
-      const newQuizId = typeof data.quizId === "string" ? data.quizId : null;
-      const started = Date.now();
-      setQuizId(newQuizId);
-      setQuestions(qs);
-      setHints(hintInit);
-      setAnswers({});
-      setCurrentIndex(0);
-      setElapsed(0);
-      setQuizSessionStart(started);
-      setQuizTabWarning(false);
-      setView("taking");
-      if (newQuizId) {
-        try {
-          const configKey = `quiz_config_${[...selectedSubjectIds].sort().join("_")}`;
-          localStorage.setItem(
-            configKey,
-            JSON.stringify({ quizId: newQuizId, savedAt: Date.now() })
-          );
-          Object.keys(localStorage)
-            .filter((k) => k.startsWith("quiz_session_"))
-            .forEach((k) => {
-              if (k !== `quiz_session_${newQuizId}`) {
-                localStorage.removeItem(k);
-              }
-            });
-        } catch {}
-      }
-    } catch (e) {
-      console.error(e);
-      alert(e instanceof Error ? e.message : "Failed to generate quiz");
-    } finally {
-      activeQuizGenerations.delete(lockKey);
-      setIsGenerating(false);
-    }
-  }, [
-    selectedSubjectIds,
-    questionCount,
-    difficulty,
-    questionTypes,
-    selectedTopics,
-    focusTopic,
-  ]);
-
-  useEffect(() => {
-    if (view === "taking") {
-      const t = setInterval(() => setElapsed((e) => e + 1), 1000);
-      return () => clearInterval(t);
-    }
-    if (view === "history" && !historyLoaded && !loadingHistory) {
-      void fetchHistory();
-    }
-  }, [view, historyLoaded, loadingHistory, fetchHistory]);
-
-  useEffect(() => {
-    try {
-      const keys = Object.keys(localStorage).filter((k) =>
-        k.startsWith("quiz_session_")
-      );
-      for (const key of keys) {
-        const raw = localStorage.getItem(key);
-        const saved = raw ? (JSON.parse(raw) as Record<string, unknown>) : {};
-        const ageMinutes =
-          (Date.now() - Number(saved.savedAt ?? 0)) / 60000;
-        if (
-          ageMinutes < 60 &&
-          Array.isArray(saved.questions) &&
-          saved.questions.length > 0
-        ) {
-          const sid = String(
-            saved.quizId ?? key.replace(/^quiz_session_/, "")
-          );
-          if (!sid) {
-            localStorage.removeItem(key);
-            continue;
-          }
-          setInProgressQuiz({
-            quizId: sid,
-            questionsAnswered: Object.keys(
-              (saved.answers as Record<string, string>) ?? {}
-            ).length,
-            total: (saved.questions as unknown[]).length,
-            savedAt: Number(saved.savedAt ?? 0),
-          });
-          break;
-        }
-        localStorage.removeItem(key);
-      }
-    } catch {}
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
   }, []);
 
   useEffect(() => {
-    if (view !== "taking" || !quizId || !quizStorageKey) return;
-    try {
-      localStorage.setItem(
-        quizStorageKey,
-        JSON.stringify({
-          quizId,
-          questions,
-          answers,
-          currentIndex,
-          startTime: quizSessionStart,
-          savedAt: Date.now(),
-        })
-      );
-    } catch {}
-  }, [
-    answers,
-    currentIndex,
-    view,
-    quizId,
-    questions,
-    quizStorageKey,
-    quizSessionStart,
-  ]);
-
-  useEffect(() => {
-    if (view !== "taking") return;
-    const warn = (e: BeforeUnloadEvent) => {
-      e.preventDefault();
-      e.returnValue = "Your quiz answers will be lost. Are you sure?";
-      return e.returnValue;
-    };
-    window.addEventListener("beforeunload", warn);
-    return () => window.removeEventListener("beforeunload", warn);
-  }, [view]);
-
-  useEffect(() => {
-    if (view !== "taking") return;
-    const handleVis = () => {
-      if (!document.hidden) setQuizTabWarning(true);
-    };
-    document.addEventListener("visibilitychange", handleVis);
-    return () => document.removeEventListener("visibilitychange", handleVis);
-  }, [view]);
-
-  const handleGetHint = async (q: QuizQuestion) => {
-    if (hints[q.id]?.used || hints[q.id]?.isLoading) return;
-    setHints((prev) => ({
-      ...prev,
-      [q.id]: { ...prev[q.id], isLoading: true, used: false, text: null },
-    }));
-    try {
-      const res = await fetch("/api/quiz/hint", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          question: q.question,
-          subjectName: subjectName || "Subject",
-          unit: q.unit,
-        }),
-      });
-      const data = await res.json();
-      const hint = data?.hint ?? "";
-      setHints((prev) => ({
-        ...prev,
-        [q.id]: { text: hint, isLoading: false, used: true },
-      }));
-    } catch {
-      setHints((prev) => ({
-        ...prev,
-        [q.id]: {
-          text: "Could not load hint.",
-          isLoading: false,
-          used: true,
-        },
-      }));
-    }
-  };
-
-  const handleSubmit = async () => {
-    if (!quizId) return;
-    setIsSubmitting(true);
-    try {
-      const answersForSubmit: Record<string, string> = {};
-      questions.forEach((q) => {
-        const v = answers[q.id];
-        if (v != null && v.trim() !== "") answersForSubmit[q.id] = v;
-      });
-      const res = await fetch("/api/quiz/submit", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          quizId,
-          answers: answersForSubmit,
-          timeTaken: elapsed,
-        }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data?.error ?? "Failed to submit");
-      if (quizStorageKey) {
-        try {
-          localStorage.removeItem(quizStorageKey);
-        } catch {}
+    const run = async () => {
+      try {
+        const res = await fetch("/api/assessment/landing");
+        // apiSuccess() returns the payload directly (no {success,data}
+        // envelope); apiError() returns {error}. Same contract as every other
+        // route in this codebase — see lib/api/helpers.ts.
+        const json = await res.json().catch(() => null);
+        if (!mounted.current) return;
+        if (!res.ok || !json) {
+          setSignalsError(json?.error ?? "Could not load your progress");
+          return;
+        }
+        setSignals(json as LandingSignals);
+        setSignalsError(null);
+      } catch {
+        if (mounted.current) setSignalsError("Could not load your progress");
+      } finally {
+        if (mounted.current) setLoadingSignals(false);
       }
-      try {
-        const configKey = `quiz_config_${[...selectedSubjectIds].sort().join("_")}`;
-        localStorage.removeItem(configKey);
-      } catch {}
-      setScore(data.score ?? 0);
-      setCorrectCount(data.correctCount ?? 0);
-      setTotalCount(data.totalCount ?? 0);
-      setBreakdown((data.breakdown ?? []) as BreakdownItem[]);
-      setResultsElapsed(elapsed);
-      setView("results");
-    } catch (e) {
-      console.error(e);
-      alert(e instanceof Error ? e.message : "Failed to submit quiz");
-    } finally {
-      setIsSubmitting(false);
+    };
+    void run();
+  }, []);
+
+  const startHref = (mode: ModeCard) => {
+    const ids = mode.multiSubject
+      ? selected.map((s) => s.id)
+      : selected.slice(0, 1).map((s) => s.id);
+    const params = new URLSearchParams({ mode: mode.key });
+    if (ids.length > 0) params.set("subjectIds", ids.join(","));
+    if (mode.key === "mastery" && presetModules.length > 0) {
+      params.set("moduleIds", presetModules.join(","));
     }
+    return `/student/quiz/start?${params.toString()}`;
   };
 
-  const resetToSetup = () => {
-    if (quizId) {
-      try {
-        localStorage.removeItem(`quiz_session_${quizId}`);
-      } catch {}
-    }
-    try {
-      const configKey = `quiz_config_${[...selectedSubjectIds].sort().join("_")}`;
-      localStorage.removeItem(configKey);
-    } catch {}
-    setView("setup");
-    setQuestions([]);
-    setQuizId(null);
-    setQuizSessionStart(null);
-    setBreakdown([]);
-  };
+  const canStart = selected.length > 0;
 
-  const currentQuestion = questions[currentIndex];
-  const progressPct = questions.length > 0 ? (currentIndex / questions.length) * 100 : 0;
-  const hasAnswer = currentQuestion
-    ? (() => {
-        const val = answers[currentQuestion.id];
-        if (!val) return false;
-        if (currentQuestion.type === "multiple_correct") {
-          return val
-            .split("|")
-            .map((s) => s.trim())
-            .filter(Boolean).length > 0;
-        }
-        if (currentQuestion.type === "match") {
-          return val
-            .split("|")
-            .map((s) => s.trim())
-            .filter(Boolean).length > 0;
-        }
-        return val.trim() !== "";
-      })()
-    : false;
-  const answeredCount = Object.keys(answers).filter(
-    (key) => String(answers[key] ?? "").trim() !== ""
-  ).length;
-
-  const renderTabs = () => (
-    <div className="mb-4 flex gap-2 border-b pb-2">
-      <Button
-        type="button"
-        variant={view === "history" ? "ghost" : "default"}
-        size="sm"
-        onClick={() => setView("setup")}
-      >
-        Create Quiz
-      </Button>
-      <Button
-        type="button"
-        variant={view === "history" ? "default" : "ghost"}
-        size="sm"
-        onClick={() => setView("history")}
-      >
-        History
-        {historyLoaded && historyAttempts.length > 0 && (
-          <span className="ml-1 text-xs opacity-70">
-            ({historyAttempts.length})
-          </span>
-        )}
-      </Button>
-    </div>
-  );
-
-  // ──── VIEW 1: SETUP ─────────────────────────────────────────
-  if (view === "setup") {
-    return (
-      <div className="space-y-6">
-        {renderTabs()}
-        {inProgressQuiz && (
-          <div
-            className="flex items-center justify-between gap-4 rounded-lg border border-amber-200 bg-amber-50 p-4 dark:bg-amber-950/30"
-          >
-            <div className="flex items-center gap-3">
-              <Clock className="size-4 shrink-0 text-amber-600" />
-              <div>
-                <p className="text-sm font-semibold text-amber-800 dark:text-amber-200">
-                  Quiz in progress
-                </p>
-                <p className="text-xs text-amber-700 dark:text-amber-300">
-                  {inProgressQuiz.questionsAnswered} of {inProgressQuiz.total}{" "}
-                  questions answered
-                </p>
-              </div>
-            </div>
-            <div className="flex shrink-0 gap-2">
-              <Button
-                type="button"
-                size="sm"
-                variant="outline"
-                className="h-7 border-amber-400 text-xs text-amber-700"
-                onClick={() => {
-                  const key = `quiz_session_${inProgressQuiz.quizId}`;
-                  try {
-                    const raw = localStorage.getItem(key);
-                    const saved = raw
-                      ? (JSON.parse(raw) as {
-                          quizId?: string;
-                          questions?: QuizQuestion[];
-                          answers?: Record<string, string>;
-                          currentIndex?: number;
-                          startTime?: number;
-                        })
-                      : null;
-                    if (saved?.questions?.length) {
-                      const hintInit: Record<string, HintState> = {};
-                      saved.questions.forEach((q) => {
-                        hintInit[q.id] = {
-                          text: null,
-                          isLoading: false,
-                          used: false,
-                        };
-                      });
-                      setHints(hintInit);
-                      setQuizId(
-                        typeof saved.quizId === "string"
-                          ? saved.quizId
-                          : inProgressQuiz.quizId
-                      );
-                      setQuestions(saved.questions);
-                      setAnswers(saved.answers ?? {});
-                      setCurrentIndex(saved.currentIndex ?? 0);
-                      const st =
-                        typeof saved.startTime === "number"
-                          ? saved.startTime
-                          : Date.now();
-                      setQuizSessionStart(st);
-                      setElapsed(
-                        Math.max(0, Math.floor((Date.now() - st) / 1000))
-                      );
-                      setQuizTabWarning(false);
-                      setView("taking");
-                      setInProgressQuiz(null);
-                    }
-                  } catch {
-                    /* ignore */
-                  }
-                }}
-              >
-                Resume →
-              </Button>
-              <Button
-                type="button"
-                size="sm"
-                variant="ghost"
-                className="h-7 text-xs text-muted-foreground"
-                onClick={() => {
-                  const key = `quiz_session_${inProgressQuiz.quizId}`;
-                  try {
-                    localStorage.removeItem(key);
-                  } catch {
-                    /* ignore */
-                  }
-                  setInProgressQuiz(null);
-                }}
-              >
-                Discard
-              </Button>
-            </div>
-          </div>
-        )}
-        <div className="flex items-center gap-2">
-          <Brain className="size-8 text-primary" />
-          <h1 className="text-2xl font-semibold tracking-tight">Quiz</h1>
+  return (
+    <div className="space-y-8">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h1 className="text-2xl font-semibold tracking-tight">Practice</h1>
+          <p className="text-sm text-muted-foreground">
+            Pick your subjects, then choose how you want to be tested.
+          </p>
         </div>
-        <Card>
-          <CardHeader>
-            <CardTitle>Create Your Quiz</CardTitle>
-            <CardDescription>
-              Select subjects and configure your quiz settings.
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-6">
-            <div className="space-y-2">
-              <Label>Subjects (select one or more)</Label>
-              <p className="text-xs text-muted-foreground">
-                Mix questions from multiple subjects in one quiz
-              </p>
-              {subjects.length > 0 && (
-                <div className="mb-1 flex items-center justify-between text-xs">
-                  <button
-                    type="button"
-                    className="text-primary hover:underline"
-                    onClick={() =>
-                      setSelectedSubjectIds(subjects.map((s) => s.id))
-                    }
-                  >
-                    Select All
-                  </button>
-                  <button
-                    type="button"
-                    className="text-muted-foreground hover:underline"
-                    onClick={() => {
-                      setSelectedSubjectIds([]);
-                      setModules([]);
-                    }}
-                  >
-                    Clear All
-                  </button>
-                </div>
-              )}
-              <div className="max-h-48 space-y-2 overflow-y-auto rounded-md border p-2">
-                {subjects.length === 0 ? (
-                  <p className="text-xs text-muted-foreground">
-                    No subjects found for your branch.
-                  </p>
-                ) : (
-                  subjects.map((s) => (
-                    <div
-                      key={s.id}
-                      className="flex items-center justify-between gap-2"
-                    >
-                      <div className="flex items-center gap-2">
-                        <Checkbox
-                          id={`sub-${s.id}`}
-                          checked={selectedSubjectIds.includes(s.id)}
-                          onCheckedChange={() =>
-                            setSelectedSubjectIds((prev) =>
-                              prev.includes(s.id)
-                                ? prev.filter((id) => id !== s.id)
-                                : [...prev, s.id]
-                            )
-                          }
-                        />
-                        <Label
-                          htmlFor={`sub-${s.id}`}
-                          className="cursor-pointer text-sm font-normal"
-                        >
-                          {s.code} — {s.name}
-                        </Label>
-                      </div>
-                      <Badge
-                        variant="outline"
-                        className="text-[10px] uppercase"
-                      >
-                        Sem {s.semester}
-                      </Badge>
-                    </div>
-                  ))
-                )}
-              </div>
-            </div>
-
-            {selectedSubjectIds.length > 0 && (
-              <div className="space-y-2">
-                <Label>Focus Topics</Label>
-                <p className="text-muted-foreground text-xs">
-                  Leave all unchecked to cover full syllabus
-                </p>
-                {loadingModules ? (
-                  <div className="space-y-2">
-                    {[1, 2, 3].map((i) => (
-                      <Skeleton key={i} className="h-5 w-full" />
-                    ))}
-                  </div>
-                ) : (
-                  <div className="flex flex-col gap-2">
-                    {modulesBySubject.map((group) => (
-                      <div
-                        key={group.subjectId}
-                        className="space-y-2"
-                      >
-                        <div className="flex items-center gap-2 pt-2 first:pt-0">
-                          <span className="text-xs font-semibold uppercase tracking-wide text-primary">
-                            {group.subjectCode || "—"}
-                          </span>
-                          <span className="text-xs text-muted-foreground">
-                            — {group.subjectName}
-                          </span>
-                          <div className="h-px flex-1 bg-border" />
-                        </div>
-                        {group.modules.map((m) => (
-                          <label
-                            key={m.id}
-                            htmlFor={`topic-${m.id}`}
-                            className="flex cursor-pointer items-center gap-3 rounded-lg p-2 hover:bg-muted/50"
-                          >
-                            <Checkbox
-                              id={`topic-${m.id}`}
-                              checked={selectedTopics.includes(m.name)}
-                              onCheckedChange={() => toggleTopic(m.name)}
-                            />
-                            <span className="text-sm">
-                              Module {m.module_number}: {m.name}
-                            </span>
-                          </label>
-                        ))}
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            )}
-
-            <div className="space-y-2">
-              <Label>Number of Questions</Label>
-              <Select
-                value={String(questionCount)}
-                onValueChange={(v) => setQuestionCount(Number(v) as 5 | 10 | 15 | 20)}
-              >
-                <SelectTrigger className="w-full">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {QUESTION_COUNTS.map((n) => (
-                    <SelectItem key={n} value={String(n)}>
-                      {n}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-
-            <div className="space-y-2">
-              <Label>Difficulty</Label>
-              <RadioGroup
-                value={difficulty}
-                onValueChange={(v) =>
-                  setDifficulty(v as "easy" | "medium" | "hard" | "mixed")
-                }
-                className="flex flex-wrap gap-4"
-              >
-                {DIFFICULTIES.map((d) => (
-                  <div
-                    key={d}
-                    className="flex items-center space-x-2"
-                  >
-                    <RadioGroupItem value={d} id={`diff-${d}`} />
-                    <Label
-                      htmlFor={`diff-${d}`}
-                      className="cursor-pointer capitalize"
-                    >
-                      {d}
-                    </Label>
-                  </div>
-                ))}
-              </RadioGroup>
-            </div>
-
-            <div className="space-y-2">
-              <Label>Question Types</Label>
-              <div className="flex flex-wrap gap-4">
-                {QUESTION_TYPE_OPTS.map((opt) => (
-                  <div
-                    key={opt.id}
-                    className="flex items-center space-x-2"
-                  >
-                    <Checkbox
-                      id={`type-${opt.id}`}
-                      checked={questionTypes.includes(opt.id)}
-                      onCheckedChange={() => toggleQuestionType(opt.id)}
-                      disabled={
-                        questionTypes.length === 1 && questionTypes.includes(opt.id)
-                      }
-                    />
-                    <Label
-                      htmlFor={`type-${opt.id}`}
-                      className="text-sm font-normal cursor-pointer"
-                    >
-                      {opt.label}
-                    </Label>
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            <div className="space-y-2">
-              <Label htmlFor="focus-topic">What do you want to focus on?</Label>
-              <Input
-                id="focus-topic"
-                placeholder="Narrow further, e.g. Carnot Cycle (optional)"
-                value={focusTopic}
-                onChange={(e) => setFocusTopic(e.target.value)}
-              />
-            </div>
-
-            <div className="flex items-center justify-between rounded-lg border p-4">
-              <div>
-                <Label htmlFor="socratic" className="text-base">
-                  Socratic Mode 💡
-                </Label>
-                <p className="text-muted-foreground text-sm">
-                  Get a hint per question during the quiz
-                </p>
-              </div>
-              <Switch
-                id="socratic"
-                checked={socraticMode}
-                onCheckedChange={setSocraticMode}
-              />
-            </div>
-
-            <div className="space-y-2">
-              <Button
-                size="lg"
-                className="h-12 w-full text-base font-semibold"
-                disabled={isGenerating}
-                onClick={() => {
-                  if (selectedSubjectIds.length === 0) {
-                    setSubjectError(true);
-                    return;
-                  }
-                  setSubjectError(false);
-                  void generateQuiz();
-                }}
-              >
-                {isGenerating ? (
-                  <>
-                    <Loader2 className="size-4 animate-spin" />
-                    Generating your quiz...
-                  </>
-                ) : (
-                  "Generate Quiz"
-                )}
-              </Button>
-              {subjectError && selectedSubjectIds.length === 0 && (
-                <p className="flex items-center gap-1.5 text-sm font-medium text-amber-600">
-                  <AlertTriangle className="size-4 shrink-0" />
-                  Pick at least one subject to generate a quiz.
-                </p>
-              )}
-            </div>
-          </CardContent>
-        </Card>
+        <StreakBadge streak={signals?.streak ?? null} />
       </div>
-    );
-  }
 
-  // ──── VIEW 2: TAKING ────────────────────────────────────────
-  if (view === "taking" && currentQuestion) {
-    const q = currentQuestion;
-    const hintState = hints[q.id] ?? { text: null, isLoading: false, used: false };
+      {/* Resume first — a student with an unfinished session almost always
+          came back for it, so it should not sit below three cards. */}
+      {signals ? <ContinueStrip sessions={signals.inProgress} /> : null}
 
-    return (
-      <div className="space-y-6">
-        {quizTabWarning && (
-          <div
-            className="fixed top-4 left-1/2 z-50 flex -translate-x-1/2 cursor-pointer items-center gap-2 rounded-lg bg-amber-500 px-4 py-2 text-white shadow-lg"
-            onClick={() => setQuizTabWarning(false)}
-            role="button"
-            tabIndex={0}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" || e.key === " ") setQuizTabWarning(false);
-            }}
-          >
-            <AlertTriangle className="size-4 shrink-0" />
-            <span className="text-sm font-medium">
-              Tab switch detected. Click to dismiss.
-            </span>
-          </div>
-        )}
-        {renderTabs()}
-        <div className="flex items-center justify-between">
-          <span className="text-muted-foreground text-sm">
-            Question {currentIndex + 1} of {questions.length}
-          </span>
-          <div className="flex items-center gap-2 text-sm">
-            <Clock className="size-4" />
-            {formatElapsed(elapsed)}
-          </div>
-        </div>
-        <Progress value={progressPct} />
+      {/* ── subject selection ────────────────────────────────────────────── */}
+      <Card>
+        <CardHeader className="pb-3">
+          <CardTitle className="text-base">Subjects</CardTitle>
+          <CardDescription>
+            Quick Check and Module Mastery use the first subject you pick. Exam
+            Simulation can span up to {MAX_MULTI_SUBJECTS}.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          {/* filterByBranch={false}: the pilot cohort includes cross-semester
+              electives, and a student practising for a backlog paper needs a
+              subject from a semester they are no longer in. */}
+          <SubjectSearchPicker
+            multi
+            filterByBranch={false}
+            initialSelected={initialSelected}
+            onSelect={() => {}}
+            onChange={handleChange}
+            placeholder="Search subjects to practise…"
+          />
+        </CardContent>
+      </Card>
 
-        <Card>
-          <CardHeader>
-            <div className="flex items-center gap-2 mb-2">
-              <Badge variant="secondary" className="capitalize">
-                {q.difficulty}
-              </Badge>
-              {q.unit && (
-                <span className="text-muted-foreground text-xs">{q.unit}</span>
-              )}
-            </div>
-            <CardTitle
+      {/* ── mode cards ───────────────────────────────────────────────────── */}
+      <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+        {MODES.map((mode) => {
+          const Icon = mode.icon;
+          return (
+            <Card
+              key={mode.key}
               className={cn(
-                "text-lg font-medium",
-                q.type === "match" && "whitespace-pre-wrap"
+                "flex flex-col border-2 transition-colors",
+                mode.accent,
+                presetMode === mode.key && "ring-2 ring-primary/30"
               )}
             >
-              {q.question}
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            {(q.type === "mcq" || q.type === "match") && q.options && (
-              <div className="grid grid-cols-1 gap-3">
-                {q.options.map((opt) => {
-                  const letMap: Record<number, string> = {
-                    0: "A",
-                    1: "B",
-                    2: "C",
-                    3: "D",
-                  };
-                  const letter = letMap[q.options!.indexOf(opt)] ?? opt;
-                  const value = q.type === "match" ? opt : letter;
-                  const isSelected =
-                    (answers[q.id] ?? "").trim().toLowerCase() ===
-                    value.toLowerCase();
-                  return (
-                    <Button
-                      key={opt}
-                      type="button"
-                      variant="outline"
-                      className={cn(
-                        "min-h-[52px] justify-start text-left px-4 py-3 text-base",
-                        isSelected &&
-                          "border-primary bg-primary/10 text-primary"
-                      )}
-                      onClick={() =>
-                        setAnswers((prev) => ({ ...prev, [q.id]: value }))
-                      }
-                    >
-                      {letter}. {opt}
-                    </Button>
-                  );
-                })}
-              </div>
-            )}
-
-            {q.type === "multiple_correct" && q.options && (
-              <div className="space-y-2">
-                <p className="text-xs text-muted-foreground">
-                  Select all that apply
-                </p>
-                <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-                  {q.options.map((opt, idx) => {
-                    const letter = String.fromCharCode(65 + idx); // A, B, C...
-                    const current = answers[q.id] ?? "";
-                    const selectedLetters = current
-                      .split("|")
-                      .map((s) => s.trim().toLowerCase())
-                      .filter(Boolean);
-                    const isSelected = selectedLetters.includes(
-                      letter.toLowerCase()
-                    );
-                    return (
-                      <Button
-                        key={opt}
-                        type="button"
-                        variant="outline"
-                        className={cn(
-                          "h-auto justify-start text-left py-3 px-4",
-                          isSelected &&
-                            "border-primary bg-primary/10 text-primary"
-                        )}
-                        onClick={() =>
-                          setAnswers((prev) => {
-                            const cur = prev[q.id] ?? "";
-                            const arr = cur
-                              .split("|")
-                              .map((s) => s.trim())
-                              .filter(Boolean);
-                            const idxIn = arr
-                              .map((s) => s.toLowerCase())
-                              .indexOf(letter.toLowerCase());
-                            if (idxIn >= 0) {
-                              arr.splice(idxIn, 1);
-                            } else {
-                              arr.push(letter);
-                            }
-                            return {
-                              ...prev,
-                              [q.id]: arr.join("|"),
-                            };
-                          })
-                        }
-                      >
-                        {letter}. {opt}
-                      </Button>
-                    );
-                  })}
+              <CardHeader className="pb-3">
+                <div className="flex items-center gap-2">
+                  <Icon className="size-5" />
+                  <CardTitle className="text-base">{mode.label}</CardTitle>
                 </div>
-              </div>
-            )}
+                <Badge variant="secondary" className="w-fit text-[11px] font-normal">
+                  {mode.range}
+                </Badge>
+                <CardDescription className="pt-1">{mode.pitch}</CardDescription>
+              </CardHeader>
+              <CardContent className="flex flex-1 flex-col justify-between gap-4">
+                <ul className="space-y-1 text-xs text-muted-foreground">
+                  {mode.bullets.map((b) => (
+                    <li key={b}>· {b}</li>
+                  ))}
+                </ul>
 
-            {q.type === "true_false" && (
-              <div className="grid grid-cols-2 gap-4">
-                {["True", "False"].map((opt) => {
-                  const isSelected =
-                    (answers[q.id] ?? "").trim().toLowerCase() ===
-                    opt.toLowerCase();
-                  return (
-                    <Button
-                      key={opt}
-                      type="button"
-                      variant="outline"
-                      size="lg"
-                      className={cn(
-                        "h-14",
-                        isSelected && "border-primary bg-primary/10 text-primary"
-                      )}
-                      onClick={() =>
-                        setAnswers((prev) => ({ ...prev, [q.id]: opt }))
-                      }
-                    >
-                      {opt}
-                    </Button>
-                  );
-                })}
-              </div>
-            )}
+                <div className="rounded-md border bg-muted/30 px-3 py-2">
+                  <ModeSignal
+                    mode={mode.key}
+                    signals={signals}
+                    loading={loadingSignals}
+                  />
+                </div>
 
-            {q.type === "short" && (
-              <Textarea
-                placeholder="Write your answer here..."
-                rows={4}
-                value={answers[q.id] ?? ""}
-                onChange={(e) =>
-                  setAnswers((prev) => ({ ...prev, [q.id]: e.target.value }))
-                }
-              />
-            )}
-
-
-            {hintState.text && (
-              <div
-                className={cn(
-                  "rounded-lg border border-amber-200 bg-amber-50 p-4 dark:border-amber-900 dark:bg-amber-950/50",
-                  "animate-in fade-in duration-300"
-                )}
-              >
-                <p className="text-amber-800 dark:text-amber-200 text-sm font-semibold mb-1">
-                  💡 Hint
-                </p>
-                <p className="text-amber-700 dark:text-amber-300 text-sm">
-                  {hintState.text}
-                </p>
-              </div>
-            )}
-
-            <Separator />
-
-            <div className="flex flex-wrap items-center justify-between gap-4">
-              <div>
-                {socraticMode && (
-                  <>
-                    {!hintState.used && !hintState.isLoading && (
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => handleGetHint(q)}
-                      >
-                        <Lightbulb className="size-4" />
-                        Get Hint
-                      </Button>
-                    )}
-                    {hintState.isLoading && (
-                      <Button variant="outline" size="sm" disabled>
-                        <Loader2 className="size-4 animate-spin" />
-                        Getting hint...
-                      </Button>
-                    )}
-                    {hintState.used && !hintState.isLoading && (
-                      <span className="text-muted-foreground text-sm">
-                        Hint used
-                      </span>
-                    )}
-                  </>
-                )}
-              </div>
-              <div className="flex items-center gap-2">
-                <AlertDialog
-                  open={showEndQuizDialog}
-                  onOpenChange={setShowEndQuizDialog}
-                >
-                  <AlertDialogTrigger asChild>
-                    <Button variant="outline" size="sm" disabled={isSubmitting}>
-                      End Quiz
-                    </Button>
-                  </AlertDialogTrigger>
-                  <AlertDialogContent>
-                    <AlertDialogHeader>
-                      <AlertDialogTitle>Submit quiz early?</AlertDialogTitle>
-                      <AlertDialogDescription>
-                        You&apos;ve answered {answeredCount} of {questions.length} questions.
-                        Remaining questions will be marked incorrect.
-                      </AlertDialogDescription>
-                    </AlertDialogHeader>
-                    <AlertDialogFooter>
-                      <AlertDialogCancel>Continue Quiz</AlertDialogCancel>
-                      <AlertDialogAction
-                        className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-                        onClick={handleSubmit}
-                      >
-                        Submit Now
-                      </AlertDialogAction>
-                    </AlertDialogFooter>
-                  </AlertDialogContent>
-                </AlertDialog>
-
-                <Button
-                  disabled={!hasAnswer || isSubmitting}
-                  onClick={() => {
-                    if (currentIndex < questions.length - 1) {
-                      setCurrentIndex((i) => i + 1);
-                    } else {
-                      handleSubmit();
-                    }
-                  }}
-                >
-                  {isSubmitting ? (
-                    <>
-                      <Loader2 className="size-4 animate-spin" />
-                      Submitting...
-                    </>
-                  ) : currentIndex < questions.length - 1 ? (
-                    "Next →"
+                <Button asChild={canStart} disabled={!canStart} className="w-full">
+                  {canStart ? (
+                    <Link href={startHref(mode)}>Start</Link>
                   ) : (
-                    "Submit Quiz"
+                    <span>Pick a subject first</span>
                   )}
                 </Button>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-      </div>
-    );
-  }
-
-  // ──── VIEW 3: RESULTS ────────────────────────────────────────
-  const scoreColor =
-    score > 75 ? "text-green-600" : score >= 50 ? "text-yellow-600" : "text-red-600";
-  const message =
-    score > 80
-      ? "Excellent work! You've got this 🎉"
-      : score >= 60
-        ? "Good effort! Review the missed topics 📚"
-        : "Keep practicing — you'll get there 💪";
-  const totalPages =
-    breakdown.length > 0
-      ? Math.ceil(breakdown.length / RESULTS_PER_PAGE)
-      : 1;
-  const paginatedBreakdown = breakdown.slice(
-    (resultsPage - 1) * RESULTS_PER_PAGE,
-    resultsPage * RESULTS_PER_PAGE
-  );
-
-  if (view === "results") {
-    return (
-      <div className="space-y-8">
-        {renderTabs()}
-        <div className="text-center space-y-2">
-          <p className={cn("text-5xl font-bold", scoreColor)}>{score}%</p>
-          <p className="text-muted-foreground">
-            {correctCount} of {totalCount} correct
-          </p>
-          <p className="text-muted-foreground text-sm">
-            Time: {formatElapsed(resultsElapsed)}
-          </p>
-          <p className="text-lg font-medium">{message}</p>
-        </div>
-
-        <div ref={breakdownRef} className="space-y-3">
-          <div className="flex items-center justify-between">
-            <h2 className="text-sm font-semibold">Question Breakdown</h2>
-            {breakdown.length > 0 && (
-              <p className="text-xs text-muted-foreground">
-                Showing{" "}
-                {(resultsPage - 1) * RESULTS_PER_PAGE + 1}-
-                {Math.min(resultsPage * RESULTS_PER_PAGE, breakdown.length)} of{" "}
-                {breakdown.length} questions
-              </p>
-            )}
-          </div>
-
-          <Accordion
-            type="multiple"
-            defaultValue={paginatedBreakdown.map((b) => b.questionId)}
-          >
-            {paginatedBreakdown.map((b, index) => {
-              const globalIndex =
-                (resultsPage - 1) * RESULTS_PER_PAGE + index + 1;
-              return (
-                <AccordionItem key={b.questionId} value={b.questionId}>
-                  <AccordionTrigger className="flex items-center gap-2 text-left">
-                    <span>
-                      Q{globalIndex}: {truncate(b.question, 60)}
-                    </span>
-                    {b.correct ? (
-                      <CheckCircle2 className="size-5 shrink-0 text-green-600" />
-                    ) : (
-                      <XCircle className="size-5 shrink-0 text-red-600" />
-                    )}
-                  </AccordionTrigger>
-                  <AccordionContent className="space-y-2">
-                    {b.correct ? (
-                      <>
-                        <Badge className="bg-green-600">✓ Correct!</Badge>
-                        {b.explanation && (
-                          <p className="text-sm">
-                            <span className="font-medium">Explanation:</span>{" "}
-                            {b.explanation}
-                          </p>
-                        )}
-                        {b.unit && (
-                          <Badge variant="outline">{b.unit}</Badge>
-                        )}
-                      </>
-                    ) : (
-                      <>
-                        <Badge variant="destructive">✗ Incorrect</Badge>
-                        <p className="text-sm">
-                          <span className="font-medium">Your answer:</span>{" "}
-                          {b.studentAnswer || "(empty)"}
-                        </p>
-                        <p className="text-sm">
-                          <span className="font-medium">Correct answer:</span>{" "}
-                          {b.correctAnswer}
-                        </p>
-                        {b.explanation && (
-                          <p className="text-sm">
-                            <span className="font-medium">Explanation:</span>{" "}
-                            {b.explanation}
-                          </p>
-                        )}
-                        {b.unit && (
-                          <Badge variant="outline">{b.unit}</Badge>
-                        )}
-                      </>
-                    )}
-                  </AccordionContent>
-                </AccordionItem>
-              );
-            })}
-          </Accordion>
-
-          {breakdown.length > RESULTS_PER_PAGE && (
-            <div className="flex items-center justify-center gap-3 pt-2 text-xs">
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                disabled={resultsPage === 1}
-                onClick={() => {
-                  setResultsPage((p) => Math.max(1, p - 1));
-                  if (breakdownRef.current) {
-                    breakdownRef.current.scrollIntoView({
-                      behavior: "smooth",
-                    });
-                  }
-                }}
-              >
-                ← Previous
-              </Button>
-              <span className="text-muted-foreground">
-                Page {resultsPage} of {totalPages}
-              </span>
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                disabled={resultsPage === totalPages}
-                onClick={() => {
-                  setResultsPage((p) => Math.min(totalPages, p + 1));
-                  if (breakdownRef.current) {
-                    breakdownRef.current.scrollIntoView({
-                      behavior: "smooth",
-                    });
-                  }
-                }}
-              >
-                Next →
-              </Button>
-            </div>
-          )}
-        </div>
-
-        <div className="flex gap-3">
-          <Button variant="outline" onClick={resetToSetup}>
-            Try Another Quiz
-          </Button>
-          <Button variant="outline" asChild>
-            <Link href="/student/subjects">Back to Subjects</Link>
-          </Button>
-        </div>
-      </div>
-    );
-  }
-
-  // ──── VIEW 4: HISTORY ────────────────────────────────────────
-  return (
-    <div className="space-y-6">
-      {renderTabs()}
-      <div className="flex items-center gap-2">
-        <Brain className="size-6 text-primary" />
-        <h1 className="text-xl font-semibold tracking-tight">
-          Quiz History
-        </h1>
+              </CardContent>
+            </Card>
+          );
+        })}
       </div>
 
-      {loadingHistory ? (
-        <p className="text-sm text-muted-foreground">Loading history...</p>
-      ) : historyAttempts.length === 0 ? (
-        <p className="text-sm text-muted-foreground">
-          No quiz attempts yet. Create a quiz to get started.
+      {signalsError ? (
+        // Amber, never red (§16). The page is fully usable without signals —
+        // this is a missing nicety, not a broken page, and it should read that
+        // way.
+        <p className="text-xs text-amber-600 dark:text-amber-500">
+          {signalsError}. You can still start a session.
         </p>
-      ) : (
-        <div className="space-y-4">
-          {historyAttempts.map((attempt) => {
-            const scoreColor =
-              attempt.score >= 80
-                ? "text-green-600"
-                : attempt.score >= 60
-                ? "text-amber-600"
-                : "text-red-600";
-            return (
-              <Card key={attempt.id}>
-                <CardHeader className="space-y-1">
-                  <div className="flex items-center justify-between gap-2">
-                    <div>
-                      <p className="text-xs text-muted-foreground">
-                        {attempt.subjectName}
-                      </p>
-                      <CardTitle className="text-sm font-semibold">
-                        {attempt.title}
-                      </CardTitle>
-                    </div>
-                    <span
-                      className={cn(
-                        "text-lg font-semibold",
-                        scoreColor
-                      )}
-                    >
-                      {attempt.score}%
-                    </span>
-                  </div>
-                  <p className="text-xs text-muted-foreground">
-                    {new Date(attempt.createdAt).toLocaleString("en-IN")}{" "}
-                    • {attempt.correctCount}/{attempt.totalCount} correct
-                    {attempt.timeTaken != null
-                      ? ` • ${attempt.timeTaken}s`
-                      : ""}
-                  </p>
-                </CardHeader>
-                <CardContent className="space-y-2">
-                  <Accordion type="single" collapsible>
-                    <AccordionItem value="details">
-                      <AccordionTrigger className="text-sm">
-                        View detailed breakdown
-                      </AccordionTrigger>
-                      <AccordionContent className="space-y-3">
-                        {attempt.breakdown.map((b, idx) => (
-                          <div
-                            key={b.questionId}
-                            className="rounded-md border p-3 text-sm"
-                          >
-                            <p className="font-medium mb-1">
-                              Q{idx + 1}. {b.question}
-                            </p>
-                            <p
-                              className={cn(
-                                "text-xs",
-                                b.correct
-                                  ? "text-green-600"
-                                  : "text-red-600"
-                              )}
-                            >
-                              Your answer:{" "}
-                              {b.studentAnswer || "(empty)"}
-                            </p>
-                            {!b.correct && (
-                              <p className="text-xs">
-                                Correct answer: {b.correctAnswer}
-                              </p>
-                            )}
-                            {b.explanation && (
-                              <p className="mt-1 text-xs text-muted-foreground">
-                                Explanation: {b.explanation}
-                              </p>
-                            )}
-                            {b.difficulty && (
-                              <Badge
-                                variant="outline"
-                                className="mt-1 text-[10px] uppercase"
-                              >
-                                {b.difficulty}
-                              </Badge>
-                            )}
-                          </div>
-                        ))}
-                      </AccordionContent>
-                    </AccordionItem>
-                  </Accordion>
-                </CardContent>
-                <CardHeader className="pt-0">
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="outline"
-                    onClick={async () => {
-                      try {
-                        const res = await fetch("/api/quiz/export", {
-                          method: "POST",
-                          headers: {
-                            "Content-Type": "application/json",
-                          },
-                          body: JSON.stringify({ attemptId: attempt.id }),
-                        });
-                        if (!res.ok) {
-                          const err = await res
-                            .json()
-                            .catch(() => ({}));
-                          throw new Error(
-                            err?.error ?? "Failed to export PDF"
-                          );
-                        }
-                        const blob = await res.blob();
-                        const url = URL.createObjectURL(blob);
-                        const a = document.createElement("a");
-                        a.href = url;
-                        a.download = "quiz-results.pdf";
-                        document.body.appendChild(a);
-                        a.click();
-                        a.remove();
-                        URL.revokeObjectURL(url);
-                      } catch (e) {
-                        console.error(e);
-                        alert(
-                          e instanceof Error
-                            ? e.message
-                            : "Failed to export PDF"
-                        );
-                      }
-                    }}
-                  >
-                    Export PDF
-                  </Button>
-                </CardHeader>
-              </Card>
-            );
-          })}
-        </div>
-      )}
+      ) : null}
+
+      <div className="flex flex-wrap items-center gap-4 text-xs text-muted-foreground">
+        <Link
+          href="/student/quiz/mastery"
+          className="underline underline-offset-2 hover:text-foreground"
+        >
+          Your mastery by module
+        </Link>
+      </div>
     </div>
+  );
+}
+
+export default function StudentQuizLandingPage() {
+  // useSearchParams needs a Suspense boundary in the App Router.
+  return (
+    <Suspense fallback={null}>
+      <AssessmentLanding />
+    </Suspense>
   );
 }

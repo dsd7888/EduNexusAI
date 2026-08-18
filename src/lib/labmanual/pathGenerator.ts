@@ -19,6 +19,7 @@
 // ============================================================================
 
 import { routeAI } from "@/lib/ai/router";
+import { repairGeminiJsonEscapes } from "@/lib/text/latexSegments";
 import { buildModuleDigest, type SubjectContext } from "@/lib/subjectContext";
 import type { AILogContext } from "@/lib/ai/providers/types";
 import type {
@@ -126,7 +127,8 @@ const PATH_RESPONSE_SCHEMA = {
 };
 
 function parseJsonObject(text: string): Record<string, unknown> | null {
-  const trimmed = String(text ?? "").trim();
+  // §13: repair the Gemini escape collision before parsing.
+  const trimmed = repairGeminiJsonEscapes(String(text ?? "").trim());
   try {
     const parsed = JSON.parse(trimmed);
     if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {

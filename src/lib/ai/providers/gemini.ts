@@ -130,6 +130,17 @@ function createGeminiProvider(): AIProvider {
       "ppt_extract",
       "ppt_refine",
       "quiz_gen",
+      // Assessment Engine batches (CP-Q1). Every call passes a narrow per-type
+      // responseSchema, so thinkingBudget:0 is MANDATORY (CLAUDE_CONTEXT §19) —
+      // thinking tokens eating maxOutputTokens would truncate the questions
+      // array mid-object, which reads as "the AI produced 3 of 5" rather than
+      // as an error. The call site sets it explicitly too; this is the default.
+      "quiz_gen_v2",
+      // NAT verification (CP-Q2). Narrow responseSchema whose FIELD ORDER is
+      // the anti-anchoring mechanism; thinkingBudget:0 per §19 so nothing eats
+      // the output budget before `verified` is emitted — a truncated verdict is
+      // an unparseable verdict, which discards a possibly-good question.
+      "nat_verify",
       "placement_prep",
       "qpaper_gen",
       "refine",
@@ -138,6 +149,11 @@ function createGeminiProvider(): AIProvider {
       "pyq_extract",
       "qbank_generate",
       "qbank_tag",
+      // Module quant classification (CP-Q1.5): dual-pass Flash with a narrow
+      // responseSchema. thinkingBudget:0 per §19 — a truncated array here drops
+      // modules off the end, which reads as "unclassified" (NAT-allowed) rather
+      // than as an error, so the failure would be silent and permissive.
+      "module_quant_classify",
       // Answer-key blocks emit a strict JSON array. The MCQ block runs on
       // Flash, where leaving thinking uncapped silently consumes the
       // maxOutputTokens budget and truncates the JSON → parse failure.
@@ -167,6 +183,12 @@ function createGeminiProvider(): AIProvider {
       // deliberately NOT listed — they want the creative default.
       "chat_viz_classify",
       "chat_viz_diagram",
+      // Notes v2 module generation (CP-N1): narrow anyOf responseSchema over
+      // the three NoteBlock kinds. thinkingBudget:0 is MANDATORY (§19) — a
+      // truncated blocks array silently drops the last blocks, which reads as
+      // "this module only had 5 ideas" rather than as an error. The call site
+      // sets it explicitly too; this is the default.
+      "notes_gen_module",
     ].includes(taskName);
 
     const temperature =
@@ -342,11 +364,52 @@ function createGeminiProvider(): AIProvider {
       if (params.maxTokens !== undefined)
         config.maxOutputTokens = params.maxTokens;
 
+      // THINKING BUDGET — the fix for the two chat_research production failures
+      // (empty content, and raw scaffolding leaking into visible text). Unlike
+      // chat()/chatStream() (which go through prepareChatCall and always set a
+      // thinkingConfig), this path historically set NONE, so gemini-2.5-flash
+      // ran with its default dynamic (uncapped) thinking. On a heavy multi-query
+      // research turn that let thinking consume the whole maxOutputTokens budget
+      // before any answer was written → the empty-response failure; it also
+      // correlated with the model emitting its own reasoning/tool scaffolding as
+      // ordinary (unflagged) visible text → the leaked-scaffolding failure.
+      //
+      // Cap thinking at a bounded budget rather than disabling it (mirrors the
+      // explainer_ideate "thinking on but bounded" precedent): multi-query search
+      // orchestration benefits from some reasoning, and a 2048 cap against the
+      // 16384 output budget still leaves ~14k tokens of headroom for the answer,
+      // which structurally prevents the budget-exhaustion empty response.
+      // includeThoughts:false is defence-in-depth: the API must not fold thought
+      // parts into the returned content. Honour an explicit per-call budget if a
+      // future caller sets one.
+      config.thinkingConfig = {
+        thinkingBudget: params.thinkingBudget ?? 2048,
+        includeThoughts: false,
+      };
+
       const result = await ai.models.generateContent({
         model: RESEARCH_MODEL,
         contents,
         config,
       });
+
+      // Gated raw-payload diagnostic (off by default; set DEBUG_RESEARCH_RAW=1).
+      // Dumps the full-fidelity parts array (thought/thoughtSignature/functionCall/
+      // text) BEFORE the .text getter and citation extraction run, so a recurrence
+      // of either failure can be root-caused from real payloads. Never fires in
+      // production unless the env var is explicitly set.
+      if (process.env.DEBUG_RESEARCH_RAW === "1") {
+        console.log(
+          "[chat_research][DEBUG_RESEARCH_RAW] raw parts:",
+          JSON.stringify(result.candidates?.[0]?.content?.parts ?? null)
+        );
+        console.log(
+          "[chat_research][DEBUG_RESEARCH_RAW] finishReason:",
+          result.candidates?.[0]?.finishReason,
+          "usageMetadata:",
+          JSON.stringify(result.usageMetadata ?? null)
+        );
+      }
 
       const content = result.text ?? "";
 

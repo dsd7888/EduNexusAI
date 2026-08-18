@@ -1,8 +1,4 @@
-import {
-  createAdminClient,
-  createServerClient,
-} from "@/lib/db/supabase-server";
-import { requireAuth, requireRole, apiError, apiSuccess } from "@/lib/api/helpers";
+import { requireRole, apiError } from "@/lib/api/helpers";
 import type { NextRequest } from "next/server";
 
 export async function GET(request: NextRequest) {
@@ -32,7 +28,7 @@ export async function GET(request: NextRequest) {
       const subjectIds = [
         ...new Set(
           (assignments ?? [])
-            .map((a: any) => a.subject_id as string | null)
+            .map((a: { subject_id: string | null }) => a.subject_id)
             .filter(Boolean)
         ),
       ] as string[];
@@ -76,6 +72,23 @@ export async function GET(request: NextRequest) {
       }
     }
 
+    // Total completed quiz_sessions across every subject this role can see —
+    // computed regardless of the selected subjectId so the faculty dashboard
+    // can show one aggregate number without a subject picker.
+    const allSubjectIds = subjects.map((s) => s.id);
+    let totalQuizAttempts = 0;
+    if (allSubjectIds.length > 0) {
+      const { count: sessionCount, error: sessionCountError } = await adminClient
+        .from("quiz_sessions")
+        .select("id", { count: "exact", head: true })
+        .eq("status", "completed")
+        .overlaps("subject_ids", allSubjectIds);
+      if (sessionCountError) {
+        console.error("[analytics] quiz_sessions count error:", sessionCountError);
+      }
+      totalQuizAttempts = sessionCount ?? 0;
+    }
+
     // If no subjectId, default to first assigned
     if (!subjectId && subjects.length > 0) {
       subjectId = subjects[0].id;
@@ -87,6 +100,7 @@ export async function GET(request: NextRequest) {
         subjects,
         selectedSubjectId: null,
         quizStats: [],
+        totalQuizAttempts,
         dailyActivity: [],
         topQuestions: [],
         cacheStats: {
@@ -100,37 +114,39 @@ export async function GET(request: NextRequest) {
     }
 
     // ── A. Quiz Stats ─────────────────────────────────────
-    const { data: quizRows, error: quizError } = await adminClient
-      .from("quizzes")
-      .select("id, title, quiz_attempts(score)")
-      .eq("subject_id", subjectId);
+    // quiz_sessions.subject_ids is an array (a session can span multiple
+    // subjects, e.g. exam_sim) — group completed sessions that include this
+    // subject by mode, since there is no per-quiz "title" anymore.
+    const { data: sessionRows, error: quizError } = await adminClient
+      .from("quiz_sessions")
+      .select("mode, score")
+      .eq("status", "completed")
+      .contains("subject_ids", [subjectId]);
 
     if (quizError) {
       console.error("[analytics] quiz stats error:", quizError);
     }
 
-    const quizStats =
-      quizRows?.map((q: any) => {
-        const attempts = (q.quiz_attempts ?? []) as { score: number }[];
-        const scores = attempts.map((a) => a.score);
-        const attempt_count = attempts.length;
-        const avg_score =
-          scores.length > 0
-            ? scores.reduce((sum, s) => sum + s, 0) / scores.length
-            : null;
-        const min_score =
-          scores.length > 0 ? Math.min(...scores) : null;
-        const max_score =
-          scores.length > 0 ? Math.max(...scores) : null;
+    const byMode = new Map<string, number[]>();
+    for (const row of (sessionRows ?? []) as Array<{ mode: string; score: number | null }>) {
+      const scores = byMode.get(row.mode) ?? [];
+      if (row.score != null) scores.push(row.score);
+      byMode.set(row.mode, scores);
+    }
 
-        return {
-          title: q.title as string,
-          attempt_count,
-          avg_score,
-          min_score,
-          max_score,
-        };
-      }) ?? [];
+    const quizStats = Array.from(byMode.entries()).map(([mode, scores]) => {
+      const attempt_count = scores.length;
+      const avg_score = attempt_count > 0 ? scores.reduce((sum, s) => sum + s, 0) / attempt_count : null;
+      const min_score = attempt_count > 0 ? Math.min(...scores) : null;
+      const max_score = attempt_count > 0 ? Math.max(...scores) : null;
+      return {
+        title: `${mode.replace("_", " ")} quiz`,
+        attempt_count,
+        avg_score,
+        min_score,
+        max_score,
+      };
+    });
 
     quizStats.sort((a, b) => b.attempt_count - a.attempt_count);
     const quizStatsTop10 = quizStats.slice(0, 10);
@@ -145,7 +161,7 @@ export async function GET(request: NextRequest) {
       console.error("[analytics] chat_sessions error:", sessionsError);
     }
 
-    const sessionIds = (sessions ?? []).map((s: any) => s.id) as string[];
+    const sessionIds = (sessions ?? []).map((s: { id: string }) => s.id);
 
     let dailyActivity: { date: string; sessions: number }[] = [];
     let topQuestions: { content: string; frequency: number }[] = [];
@@ -211,7 +227,7 @@ export async function GET(request: NextRequest) {
     const total_entries = cacheCount ?? (cacheRows?.length ?? 0);
     const total_hits =
       cacheRows?.reduce(
-        (sum: number, row: any) => sum + (row.hit_count ?? 0),
+        (sum: number, row: { hit_count: number | null }) => sum + (row.hit_count ?? 0),
         0
       ) ?? 0;
     const avg_hits_per_entry =
@@ -242,22 +258,23 @@ export async function GET(request: NextRequest) {
     }
 
     const generatedContent =
-      genRows?.map((row: any) => {
-        const md = (row.metadata ?? {}) as any;
+      genRows?.map((row: { type: string; title: string; created_at: string; metadata: unknown }) => {
+        const md = (row.metadata ?? {}) as Record<string, unknown>;
         return {
-          type: row.type as string,
-          title: row.title as string,
-          created_at: row.created_at as string,
-          slide_count: md.slideCount ?? null,
-          question_count: md.totalQuestions ?? null,
+          type: row.type,
+          title: row.title,
+          created_at: row.created_at,
+          slide_count: (md.slideCount as number | undefined) ?? null,
+          question_count: (md.totalQuestions as number | undefined) ?? null,
         };
       }) ?? [];
 
     // ── F. Quiz Score Distribution ────────────────────────
     const { data: scoreRows, error: scoreError } = await adminClient
-      .from("quiz_attempts")
-      .select("score, quizzes!inner(subject_id)")
-      .eq("quizzes.subject_id", subjectId);
+      .from("quiz_sessions")
+      .select("score")
+      .eq("status", "completed")
+      .contains("subject_ids", [subjectId]);
 
     if (scoreError) {
       console.error("[analytics] score distribution error:", scoreError);
@@ -291,6 +308,7 @@ export async function GET(request: NextRequest) {
       subjects,
       selectedSubjectId: subjectId,
       quizStats: quizStatsTop10,
+      totalQuizAttempts,
       dailyActivity,
       topQuestions,
       cacheStats,

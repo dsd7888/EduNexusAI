@@ -14,6 +14,34 @@ export function apiSuccess<T>(data: T, status = 200): Response {
   return Response.json(data, { status });
 }
 
+// ─── Input validation ────────────────────────────────────────────────────────
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** Cheap shape check — rejects SQL-injection-shaped strings before they ever reach a query. */
+export function isUuid(value: string): boolean {
+  return UUID_RE.test(value);
+}
+
+// ─── Error logging ────────────────────────────────────────────────────────────
+
+const LOGGED_ERROR_MESSAGE_CAP = 500;
+
+/**
+ * console.error, but caps the message length. An upstream failure on a
+ * malformed query can surface a raw, unbounded HTML error page as `err.message`
+ * — logging that verbatim turns one bad request into log-noise (or worse, a
+ * log-injection vector). Truncate before it hits stdout.
+ */
+export function logCappedError(scope: string, err: unknown): void {
+  const message = err instanceof Error ? err.message : String(err);
+  const capped =
+    message.length > LOGGED_ERROR_MESSAGE_CAP
+      ? `${message.slice(0, LOGGED_ERROR_MESSAGE_CAP)}… [truncated, ${message.length} chars total]`
+      : message;
+  console.error(scope, capped);
+}
+
 // ─── Auth helpers ─────────────────────────────────────────────────────────────
 
 export type AllowedRole =

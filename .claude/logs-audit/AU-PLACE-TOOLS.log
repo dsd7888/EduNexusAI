@@ -1,0 +1,5 @@
+Committed locally (not pushed, per instructions). Audit complete.
+
+- **S1: 2** — resume autosave silently discards all data behind a false "Saved" confirmation whenever a student reaches the Resume tab before finishing placement setup (`.update()` no-ops on a missing row); `POST /api/placement/resume` has zero schema validation and 500s on malformed input instead of validating.
+- **S2: 4** — resume PDF/DOCX export crashes on a resume missing `technical_skills`; the `interview/mock/follow-up` cost cap (5/3h) was fully bypassed under an 8-way concurrent burst (8/8 succeeded, confirmed against real billed Gemini calls in `ai_call_logs`); the other 4 AI-calling routes in this feature have no rate limit at all; a distress-adjacent interview answer got zero safety acknowledgment.
+- **Most important finding:** the resume-save silent-discard bug — no exploit tooling needed, just ordinary navigation (clicking "Resume" before completing setup, which the product's own tab bar permits), and the UI actively lies to the student that their work was saved while every downstream feature (ATS, exports, interview follow-up) then silently operates on the void left behind.

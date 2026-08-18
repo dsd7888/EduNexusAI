@@ -1,13 +1,6 @@
 "use client";
 
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
-import {
-  Card,
-  CardContent,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
+import { MonoTag } from "@/components/ui/mono-tag";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Skeleton } from "@/components/ui/skeleton";
 import MarkdownRenderer from "@/components/chat/MarkdownRenderer";
@@ -84,7 +77,7 @@ export default function StudentHistoryPage() {
 
         // For each session, count messages
         const sessionsWithCount = await Promise.all(
-          (sessionsData || []).map(async (session: any) => {
+          (sessionsData || []).map(async (session) => {
             const { count } = await supabase
               .from("chat_messages")
               .select("id", { count: "exact", head: true })
@@ -92,7 +85,7 @@ export default function StudentHistoryPage() {
             return {
               ...session,
               message_count: count || 0,
-            } as SessionListItem;
+            } as unknown as SessionListItem;
           })
         );
 
@@ -162,38 +155,38 @@ export default function StudentHistoryPage() {
   return (
     <div className="space-y-6">
       <div className="flex items-center gap-2">
-        <Clock className="size-6 text-primary" />
-        <h1 className="text-2xl font-semibold tracking-tight">
+        <Clock className="size-6 text-ochre" />
+        <h1 className="font-plex-serif text-display-sm font-semibold text-ink">
           Chat History
         </h1>
       </div>
 
       <div className="flex flex-col gap-4 md:flex-row">
         {/* LEFT: Sessions */}
-        <div className="md:w-1/3 space-y-3">
-          <h2 className="text-sm font-medium text-muted-foreground">
+        <div className="space-y-3 md:w-1/3">
+          <h2 className="font-plex-sans text-label font-semibold uppercase tracking-[0.04em] text-ink-500">
             Recent Conversations
           </h2>
           {isLoadingSessions ? (
             <div className="space-y-3">
               {Array.from({ length: 3 }).map((_, i) => (
-                <Card key={i} className="p-3">
+                <div key={i} className="rounded-8 border border-ink-200 bg-paper p-3">
                   <Skeleton className="h-4 w-32" />
                   <Skeleton className="mt-2 h-3 w-24" />
                   <Skeleton className="mt-2 h-3 w-20" />
-                </Card>
+                </div>
               ))}
             </div>
           ) : sessions.length === 0 ? (
-            <Card className="p-4 text-sm text-muted-foreground">
+            <div className="rounded-8 border border-ink-200 bg-paper p-4 font-plex-sans text-body-sm text-ink-500">
               <p>No chat history yet.</p>
               <Link
                 href="/student/subjects"
-                className="mt-2 inline-flex text-xs text-primary hover:underline"
+                className="mt-2 inline-flex rounded-4 text-xs text-ink-700 underline-offset-2 transition-colors duration-180 ease-out hover:text-ink-900 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ink-900"
               >
                 Start a conversation →
               </Link>
-            </Card>
+            </div>
           ) : (
             <div className="space-y-2">
               {sessions.map((session) => {
@@ -202,28 +195,25 @@ export default function StudentHistoryPage() {
                   <div
                     key={session.id}
                     className={cn(
-                      "p-3 rounded-lg border cursor-pointer hover:border-primary transition-colors",
-                      isSelected &&
-                        "border-primary bg-primary/5 dark:bg-primary/10"
+                      "cursor-pointer rounded-8 border border-ink-200 bg-paper p-3 transition-colors duration-180 ease-out hover:border-ink-400",
+                      isSelected && "border-ochre"
                     )}
                     onClick={() => handleSelectSession(session)}
                   >
                     {/* Subject name — most prominent */}
-                    <div className="font-semibold text-base text-foreground">
+                    <div className="font-plex-sans text-body-sm font-semibold text-ink">
                       {session.subjects?.name || "Unknown Subject"}
                     </div>
 
-                    {/* Subject code badge */}
-                    <Badge variant="outline" className="text-xs mt-1">
-                      {session.subjects?.code}
-                    </Badge>
+                    {/* Subject code tag */}
+                    <MonoTag className="mt-1">{session.subjects?.code}</MonoTag>
 
                     {/* Message count + date on same line */}
-                    <div className="flex items-center justify-between mt-2">
-                      <span className="text-xs text-muted-foreground">
+                    <div className="mt-2 flex items-center justify-between">
+                      <span className="font-plex-sans text-xs text-ink-500">
                         {session.message_count} messages
                       </span>
-                      <span className="text-xs text-muted-foreground">
+                      <span className="font-plex-sans text-xs text-ink-500">
                         {formatDate(session.created_at)}
                       </span>
                     </div>
@@ -236,15 +226,15 @@ export default function StudentHistoryPage() {
 
         {/* RIGHT: Messages */}
         <div className="md:w-2/3">
-          <Card className="h-full">
-            <CardHeader className="flex flex-row items-center justify-between gap-2">
+          <div className="flex h-full flex-col rounded-12 border border-ink-200 bg-paper">
+            <div className="flex flex-row items-center justify-between gap-2 p-4">
               {selectedSession ? (
                 <>
                   <div className="min-w-0">
-                    <div className="font-semibold">
+                    <div className="font-plex-sans text-body-sm font-semibold text-ink">
                       {selectedSession.subjectName}
                     </div>
-                    <div className="text-xs text-muted-foreground">
+                    <div className="font-plex-sans text-xs text-ink-500">
                       {new Date(
                         selectedSession.createdAt
                       ).toLocaleDateString("en-IN", {
@@ -260,11 +250,10 @@ export default function StudentHistoryPage() {
                         : `${selectedSession.messages.length} messages`}
                     </div>
                   </div>
-                  <Button
+                  <button
                     type="button"
-                    size="sm"
-                    variant="outline"
                     disabled={exportingId === selectedSession.id}
+                    className="flex h-11 items-center gap-1.5 rounded-8 border border-ink-200 px-3 font-plex-sans text-body-sm font-medium text-ink-700 transition-colors duration-180 ease-out hover:border-ink-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ink-900 disabled:pointer-events-none disabled:opacity-50"
                     onClick={async () => {
                       setExportingId(selectedSession.id);
                       try {
@@ -308,29 +297,27 @@ export default function StudentHistoryPage() {
                   >
                     {exportingId === selectedSession.id ? (
                       <>
-                        <Loader2 className="mr-1 size-4 animate-spin" />
+                        <Loader2 className="size-4 animate-spin" />
                         Exporting...
                       </>
                     ) : (
                       <>
-                        <Download className="mr-1 size-4" />
+                        <Download className="size-4" />
                         Export PDF
                       </>
                     )}
-                  </Button>
+                  </button>
                 </>
               ) : (
-                <>
-                  <CardTitle className="text-sm font-semibold">
-                    Conversation
-                  </CardTitle>
-                </>
+                <p className="font-plex-sans text-body-sm font-semibold text-ink">
+                  Conversation
+                </p>
               )}
-            </CardHeader>
-            <CardContent className="border-t pt-4">
+            </div>
+            <div className="border-t border-ink-100 p-4">
               {!selectedSession ? (
-                <div className="flex h-[300px] flex-col items-center justify-center gap-2 text-center text-sm text-muted-foreground">
-                  <MessageSquare className="size-10 text-muted-foreground/60" />
+                <div className="flex h-[300px] flex-col items-center justify-center gap-2 text-center font-plex-sans text-body-sm text-ink-500">
+                  <MessageSquare className="size-10 text-ink-300" />
                   <p>Select a conversation to view.</p>
                 </div>
               ) : (
@@ -348,12 +335,12 @@ export default function StudentHistoryPage() {
                                 : "justify-start"
                             )}
                           >
-                            <Skeleton className="h-10 w-2/3 rounded-2xl" />
+                            <Skeleton className="h-10 w-2/3 rounded-12" />
                           </div>
                         ))}
                       </>
                     ) : selectedSession.messages.length === 0 ? (
-                      <p className="text-xs text-muted-foreground">
+                      <p className="font-plex-sans text-xs text-ink-500">
                         No messages in this conversation.
                       </p>
                     ) : (
@@ -361,13 +348,13 @@ export default function StudentHistoryPage() {
                         m.role === "user" ? (
                           <div
                             key={idx}
-                            className="flex justify-end text-sm"
+                            className="flex justify-end font-plex-sans text-body-sm"
                           >
                             <div className="max-w-[80%]">
-                              <div className="rounded-2xl bg-blue-600 px-4 py-2 text-white">
+                              <div className="rounded-12 bg-ink px-4 py-2 text-paper">
                                 {m.content}
                               </div>
-                              <div className="mt-0.5 text-[10px] text-muted-foreground text-right">
+                              <div className="mt-0.5 text-right text-[10px] text-ink-500">
                                 {formatDateTime(m.created_at)}
                               </div>
                             </div>
@@ -375,15 +362,13 @@ export default function StudentHistoryPage() {
                         ) : (
                           <div
                             key={idx}
-                            className="flex justify-start text-sm"
+                            className="flex justify-start font-plex-sans text-body-sm"
                           >
                             <div className="max-w-[80%]">
-                              <Card className="border bg-card">
-                                <CardContent className="px-4 py-3">
-                                  <MarkdownRenderer content={m.content} />
-                                </CardContent>
-                              </Card>
-                              <div className="mt-0.5 text-[10px] text-muted-foreground">
+                              <div className="rounded-12 border border-ink-200 bg-paper px-4 py-3">
+                                <MarkdownRenderer content={m.content} />
+                              </div>
+                              <div className="mt-0.5 text-[10px] text-ink-500">
                                 {formatDateTime(m.created_at)}
                               </div>
                             </div>
@@ -394,8 +379,8 @@ export default function StudentHistoryPage() {
                   </div>
                 </ScrollArea>
               )}
-            </CardContent>
-          </Card>
+            </div>
+          </div>
         </div>
       </div>
     </div>

@@ -1,0 +1,6 @@
+Both commits are local only per the no-push default. Working tree is otherwise clean of my changes (dev server stopped).
+
+**Summary:**
+- Added 4 per-route daily caps to `RATE_LIMITS` (`placement_resume_ats`: 10, `placement_resume_rewrite`: 30, `placement_jd_analyze`: 15, `placement_interview_evaluate`: 20) and wired `checkRateLimit`/`releaseRateLimit` into all 4 previously-uncapped placement AI routes, reusing CP-02's atomic-CAS pattern.
+- Verified live over HTTP via `_cp_07_verify/api.mts`: invalid input never reserves quota (interrupted-flow case), cap enforcement with zero AI spend once throttled, a concurrent 2-way race at limit-1 yields exactly one winner with no double-spend (concurrent-flow case), and a second route enforces its own independent budget — all PASS, zero residue on cleanup.
+- Commit `8eee90c` (fix) + `5785ad9` (SHA fill-in/PROGRESS.md), both **committed locally only, not pushed** — human review needed before push, per this session's no-push default.
