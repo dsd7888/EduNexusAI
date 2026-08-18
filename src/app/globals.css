@@ -200,3 +200,17 @@
     scroll-behavior: smooth;
   }
 }
+
+/* Respect OS-level "reduce motion" — collapses every animation/transition
+   (Tailwind utilities, tw-animate-css, shadcn primitives, scroll-behavior)
+   to near-instant instead of disabling motion piecemeal per component. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
