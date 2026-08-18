@@ -51,7 +51,7 @@ runner may touch it — the runner refuses and errors, it does not skip silently
 | CP-32 | done | 23e64954ce90d09d121abf8cc75751629032f0b5 | 2026-08-18 | prompt-only tightening in notes/prompts.ts (BLOCK_EXAMPLES bad/good pair + explicit "symbol" constraint line), per AU-NOTES S3-2's own low-priority recommendation; no schema/validator change |
 | CP-33 | done | 2d99d621f417fd207aed32e7fd97141f41d2f197 | 2026-08-18 | shuffle(combined) at all 3 return points in prep/generate/route.ts (bank-serve, insert-success, insert-fallback); prior code always ordered all-MCQ-then-all-fill_code |
 | CP-34 | done | 82582b1c0cc914dfb5ed5c8126248b2140aa45e6 | 2026-08-18 | scroll-position-aware edge-fade masks (left/right) on StageStrip via scroll+ResizeObserver listeners; no affordance shown when content doesn't overflow; committed locally only, per this session's no-push default |
-| CP-35 | done | 60d8a4270286d46f9bfd9a659306413f5a482fee | 2026-08-18 | already fully implemented by CP-15's commit (capArraySizes + MAX_PROJECTS/MAX_BULLETS/MAX_ACHIEVEMENTS/MAX_COURSES applied server-side); this session verified behaviorally, no new code |
+| CP-35 | done | 1302d015042ea19cac7b65b71ecc2d8f26449acc | 2026-08-18 | already fully implemented by CP-15's commit (capArraySizes + MAX_PROJECTS/MAX_BULLETS/MAX_ACHIEVEMENTS/MAX_COURSES applied server-side); this session verified behaviorally, no new code |
 | CP-36 | pending | | | |
 | CP-37 | pending | | | |
 | CP-38 | pending | | | large — pairs with CP-27, own initiative |
