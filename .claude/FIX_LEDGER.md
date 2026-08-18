@@ -49,7 +49,7 @@ runner may touch it — the runner refuses and errors, it does not skip silently
 | CP-30 | done | 1b871deb3629b36dc9f1ecb050fab4959ba63d35 | 2026-08-18 | deliberately deferred per FIX_SPEC.md's own framing — no production telemetry showing double-submits; client already guards via isSendingRef + disabled button (chat/[subjectId]/page.tsx:256-261, Composer.tsx) |
 | CP-31 | done | 351b8da5c9382f0286872ea865da19d3ee70d642 | 2026-08-18 | color tokens only (ink/paper/ochre/mastery-green swap); IBM Plex font-embed half deferred — needs new npm dep (fontkit) + font binaries not present in repo, awaiting approval per CLAUDE.md |
 | CP-32 | done | 23e64954ce90d09d121abf8cc75751629032f0b5 | 2026-08-18 | prompt-only tightening in notes/prompts.ts (BLOCK_EXAMPLES bad/good pair + explicit "symbol" constraint line), per AU-NOTES S3-2's own low-priority recommendation; no schema/validator change |
-| CP-33 | pending | | | |
+| CP-33 | done | 2df52ce7ddafd4776c58887d837de2e098578480 | 2026-08-18 | shuffle(combined) at all 3 return points in prep/generate/route.ts (bank-serve, insert-success, insert-fallback); prior code always ordered all-MCQ-then-all-fill_code |
 | CP-34 | pending | | | |
 | CP-35 | pending | | | bundle into CP-15 |
 | CP-36 | pending | | | |

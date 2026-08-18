@@ -1709,3 +1709,59 @@ _(entries appended below by each checkpoint session)_
      `CP-28.*` / `CP-29.*` / `CP-30.*` / `CP-31.*` / `CP-32.*`, are still present, still
      untouched — not part of this checkpoint, same as every prior checkpoint has noted since
      CP-14.
+
+### CP-33 — fill_code+MCQ prep session not actually interleaved (AU-PLACE-CORE S3) — 2026-08-18
+- **Commit SHA:** `2df52ce7ddafd4776c58887d837de2e098578480` (local only, not pushed — this
+  session's no-push default)
+- **Finding source:** `.claude/findings/AU-PLACE-CORE.md` [S3] — not in `FIX_SPEC.md` (this
+  checkpoint, like CP-27–CP-32, runs off the audit ledger directly, confirmed via grep of
+  `FIX_SPEC.md` for "CP-33" with zero hits). The "mixed" fill_code+MCQ placement prep session
+  was never actually interleaved: both the bank-serve path (`prep/generate/route.ts:404-407`
+  at audit time) and the AI-generated path (`generateFillCodeMix`) concatenated
+  `[...mcq, ...fillCode]` without an interleave/shuffle-together step, so question 1 was
+  always MCQ and the first fill_code question was always Q5. Confirmed live during the audit
+  against a real "SQL Queries & Joins" session.
+- **Repo-state check performed:** grepped `src/app/api/placement/prep/generate/route.ts` for
+  every place the finding's evidence lines pointed at; found the bug reproduced in 3 places,
+  not just the 2 the finding named — the bank-serve return (line ~418), the insert-success
+  return (line ~782, using `insertedRows` straight from Supabase in insert order), and the
+  insert-failure fallback return (line ~774, `[...fallbackMcq, ...fallbackFc]`). All three
+  needed the same fix.
+- **What changed:** `src/app/api/placement/prep/generate/route.ts` — wrapped the combined
+  8-question array in the file's existing `shuffle<T>()` helper (a Fisher-Yates that returns
+  a fresh copy, already used per-half at 2 of these 3 call sites) at all 3 return points, per
+  the finding's own recommendation ("shuffle the combined 8-question array, not just each
+  half independently"). No new helper, no schema change, no new dependency.
+- **Verified (build/lint):** `npx tsc --noEmit` clean; `npx eslint
+  src/app/api/placement/prep/generate/route.ts` clean (zero new or pre-existing findings).
+- **Verified (behavioral, standalone harness):** extracted the same `shuffle()` implementation
+  into a disposable Node script and ran 2000-trial Monte Carlo checks (twice, for
+  reproducibility) over a synthetic 4-MCQ + 4-fill_code combined array: (1) every trial
+  preserved exactly 8 questions with exactly 4 of each type — no loss/duplication from the
+  shuffle; (2) the "all 4 MCQ land in positions 0-3" pattern (the exact bug being fixed)
+  occurred in ~1.4-1.6% of trials, matching the true combinatorial baseline for a fair shuffle
+  (C(4,4)·C(4,0)/C(8,4) = 1/70 ≈ 1.43%) — versus the pre-fix code's 100% deterministic rate.
+  This is the closest available verification to a live AI-generated session without spending
+  real Gemini calls to reproduce the audit's exact repro.
+- **Verified (unhappy path — concurrent):** `shuffle()` copies its input (`const a = [...arr]`)
+  before mutating, so concurrent callers reading the same `insertedRows`/`mcqBank`/`fcBank`
+  array (e.g. two overlapping prep-generate requests hitting the bank-serve path against
+  cached query results) cannot observe or corrupt each other's shuffle — each call gets an
+  independent copy. No shared-mutable-state race introduced.
+- **Verified (unhappy path — interrupted):** N/A in the async-gap sense — the shuffle is a
+  synchronous, pure array transform applied immediately before each `apiSuccess()` return, with
+  no `await` between the shuffle and the response being sent, so there is no window for a
+  client abort or state change to interleave with it.
+- **Migration needed:** none.
+- **Ledger status:** `.claude/FIX_LEDGER.md`'s CP-33 row set to `done` with commit
+  `2df52ce7ddafd4776c58887d837de2e098578480`.
+- **Next checkpoint must know:**
+  1. Commit `2df52ce7...` is **local only, not pushed** — a human needs to review and push
+     `dev`.
+  2. The fix covers all 3 return points that emit the combined MCQ+fill_code array in this
+     route; no other file constructs this mixed question list.
+  3. The pre-existing uncommitted CP-08 changes and the `.claude/logs-fix/CP-08.*` /
+     `CP-26.*` runner-artifact diffs, plus now-untracked `.claude/logs-fix/CP-27.*` /
+     `CP-28.*` / `CP-29.*` / `CP-30.*` / `CP-31.*` / `CP-32.*`, are still present, still
+     untouched — not part of this checkpoint, same as every prior checkpoint has noted since
+     CP-14.
