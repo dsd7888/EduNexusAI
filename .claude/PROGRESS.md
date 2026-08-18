@@ -1529,3 +1529,39 @@ _(entries appended below by each checkpoint session)_
   4. `_cp_29_verify/verify.mts` is a reusable template for any future theme-toggle-adjacent
      browser verification — swap the page list / assertions for new surfaces once CP-29b+
      starts adding per-page `dark:` classes.
+
+### CP-30 — No chat double-submit guard — 2026-08-18
+- **Commit SHA:** (none — no code change; see below)
+- **What was decided:** FIX_SPEC.md's own S3 entry for this finding reads: "Backlog — only
+  act if double-submits show up in production telemetry, per the audit's own framing." That
+  is a deliberate policy gate, not a normal "pending" fix — this session has no access to
+  production telemetry and no report of double-submits actually occurring, so the correct
+  action is to **not** implement a server-side idempotency/dedup guard in
+  `src/app/api/chat/route.ts` this session, matching the spec's explicit instruction rather
+  than inventing a fix for a precondition that can't be confirmed.
+- **Repo-state check performed:** confirmed `src/app/api/chat/route.ts` has no request-level
+  idempotency key, no in-flight-request dedup, and no debounce — the finding is accurate.
+  Also confirmed a **client-side** guard already exists and was not part of this finding's
+  gap: `src/app/(student)/student/chat/[subjectId]/page.tsx:256-261` uses an `isSendingRef`
+  ref (checked synchronously, not React state, so two calls arriving in the same tick can't
+  both pass) plus `Composer.tsx`'s `disabled={isSending || isRateLimited}` on the send
+  button. So the UI-reachable double-submit path is already closed; the gap the finding
+  names is specifically the *server* having no defense if a request reaches it through some
+  other path (retried fetch, non-UI client, replayed request) — exactly the kind of gap
+  that's cheap to leave alone until telemetry shows it's real, per the spec's framing.
+- **Verified (happy/unhappy path):** N/A — no code changed, so there is no new behavior to
+  drive through a browser. The "verification" for this checkpoint is the repo-state grep
+  above (finding still accurate) plus confirming the existing client guard's logic reads
+  correctly (ref check happens before the async call, matching the in-file comment at
+  page.tsx:259-260).
+- **Migration needed:** none.
+- **Ledger status:** `.claude/FIX_LEDGER.md`'s CP-30 row set to `blocked` (was stale
+  `in-progress` from a prior run that didn't complete) with a note pointing at the existing
+  client-side guard, mirroring how CP-29b+ is recorded as `blocked`/deferred rather than
+  `pending` or `done`.
+- **Next checkpoint must know:** CP-30 stays `blocked` until someone reports actual
+  double-submit incidents (support ticket, error-tracking spike, or a telemetry field added
+  specifically to count them) — at that point the fix is a standard idempotency-key or
+  request-coalescing guard in `api/chat/route.ts`, no design work needed, this session just
+  didn't manufacture a reason to build it early. Do not re-attempt this checkpoint without
+  that evidence in hand.

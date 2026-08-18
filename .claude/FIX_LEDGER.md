@@ -46,7 +46,7 @@ runner may touch it — the runner refuses and errors, it does not skip silently
 | CP-28 | done | b0c2f6bf53213a264442b781c1832418401f68f8 | 2026-08-18 | one-line swap chat/export → richText() (real table renderer already existed, used by answerKeyGen.ts) |
 | CP-29a | done | e2d2aaabe06ae19b849d90736cd14938252c2712 | 2026-08-18 | next-themes ThemeProvider + toggle in student shell nav, persisted; existing dark: classes now reachable, no new dark: added |
 | CP-29b+ | blocked | | | deferred — bundle with CP-27/CP-38, schedule when those are scoped |
-| CP-30 | pending | | | backlog — only act if double-submits show up in production telemetry |
+| CP-30 | blocked |  | 2026-08-18 | deliberately deferred per FIX_SPEC.md's own framing — no production telemetry showing double-submits; client already guards via isSendingRef + disabled button (chat/[subjectId]/page.tsx:256-261, Composer.tsx) |
 | CP-31 | pending | | | bundle with CP-16b, same file |
 | CP-32 | pending | | | |
 | CP-33 | pending | | | |
