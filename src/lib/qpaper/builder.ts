@@ -1149,6 +1149,34 @@ function drawUnitImage(
   return ctx;
 }
 
+/**
+ * Rough line-count estimate of a sub-part/pool-item's rendered height, used
+ * only to decide whether a question header should page-break together with
+ * its first sub-part (keep-with-next) — not for exact layout, which the
+ * existing math/markdown-aware draw* functions still own. Deliberately
+ * generous (whole options block counted even though some keys may be empty)
+ * so under-estimating never reintroduces the orphan this exists to prevent.
+ */
+function estimateUnitHeight(
+  ctx: Ctx,
+  text: string,
+  indentX: number,
+  size: number,
+  options?: Record<string, string> | null,
+  hasImage?: boolean
+): number {
+  const { regular } = ctx.fonts;
+  const maxWidth = COL_MARKS_X - indentX - 12;
+  const lines = wrapWords(sanitize(text ?? ""), regular, size, maxWidth);
+  let h = LINE_H * Math.max(lines.length, 1);
+  if (options) {
+    const present = (["a", "b", "c", "d"] as const).filter((k) => options[k]);
+    h += LINE_H * present.length;
+  }
+  if (hasImage) h += 80;
+  return h;
+}
+
 /** One MCQ / true-false sub-row (label + text + CO/BTL/PO + optional options). */
 function drawTaggedSubRow(ctx: Ctx, sub: SubQuestion, hasCoPo: boolean): Ctx {
   ctx = ensureSpace(ctx, LINE_H * 4);
@@ -1222,7 +1250,21 @@ function drawTaggedOptionRow(
 function drawMCQRow(ctx: Ctx, q: GeneratedQuestion, hasCoPo: boolean): Ctx {
   const { bold, regular } = ctx.fonts;
 
-  ctx = ensureSpace(ctx, LINE_H * 4);
+  const firstSub = (q.sub_parts ?? [])[0];
+  const firstSubHeight = firstSub
+    ? estimateUnitHeight(
+        ctx,
+        `${firstSub.label} ${firstSub.question}`,
+        MARGIN_LEFT + 16,
+        10,
+        firstSub.options,
+        !!firstSub.image_path
+      )
+    : 0;
+  // Keep-with-next: reserve room for the header AND its first sub-part
+  // together, so a header drawn near the bottom of a page never leaves its
+  // first sub-part to be pushed alone onto the next one.
+  ctx = ensureSpace(ctx, LINE_H * 4 + firstSubHeight);
   const label = sanitize(q.display_label ?? `Q - ${q.q_number}`);
   const instruction = sanitize(q.instruction ?? "");
 
@@ -1396,7 +1438,20 @@ function drawAttemptAnyOne(
   hasCoPo: boolean
 ): Ctx {
   const { bold, regular } = ctx.fonts;
-  ctx = ensureSpace(ctx, LINE_H * 5);
+  const firstPart = (q.parts ?? [])[0];
+  const firstPartHeight = firstPart
+    ? estimateUnitHeight(
+        ctx,
+        firstPart.question,
+        MARGIN_LEFT + 50,
+        10,
+        null,
+        !!firstPart.image_path
+      )
+    : 0;
+  // Keep-with-next (same reasoning as drawMCQRow): the header must not
+  // commit to a page unless its first option row also fits.
+  ctx = ensureSpace(ctx, LINE_H * 5 + firstPartHeight);
   const label = sanitize(q.display_label ?? `Q - ${q.q_number}`);
   const instruction = sanitize(
     q.instruction ??
@@ -1434,7 +1489,20 @@ function drawAttemptAnyOne(
 
 function drawPool(ctx: Ctx, q: GeneratedQuestion, hasCoPo: boolean): Ctx {
   const { bold, regular } = ctx.fonts;
-  ctx = ensureSpace(ctx, LINE_H * 5);
+  const firstItem = (q.items ?? [])[0];
+  const firstItemHeight = firstItem
+    ? estimateUnitHeight(
+        ctx,
+        firstItem.question_text,
+        isPoolItemMcqLike(firstItem.itemType) ? MARGIN_LEFT + 16 : MARGIN_LEFT + 50,
+        10,
+        firstItem.options,
+        !!firstItem.image_path
+      )
+    : 0;
+  // Keep-with-next (same reasoning as drawMCQRow): the header must not
+  // commit to a page unless its first pool item also fits.
+  ctx = ensureSpace(ctx, LINE_H * 5 + firstItemHeight);
   const label = sanitize(q.display_label ?? `Q - ${q.q_number}`);
   const instruction = sanitize(
     q.instruction ??
