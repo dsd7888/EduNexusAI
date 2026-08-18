@@ -1400,3 +1400,49 @@ _(entries appended below by each checkpoint session)_
      by then the faculty/superadmin chrome question will need answering anyway.
   4. `_cp_27_verify/verify.mts` is a reusable template for any future student-shell
      screenshot pass — swap the `PAGES` array and viewport list for new surfaces.
+
+### CP-28 — Chat PDF markdown tables garbled — 2026-08-18
+- **Commit SHA:** fb21c5b (local only — this run has no auto-push; a human reviews and pushes)
+- **Repo-state finding:** `PDFBuilder` already has two markdown renderers — the older
+  `markdown()` (heading/bullet/numbered-list handling only, no table support; a pipe-table
+  line falls into its "regular paragraph" branch and prints raw `| a | b |` text) and the
+  newer `richText()` (backed by `parseMarkdownLite`, already used by `qpaper/answerKeyGen.ts`
+  for the same "AI text with pipe-table leakage" problem — real bordered `drawTable()` output
+  for tables, proper list markers, headings). Grep confirmed `markdown()` had exactly one
+  caller in the whole repo: `src/app/api/chat/export/route.ts:119`. Notes/quiz export don't
+  call either method (they build PDF content structurally, not from raw markdown), so this
+  was purely a chat-export gap, not a shared-renderer bug.
+- **What was built:** One-line swap in `chat/export/route.ts` — `builder.markdown(part.content, 11)`
+  → `builder.richText(part.content, { size: 11 })`. `richText()` is a strict superset of what
+  `markdown()` did for this call site (headings, bold/italic/code stripping, bullet/numbered
+  lists all still handled) plus real table rendering. No changes to `builder.ts` itself; the
+  table renderer already existed and is shared/proven via `answerKeyGen.ts`.
+- **Verified (happy path):** standalone script instantiating `PDFBuilder` directly (not
+  committed — scratch file, deleted after use) rendered a chat-shaped message mixing prose
+  and a well-formed pipe table (`| Feature | Old | New |` + separator + 2 data rows) through
+  `extractDiagramBlocks` → `richText`. `pdftotext -layout` on the output PDF confirmed the
+  table rendered as an aligned 3-column grid ("Feature / Old / New" header, "Speed / Slow /
+  Fast", "Cost / High / Low" as columns) — not raw pipe characters.
+- **Verified (unhappy path):** (1) **malformed/interrupted table** — a header-only pipe line
+  with no separator row (simulating a truncated AI stream cut off mid-table) does not match
+  `parseMarkdownLite`'s table-detection (needs row + separator), so it correctly falls through
+  to plain-paragraph rendering (pipes preserved as literal text) rather than crashing or
+  drawing a broken table. (2) **ragged table** (extra column in a data row vs. the header,
+  an empty cell) rendered without error — `drawTable` silently caps at the header's column
+  count, a pre-existing shared-renderer behavior (also true for `answerKeyGen.ts`'s usage),
+  not something this checkpoint's one-line fix changed or needed to change.
+- **Noted, explicitly out of scope:** cell text in `drawTable` is not run through
+  `stripInlineMarkdown` — a cell containing `**bold**` renders the literal asterisks. This is
+  pre-existing behavior of the shared `drawTable`/`richText` path (same for `answerKeyGen.ts`'s
+  callers today), not something CP-28 introduced; the finding was specifically "tables
+  garbled" (i.e., no table structure at all), which is fixed. Flagging as a possible future
+  S3 polish item if bold-in-cells shows up in real chat exports.
+- **Gate status:** `tsc --noEmit` clean. `npm run lint` — pre-existing baseline (133
+  problems/31 errors, all in unrelated files); the one warning/error inside
+  `chat/export/route.ts` (`no-explicit-any` on line 49, unused imports) predates this change
+  and sits outside the touched line. `npm run build` exits 0, all routes compile.
+- **Migration needed:** none.
+- **Next checkpoint must know:** nothing blocking — this was a fully self-contained, one-line
+  fix. If a future checkpoint revisits `PDFBuilder`, note `markdown()` now has zero callers
+  repo-wide (kept, not deleted — out of scope for a docs-table fix to also prune a public
+  class method with no evidence it's dead-for-good rather than a future extension point).
