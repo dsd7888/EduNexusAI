@@ -1765,3 +1765,49 @@ _(entries appended below by each checkpoint session)_
      `CP-28.*` / `CP-29.*` / `CP-30.*` / `CP-31.*` / `CP-32.*`, are still present, still
      untouched — not part of this checkpoint, same as every prior checkpoint has noted since
      CP-14.
+
+### CP-34 — Stage strip has no scroll affordance (S3, `page.tsx` `StageStrip`) — 2026-08-18
+- **Commit SHA:** `a9af20826e6b41d5e2daf91801a90ee3beb00cb9` (fix), `5e3502f...` (ledger SHA
+  record) — both local only, not pushed, per this session's no-push default.
+- **Finding:** FIX_SPEC.md S3 row 34 — `(student)/student/placement/page.tsx`'s `StageStrip`
+  is `overflow-x-auto` with no visual cue that it scrolls; on narrow viewports (6 stage tags)
+  it silently clips content the user doesn't know to scroll for.
+- **Repo-state check performed:** confirmed via grep that `StageStrip` (page.tsx:74-91 at
+  audit time) was the only overflow-x-auto instance in this file, rendered a plain `<ol>`
+  with no fade/chevron affordance anywhere in the codebase's other `overflow-x-auto` usages
+  either (checked all ~15 other call sites — none of them have one, so no existing pattern to
+  reuse).
+- **What changed:** wrapped the `<ol>` in a `relative` container; added a `scrollLeft`/
+  `clientWidth`/`scrollWidth` scroll listener (passive) plus a `ResizeObserver` on the
+  scrollable element, both updating `canScrollLeft`/`canScrollRight` state; each renders a
+  `pointer-events-none` absolutely-positioned gradient-to-`bg-paper` mask on the
+  corresponding edge only when there's more content in that direction. No fade shown at all
+  when the strip doesn't overflow its container (e.g. wide desktop viewport with all 6 tags
+  visible).
+- **Verified (build/lint):** `npx tsc --noEmit` clean for this file; `npx eslint
+  "src/app/(student)/student/placement/page.tsx"` clean (zero new findings).
+- **Verified (unhappy path — reasoning, not full browser drive):** could not complete a full
+  authenticated browser click-through this session (dev server redirects to login, no test
+  credentials available in this environment) — flagging this explicitly per CLAUDE.md's
+  verification protocol rather than implying full coverage. Verified at the code level
+  instead: (1) unmount mid-observation — cleanup calls both
+  `removeEventListener('scroll', ...)` and `observer.disconnect()`, so no post-unmount
+  `setState` is possible; (2) concurrent-equivalent — rapid scroll + container-resize events
+  (e.g. viewport rotation) both funnel through the same synchronous `updateFades()` reading
+  live DOM geometry, no stale-closure or async-gap risk since there's no `await` anywhere in
+  the path; (3) no-overflow edge case — when `scrollWidth <= clientWidth` both flags stay
+  `false` and no mask renders, so desktop viewports that already show all 6 stages get no
+  spurious fade.
+- **Migration needed:** none.
+- **Ledger status:** `.claude/FIX_LEDGER.md`'s CP-34 row set to `done` with commit
+  `a9af20826e6b41d5e2daf91801a90ee3beb00cb9`.
+- **Next checkpoint must know:**
+  1. Commits are **local only, not pushed** — a human needs to review and push `dev`, and
+     ideally give this a real browser pass (authenticated as a student) before/at push time
+     since this session couldn't.
+  2. This is a purely visual/CSS-and-listener change — no API, schema, or state-shape changes,
+     so it's low-risk to bundle with other pending pushes.
+  3. The pre-existing uncommitted CP-08 changes and the `.claude/logs-fix/CP-08.*` /
+     `CP-26.*` runner-artifact diffs, plus now-untracked `.claude/logs-fix/CP-27.*` through
+     `CP-33.*` and this checkpoint's own `CP-34.*`, are still present, still untouched — not
+     part of this checkpoint, same as every prior checkpoint has noted since CP-14.
