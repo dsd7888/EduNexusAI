@@ -1651,3 +1651,61 @@ _(entries appended below by each checkpoint session)_
      `CP-26.*` runner-artifact diffs, plus now-untracked `.claude/logs-fix/CP-27.*` /
      `CP-28.*` / `CP-29.*` / `CP-30.*`, are still present, still untouched — not part of this
      checkpoint, same as every prior checkpoint has noted since CP-14.
+
+### CP-32 — Formula symbol field holds full phrases (AU-NOTES S3-2) — 2026-08-18
+- **Commit SHA:** `aa14d1870091c2e893303394b94b80a6573a64cf` (local only, not pushed — this
+  session's no-push default)
+- **Finding source:** `.claude/findings/AU-NOTES.md` [S3-2] — not in `FIX_SPEC.md` (this
+  checkpoint, like CP-27–CP-31, runs off the audit ledger directly). The real "Steering
+  Ratio" formula block generated during that audit had `symbols[].symbol` rows of
+  `"Steering Wheel Angle"` / `"Road Wheel Angle"` — full descriptive phrases, paired with an
+  identical string repeated in `meaning` — instead of short notation like `θ_sw`/`θ_rw`. The
+  20-char `symbol` length cap in `LIMITS.formula.symbols.symbol` doesn't catch this because
+  the offending phrase happened to fit under it (a length bound polices length, not whether
+  the field is actually a symbol). The finding's own recommendation: low-priority prompt
+  tightening, one bad-example pair mirroring the existing `whyItMatters LENGTH — BAD`
+  pattern already in the file — not a validator/schema change.
+- **Repo-state check performed:** confirmed via grep that `FIX_SPEC.md` has no CP-32 entry
+  (checkpoints CP-30–32 postdate the spec file and come from the audit ledger directly, same
+  as CP-27/CP-28); confirmed `src/lib/notes/prompts.ts`'s `FORMULA_SCHEMA` (the validator) is
+  unchanged — the fix is prompt-text only, per the finding's own "low-priority prompt
+  tightening... not a validator gap worth a hard reject."
+- **What changed:** `src/lib/notes/prompts.ts` — (1) `BLOCK_EXAMPLES`'s doc comment updated
+  from "three failure modes" to "four," citing AU-NOTES S3-2 directly; (2) a new
+  `FORMULA SYMBOL — BAD` / `FORMULA SYMBOL — GOOD` pair added right after the existing
+  `FORMULA — BAD` example, using the same real-world domain (steering angle) as the audit's
+  reproduction so the contrast is concrete: BAD shows `"symbol":"Steering Wheel Angle"` with
+  the identical phrase repeated as `"meaning"`; GOOD shows `"symbol":"\theta_{sw}"` paired
+  with an actual explanatory `"meaning"`; (3) the plain-English constraints list (the
+  `formula.symbols ≤ N rows...` line built into the prompt body, not just the few-shot
+  examples) now states explicitly: `"symbol" is short notation (e.g. V, I, R, θ_sw) — NEVER
+  a descriptive phrase; the phrase belongs in "meaning" instead`. No schema, validator,
+  `LIMITS`, or `responseSchema` change — `FORMULA_SCHEMA`'s `symbol` field is untouched.
+- **Migration needed:** none.
+- **Verified (build/lint):** `npx tsc --noEmit` clean; `npx eslint src/lib/notes/prompts.ts`
+  clean (no new or pre-existing findings). Confirmed the edited template literal parses
+  correctly (tsc/eslint both fully parse the file, including the new `\\\\theta_{sw}` escape,
+  which follows the exact same double-backslash pattern already used elsewhere in the same
+  literal for `\\\\Omega` in the Ohm's Law example — same escaping convention, not a new one).
+- **Verified (unhappy path):** N/A in the interrupted-flow/concurrent-action sense — this
+  checkpoint changes only a static prompt string with no runtime code path, no async gap, no
+  state mutation, and no UI/API surface of its own to interrupt or race. The one meaningful
+  "verification" for a prompt-only change is that it doesn't regress request validity, which
+  the schema/tsc/eslint checks above cover — there is no live AI call to re-run in this
+  session (would cost real spend to confirm the model actually stops emitting phrases, and
+  the finding itself says "one instance in one generation, not urgent"). Flagging this
+  explicitly rather than implying a live-generation re-test happened.
+- **Ledger status:** `.claude/FIX_LEDGER.md`'s CP-32 row set to `done` with commit
+  `aa14d1870091c2e893303394b94b80a6573a64cf`.
+- **Next checkpoint must know:**
+  1. Commit `aa14d187...` is **local only, not pushed** — a human needs to review and push
+     `dev`.
+  2. This is a prompt-tightening fix with no automated regression test — if a future real
+     generation still shows a full phrase in `symbol`, the next step per the finding would be
+     a validator-level heuristic (e.g. reject `symbol` values containing spaces or over N
+     words), which is a bigger change than this checkpoint's low-priority scope justified.
+  3. The pre-existing uncommitted CP-08 changes and the `.claude/logs-fix/CP-08.*` /
+     `CP-26.*` runner-artifact diffs, plus now-untracked `.claude/logs-fix/CP-27.*` /
+     `CP-28.*` / `CP-29.*` / `CP-30.*` / `CP-31.*` / `CP-32.*`, are still present, still
+     untouched — not part of this checkpoint, same as every prior checkpoint has noted since
+     CP-14.
