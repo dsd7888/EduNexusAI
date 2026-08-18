@@ -415,10 +415,10 @@ export async function POST(request: NextRequest) {
 
         if (mcqBank.length >= 4 && fcBank.length >= 4) {
           return apiSuccess({
-            questions: [
+            questions: shuffle([
               ...shuffle(mcqBank).slice(0, 4),
               ...shuffle(fcBank).slice(0, 4),
-            ].map(stripAnswerKey),
+            ]).map(stripAnswerKey),
             topic: cleanTopic,
             track: validTrack,
             difficulty: difficultyToServe,
@@ -772,7 +772,7 @@ async function generateFillCodeMix(
       quality_score: null, company_context: null, generated_at: now, is_active: true,
     }));
     return apiSuccess({
-      questions: [...fallbackMcq, ...fallbackFc].map(stripAnswerKey),
+      questions: shuffle([...fallbackMcq, ...fallbackFc]).map(stripAnswerKey),
       topic, track, difficulty,
       source: "generated",
       generated_at: now,
@@ -780,7 +780,7 @@ async function generateFillCodeMix(
   }
 
   return apiSuccess({
-    questions: (insertedRows as PlacementBankQuestion[]).map(stripAnswerKey),
+    questions: shuffle(insertedRows as PlacementBankQuestion[]).map(stripAnswerKey),
     topic, track, difficulty,
     source: "generated",
     generated_at: now,
