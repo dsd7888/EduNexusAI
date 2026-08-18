@@ -78,39 +78,54 @@ export async function POST(request: NextRequest) {
     }
 
     // Cap check FIRST — no AI call at all once the ceiling is hit.
+    // CP-06: atomic reserve-then-check via RPC, replacing a check-then-act
+    // read of ai_call_logs (written by routeAI's deferred after() hook, so
+    // every request in a concurrent burst previously read the same
+    // pre-burst count — a 100% bypass, not just a marginal overrun).
     const windowStart = new Date(
       Date.now() - REACTIVE_FOLLOWUP_WINDOW_HOURS * 60 * 60 * 1000
     ).toISOString();
 
-    const { data: recentCalls, error: recentCallsError } = await adminClient
-      .from("ai_call_logs")
-      .select("id, metadata")
-      .eq("user_id", user.id)
-      .eq("task", "placement_prep")
-      .gte("created_at", windowStart);
+    const { data: reservation, error: reserveError } = await adminClient.rpc(
+      "reserve_interview_followup",
+      {
+        p_user_id: user.id,
+        p_window_start: windowStart,
+        p_cap: REACTIVE_FOLLOWUP_CAP,
+      }
+    );
 
-    if (recentCallsError) {
+    if (reserveError || !reservation) {
       console.error(
-        "[interview/mock/follow-up] cap check query failed:",
-        recentCallsError
+        "[interview/mock/follow-up] cap reservation failed:",
+        reserveError
       );
       return apiError("Follow-up unavailable right now. Try again.", 500);
     }
 
-    const reactiveCallsUsed = (recentCalls ?? []).filter(
-      (row) =>
-        row.metadata &&
-        typeof row.metadata === "object" &&
-        (row.metadata as Record<string, unknown>).kind === REACTIVE_FOLLOWUP_KIND
-    ).length;
+    const { reservation_id: reservationId, calls_used: callsUsed } =
+      reservation as { reservation_id: string | null; calls_used: number };
 
-    if (reactiveCallsUsed >= REACTIVE_FOLLOWUP_CAP) {
+    if (reservationId === null) {
       return apiError(
         `You've used all ${REACTIVE_FOLLOWUP_CAP} reactive follow-ups for this session. ` +
           `Continue with the structured questions — this resets in a few hours.`,
         429
       );
     }
+
+    const releaseReservation = async () => {
+      const { error } = await adminClient
+        .from("interview_followup_reservations")
+        .delete()
+        .eq("id", reservationId);
+      if (error) {
+        console.error(
+          "[interview/mock/follow-up] failed to release reservation on failure:",
+          error
+        );
+      }
+    };
 
     const prompt =
       `You are a technical interviewer probing a fresher's project answer. ` +
@@ -146,6 +161,7 @@ export async function POST(request: NextRequest) {
       });
     } catch (err) {
       console.error("[interview/mock/follow-up] AI call failed:", err);
+      await releaseReservation();
       return apiError("Follow-up generation failed. Try again.", 500);
     }
 
@@ -154,16 +170,18 @@ export async function POST(request: NextRequest) {
       followUp = JSON.parse(repairGeminiJsonEscapes(String(result.content ?? "")));
     } catch {
       console.error("[interview/mock/follow-up] Failed to parse AI response");
+      await releaseReservation();
       return apiError("Follow-up generation failed. Try again.", 500);
     }
 
     if (typeof (followUp as { follow_up_question?: unknown }).follow_up_question !== "string") {
+      await releaseReservation();
       return apiError("Follow-up generation failed. Try again.", 500);
     }
 
     return apiSuccess({
       ...followUp,
-      reactive_calls_used: reactiveCallsUsed + 1,
+      reactive_calls_used: callsUsed,
       reactive_calls_cap: REACTIVE_FOLLOWUP_CAP,
     });
   } catch (error) {

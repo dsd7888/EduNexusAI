@@ -2066,3 +2066,66 @@ _(entries appended below by each checkpoint session)_
      `CP-26.*` runner-artifact diffs, plus untracked `.claude/logs-fix/CP-27.*` through
      `CP-37.*` and this checkpoint's own `CP-38.*`, are still present, still untouched — not
      part of this checkpoint, same as every prior checkpoint has noted since CP-14.
+
+### CP-05 / CP-06 — resumed and closed — 2026-08-18
+- **Context:** a pilot-readiness review found both checkpoints' migration files
+  (`20260817010000_placement_mastery_atomic_upsert.sql`,
+  `20260817020000_interview_followup_atomic_cap.sql`) missing from the working
+  tree — not in `supabase/migrations/`, not untracked, not committed anywhere in
+  `git log --all`. Both had been correctly HALTED per CLAUDE.md's "create
+  migration, then STOP" rule, but the files themselves were lost between
+  sessions (never committed by design, and apparently never persisted any other
+  way either). `route.ts` for both `prep/submit` and `interview/mock/follow-up`
+  still had the original read-then-write / check-then-act logic untouched,
+  confirmed by direct inspection.
+- **What was rebuilt:** both `.sql` files reconstructed from this file's own
+  CP-05 (line ~288) and CP-06 (line ~302) entries above, which documented the
+  intended function signatures, advisory-lock technique, and exact math/
+  threshold-ladder logic in enough detail to reproduce faithfully — cross-
+  checked line-for-line against the still-live JS logic in both routes before
+  writing the SQL, to make sure the replacement RPCs replicate exactly what
+  they replace (weight-capped accuracy blend, four-branch difficulty
+  promote/demote ladder for CP-05; count-check-and-reserve with `NULL`-on-cap
+  contract for CP-06).
+- **Migrations applied:** by hand, directly to the live DB, by Dhruv (same
+  precedent as CP-01) — not through this session's tooling.
+- **App code wired** (both previously left untouched per the HALT convention):
+  - `prep/submit/route.ts` Step 3 now calls
+    `adminClient.rpc("upsert_placement_topic_mastery", {...})` instead of a
+    plain `SELECT` + `.update()`/`.insert()`; the `sessionAttempted === 0`
+    early-return branch keeps its own read-only `SELECT` (no write, no race to
+    fix there) per the original CP-05 note's own guidance.
+  - `interview/mock/follow-up/route.ts` now calls
+    `adminClient.rpc("reserve_interview_followup", {...})` instead of
+    filtering an `ai_call_logs` read; added the delete-on-failure call (the
+    original migration deliberately left this unwired) into all 3 failure
+    branches — `routeAI` catch, JSON-parse failure, and missing
+    `follow_up_question` — so a failed generation no longer permanently burns
+    a slot. Response's `reactive_calls_used` now reads the RPC's own
+    post-reservation count instead of a client-side `+ 1`.
+- **Verified:** `_cp_05_verify/api.mts` — (1) two genuinely concurrent direct
+  RPC calls for a fresh topic key land `sessions_count=2`/`attempts_count=10`/
+  `correct_count=6` (both deltas summed, neither lost — was `sessions_count=1`
+  pre-fix); (2) a live HTTP smoke test against the real route (real bank-
+  question fixtures, real auth cookie) returns 200 with a well-formed
+  `mastery` object off the RPC and confirms CP-08's server-side re-grading
+  still holds on top of it. `_cp_06_verify/api.mts` — real 8-way concurrent
+  `Promise.all` burst against the live route: exactly 5/8 succeeded (was 8/8
+  pre-fix), reservation-row count matched the accepted-request count exactly
+  (no phantom rows from rejected requests), and manually deleting one
+  reservation (simulating the route's own release-on-failure path) correctly
+  freed a slot for a subsequent call. All fixture rows cleaned up, zero
+  residue confirmed both runs. `tsc --noEmit`, `eslint`, and `npm run build`
+  clean across both routes and both new harness files.
+- **Cost:** CP-06's verify burst made 5 real Flash-tier `placement_prep`
+  Gemini calls (the 5 that won the race) plus 1 more for the release-on-
+  failure sub-test — 6 total, small `maxTokens: 500` each.
+- **Migration needed:** none further — both already applied live (see above).
+- **Next checkpoint must know:**
+  1. `.claude/FIX_LEDGER.md`'s CP-05/CP-06 rows updated to reflect completion;
+     their commit SHA cells point back to this entry rather than a single
+     commit, since the work spans the two `.sql` files, two `route.ts` edits,
+     and two new `_cp_0{5,6}_verify/` harnesses together.
+  2. Same unresolved caveat as every checkpoint since CP-03: confirm what
+     `origin/dev` has before assuming this is live — these changes are local
+     commits only until pushed.

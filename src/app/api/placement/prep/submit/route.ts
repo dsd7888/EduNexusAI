@@ -290,6 +290,10 @@ export async function POST(request: NextRequest) {
     }
 
     // ── Step 3: Upsert placement_topic_mastery (critical path) ─────────────────
+    // CP-05: delegated to an atomic RPC (advisory-lock-guarded upsert) instead
+    // of a JS read-then-write — two concurrent submits for the same
+    // (student_id, track, topic) previously raced on a stale read and lost one
+    // submission's contribution to the accumulator (sessions_count, etc.).
     const sessionAttempted = answeredAttempts.length;
     const sessionCorrect = validAttempts.filter((a) => a.is_correct).length;
     const sessionAccuracy =
@@ -297,20 +301,20 @@ export async function POST(request: NextRequest) {
         ? (sessionCorrect / Math.max(sessionAttempted, 1)) * 100
         : 0;
 
-    const { data: existingMastery, error: masteryFetchError } = await adminClient
-      .from("placement_topic_mastery")
-      .select("*")
-      .eq("student_id", user.id)
-      .eq("track", track)
-      .eq("topic", topicTrimmed)
-      .maybeSingle();
-
-    if (masteryFetchError) {
-      console.error("[placement-submit] Mastery fetch error:", masteryFetchError);
-      return apiError("Failed to load mastery record", 500);
-    }
-
     if (sessionAttempted === 0) {
+      const { data: existingMastery, error: masteryFetchError } = await adminClient
+        .from("placement_topic_mastery")
+        .select("*")
+        .eq("student_id", user.id)
+        .eq("track", track)
+        .eq("topic", topicTrimmed)
+        .maybeSingle();
+
+      if (masteryFetchError) {
+        console.error("[placement-submit] Mastery fetch error:", masteryFetchError);
+        return apiError("Failed to load mastery record", 500);
+      }
+
       return apiSuccess({
         mastery: existingMastery ?? null,
         difficulty_changed: false,
@@ -323,106 +327,31 @@ export async function POST(request: NextRequest) {
       });
     }
 
-    let masteryData: unknown;
-    let difficultyChanged = false;
-    let newDifficulty: Difficulty = "easy";
-
-    if (existingMastery) {
-      const prevAttempts = existingMastery.attempts_count ?? 0;
-      const prevCorrect = existingMastery.correct_count ?? 0;
-      const prevSessions = existingMastery.sessions_count ?? 0;
-      const prevAccuracy = existingMastery.recent_accuracy ?? 0;
-      const currentDiff =
-        (existingMastery.current_difficulty as Difficulty | undefined) ?? "easy";
-
-      const newAttempts = prevAttempts + sessionAttempted;
-      const newCorrect = prevCorrect + sessionCorrect;
-      const newSessions = prevSessions + 1;
-
-      const weightExisting = Math.min(prevAttempts, 20);
-      const weightNew = sessionAttempted;
-      const newAccuracy =
-        (prevAccuracy * weightExisting + sessionAccuracy * weightNew) /
-        Math.max(weightExisting + weightNew, 1);
-
-      let newDiff: Difficulty = currentDiff;
-      if (
-        newAccuracy >= 70 &&
-        newAttempts >= 10 &&
-        currentDiff === "easy" &&
-        newSessions >= 2
-      ) {
-        newDiff = "medium";
-      } else if (
-        newAccuracy >= 70 &&
-        newAttempts >= 10 &&
-        currentDiff === "medium" &&
-        newSessions >= 2
-      ) {
-        newDiff = "hard";
-      } else if (
-        newAccuracy < 40 &&
-        newAttempts >= 5 &&
-        currentDiff === "hard"
-      ) {
-        newDiff = "medium";
-      } else if (
-        newAccuracy < 40 &&
-        newAttempts >= 5 &&
-        currentDiff === "medium"
-      ) {
-        newDiff = "easy";
+    const { data: masteryRpcData, error: masteryRpcError } = await adminClient.rpc(
+      "upsert_placement_topic_mastery",
+      {
+        p_student_id: user.id,
+        p_track: track,
+        p_topic: topicTrimmed,
+        p_session_attempted: sessionAttempted,
+        p_session_correct: sessionCorrect,
+        p_session_accuracy: sessionAccuracy,
       }
+    );
 
-      difficultyChanged = newDiff !== currentDiff;
-      newDifficulty = newDiff;
-
-      const { data: updated, error: updateError } = await adminClient
-        .from("placement_topic_mastery")
-        .update({
-          attempts_count: newAttempts,
-          correct_count: newCorrect,
-          sessions_count: newSessions,
-          recent_accuracy: Math.round(newAccuracy * 100) / 100,
-          current_difficulty: newDiff,
-          last_practiced_at: new Date().toISOString(),
-        })
-        .eq("student_id", user.id)
-        .eq("track", track)
-        .eq("topic", topicTrimmed)
-        .select()
-        .single();
-
-      if (updateError) {
-        console.error("[placement-submit] Mastery update error:", updateError);
-        return apiError("Failed to update mastery", 500);
-      }
-      masteryData = updated;
-    } else {
-      newDifficulty = "easy";
-
-      const { data: inserted, error: insertError } = await adminClient
-        .from("placement_topic_mastery")
-        .insert({
-          student_id: user.id,
-          track,
-          topic: topicTrimmed,
-          attempts_count: sessionAttempted,
-          correct_count: sessionCorrect,
-          sessions_count: 1,
-          recent_accuracy: Math.round(sessionAccuracy * 100) / 100,
-          current_difficulty: "easy",
-          last_practiced_at: new Date().toISOString(),
-        })
-        .select()
-        .single();
-
-      if (insertError) {
-        console.error("[placement-submit] Mastery insert error:", insertError);
-        return apiError("Failed to create mastery record", 500);
-      }
-      masteryData = inserted;
+    if (masteryRpcError || !masteryRpcData) {
+      console.error("[placement-submit] Mastery upsert RPC error:", masteryRpcError);
+      return apiError("Failed to update mastery", 500);
     }
+
+    const { mastery: masteryData, prev_difficulty: prevDifficulty } =
+      masteryRpcData as {
+        mastery: { current_difficulty: Difficulty } & Record<string, unknown>;
+        prev_difficulty: Difficulty | null;
+      };
+    const newDifficulty: Difficulty = masteryData.current_difficulty ?? "easy";
+    const difficultyChanged =
+      prevDifficulty !== null && prevDifficulty !== newDifficulty;
 
     // ── Step 4: Recompute readiness scores from mastery (non-fatal) ────────────
     let readinessUpdated = false;
