@@ -1,0 +1,14 @@
+ok: valid UUID accepted
+ok: SQL-injection-shaped subjectId rejected
+ok: boolean-injection-shaped subjectId rejected
+ok: empty string rejected
+ok: truncated UUID rejected
+ok: known aptitude topic accepted
+ok: HTML/injection-shaped topic rejected
+ok: injection-suffixed real-looking topic rejected
+ok: capped log stayed bounded (got 538 chars)
+ok: capped log signals truncation happened
+ok: capped log does not contain the full raw payload
+ok: short error logged verbatim, untouched
+
+ALL PASS

@@ -1,0 +1,6 @@
+CP-20 is committed cleanly; the remaining unstaged changes are the pre-existing CP-08 leftovers, untouched by this session as intended. Not pushed, per this run's no-push default.
+
+**Summary:**
+- Bumped touch targets to the 44px floor across the checkpoint's named call sites — mobile hamburger/drawer-close in `(student)/layout.tsx`, `NavLink.tsx` row padding, `Composer.tsx`'s Send button, `ModeControl.tsx`'s pill buttons, and `ChatHeader.tsx`'s "More actions" button + dropdown rows — via `min-h-11`/`min-w-11`, deliberately not touching the shared `button.tsx` component's global sizes (would ripple across ~160 unaudited call sites) or the un-migrated placement pages (CP-38's job).
+- Verified live via a new `_cp_20_verify/ui.mts` Playwright harness against the real pilot DB: every touched control measures ≥44px on mobile and desktop, plus an interrupted-navigation flow and two concurrent-click races (hamburger double-click, "New session" double-click racing its own unmount) all resolved cleanly with zero console errors. `tsc`/`eslint`/`npm run build` all clean.
+- Commits (local only, not pushed): `cce95e0` (fix), `1413337` (ledger status), `9f2f132` (PROGRESS.md entry). No migration needed.

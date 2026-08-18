@@ -1,0 +1,14 @@
+[no-cgpa] status: 400 {"error":"A valid CGPA (0-10) is required before completing placement setup"}
+PASS: setup_complete rejected with no CGPA set
+PASS: row still setup_complete:false/null after rejection — { setup_complete: false, cgpa: null }
+[out-of-range] status: 400 {"error":"A valid CGPA (0-10) is required before completing placement setup"}
+PASS: setup_complete rejected with out-of-range CGPA
+[valid] status: 200 {"profile":{"id":"0d751da5-5d1b-44a3-b068-c5e5ab68d03a","student_id":"d4a32a8a-cc85-4ac2-bd14-ea6896ec150a","cgpa":8.2,"active_backlogs":0,"history_backlogs":0,"primary_target":"product","dream_companies":["tcs","infosys","cognizant","hcl","accenture","capgemini"],"open_to_relocation":true,"readiness_aptitude":14,"readiness_verbal":0,"readiness_domain":50,"readiness_coding":0,"readiness_communication":0,"readiness_overall":15,"resume_data":{"email":"teststudent@gmail.com","phone":"7211107888","projects":[],"education":[{"cgpa":"8.3","branch":"Computer Science and Engineering","degree":"B.Tech","university":"P.P. Savani University","year_of_passing":"","relevant_courses":[]}],"full_name":"Test Student","github_url":"fdfdf","internships":[],"achievements":[],"completeness":80,"last_updated":"2026-06-13T16:01:32.353Z","linkedin_url":"fdfdf","portfolio_url":"fdfdf","certifications":[],"technical_skills":{"tools":["Git"],"concepts":["DSA, DBMS"],"languages":["Java, Pythib"],"frameworks":["React"]}},"resume_completeness":80,"prep_streak_days":0,"last_active_date":"2026-08-17","setup_complete":true,"created_at":"2026-06-07T08:08:08.742904+00:00","updated_at":"2026-08-17T17:39:19.944726+00:00","resume_versions":[]}}
+PASS: setup_complete succeeded once a valid CGPA was supplied
+[concurrent good] 200 [concurrent bad] 400
+PASS: concurrent no-cgpa request did not silently complete setup with null cgpa
+[interrupted] result: { aborted: true, message: 'AbortError: This operation was aborted' }
+PASS: route recovered cleanly after a client-aborted request and still validates CGPA
+
+=== CP-22 VERIFY: ALL PASS ===
+[cleanup] restored original profile row

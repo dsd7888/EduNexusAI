@@ -1,0 +1,5 @@
+CP-23 is done, committed locally (not pushed, per this run's default).
+
+- **Fix:** `computeNextMoves` in `src/lib/placement/nextMove.ts` could return an empty queue for a ready student in two cases — an in-window eligible drive with nothing weak to sprint on (added a new confirmatory `drive_ready` move), and any far-future eligible drive wrongly suppressing the Rule 6 fallback (narrowed its check to the sprint window). Commit `c758d54`.
+- **Verified:** pure-function harness `_cp_23_verify/nextMove.mts`, 8/8 assertions passing — includes a regression guard (genuinely weak dimension still triggers a real sprint move, not a false-positive "ready" message) and two unhappy-path guards (no drives at all → no fabricated move; out-of-window drive → no false "ready" claim but Rule 6 fallback still correctly reachable). `tsc`/`eslint`/`npm run build` all clean.
+- Ledger + PROGRESS.md updated (commit `45d2d3b`); no migration needed; not pushed — human review/push pending, same as all prior checkpoints this session.
