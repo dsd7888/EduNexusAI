@@ -1565,3 +1565,89 @@ _(entries appended below by each checkpoint session)_
   request-coalescing guard in `api/chat/route.ts`, no design work needed, this session just
   didn't manufacture a reason to build it early. Do not re-attempt this checkpoint without
   that evidence in hand.
+
+### CP-31 — Generic PDF branding (Tailwind-blue/Helvetica) — 2026-08-18
+- **Commit SHA:** `52b410c` (color-token half only; font-embed half deferred, see below)
+- **Repo-state check performed:** confirmed `src/lib/pdf/builder.ts`'s `COLORS` was
+  Tailwind's stock blue palette (`primary:#2563EB`, `dark:#1E40AF`, `userBubble:#3B82F6`,
+  etc.) — nothing DESIGN.md-derived — and `createPDFBuilder()` embeds `StandardFonts.Helvetica`
+  (pdf-lib's built-in font, not a custom-embedded one). This file backs every PDF export in
+  the product (chat, notes, quiz, Q-paper, answer key, placement resume) via the single
+  shared `COLORS` export — confirmed via grep, 9 external consumers (`answerKeyGen.ts`,
+  `notes/pdf/*.ts`, export API routes, `ppt/generator.ts`) all import from this one file, none
+  hardcode their own competing color constants for brand colors (only stray literal rgb()
+  calls for domain-specific accents like correct/incorrect, out of this finding's scope).
+- **What changed (colors):** `COLORS` now derives from DESIGN.md's hex source of truth —
+  `ink` (#14293D) for `primary`/`text` (DESIGN.md explicitly says ink "doubles" as both),
+  `paper` (#F5F6F4) for `bgLight`/`aiBubble`, `ochre` (#C08A2E) for `userBubble`, `mastery-green`
+  (#2F7B5C) for `success`. Neutral tiers (`dark`, `muted`, `light`, `border`,
+  `bgAccent`) are computed via a small `mix()`/`tint()`/`shade()` helper blending toward
+  white/black rather than separately hand-picked hex values, per DESIGN.md's own "ink-50
+  through ink-900 | derive via standard tint/shade scale from ink" instruction — the same
+  principle, applied at PDF-render time instead of as CSS variables. Also replaced one
+  orphaned hardcoded `rgb(0.8,0.88,1.0)` (a light-blue chosen specifically to contrast against
+  the old blue header bar) with a new `COLORS.onPrimaryMuted` token (`tint(ink,0.9)`) so the
+  page-header subtitle still reads on the now-ink header bar.
+- **What did NOT change (fonts) — deferred, needs approval:** the finding also calls for
+  swapping Helvetica for IBM Plex via `fontkit`. This needs two things this session
+  couldn't supply itself per CLAUDE.md's "no new npm dependencies without a note asking for
+  approval" rule: (1) `fontkit` (or `@pdf-lib/fontkit`) as a new direct dependency —
+  `fontkit@2.0.4` is present in `node_modules` today only as a transitive dep of
+  `@react-pdf/renderer` (via `@react-pdf/font`/`@react-pdf/pdfkit`), which is not something
+  app code should import directly without it being a declared dependency; (2) actual IBM
+  Plex TTF/OTF binary bytes to hand to `doc.registerFontkit()` + `doc.embedFont()` — the
+  `next/font/google` IBM Plex files already used for the web UI (`src/app/layout.tsx`) are
+  Next.js build-time output baked into `.next/`, not importable raw font files, and no font
+  binaries exist anywhere else in the repo. **Asking for approval:** add `fontkit` (or
+  `@pdf-lib/fontkit`) as a direct dependency and commit IBM Plex Sans/Serif regular+bold TTF
+  files (e.g. under `src/lib/pdf/fonts/`, sourced from Google Fonts, same license as the
+  already-approved web usage) — once approved, swapping `StandardFonts.Helvetica` for the
+  embedded Plex fonts in `createPDFBuilder()` is a small, low-risk follow-up in this same
+  file since the `FontBundle` shape (`regular`/`bold`/`italic`/`boldItalic`) doesn't change.
+- **Verified (build/lint):** `tsc --noEmit` clean; `npx eslint src/lib/pdf/builder.ts` shows
+  only the one pre-existing unrelated warning (`badge()`'s unused `bgColor` param — confirmed
+  present identically on a `git stash` of this change, not introduced by it); `npm run build`
+  exits 0, full route manifest unchanged from CP-30's baseline.
+- **Verified (rendering, happy path):** wrote a throwaway `_cp_31_verify/check.mts` (deleted
+  after use, not committed) that drives `createPDFBuilder()` + `addPageHeader()` +
+  `sectionHeading()` + `badge()` + `beginCard()` — the representative slice of the shared API
+  every export route calls into — and rendered the output PDF to PNG via `qlmanage`. Visually
+  confirmed: header bar is ink-navy (not Tailwind blue), section accent bar and heading text
+  are ink, badge renders in ochre, card content sits on the paper-toned background. Computed
+  WCAG contrast for the two load-bearing text-on-fill pairs: ink text on white/paper background
+  is ~14.8:1 and white header text on the ink bar is ~14.8:1 (both far above the 4.5:1 AA
+  floor). The one weaker pairing (white text on raw ochre, ~3.0:1, below AA for normal-size
+  text) only applies to `COLORS.userBubble`, which grep confirms has zero real callers
+  anywhere in `src/` (dead/unused export, not exercised by any actual PDF export) — not a live
+  contrast bug, but worth fixing at the value level if a caller is ever added.
+- **Verified (unhappy path — concurrent):** fired 5 concurrent `createPDFBuilder()` + `build()`
+  calls via `Promise.all` (mirrors real traffic: multiple export API routes / users hitting
+  PDF generation at once) — each produced an independent, correctly-sized PDF with no
+  cross-request bleed, confirming the new module-level `INK`/`PAPER`/`OCHRE`/`MASTERY_GREEN`
+  constants (computed once at import time) are read-only and safe under concurrent use, same
+  as the `COLORS` object they replaced. No interrupted-flow case applies here — this is a
+  backend constants change with no async gap or user-abortable request path of its own (each
+  export route's existing abort/cleanup handling, covered by earlier checkpoints, is
+  unaffected since the shape of `COLORS`/`FontBundle` didn't change, only the values).
+- **Migration needed:** none.
+- **Ledger status:** `.claude/FIX_LEDGER.md`'s CP-31 row set to `done` with commit `52b410c`
+  and a note flagging the font-embed half as deferred pending the dependency/asset approval
+  above — not a clean full close of the underlying finding, but the color half (the larger
+  ROI piece, per the finding's own note "fixes every PDF export at once") is complete and
+  shipped.
+- **Next checkpoint must know:**
+  1. Commit `52b410c` is **local only, not pushed** — this run's default. A human needs to
+     review and push `dev`.
+  2. The IBM Plex font-embed half of this finding is still open. If approved, the follow-up
+     is scoped entirely to `createPDFBuilder()` in `src/lib/pdf/builder.ts` (~10 lines): add
+     `fontkit`/`@pdf-lib/fontkit`, `doc.registerFontkit(fontkit)`, swap the 4
+     `StandardFonts.Helvetica*` embeds for `doc.embedFont(plexTtfBytes)` reads from committed
+     font files. No other file needs to change — `FontBundle`'s shape is already
+     font-agnostic.
+  3. `COLORS.userBubble`/`COLORS.aiBubble` remain effectively dead exports (zero real
+     callers, confirmed by grep) — out of this checkpoint's scope to remove, noted here so a
+     future cleanup pass doesn't have to re-derive that.
+  4. The pre-existing uncommitted CP-08 changes and the `.claude/logs-fix/CP-08.*` /
+     `CP-26.*` runner-artifact diffs, plus now-untracked `.claude/logs-fix/CP-27.*` /
+     `CP-28.*` / `CP-29.*` / `CP-30.*`, are still present, still untouched — not part of this
+     checkpoint, same as every prior checkpoint has noted since CP-14.

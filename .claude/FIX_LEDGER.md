@@ -47,7 +47,7 @@ runner may touch it — the runner refuses and errors, it does not skip silently
 | CP-29a | done | e2d2aaabe06ae19b849d90736cd14938252c2712 | 2026-08-18 | next-themes ThemeProvider + toggle in student shell nav, persisted; existing dark: classes now reachable, no new dark: added |
 | CP-29b+ | blocked | | | deferred — bundle with CP-27/CP-38, schedule when those are scoped |
 | CP-30 | done | 1b871deb3629b36dc9f1ecb050fab4959ba63d35 | 2026-08-18 | deliberately deferred per FIX_SPEC.md's own framing — no production telemetry showing double-submits; client already guards via isSendingRef + disabled button (chat/[subjectId]/page.tsx:256-261, Composer.tsx) |
-| CP-31 | pending | | | bundle with CP-16b, same file |
+| CP-31 | done | 52b410c | 2026-08-18 | color tokens only (ink/paper/ochre/mastery-green swap); IBM Plex font-embed half deferred — needs new npm dep (fontkit) + font binaries not present in repo, awaiting approval per CLAUDE.md |
 | CP-32 | pending | | | |
 | CP-33 | pending | | | |
 | CP-34 | pending | | | |
