@@ -153,9 +153,12 @@ export const NOTES_SYSTEM_PROMPT =
  *
  * Layout discipline is learned far better from a concrete good/bad pair than
  * from instructions — proven by CP4's visualize interactive worked example. The
- * BAD cases here are the three failure modes actually worth pre-empting:
+ * BAD cases here are the four failure modes actually worth pre-empting:
  * a concept that only announces its topic, a formula with unexplained symbols,
- * and a "comparison" that is really two disconnected descriptions.
+ * a "comparison" that is really two disconnected descriptions, and a formula
+ * `symbol` field holding a full descriptive phrase instead of short notation
+ * (AU-NOTES S3-2 — the 20-char length cap doesn't catch this since a phrase can
+ * still fit under it).
  */
 const BLOCK_EXAMPLES = `EXAMPLES — study the difference between GOOD and BAD.
 
@@ -184,6 +187,13 @@ FORMULA — BAD (symbols unexplained, no units, worked example restates the form
 {"kind":"formula","id":"formula-1","name":"Ohms law","formula":"V=IR",
  "symbols":[{"symbol":"V","meaning":"V"}],
  "workedExample":{"problem":"Find V.","solution":"Use V=IR."}}
+
+FORMULA SYMBOL — BAD (the "symbol" column holds a full descriptive phrase, not a short notation —
+the phrase is just repeated as its own "meaning", defeating the point of having two columns):
+{"symbol":"Steering Wheel Angle","meaning":"Steering Wheel Angle","unit":"rad"}
+
+FORMULA SYMBOL — GOOD (same quantity, "symbol" is short notation, "meaning" is the actual explanation):
+{"symbol":"\\\\theta_{sw}","meaning":"Angle turned at the steering wheel","unit":"rad"}
 
 COMPARISON — GOOD (axes are shared dimensions; every item answers every axis):
 {"kind":"comparison","id":"comparison-series-vs-parallel-resistors","title":"Series vs Parallel Resistors",
@@ -332,7 +342,9 @@ The remaining fields are short enough that a character ceiling is sufficient:
 - concept.relatedTerms       ≤ ${L.concept.relatedTerms.maxItems} terms, each ≤ ${L.concept.relatedTerms.maxLength} characters
 - formula.name               ≤ ${L.formula.name} characters
 - formula.formula            ≤ ${L.formula.formula} characters
-- formula.symbols            ≤ ${L.formula.symbols.maxItems} rows; explain EVERY symbol that appears in the formula
+- formula.symbols            ≤ ${L.formula.symbols.maxItems} rows; explain EVERY symbol that appears in the formula.
+  "symbol" is short notation (e.g. V, I, R, θ_sw) — NEVER a descriptive phrase; the phrase belongs
+  in "meaning" instead.
 - formula.workedExample      problem ≤ ${L.formula.workedExample.problem}, solution ≤ ${L.formula.workedExample.solution} characters
 - formula.conditions         ≤ ${L.formula.conditions} characters
 - comparison.title           ≤ ${L.comparison.title} characters
