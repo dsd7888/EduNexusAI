@@ -1983,3 +1983,86 @@ _(entries appended below by each checkpoint session)_
      (design migration: Resume/JD/Interview-bank/Projects pages) remains the only item left in
      the S3 table and is explicitly scoped as "own initiative" — large, multi-file, not a quick
      follow-up.
+
+### CP-38 — Design migration: Resume/JD/Interview-bank/Projects pages — 2026-08-18
+- **Commit SHA:** `c5f2b6e3dc046da454019a2466ef7c4c33bb6b46`
+- **Finding:** FIX_SPEC.md line 368 — 4 placement page files (Resume, JD Analyzer,
+  Interview bank, Projects) were still on ad hoc `gray-*`/`blue-*`/`rounded-lg`/`rounded-xl`/
+  shadcn `Button` styling, never migrated onto the DESIGN.md ink/paper/ochre token system that
+  CP-27 (shell chrome) and CP-A2/interview-mock (placement core) already carry. Scoped as its
+  own initiative, pairing with CP-27, per FIX_SPEC's own note.
+- **Repo-state check performed before editing:** grepped all 6 non-`mock` placement page files
+  for `font-plex`/`MonoTag`/`text-gray-`/`bg-blue-`/`rounded-xl`/`rounded-lg` occurrence counts
+  to confirm exact migration state before touching anything: `resume/page.tsx` (2171 lines,
+  103 ad-hoc occurrences, only 3 already-migrated), `jd-analyzer/page.tsx` (642 lines, fully
+  unmigrated, shadcn `Button`), `interview/page.tsx` (506 lines, the bank-listing page,
+  partially migrated header only), `projects/page.tsx` (200 lines, fully unmigrated),
+  `projects/[id]/page.tsx` (193 lines, fully unmigrated). Confirmed `interview/mock/page.tsx`
+  was **already** fully migrated (font-plex-*, MonoTag, scoreVariant()) — left untouched,
+  used as the direct reference pattern for `interview/page.tsx` (same feature area).
+- **What changed (5 files, 428 insertions / 390 deletions):** `interview/page.tsx`,
+  `jd-analyzer/page.tsx`, `projects/[id]/page.tsx`, `projects/page.tsx`, `resume/page.tsx`.
+  `gray-*`/`blue-*` → the ink scale; primary CTAs → `bg-ink`/`text-paper` (not ochre — reserved
+  for active/selected per DESIGN.md's "one warm accent" rule); `rounded-lg`→`rounded-8`,
+  `rounded-xl`→`rounded-12`, `rounded-md`→`rounded-4` (pills/dots/avatars kept `rounded-full`);
+  shadcn `<Button>` dropped from `resume/page.tsx` (7 sites) and `jd-analyzer/page.tsx`
+  (1 site) for hand-styled `PRIMARY_BUTTON`/`SECONDARY_BUTTON` constants matching
+  `interview/mock/page.tsx`; `MonoTag` used for structural tags (tech-stack chips, round
+  labels) in `interview/page.tsx`, `projects/page.tsx`, `projects/[id]/page.tsx`;
+  `font-plex-serif` on page H1s, `font-plex-sans` elsewhere; `focus-visible:ring-ink-900`
+  added to every interactive control across all 5 files (`resume/page.tsx` alone had 29
+  `<button>` elements and only 2 carried a focus ring before this pass — the single largest
+  a11y gap closed by this checkpoint); `duration-180 ease-out` added to transitions missing
+  it. Semantic status colors deliberately preserved, not flattened to ink: JD requirement
+  severity (emerald/amber/slate), interview difficulty dots, do/avoid lists, mastery
+  `scoreVariant()` fills via `MonoTag` — per DESIGN.md's distinction between decorative color
+  (must go) and meaningful color (must stay).
+- **Judgment calls:** (1) interview-bank round/category badges (previously purple/blue/gray by
+  type) moved to neutral `MonoTag`, matching `mock/page.tsx`'s precedent that structural tags
+  stay neutral, not color-coded by type. (2) `projects/page.tsx`'s `intermediate` difficulty
+  badge moved from `blue-50/blue-700` (no defined token — blue has no semantic meaning in this
+  system) to `amber-50/amber-800`. (3) Fixed a **pre-existing** `react-hooks/set-state-in-effect`
+  lint error in `resume/page.tsx` (the `hasStoredJD` sessionStorage read) that the commit guard
+  surfaced while staging — confirmed present before this migration too (same error, different
+  line), fixed via `useSyncExternalStore`, the same pattern this repo's `ThemeToggle.tsx`
+  `useMounted` already uses (not a new pattern introduced by this checkpoint). Per CLAUDE.md's
+  automated-run rule ("do not fight the hook... fix the errors"), fixed rather than bypassed.
+- **Verified (build/lint):** `npx tsc --noEmit` clean (re-confirmed independently in the parent
+  session after the subagent's report, not just taken on its word). `npm run lint`/`eslint` on
+  the 5 touched files clean. `npm run build` succeeds, all routes compile.
+- **Verified (happy path, Playwright against `npm run dev`, real auth session):** logged in as
+  `teststudent@gmail.com` via `admin.auth.admin.generateLink`→`verifyOtp`, same recipe as
+  `_cp_27_verify`. All 5 pages (resume, jd-analyzer, interview bank, projects list, project
+  detail for a real project id) visually checked at 1280px and 390px — 10 screenshots, zero
+  console errors.
+- **Verified (unhappy path):** (1) **Interrupted flow** — filled the JD Analyzer textarea,
+  clicked Analyze, navigated away ~150ms later (mid-request), navigated back: clean remount to
+  empty state, no stale/torn UI, no console errors. (2) **Concurrent flow, x2** — rapid
+  `Promise.all` double-click on the Projects difficulty filter (Beginner + Intermediate
+  simultaneously): resolved deterministically to the last click, no visual corruption; same
+  test against Interview Bank's HR/Technical tab toggle: resolved cleanly. (3) Separately
+  confirmed the `useSyncExternalStore` refactor didn't change behavior: seeded `sessionStorage`
+  with a JD result and confirmed resume page's pre-existing (untouched) auto-analyze-from-JD
+  effect still reads it correctly on mount.
+- **Screenshots:** `_cp_38_verify/screens/` (14 PNGs: desktop/mobile × 5 pages + 3 unhappy-path
+  + 1 sync-check) — untracked, not committed, same convention as prior UI checkpoints.
+- **Migration needed:** none.
+- **Ledger status:** `.claude/FIX_LEDGER.md`'s CP-38 row set to `done`, SHA
+  `c5f2b6e3dc046da454019a2466ef7c4c33bb6b46`.
+- **Next checkpoint must know:**
+  1. Committed locally only, per this run's no-push default — `git log origin/dev -1` still
+     needs checking before assuming the remote has this or any prior local-only checkpoint
+     (`origin/dev` was at `bf156b0` at commit time, one behind local `dev`).
+  2. `interview/mock/page.tsx` was intentionally left untouched — it was already migrated and
+     served as this checkpoint's reference pattern.
+  3. CP-29b+ (dark mode full coverage for placement pages) was deliberately deferred to run
+     *after* CP-27/CP-38 so a page picks up its design tokens and dark-mode classes in the same
+     pass — CP-27 and this checkpoint are now both done, so CP-29b+ is unblocked and is the
+     next natural placement-design follow-up, though it is not itself required by this session.
+  4. This was CP-38, the last row in FIX_SPEC.md's S3 table — all of CP-01 through CP-38 are
+     now `done` in `.claude/FIX_LEDGER.md` except any explicitly `blocked`/deferred rows
+     (check the ledger directly rather than assuming from this note, since it can drift).
+  5. The pre-existing uncommitted CP-08 changes and the `.claude/logs-fix/CP-08.*` /
+     `CP-26.*` runner-artifact diffs, plus untracked `.claude/logs-fix/CP-27.*` through
+     `CP-37.*` and this checkpoint's own `CP-38.*`, are still present, still untouched — not
+     part of this checkpoint, same as every prior checkpoint has noted since CP-14.
