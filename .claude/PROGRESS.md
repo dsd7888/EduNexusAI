@@ -1263,3 +1263,73 @@ _(entries appended below by each checkpoint session)_
      loop, to avoid reintroducing this same garbled-table bug elsewhere.
   4. CP-26 (Q Paper PDF page-break orphaning, `src/lib/qpaper/builder.ts`)
      is next in FIX_SPEC.md's S2 tier.
+
+## 2026-08-18 — CP-26: Q Paper PDF page-break orphaning (verify + finalize)
+
+- **Commits:** `a8330e7` (WIP fix, landed in a prior interrupted session —
+  code only, not verified) → this session added `e888a74` (verify harness +
+  ledger entry) and `6bc80d8` (record commit SHA in ledger). All local only,
+  per this session's no-push default.
+- **Starting state:** the fix itself (`estimateUnitHeight` +
+  keep-with-next `ensureSpace` reservation in `drawMCQRow`/
+  `drawAttemptAnyOne`/`drawPool`, `src/lib/qpaper/builder.ts`) was already
+  committed as WIP — a prior run's API connection dropped mid-response after
+  37 turns/$4.51 before it could write `_cp_26_verify/` or confirm the fix
+  against real output. This session's job was purely verification.
+- **Finding recap:** a question header (label + instruction + column row)
+  reserved only `LINE_H * 4` before committing to a page, with no regard
+  for whether its first sub-part/option/pool-item would also fit. A header
+  landing near the bottom margin could commit, draw, then have its first
+  sub-part — or worse, one option mid-way through an MCQ's option list —
+  pushed alone onto the next page, orphaning content from its header.
+- **Verified:** `_cp_26_verify/verify.mts` — a black-box harness against
+  the real `generatePPSUPaperPDF` export (no internal draw functions are
+  exported, so this isn't a pure-function harness like CP-24/25's). It
+  renders a real PDF, decompresses each page's content stream, and decodes
+  the hex-string `Tj` show-text operators pdf-lib emits for standard fonts
+  to locate marker strings — no new dependency, just `pdf-lib` + node's
+  built-in `zlib`. Sweeps filler-question counts 0..60 so a target MCQ
+  question's page-break boundary (header vs. first sub-part vs. last
+  option) is crossed multiple times rather than tested at one lucky offset.
+  250 assertions, all passing (post-fix). Critically, **this was confirmed
+  to actually catch the bug**, not just pass vacuously: I temporarily
+  swapped in the pre-fix code (`git show ebad038:src/lib/qpaper/builder.ts`
+  — the commit before `a8330e7`) and re-ran the identical harness; it
+  reliably reproduced the orphan (header + question stem staying on one
+  page, the last MCQ option alone on the next) at filler=10-12, 27-29, and
+  44-46, then failed 10 assertions. Restoring the fixed code and re-running
+  brought it back to 250/250 with zero splits across the whole sweep — the
+  fix demonstrably resolves the exact defect it claims to.
+  **Unhappy paths:** (1) an MCQ question with an empty `sub_parts` array
+  renders without throwing (guards a malformed/interrupted generation
+  result); (2) two `generatePPSUPaperPDF` calls run concurrently
+  (`Promise.all`) on different papers with distinct marker strings don't
+  leak content across each other's pages, and each independently keeps its
+  own header/sub-part/option together — rules out shared mutable module
+  state in the builder under concurrent requests.
+  `npm run build` (full type-check + Next.js compile, all routes) and
+  `npx eslint` on both the changed source file and the new verify harness
+  are clean. No live-server/browser pass needed — this is a pure PDF-layout
+  function with no route/UI surface of its own; the Q-paper generate/export
+  routes were not touched.
+- **Migration needed:** none.
+- **Next checkpoint must know:**
+  1. Commits are **not pushed** — confirm `origin/dev` before assuming this
+     or any prior checkpoint is live.
+  2. The pre-existing uncommitted CP-08 changes (`api/placement/prep/
+     {generate,submit}/route.ts`, `student/placement/prep/[track]/
+     practice/page.tsx`, `src/types/placement.ts`, `_cp_08_verify/api.mts`)
+     are still present, still untouched, and still uncommitted — same as
+     every prior checkpoint noted this since CP-14/23/24/25. This session
+     also found `.claude/logs-fix/CP-08.json`/`CP-08.log` and
+     `.claude/logs-fix/CP-26.json` carrying uncommitted runner-artifact
+     diffs unrelated to CP-26 — left untouched, out of scope for this
+     checkpoint.
+  3. `generatePPSUPaperPDF` is the *only* export from
+     `src/lib/qpaper/builder.ts` — any future checkpoint needing to test
+     this file's internals will need either a black-box approach like
+     `_cp_26_verify/verify.mts`'s content-stream decoding, or to export the
+     specific helper being tested.
+  4. Per FIX_SPEC.md's S2 tier, CP-27 (DESIGN.md tokens for shell chrome)
+     is next but is explicitly flagged as large/own-initiative — check with
+     the user before starting a multi-file design migration checkpoint.
