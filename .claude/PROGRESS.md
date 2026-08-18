@@ -1333,3 +1333,70 @@ _(entries appended below by each checkpoint session)_
   4. Per FIX_SPEC.md's S2 tier, CP-27 (DESIGN.md tokens for shell chrome)
      is next but is explicitly flagged as large/own-initiative — check with
      the user before starting a multi-file design migration checkpoint.
+
+### CP-27 — DESIGN.md tokens for shell chrome — 2026-08-18
+- **Commit SHA:** 3ad67ab (local only — this run has no auto-push; a human reviews and pushes)
+- **What was built:** Migrated the five listed files — `src/app/(student)/layout.tsx`
+  (mobile top bar, desktop/mobile sidebar chrome, `SidebarContent`) and
+  `dashboard/subjects/profile/history` `page.tsx` — onto DESIGN.md's ink/paper/ochre
+  palette, `font-plex-serif/sans/mono` type scale, the `MonoTag` component (subject
+  codes, "Current" semester badge, role badge), `rounded-4/8/12` radius scale,
+  `duration-180/240 ease-out` motion, and `ring-ink-900` focus rings — the same
+  pattern CP-A2 already established on `/student/placement`. Dropped shadcn
+  `Card`/`Badge`/`Button` in favor of hand-styled anchors/divs on these 5 files only
+  (matches the placement-page precedent, which also dropped them). History's chat
+  bubbles moved off hardcoded `bg-blue-600` to `bg-ink`/`bg-paper` (DESIGN.md: ochre
+  is the only accent, never blue) and `rounded-2xl` → `rounded-12` (DESIGN.md caps
+  the radius scale at 12px, explicitly bans 16px+/`rounded-2xl` as "the generic
+  AI-template bubble look"). Removed the 💡 emoji from the dashboard tip banner
+  and the 👋 from two headers per DESIGN.md's voice section (no forced/gamified
+  decoration).
+- **Deliberately out of scope:** `NavLink`/`UserProfile`/`LogoutButton` components
+  (shared with the faculty/superadmin sidebars — restyling them belongs to a
+  cross-role pass, not this student-only checkpoint) and `src/lib/ui/score.ts`
+  (the not-started/in-progress/on-track semantic color system — a separate,
+  already-coherent system from the ink/paper/ochre chrome tokens, left as-is).
+  Both are candidates the next design-migration checkpoint (CP-38, or CP-29b+ dark
+  mode) should look at.
+- **Incidental fix:** `history/page.tsx`'s `sessionsData.map(async (session: any) => …)`
+  had a pre-existing `@typescript-eslint/no-explicit-any` error. The commit guard
+  hook blocks on any eslint error in a staged file regardless of whether that
+  session introduced it, and this file was staged either way — fixed by casting
+  through `unknown` instead of `any` (the underlying Supabase join-shape mismatch
+  between the query result and the hand-written `SessionListItem` type predates
+  this checkpoint and wasn't otherwise touched).
+- **Verified (happy path):** `npm run build` (all routes compile) and `npm run lint`
+  clean on all 5 changed files (confirmed via `npx eslint` scoped to each). Real
+  browser (Playwright + Chromium) via `_cp_27_verify/verify.mts`, same
+  `generateLink`/`verifyOtp` authenticated-session pattern as CP-A2, against the
+  live "Test Student" fixture — desktop (1280px) and mobile (390px) screenshots of
+  all 4 pages (dashboard, subjects, profile, history) plus the shared sidebar/mobile
+  top bar from `layout.tsx`. Visually confirmed: MonoTag subject-code chips, ochre
+  "Current" semester border + active-state AI-Tutor card, ink CTA buttons, IBM Plex
+  Serif headers, ink chat bubbles in history. Zero console errors across every run.
+- **Verified (unhappy path):** (1) **Interrupted flow** — navigated `/student/subjects`
+  → `/student/dashboard` → back to `/student/subjects` before each prior
+  navigation's fetch settled; final render is clean (`Group by` control present,
+  correct subject grid), zero console errors. (2) **Concurrent** — fired two
+  overlapping clicks on the subjects page's "Subject Code" and "Semester" group-by
+  toggle buttons simultaneously (`Promise.all`); settled into one consistent state,
+  zero errors, no torn UI. (3) **Concurrent** — double-clicked the sidebar
+  collapse/expand toggle in `layout.tsx` simultaneously; the two toggles canceled
+  out back to the original expanded state with no layout tear or duplicated
+  sidebar, zero console errors. Dark mode was not exercised — CP-29a (dark-mode
+  infra) hasn't landed yet, matching CP-A2's prior finding that no theme toggle
+  exists anywhere in the app yet.
+- **Migration needed:** none.
+- **Next checkpoint must know:**
+  1. Commit `3ad67ab` is **local only, not pushed** — this run's default. A human
+     needs to review and push `dev` before this is live.
+  2. The pre-existing uncommitted CP-08 changes and the `.claude/logs-fix/CP-08.*`
+     / `CP-26.*` runner-artifact diffs are still present, still untouched, same as
+     every prior checkpoint has noted since CP-14 — not part of this checkpoint.
+  3. CP-38 ("Design migration: Resume/JD/Interview-bank/Projects pages") and
+     CP-29b+ (dark-mode full coverage) were both explicitly deferred to run after
+     CP-27 per FIX_SPEC.md — both are now unblocked. CP-38 should also pick up the
+     `NavLink`/`UserProfile`/`LogoutButton` restyle this checkpoint skipped, since
+     by then the faculty/superadmin chrome question will need answering anyway.
+  4. `_cp_27_verify/verify.mts` is a reusable template for any future student-shell
+     screenshot pass — swap the `PAGES` array and viewport list for new surfaces.
