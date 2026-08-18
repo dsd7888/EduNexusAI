@@ -1868,3 +1868,63 @@ _(entries appended below by each checkpoint session)_
      `CP-26.*` runner-artifact diffs, plus untracked `.claude/logs-fix/CP-27.*` through
      `CP-34.*` and this checkpoint's own `CP-35.*`, are still present, still untouched — not
      part of this checkpoint, same as every prior checkpoint has noted since CP-14.
+
+### CP-36 — Duplicate ResumeProject/etc. type declarations — 2026-08-18
+- **Commit SHA:** `c4c4ec11c84fbf3d00fefb8b238021e9fd6c5561`
+- **Finding:** FIX_SPEC.md line 366 — `src/types/placement.ts` declared `ResumeProject`,
+  `ResumeCertification`, and `ResumeData` twice: a stale block at lines 101-128 (old resume
+  shape — `summary`/`skills`/`description`/`from_mini_project`) and the real block at lines
+  373-437 (current shape — `full_name`/`education`/`technical_skills`/`bullets`/`duration`).
+  Recommendation: delete the first block, keep the second (the one actually used).
+- **Repo-state check performed:** read both blocks in full, confirmed field-level differences
+  (no overlap beyond `id`/`title`/`tech_stack`/`github_url`/`live_url` for `ResumeProject`, none
+  at all for `ResumeCertification` which was byte-identical in both spots). Grepped every
+  consumer (`resume/page.tsx`, `interview/mock/page.tsx`, `api/placement/resume/route.ts`,
+  `resume/export/pdf/route.ts`, `resume/ats/route.ts`, `resume/export/docx/route.ts`,
+  `lib/db/types.ts`, `lib/placement/archetypes.ts`) — all use the second block's fields
+  (`education`, `technical_skills`, `bullets`, `duration`, etc.), confirming it's the live one
+  per FIX_SPEC's own note.
+- **What this bug actually was (worse than "unused dead code"):** TypeScript merges two
+  `interface` declarations with the same name in the same module into one interface requiring
+  the union of both sets of members — it does NOT treat the second as shadowing the first. This
+  silently forced every `ResumeData`/`ResumeProject` object literal in the codebase to satisfy
+  *both* the old shape and the new shape simultaneously, which is why `resume/page.tsx`'s
+  `makeEmptyResume()` and `newProject()` factories carry both the old fields (`summary`,
+  `skills`, `description`, `from_mini_project`) and the new fields (`full_name`, `education`,
+  `bullets`, `duration`) in the same object literal, then escape-hatch the mismatch with
+  `as unknown as ResumeData` / `as unknown as ResumeProject` casts (confirmed at
+  `resume/page.tsx:103,128`) instead of a clean type. Left as-is (not part of this finding's
+  scope), but now that the duplicate is gone those casts are no longer load-bearing — worth a
+  follow-up if a future checkpoint touches that file.
+- **What changed:** deleted lines 99-129 of `src/types/placement.ts` (comment header + the
+  stale `ResumeProject`/`ResumeCertification`/`ResumeData` block). Moved the `// ─── Resume
+  Data ───` section comment to sit directly above the real block (was previously headerless).
+  Net diff: 2 insertions, 31 deletions, single file.
+- **Verified (build):** `npx tsc --noEmit` clean before and after (no errors either way, since
+  the merge was silently satisfied via `as unknown as` casts — confirms this was a
+  type-soundness hole, not a compile error, until now). `npm run build` — full production build,
+  all routes compiled including every consumer file listed above.
+- **Verified (lint):** `npx eslint src/types/placement.ts` clean.
+- **Verified (no other duplicates remain):** extracted every `export interface` name in
+  `placement.ts` post-fix and diffed for repeats — none.
+- **Unhappy-path / concurrent verification — not applicable, explicitly noting why:** this is a
+  type-only declaration change (TypeScript `interface` bodies erase completely at compile time;
+  zero JS is emitted from the deleted block). There is no new runtime code path, request
+  handler, or state transition to interrupt or race — the correct verification proxy for a
+  type-only refactor is a full-project `tsc --noEmit` + `npm run build` across every consumer,
+  which was done. Per CLAUDE.md's verification protocol, calling this out explicitly rather than
+  silently implying interrupted/concurrent-flow coverage that doesn't apply here.
+- **Migration needed:** none.
+- **Ledger status:** `.claude/FIX_LEDGER.md`'s CP-36 row set to `done`, SHA
+  `c4c4ec11c84fbf3d00fefb8b238021e9fd6c5561`.
+- **Next checkpoint must know:**
+  1. Committed locally only, per this run's no-push default — `git log origin/dev -1` still
+     needs checking before assuming the remote has this or any prior local-only checkpoint.
+  2. The `as unknown as ResumeData` / `as unknown as ResumeProject` casts in
+     `resume/page.tsx:103,128` are now unnecessary (the merge conflict they worked around is
+     gone) but were left untouched since removing them wasn't part of this finding's scope —
+     flagging as a cheap follow-up, not a new checkpoint requirement.
+  3. The pre-existing uncommitted CP-08 changes and the `.claude/logs-fix/CP-08.*` /
+     `CP-26.*` runner-artifact diffs, plus untracked `.claude/logs-fix/CP-27.*` through
+     `CP-35.*` and this checkpoint's own `CP-36.*`, are still present, still untouched — not
+     part of this checkpoint, same as every prior checkpoint has noted since CP-14.
