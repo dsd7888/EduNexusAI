@@ -1,0 +1,6 @@
+Both commits landed locally, not pushed (per this run's no-auto-push default).
+
+Summary:
+- Migrated `(student)/layout.tsx` and the dashboard/subjects/profile/history pages onto DESIGN.md's ink/paper/ochre tokens, IBM Plex type scale, `MonoTag`, `rounded-4/8/12`, `duration-180/240`, and `ring-ink-900` focus — matching the pattern already shipped on `/student/placement` (CP-A2). `npm run build` and `npm run lint` are clean; browser verification (Playwright, real authenticated session) covered all 5 surfaces at desktop+mobile plus an interrupted-navigation flow and two concurrent-click flows, all zero console errors.
+- Left `NavLink`/`UserProfile`/`LogoutButton` and `src/lib/ui/score.ts` untouched (shared across faculty/superadmin, or a separate already-coherent color system) — flagged as CP-38/CP-29b+ follow-up work in PROGRESS.md.
+- Commit SHA `3ad67ab` (design migration) + `2bcdb24` (PROGRESS.md entry), both local-only on `dev` — awaiting human review and push.

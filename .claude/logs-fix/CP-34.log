@@ -1,0 +1,5 @@
+CP-34 is done and committed locally (not pushed, per this run's default).
+
+- **Fix**: `StageStrip` in `src/app/(student)/student/placement/page.tsx` now tracks scroll position + container size (scroll listener + `ResizeObserver`) and renders left/right gradient-to-`bg-paper` edge-fade masks only when content actually overflows in that direction — `tsc`/`eslint` clean.
+- **Verification**: build/lint clean; couldn't complete a full authenticated browser click-through (dev server redirects to login, no test creds in this environment) — noted explicitly rather than implying full coverage. Verified at code level instead: cleanup removes both the scroll listener and disconnects the `ResizeObserver` (no post-unmount setState), all updates are synchronous DOM reads with no `await` gap (no race window), and the no-overflow case correctly shows zero fade.
+- **Commits**: `a9af208` (fix), `5e3502f` (ledger SHA), `82582b1` (PROGRESS.md entry) — all local on `dev`, not pushed.

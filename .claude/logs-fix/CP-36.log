@@ -1,0 +1,3 @@
+- Deleted the stale duplicate `ResumeProject`/`ResumeCertification`/`ResumeData` block in `src/types/placement.ts:99-129` — the two same-named interfaces had been TS-merging into one type requiring the union of both shapes, which is why `resume/page.tsx` was casting object literals through `as unknown as` to escape the mismatch.
+- Verified with `npx tsc --noEmit` and `npm run build` (all routes, all consumer files) both clean before and after; noted explicitly in PROGRESS.md that interrupted/concurrent-flow checks don't apply to a type-only, zero-runtime-emission change.
+- Commits (local only, not pushed): `c4c4ec1` (the fix) and `e499922` (ledger + PROGRESS.md entry).

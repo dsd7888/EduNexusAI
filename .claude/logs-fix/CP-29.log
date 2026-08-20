@@ -1,0 +1,6 @@
+Per instructions this run has no auto-push — commits stay local for human review.
+
+**Summary:**
+- Wired `next-themes` (already a dep, unused until now) into the root layout with `attribute="class"`, added a `ThemeToggle` in the student shell nav next to `UserProfile`/`LogoutButton` — the existing `.dark` CSS in `globals.css` and pre-existing `dark:` classes on chat/quiz/faculty pages are now reachable, with zero new `dark:` classes added anywhere (CP-29b+ scope untouched). Commit `e2d2aaa` (local only, not pushed).
+- Verified via Playwright against the live Test Student fixture: toggle flips `.dark` on `<html>`, persists across reload, survives an interrupted navigation mid-toggle, and a rapid double-click cancels back to the starting state cleanly — zero console errors in all runs; flashcards' always-dark `bg-night` styling confirmed unaffected by code reading (not `.dark`-gated).
+- `tsc`/lint/`npm run build` all clean; ledger and `PROGRESS.md` updated (commit `5f0e41f`). CP-29b+ (per-page dark coverage) remains blocked/deferred as before.

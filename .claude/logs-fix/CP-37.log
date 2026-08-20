@@ -1,0 +1,5 @@
+CP-37 done, committed locally only (no push per this run's default).
+
+- **Fix:** Added one `@media (prefers-reduced-motion: reduce)` block to `src/app/globals.css` collapsing animation/transition durations and `scroll-behavior` site-wide when the OS reduce-motion preference is set — commit `ce5bdb8`; ledger/PROGRESS.md entry in `0b05412`.
+- **Verified:** `npm run build` and `eslint` clean; behaviorally confirmed via a real Playwright/Chromium session against `npm run dev` — normal preference leaves 2s transitions/animations untouched, `reduce` preference collapses them to `0.01ms` and forces `scroll-behavior: auto`. Interrupted/concurrent-flow checks noted as not applicable (stateless declarative CSS, no async/JS state to race), consistent with the precedent set for CP-36's type-only change.
+- **No migration needed.** Left the two existing component-level treatments (`RevealPanel.tsx`'s Tailwind `motion-reduce:` classes, flashcards' JS `matchMedia` listener) untouched — this global rule is a complementary catch-all, not a replacement.

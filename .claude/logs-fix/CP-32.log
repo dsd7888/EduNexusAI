@@ -1,0 +1,5 @@
+CP-32 is committed locally (not pushed, per this run's default). Summary:
+
+- Fixed AU-NOTES finding S3-2 in `src/lib/notes/prompts.ts`: added an explicit `FORMULA SYMBOL — BAD/GOOD` few-shot pair and a direct constraint line telling the model `symbol` must be short notation, never a descriptive phrase — prompt-text-only, no schema/validator/`LIMITS` change (commit `aa14d18`).
+- Verified via `tsc --noEmit` and `eslint` (both clean); no interrupted/concurrent-flow check applies since this is a static prompt string with no runtime code path or live AI call re-run in this session (noted explicitly rather than implied).
+- Ledger updated to `done` and PROGRESS.md entry appended (commit `23e6495`); no migration needed; next checkpoint should know these two commits still need a human push.

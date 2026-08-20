@@ -2129,3 +2129,133 @@ _(entries appended below by each checkpoint session)_
   2. Same unresolved caveat as every checkpoint since CP-03: confirm what
      `origin/dev` has before assuming this is live — these changes are local
      commits only until pushed.
+
+### Pilot-readiness pass — 2026-08-20 — **operational gaps, not audit findings**
+
+- **Context:** a pre-pilot readiness review (50 students, credentials issued by
+  admin) confirmed the AU-* punch-list itself is closed — all 38 FIX_SPEC
+  checkpoints are ancestors of `main`, `tsc` clean, and the S1s spot-verified in
+  code (`prep/submit` re-grades server-side, `prep/generate` strips the answer
+  key at all 6 return points, `src/lib/assessment/access.ts` exists, the legacy
+  practice subsystem is gone). The gaps below are all things the audit was never
+  scoped to look at: provisioning, spend ceilings, and observability.
+
+- **CP-08 ledger row corrected (no code change).** It read
+  `pending / no commit landed`. That was wrong — the runner aborted after 3
+  turns (`terminal_reason: aborted_streaming`, `logs-fix/CP-08.json`) and
+  overwrote an earlier `halted-review` row. `1e0dbb4` and `21200c5` are both in
+  `main`. The `practice/submit` third of CP-08 was closed by CP-13 deleting the
+  subsystem — **do not apply** `.claude/logs-fix/CP-08-practice-submit-pending.patch`
+  or a `practice_question_bank` migration; both are moot.
+  **Still outstanding:** `21200c5` was never browser-verified. It rewrote the
+  timed-practice score card, per-option colouring, retry-wrong-only and review
+  UI to read from `submit`'s new `grading` map. Needs an interrupted +
+  concurrent pass per CLAUDE.md before students touch it. This is the single
+  highest-risk unverified change on the student path.
+
+- **Dark-mode toggle unmounted.** CP-27/CP-38 migrated the shell and placement
+  pages onto the ink/paper/ochre tokens; `.dark` in `globals.css` only overrides
+  the shadcn base tokens, which those pages no longer paint with. Net effect of
+  CP-29a's toggle: the page stayed light while a few shadcn cards flipped — a
+  visibly broken control on every student screen. Removed the `<ThemeToggle />`
+  render + import from `(student)/layout.tsx`; kept the component and
+  `ThemeProvider` so CP-29b+ is a re-mount, not a rebuild. Explanatory comments
+  left in both `ThemeToggle.tsx` and the `.dark` block so this doesn't read as
+  an accident.
+
+- **Two uncapped student-reachable AI routes closed.**
+  - `chat_suggestions: 30` — `/api/chat/suggestions` fires on every chat-page
+    mount without the student asking, and had no ceiling of any kind. Reserves
+    before the provider call; **degrades to `DEFAULT_SUGGESTIONS` instead of
+    429ing**, matching the route's existing "always return four prompts"
+    contract, and releases the reservation if `routeAI` itself throws.
+  - `placement_prep_generate: 25` — the core practice loop. CP-07 capped the
+    four placement *tool* routes and missed this one. Reserved at a new
+    "Step 3.5", deliberately **after** the bank-serve checks (a bank-served
+    session bills no Gemini call, same ordering rationale as `notes_view`'s
+    rate-check-after-cache), and released in the 503 handler.
+
+- **Platform-wide AI spend ceiling — new `src/lib/ai/budget.ts`.** The per-student
+  caps bound one student per day; nothing bounded the institution. Two env
+  controls, both readable from the Vercel dashboard without a redeploy:
+  `AI_KILL_SWITCH=true` (hard off, no DB read) and `AI_DAILY_BUDGET_INR`
+  (default **2000**, `0` disables). `assertAiBudget()` is called at the top of
+  both `routeAI` and `routeAIStream` — before provider dispatch and outside the
+  logging try/catch, since a budget refusal never reached Gemini and must not be
+  written to `ai_call_logs` as a provider error. Today's total is summed from
+  `ai_call_logs` and cached 60s per instance. **Fails OPEN** on query error or
+  row-cap: a monitoring failure must never take AI offline for every student at
+  once. Sizing: the heaviest audit run was ₹30 and a full GATE exam-sim ~₹5, so
+  ₹2000/day catches runaway without rationing normal use.
+
+- **Runtime error visibility — new `app_error_logs`.** No Sentry/PostHog/log
+  drain existed; `ai_call_logs` records spend, not breakage. Two halves:
+  - `persistAppError()` in `src/lib/api/helpers.ts`, called by the existing
+    `logCappedError()` (so its 3 existing call sites are covered for free) plus
+    the top-level catches of `/api/chat`, `/api/assessment/{submit,answer}` and
+    `/api/notes/subject/[id]/generate`. Fire-and-forget, swallows its own
+    failures — a reporting path that can throw turns a handled 500 into an
+    unhandled one.
+  - `src/instrumentation.ts` `onRequestError` for errors nothing caught at all
+    (server-component throws, pre-handler crashes). One file, zero per-route
+    churn, Node-runtime-guarded with a lazy admin-client import.
+  - Read surface: `GET /api/admin/errors` (superadmin/dept_admin, service-role
+    read behind the role gate) + `/superadmin/errors`, which leads with a
+    most-frequent-scope roll-up rather than a reverse-chronological wall. The
+    window selector uses a `requestIdRef` staleness guard so a slow response for
+    a previous window can't overwrite the current one.
+  - **Migration `20260820000000_app_error_logs.sql` created, NOT applied**, per
+    CLAUDE.md's create-then-STOP rule. Until it is applied every write logs a
+    named warning telling the reader which migration is missing, and the read
+    route returns that same hint — the feature degrades loudly, not silently.
+
+- **Student provisioning — new `scripts/bulk-create-students.ts`.** There was no
+  path to create 50 student accounts: self-registration is closed, the profile
+  page is admin-only for branch/semester by design, and CP-01 locked the profiles
+  self-service allow-list to zero columns. Mirrors
+  `bulk-create-faculty.ts` (same password policy, skip-if-exists, CSV output,
+  `must_change_password` handover — which already works for students, since
+  `proxy.ts:179`'s gate keys off the flag, not the role). Two deliberate
+  differences: the roster is a gitignored CSV rather than a hardcoded array
+  (real student PII), and there is an **offering pre-flight** — the script reads
+  `subject_offerings`, prints every (branch, semester) that has subjects, and
+  **refuses to create anyone** whose pair has none. That failure mode is
+  otherwise invisible: the student logs in fine and sees an empty product, with
+  no in-app way to fix it. Dry-run is the default; `--apply` is required to
+  create.
+  `.gitignore` extended for `student-credentials-*.csv` and
+  `scripts/students-roster.csv`.
+
+- **Pre-existing lint cleared to satisfy the commit guard** (same situation CP-14
+  hit): the guard runs eslint over whole staged files, so two files this pass
+  touched were blocked by findings that predate it. Removed the unused
+  `NextRequest` type import from `src/lib/api/helpers.ts`, and in
+  `api/chat/suggestions/route.ts` removed four unused imports
+  (`createServerClient`, `requireRole`, `apiError`, `apiSuccess`) and replaced
+  the `({} as any)` body fallback with a narrow
+  `{ subjectId?: unknown; syllabusContent?: unknown }` cast. Behaviour-neutral —
+  both fields were already read through `String(... ?? "")`.
+- **Verified:** `npx tsc --noEmit` clean. `npm run build` exit 0, with
+  `/superadmin/errors`, `api/admin/errors` and `instrumentation.js` all present
+  in the build output. `npx eslint` on all 11 changed/added files returns the
+  **identical** 1 error + 5 warnings as the same command against a stashed
+  working tree — all pre-existing (`chat/suggestions`' `any`, unused imports in
+  two files), zero new findings.
+- **NOT verified — stated explicitly per CLAUDE.md's protocol:** none of this was
+  browser-driven or run against the live DB. Specifically not exercised: the
+  rate-limit reservations under a real concurrent burst (CP-02's CAS is
+  unchanged, but these two new call sites are new); `assertAiBudget` actually
+  blocking at a real threshold; any `app_error_logs` write (the migration is
+  unapplied, so every write path currently takes its warning branch); and
+  `bulk-create-students.ts` against a real Supabase project — its dry run needs
+  a roster file and live `subject_offerings` read, neither available here.
+- **Next session must know:**
+  1. Migration `20260820000000_app_error_logs.sql` awaits manual application.
+  2. Set `AI_DAILY_BUDGET_INR` in Vercel deliberately — the 2000 default is a
+     guess sized off audit spend, not a measured pilot day.
+  3. CP-08's `21200c5` browser pass is still the top pre-pilot risk.
+  4. Vercel plan unconfirmed: `vercel.json` declares `maxDuration: 300` on
+     several routes, and commit `0b68615` implies a Hobby plan, which caps lower.
+     Neither the Vercel project nor the live Supabase project
+     (`rdtipzxxrjszjxirtbzd`) was reachable from this session's MCP connections,
+     so "CP-01/CP-05/CP-06 migrations are live" remains the ledger's word.

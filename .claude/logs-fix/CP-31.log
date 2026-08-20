@@ -1,0 +1,5 @@
+Committed locally, unrelated pre-existing runner-artifact diffs left untouched as noted. Work is committed but **not pushed**, per this run's no-push default.
+
+- **CP-31 done (color half):** swapped `src/lib/pdf/builder.ts`'s `COLORS` from Tailwind-blue to DESIGN.md's ink/paper/ochre/mastery-green tokens (derived neutrals via a mix-toward-white/black scale) — affects every PDF export in the product through the shared `COLORS` export. Commit `52b410c`, ledger/PROGRESS.md update in `351b8da`.
+- **Font half (IBM Plex via fontkit) deferred, not started** — it needs a new npm dependency (`fontkit`) and committed IBM Plex TTF binaries not present anywhere in the repo; flagged for approval in PROGRESS.md rather than added unilaterally.
+- **Verified:** `tsc`/`eslint`/`build` clean; rendered a real sample PDF and confirmed the ink header/ochre badge visually and via WCAG contrast math (~14.8:1 for the load-bearing text pairs); unhappy-path check ran 5 concurrent `createPDFBuilder()` builds with no cross-request bleed (no interrupted-flow case applies — this is a stateless constants change).

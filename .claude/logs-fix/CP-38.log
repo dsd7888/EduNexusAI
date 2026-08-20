@@ -1,0 +1,5 @@
+CP-38 complete.
+
+- **Migrated** `resume/page.tsx`, `jd-analyzer/page.tsx`, `interview/page.tsx`, `projects/page.tsx`, `projects/[id]/page.tsx` (428 insertions / 390 deletions) onto DESIGN.md's ink/paper/ochre token system, matching the CP-27/interview-mock precedent — plus fixed a pre-existing lint error the commit guard surfaced. Verified `tsc`/lint/build clean, Playwright-checked all 5 pages desktop+mobile with real auth, plus interrupted (mid-fetch nav-away) and concurrent (double-click) unhappy paths, all clean.
+- **Commit SHAs:** `c5f2b6e3dc046da454019a2466ef7c4c33bb6b46` (code) and `20f047e` (ledger/PROGRESS.md entry) — both committed locally on `dev`, **not pushed** per this run's no-push default.
+- Ledger and PROGRESS.md updated; CP-38 was the last row in FIX_SPEC's S3 table, so CP-29b+ (dark-mode coverage for placement) is the next natural (but not required) follow-up.

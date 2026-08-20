@@ -32,6 +32,18 @@ export const RATE_LIMITS = {
   placement_resume_rewrite: 30,
   placement_jd_analyze: 15,
   placement_interview_evaluate: 20,
+  // Chat starter-prompt suggestions. Fires once per chat-page mount per subject,
+  // so it is invisible to the student but a real AI call every time — it was the
+  // only student-reachable route with no ceiling of any kind. Degrades to the
+  // route's own DEFAULT_SUGGESTIONS when exhausted rather than erroring, so the
+  // cap is a spend guard the student never sees.
+  chat_suggestions: 30,
+  // Placement prep question generation — the core practice loop. CP-07 capped the
+  // four placement *tool* routes (ATS/rewrite/JD/evaluate) and missed this one,
+  // which is the most-hit AI route in the placement module. Bank-served sessions
+  // do not bill Gemini at all, so this ceiling only ever binds on genuinely new
+  // generation.
+  placement_prep_generate: 25,
 } as const;
 
 type RateLimitedEvent = keyof typeof RATE_LIMITS;

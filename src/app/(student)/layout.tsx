@@ -24,7 +24,6 @@ import { LogoutButton } from "@/components/layout/LogoutButton";
 import { UserProfile } from "@/components/layout/UserProfile";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { SessionTracker } from "@/components/layout/SessionTracker";
-import { ThemeToggle } from "@/components/theme/ThemeToggle";
 import { cn } from "@/lib/utils";
 
 interface LayoutProps {
@@ -70,7 +69,6 @@ function SidebarContent({
           </div>
         )}
         {collapsed && <GraduationCap className="size-6 shrink-0 text-ochre" />}
-        {!collapsed && <ThemeToggle />}
         {onToggleCollapse && (
           <button
             type="button"

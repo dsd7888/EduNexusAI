@@ -34,7 +34,7 @@
  */
 import type { NextRequest } from "next/server";
 
-import { requireAuth, apiError } from "@/lib/api/helpers";
+import { requireAuth, apiError , logCappedError } from "@/lib/api/helpers";
 import { createAdminClient } from "@/lib/db/supabase-server";
 import { checkRateLimit, releaseRateLimit, RATE_LIMITS } from "@/lib/utils/rate-limit";
 import { assertNotesSubjectAccess } from "@/lib/notes/access";
@@ -200,7 +200,7 @@ export async function POST(
       modulesFailed: failedModuleIds,
     });
   } catch (err) {
-    console.error("[notes/subject/generate] POST error:", err);
+    logCappedError("[notes/subject/generate] POST error:", err, { route: request.nextUrl?.pathname, httpMethod: "POST" });
     if (releaseReservation) {
       await releaseReservation().catch(() => {});
     }

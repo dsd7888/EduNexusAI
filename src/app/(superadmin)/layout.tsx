@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 
-import {
+import { AlertTriangle,
   CheckCircle,
   BookOpen,
   GraduationCap,
@@ -64,6 +64,10 @@ export default function SuperadminLayout({ children }: LayoutProps) {
           <NavLink href="/superadmin/pilot-analysis">
             <LineChart className="size-4" />
             <span>Pilot Analysis</span>
+          </NavLink>
+          <NavLink href="/superadmin/errors">
+            <AlertTriangle className="size-4" />
+            <span>Runtime Errors</span>
           </NavLink>
         </nav>
 
