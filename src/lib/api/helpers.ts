@@ -70,6 +70,12 @@ interface PersistAppErrorParams extends AppErrorContext {
   origin: "handled" | "unhandled";
 }
 
+/** Aborted/cancelled requests are client navigation, not server faults. */
+function isClientAbort(message: string): boolean {
+  return /\b(aborted|abortterror|request aborted|the operation was aborted|canceled|cancelled|ECONNRESET)\b/i
+    .test(message);
+}
+
 /**
  * Writes one row to `app_error_logs` (migration 20260820000000).
  *
@@ -82,6 +88,15 @@ interface PersistAppErrorParams extends AppErrorContext {
  * should not also wait on our telemetry write.
  */
 export function persistAppError(params: PersistAppErrorParams): void {
+  // A client that navigates away mid-request aborts it, and the handler's catch
+  // block sees that as an error. It isn't one — nothing is broken server-side,
+  // and during a pilot it is the single most common thing students generate
+  // (every back-button press mid-load). Logging it would bury the real faults
+  // this table exists to surface. Verified against live rows: the interrupted-
+  // flow test produced two "[placement-submit] Error: aborted" entries and
+  // nothing else.
+  if (isClientAbort(params.message)) return;
+
   void (async () => {
     try {
       const stack = params.stack

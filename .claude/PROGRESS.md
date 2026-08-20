@@ -2259,3 +2259,142 @@ _(entries appended below by each checkpoint session)_
      Neither the Vercel project nor the live Supabase project
      (`rdtipzxxrjszjxirtbzd`) was reachable from this session's MCP connections,
      so "CP-01/CP-05/CP-06 migrations are live" remains the ledger's word.
+
+### Pilot-readiness verification pass — 2026-08-20 — **browser + live DB**
+
+Ran after Dhruv applied `20260820000000_app_error_logs.sql`. Harnesses live in
+`_cp_pilot_verify/` (`api.mts`, `ui.mts`, `pilot.mts`, `shell.mts`,
+`onboarding.mts`, plus `relogin/profileread/loginprobe/abortfilter/residue`
+isolation probes). Dev server on :3000, real Supabase, real Gemini.
+
+**Migration/ledger claims confirmed live** (previously "the ledger's word only"):
+- CP-01 `profiles` privilege escalation is **genuinely blocked in prod** — a real
+  student JWT attempting `.update({role:'superadmin'})` on its own row is
+  rejected `42501: profiles: self-service updates cannot change any column`, and
+  the role reads back `student`. This was the audit's single highest-severity
+  finding; it is closed.
+- CP-05 `upsert_placement_topic_mastery` and CP-06 `reserve_interview_followup`
+  both EXIST (probed with real signatures; rejected on FK as expected).
+
+**CP-08 (commit 21200c5) — the outstanding browser gap — now closed. 18/18.**
+- Wire contract (`api.mts`, 11 assertions): `prep/generate` ships no
+  `correct_answer`/`explanation` on any question, and a canary check confirms no
+  bank explanation text survives anywhere in the serialised payload;
+  `prep/submit` returns a complete `grading` map, overrides a forged
+  `is_correct:true` on an all-wrong session to `false`, and lands
+  `recent_accuracy: 0` rather than the forged 100.
+- Browser (`ui.mts`): real session driven end to end — score card renders a real
+  N/M with accuracy and no `undefined`/`NaN`, review/explanation content renders,
+  **exactly one** submit request fires.
+- **CONCURRENT:** two `Finish` clicks in the same tick still produce exactly one
+  submit (`submittedRef` holds); results screen intact.
+- **INTERRUPTED:** navigating away while grading is in flight, then returning,
+  leaves both the dashboard and the practice URL coherent, zero console errors.
+
+**Pilot-readiness commit (53efa20) verified — 20/20** (`pilot.mts`):
+- `app_error_logs`: row lands with every column round-tripping; a real student
+  session reads **zero** rows **and no error** (RLS match-none, not a broken
+  query) with the canary absent from the payload; superadmin CAN read
+  `/api/admin/errors` and sees the canary; a student is 403'd.
+- `chat_suggestions` at cap: 200 (not 429), exactly 4 suggestions, the DEFAULT
+  set, and **no new `ai_call_logs` row** — the degrade path spends nothing.
+- `placement_prep_generate` cap ordering: at cap a bank-covered topic still
+  succeeds with `source: "bank"`, while a novel topic is 429'd. This is the
+  reserve-after-bank-check decision, confirmed behaviourally.
+- Budget guard: kill switch blocks; `AI_DAILY_BUDGET_INR=0.0001` blocks against
+  real logged spend (`₹4.39 >= ₹0.0001`); `0` disables; a generous budget passes;
+  and an unreadable spend total **fails open** rather than taking AI offline.
+- Shell sweep (`shell.mts`, 22/22): all 7 core student pages render, carry no
+  theme toggle, log no console errors; `<html>` never gains `.dark`.
+
+**Two real bugs found and fixed during this pass:**
+1. **The forced-password-change success screen was faculty-only.** It hardcoded
+   `<Link href="/faculty/syllabus">Continue to Syllabus</Link>` with the copy
+   "Let's add your first subject" — built for the faculty bulk-create and never
+   revisited. Every one of the 50 students would have hit a dead-end CTA into a
+   route `proxy.ts` bounces them out of, on the first screen they ever see.
+   Fixed: `/api/auth/change-password` now returns a role-resolved
+   `{href,label,blurb}` (faculty keep `/faculty/syllabus` byte-identically;
+   students get `/student/dashboard` and "Your subjects are ready on your
+   dashboard"), and the card renders it.
+2. **`app_error_logs` was recording client aborts as errors.** The interrupted-
+   flow test produced two live `[placement-submit] Error: aborted` rows. A
+   student pressing back mid-request is not a server fault, and at 50 students it
+   would be the most common row in the table, burying real faults. Added an
+   `isClientAbort()` guard in `persistAppError`; verified a genuine error still
+   persists while `aborted`/`AbortError` rows are dropped.
+
+**Day-one onboarding flow verified end to end — 15/15** (`onboarding.mts`), using
+a real account created by `bulk-create-students.ts --apply`:
+temp password signs in → forced to `/auth/change-password` → the gate cannot be
+bypassed by typing `/student/dashboard` → "Save password" → success card with the
+**student** CTA → `must_change_password` cleared in the DB (the admin-client
+write CP-01 left intact) → branch/semester survive → `/student/subjects` renders
+a non-empty list → fresh login with the NEW password goes straight to the app →
+the old temp password is rejected. Zero console errors throughout.
+
+**`bulk-create-students.ts` exercised for real:** offering pre-flight correctly
+refused a `MECH semester 7` roster (exit 1) while printing the 8 cohorts that do
+have subjects; malformed rosters (bad email, duplicate, empty name,
+`semester: "thirteen"`) are rejected row-by-row with line numbers and create
+nothing (exit 1); a valid roster dry-runs clean (exit 0); `--apply` created,
+flagged, and CSV'd a real account.
+
+**Harness bugs worth recording** (all four initial "failures" were mine, not the
+app's — each is a trap the next session will hit):
+- `getByRole("button", {name:/Next/})` also matches Next.js's own dev-tools
+  button → strict-mode violation swallowed by a `.catch()`.
+- `hasText` with a RegExp matches `textContent`, not `innerText`: the option
+  buttons are `"A.C"` with no whitespace, so `/^[A-D]\.\s/` never matched.
+- `waitForFunction` dies with "execution context destroyed" across a client-side
+  navigation; use `waitForURL` for anything that hops through `/auth/loading`.
+- Filling a login form before React hydrates leaves the controlled inputs empty
+  and the form self-rejects with "Please enter your email" — no auth request is
+  ever made. Assert `inputValue()` before submitting.
+- `EXIT=$?` after a pipe reads the pipe's last stage, not the script.
+
+**Residue:** every probe user, canary row and seeded `usage_analytics` row
+cleaned and re-queried to confirm zero left; credentials CSVs deleted.
+**Pre-existing, NOT mine — worth clearing before the pilot:** three harness
+profiles from earlier audit sessions survive in `profiles`
+(`cp-probe-a1760530@`, `cp-n5-browser-8b20b0b7@`, `cp-audit-curl-ba8eb6ca@`, all
+`@edunexus-harness.invalid`). Also note `teststudent3@gmail.com` has
+`branch: "Computer Science"` — a long-form value that matches no
+`subject_offerings` row (those are short codes); harmless for a test account but
+it is exactly the failure mode the new script's pre-flight exists to prevent.
+
+**A third real bug, found only because the harness was made deterministic.**
+Re-running `ui.mts` against a *fresh* student surfaced the results screen showing
+"We couldn't verify your answers right now. Your session was still recorded" on a
+successful submission. `prep/submit` was fine (probed directly on a brand-new
+student: three consecutive 200s). The defect was in the page:
+`gradingFailed = grading === null && masteryTimedOut`, where `masteryTimedOut` is
+a bare 5-second `setTimeout` with no relation to whether the request failed. Any
+submit slower than 5s therefore told the student their session had failed **while
+the request was still in flight**, then replaced it with the real score card
+seconds later. Submit does server-side re-grading + a mastery RPC + a readiness
+recompute, so >5s is ordinary on a cold function — with 50 students this would
+have been common, and it undermines exactly the scoring trust CP-08 was about.
+Fixed by tracking settlement (`submitSettled`, set in the `.then()` regardless of
+outcome): failure copy now requires a settled-and-empty response, and the 5s mark
+shows "Still scoring your answers — this can take a few seconds." over the
+existing skeleton instead. Flag resets on retry.
+
+**Harness determinism (worth knowing before re-running these):** two suites
+initially gave different results run-to-run against `teststudent@gmail.com`.
+Cause: `prep/generate` excludes questions attempted in the last 30 days
+(`seenIds`), so once a student has worked through a topic the bank can no longer
+field a full set and the route silently falls through to AI generation — slower,
+and at the daily cap a 429. Both `ui.mts` and `pilot.mts`'s cap-ordering section
+now create a disposable student per run and delete it afterwards. The apparent
+"failures" this masked were fixture drift, not regressions — but the
+`gradingFailed` bug above was only visible *because* the fixture was fresh.
+
+**Final suite:** `api.mts` 12/12 · `ui.mts` 19/19 · `pilot.mts` 20/20 ·
+`shell.mts` 22/22 · `onboarding.mts` 15/15. tsc clean, eslint clean on every
+changed file, `npm run build` exit 0. `app_error_logs` reset to 0 rows (the two
+pre-filter "aborted" entries removed) so the pilot's first look is real signal.
+
+**Still NOT verified:** Vercel plan vs. `maxDuration: 300`; behaviour under 50
+concurrent students (everything here was single-session); Supabase auth rate
+limits under a simultaneous-login burst on distribution day.
