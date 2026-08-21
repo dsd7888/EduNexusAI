@@ -16,7 +16,7 @@ for (const [k, val] of Object.entries(env)) if (!process.env[k]) process.env[k] 
 
 const SUPABASE_URL = env.NEXT_PUBLIC_SUPABASE_URL;
 const REF = new URL(SUPABASE_URL).hostname.split(".")[0];
-const BASE = "http://localhost:3000";
+const BASE = process.env.VERIFY_BASE ?? "http://localhost:3000";
 const admin = createClient(SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY);
 const anon  = createClient(SUPABASE_URL, env.NEXT_PUBLIC_SUPABASE_ANON_KEY);
 

@@ -3,7 +3,7 @@ import { createClient } from "@supabase/supabase-js";
 import fs from "fs";
 const env = Object.fromEntries(fs.readFileSync(".env.local","utf8").split("\n").filter(l=>l.includes("=")).map(l=>{const i=l.indexOf("=");return [l.slice(0,i),l.slice(i+1)];}));
 const SUPABASE_URL=env.NEXT_PUBLIC_SUPABASE_URL, REF=new URL(SUPABASE_URL).hostname.split(".")[0];
-const BASE="http://localhost:3000";
+const BASE = process.env.VERIFY_BASE ?? "http://localhost:3000";
 const admin=createClient(SUPABASE_URL,env.SUPABASE_SERVICE_ROLE_KEY), anon=createClient(SUPABASE_URL,env.NEXT_PUBLIC_SUPABASE_ANON_KEY);
 
 const EMAIL=`firstsub-${crypto.randomUUID().slice(0,8)}@edunexus-harness.invalid`;

@@ -2398,3 +2398,59 @@ pre-filter "aborted" entries removed) so the pilot's first look is real signal.
 **Still NOT verified:** Vercel plan vs. `maxDuration: 300`; behaviour under 50
 concurrent students (everything here was single-session); Supabase auth rate
 limits under a simultaneous-login burst on distribution day.
+
+### Production verification — 2026-08-20 — `edu-nexus-ai-two.vercel.app`
+
+Re-ran the suite against the deployed build after `dcfd7da` merged to `main`.
+Harnesses now take `VERIFY_BASE` (cookie domain and `secure` flag derive from
+it), so the same files run against localhost or production.
+
+**Confirmed the deployed build is the new one** before testing anything:
+`/api/admin/errors` returns 401 (route exists, auth-gated) rather than 404, which
+it would on the pre-merge build.
+
+**Results, all against production:** `api.mts` 12/12 · `ui.mts` 19/19 ·
+`onboarding.mts` 15/15 · `shell.mts` 22/22. Both student-facing fixes confirmed
+live: the password-change success card points at `/student/dashboard` with
+student copy, and no run showed the false failure message.
+
+**The Hobby / `maxDuration: 300` question is resolved empirically.** Notes
+cold-start on `SECE2250 Computer Organization & Architecture` (8 modules, 0 with
+notes) returned 200 in **74.6s** and produced notes for **8/8** modules. That is
+a quarter of the 300s ceiling on the largest CSE-3 subject, so the ceiling holds
+with real margin. (Side effect: that subject is now seeded.)
+
+**Bug 3 was not hypothetical — production latency proves it.** Measured
+`prep/submit` over four real runs:
+
+| run | generate | submit | source |
+|---|---|---|---|
+| 1 | 3897ms | **5760ms** | bank |
+| 2 | 2724ms | 4674ms | bank |
+| 3 | 2558ms | 4401ms | bank |
+| 4 | 19252ms | **10077ms** | generated |
+
+avg **6228ms**, max **10077ms**, against the 5000ms threshold. **Two of four runs
+exceeded it** — so on the pre-fix build roughly half of all real student
+submissions would have displayed "We couldn't verify your answers right now"
+before flipping to the real score. On the AI-generation path (run 4) it was
+guaranteed. This is the single most load-sensitive thing found in either pass,
+and it was invisible on localhost.
+
+**`app_error_logs` holds 0 rows** after the entire production run — nothing threw.
+Worth stating precisely: the *write* path was proven against the live DB
+(canary row, all columns, RLS, superadmin read) but from localhost; the
+`instrumentation.ts` unhandled-error hook has **not** been exercised in
+production, because nothing errored there. First real 5xx will confirm it.
+
+**Cost of the whole day's verification: ₹4.78 across 10 billed calls.** Most
+placement runs served from the bank and billed nothing; the notes cold-start is
+the bulk of it.
+
+**Residue:** zero. Every probe account deleted and re-queried; no canary rows; no
+seeded usage counters. The 3 pre-existing harness accounts from earlier audit
+sessions remain (Dhruv: not important).
+
+**Still not verified:** behaviour under genuinely concurrent load — every check
+here was single-session. Supabase auth rate limits on a simultaneous-login burst
+remain the main unknown for distribution day.

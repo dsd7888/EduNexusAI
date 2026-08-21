@@ -7,7 +7,7 @@ import { createClient } from "@supabase/supabase-js";
 import { chromium } from "playwright";
 import fs from "fs";
 const env = Object.fromEntries(fs.readFileSync(".env.local","utf8").split("\n").filter(l=>l.includes("=")).map(l=>{const i=l.indexOf("=");return [l.slice(0,i),l.slice(i+1)];}));
-const URLB="http://localhost:3000", REF=new URL(env.NEXT_PUBLIC_SUPABASE_URL).hostname.split(".")[0];
+const URLB = process.env.VERIFY_BASE ?? "http://localhost:3000", REF=new URL(env.NEXT_PUBLIC_SUPABASE_URL).hostname.split(".")[0];
 const admin=createClient(env.NEXT_PUBLIC_SUPABASE_URL,env.SUPABASE_SERVICE_ROLE_KEY), anon=createClient(env.NEXT_PUBLIC_SUPABASE_URL,env.NEXT_PUBLIC_SUPABASE_ANON_KEY);
 let pass=0,fail=0; function ok(n: string, c: boolean, d = ""): void {
   if (c) { pass++; console.log(`  PASS  ${n}`); }
@@ -18,7 +18,7 @@ const {data:link}=await admin.auth.admin.generateLink({type:"magiclink",email:"t
 const {data:v}=await anon.auth.verifyOtp({token_hash:link!.properties.hashed_token,type:"magiclink"});
 const browser=await chromium.launch();
 const ctx=await browser.newContext({viewport:{width:1280,height:900}});
-await ctx.addCookies([{name:`sb-${REF}-auth-token`,value:"base64-"+Buffer.from(JSON.stringify(v!.session),"utf8").toString("base64url"),domain:"localhost",path:"/",httpOnly:false,secure:false,sameSite:"Lax"}]);
+await ctx.addCookies([{name:`sb-${REF}-auth-token`,value:"base64-"+Buffer.from(JSON.stringify(v!.session),"utf8").toString("base64url"),domain:new URL(URLB).hostname,path:"/",httpOnly:false,secure:new URL(URLB).protocol==="https:",sameSite:"Lax"}]);
 
 const PAGES=["/student/dashboard","/student/subjects","/student/profile","/student/history","/student/quiz","/student/placement","/student/chat"];
 for (const p of PAGES) {

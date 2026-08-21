@@ -2,7 +2,7 @@ import { createClient } from "@supabase/supabase-js";
 import { chromium } from "playwright";
 import fs from "fs";
 const env = Object.fromEntries(fs.readFileSync(".env.local","utf8").split("\n").filter(l=>l.includes("=")).map(l=>{const i=l.indexOf("=");return [l.slice(0,i),l.slice(i+1)];}));
-const BASE="http://localhost:3000";
+const BASE = process.env.VERIFY_BASE ?? "http://localhost:3000";
 const admin=createClient(env.NEXT_PUBLIC_SUPABASE_URL,env.SUPABASE_SERVICE_ROLE_KEY);
 const EMAIL="loginprobe@edunexus-harness.invalid", PW="ProbePw123456";
 

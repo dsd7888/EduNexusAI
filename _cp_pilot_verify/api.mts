@@ -18,7 +18,7 @@ const env = Object.fromEntries(
 const SUPABASE_URL = env.NEXT_PUBLIC_SUPABASE_URL;
 const REF = new URL(SUPABASE_URL).hostname.split(".")[0];
 const COOKIE = `sb-${REF}-auth-token`;
-const BASE = "http://localhost:3000";
+const BASE = process.env.VERIFY_BASE ?? "http://localhost:3000";
 
 const admin = createClient(SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY);
 const anon = createClient(SUPABASE_URL, env.NEXT_PUBLIC_SUPABASE_ANON_KEY);

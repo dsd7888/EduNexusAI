@@ -9,7 +9,7 @@ const {data:v}=await anon.auth.verifyOtp({token_hash:link!.properties.hashed_tok
 const {data:b}=await admin.from("placement_question_bank").select("track,topic").eq("is_active",true).limit(1).single();
 const browser=await chromium.launch();
 const ctx=await browser.newContext({viewport:{width:1280,height:900}});
-await ctx.addCookies([{name:`sb-${REF}-auth-token`,value:"base64-"+Buffer.from(JSON.stringify(v!.session),"utf8").toString("base64url"),domain:"localhost",path:"/",httpOnly:false,secure:false,sameSite:"Lax"}]);
+await ctx.addCookies([{name:`sb-${REF}-auth-token`,value:"base64-"+Buffer.from(JSON.stringify(v!.session),"utf8").toString("base64url"),domain:new URL(BASE).hostname,path:"/",httpOnly:false,secure:new URL(BASE).protocol==="https:",sameSite:"Lax"}]);
 const page=await ctx.newPage();
 page.on("request",r=>{if(r.url().includes("prep/submit"))console.log("   >>> SUBMIT REQUEST FIRED");});
 await page.goto(`http://localhost:3000/student/placement/prep/${b!.track}/practice?topic=${encodeURIComponent(b!.topic as string)}`,{waitUntil:"networkidle"});

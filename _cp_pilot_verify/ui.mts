@@ -17,7 +17,7 @@ const env = Object.fromEntries(
 const SUPABASE_URL = env.NEXT_PUBLIC_SUPABASE_URL;
 const REF = new URL(SUPABASE_URL).hostname.split(".")[0];
 const COOKIE = `sb-${REF}-auth-token`;
-const BASE = "http://localhost:3000";
+const BASE = process.env.VERIFY_BASE ?? "http://localhost:3000";
 const SHOTS = "_cp_pilot_verify/screens";
 fs.mkdirSync(SHOTS, { recursive: true });
 
@@ -37,7 +37,8 @@ async function authedContext(browser: Browser, email: string) {
   await ctx.addCookies([{
     name: COOKIE,
     value: "base64-" + Buffer.from(JSON.stringify(v!.session), "utf8").toString("base64url"),
-    domain: "localhost", path: "/", httpOnly: false, secure: false, sameSite: "Lax",
+    domain: new URL(BASE).hostname, path: "/", httpOnly: false,
+    secure: new URL(BASE).protocol === "https:", sameSite: "Lax",
   }]);
   return ctx;
 }
