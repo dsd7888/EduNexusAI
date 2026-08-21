@@ -1,0 +1,5 @@
+CP-28 complete: chat PDF export's markdown table rendering was fixed by swapping `builder.markdown()` (no table support) for `builder.richText()` (already used elsewhere via `parseMarkdownLite` + `drawTable`), verified via a scratch script showing real bordered-table output for a well-formed table and safe fallback for a malformed/truncated one.
+
+- **Commit:** `fb21c5b` (fix) + `ac74c3c` (PROGRESS.md) + `b0c2f6b` (ledger) on `dev`, not pushed (per this run's no-auto-push default)
+- **Verified:** `tsc`/lint/build clean, no new lint issues in touched file; happy path (real pipe table → aligned grid via `pdftotext`) and unhappy paths (header-only table with no separator falls back to plain text instead of crashing; ragged/extra-column table renders without error)
+- **Scope note:** no migration needed; flagged one pre-existing, out-of-scope quirk (inline `**bold**` inside table cells isn't stripped) for a possible future S3 item, but didn't touch it since CP-28's finding was specifically "no table structure," which is now fixed

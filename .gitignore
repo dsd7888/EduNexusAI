@@ -35,6 +35,10 @@ yarn-error.log*
 
 # live credentials produced by scripts/bulk-create-faculty.ts — never commit
 faculty-credentials-*.csv
+# live credentials produced by scripts/bulk-create-students.ts — never commit
+student-credentials-*.csv
+# the roster fed to scripts/bulk-create-students.ts — real student PII
+scripts/students-roster.csv
 
 # vercel
 .vercel

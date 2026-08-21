@@ -11,7 +11,7 @@ import {
 } from "@/lib/ai/providers/gemini";
 import { createAdminClient } from "@/lib/db/supabase-server";
 import { checkRateLimit, releaseRateLimit, RATE_LIMITS } from "@/lib/utils/rate-limit";
-import { requireAuth, apiError } from "@/lib/api/helpers";
+import { requireAuth, apiError , logCappedError } from "@/lib/api/helpers";
 import type { NextRequest } from "next/server";
 
 export const runtime = "nodejs";
@@ -758,7 +758,7 @@ export async function POST(request: NextRequest) {
       },
     });
   } catch (err) {
-    console.error("[chat] POST error:", err);
+    logCappedError("[chat] POST error:", err, { route: request.nextUrl?.pathname, httpMethod: "POST" });
     const message =
       err instanceof Error ? err.message : "Failed to process chat request";
     return apiError(message, 500);

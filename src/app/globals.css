@@ -155,6 +155,13 @@
   --ink-900: oklch(0.274 0.046 248.760);
 }
 
+/* Dark-mode base tokens (shadcn scale only).
+   INCOMPLETE — the ink/paper/ochre scale defined on :root above is NOT overridden here,
+   so flipping this class does not actually re-theme the product; every surface
+   migrated by CP-27/CP-31/CP-38 paints with those tokens, not these. The student
+   nav's theme toggle was unmounted for the pilot because of this (see
+   src/components/theme/ThemeToggle.tsx). Finishing dark mode = inverting the ink
+   scale here + a per-page visual pass = CP-29b+. */
 .dark {
   --background: oklch(0.129 0.042 264.695);
   --foreground: oklch(0.984 0.003 247.858);

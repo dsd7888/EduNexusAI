@@ -1,5 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { createAdminClient } from "@/lib/db/supabase-server";
+import { checkRateLimit, releaseRateLimit, RATE_LIMITS } from "@/lib/utils/rate-limit";
 import { requireRole, apiError, apiSuccess } from "@/lib/api/helpers";
 import { routeAI } from "@/lib/ai/router";
 import type { AILogContext } from "@/lib/ai/providers/types";
@@ -462,6 +463,25 @@ export async function POST(request: NextRequest) {
         }
       }
 
+      // ── Step 3.5: Reserve AI quota ─────────────────────────────────────────
+      // Deliberately AFTER the bank checks above: a bank-served session bills no
+      // Gemini call at all, so charging it against the daily allowance would
+      // penalise the student for the cheap path. Same ordering as notes_view's
+      // rate-check-after-cache. Everything from Step 4 down either calls the
+      // provider or returns a fallback built from a call that was attempted.
+      const rate = await checkRateLimit({
+        userId: user.id,
+        eventType: "placement_prep_generate",
+        limit: RATE_LIMITS.placement_prep_generate,
+        subjectId: null,
+      });
+      if (!rate.allowed) {
+        return apiError(
+          `You've reached today's limit for new practice questions (${RATE_LIMITS.placement_prep_generate}). ${rate.resetAt}. Topics you've already practised can still be revised — those are served from the question bank and don't count against this limit.`,
+          429
+        );
+      }
+
       // ── Step 4: Fetch company context (shared for both paths) ──────────────
       let company: PlacementCompanyProfile | null = null;
       if (companySlugStr) {
@@ -608,6 +628,13 @@ export async function POST(request: NextRequest) {
       });
     } catch (err) {
       console.error("[placement-prep] Unexpected handler error:", err);
+      // Generation blew up after the reservation was taken — refund it so a
+      // provider outage doesn't silently eat the student's daily allowance.
+      await releaseRateLimit({
+        userId: user.id,
+        eventType: "placement_prep_generate",
+        subjectId: null,
+      });
       return NextResponse.json(
         { error: "Service temporarily unavailable. Please retry." },
         { status: 503 }

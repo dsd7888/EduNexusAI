@@ -1,0 +1,6 @@
+Committed locally only, per this run's no-push default.
+
+**Summary:**
+- CP-30 ("No chat double-submit guard") is explicitly scoped in `FIX_SPEC.md` as backlog — "only act if double-submits show up in production telemetry." No such telemetry exists, and repo inspection confirmed `api/chat/route.ts` has no server-side idempotency guard while a client-side one already exists (`isSendingRef` + disabled Composer button, `page.tsx:256-261`) — so per the spec's own instruction, no server fix was written this session.
+- `.claude/FIX_LEDGER.md` CP-30 row moved from a stale `in-progress` to `blocked` (mirroring CP-29b+'s deferred pattern), and `.claude/PROGRESS.md` documents the decision, the repo-state check, and what future evidence would justify revisiting it.
+- Commit `1b871de` (local only, not pushed — no code changed, so no unhappy-path browser verification applies here).

@@ -31,12 +31,33 @@ export default function ChangePasswordPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [phase, setPhase] = useState<Phase>("form");
+  const [next, setNext] = useState<{ href: string; label: string; blurb: string }>({
+    href: "/student/dashboard",
+    label: "Continue to Dashboard",
+    blurb: "You're all set.",
+  });
 
   // Retire the forced-change gate for this user (own row only). Returns true on
   // success. Standalone so the "finishing" state can retry it without a password.
   const clearFlag = useCallback(async (): Promise<boolean> => {
     const res = await fetch("/api/auth/change-password", { method: "POST" });
-    return res.ok;
+    if (!res.ok) return false;
+    // The route resolves the destination from the caller's role server-side.
+    // Falling back to the student landing (not the faculty one) is the safer
+    // default: students are the larger population and a faculty member sent to
+    // /student/dashboard is bounced to their own dashboard by proxy.ts, whereas
+    // the reverse used to strand every student on a route they cannot open.
+    const body = (await res.json().catch(() => null)) as
+      | { next?: { href: string; label: string; blurb: string } }
+      | null;
+    setNext(
+      body?.next ?? {
+        href: "/student/dashboard",
+        label: "Continue to Dashboard",
+        blurb: "You're all set.",
+      }
+    );
+    return true;
   }, []);
 
   const handleSubmit = useCallback(async () => {
@@ -101,13 +122,11 @@ export default function ChangePasswordPage() {
               <CardTitle className="text-2xl font-bold">
                 Password updated
               </CardTitle>
-              <CardDescription>
-                You&apos;re all set. Let&apos;s add your first subject.
-              </CardDescription>
+              <CardDescription>{next.blurb}</CardDescription>
             </CardHeader>
             <CardContent>
               <Button asChild className="w-full">
-                <Link href="/faculty/syllabus">Continue to Syllabus</Link>
+                <Link href={next.href}>{next.label}</Link>
               </Button>
             </CardContent>
           </>

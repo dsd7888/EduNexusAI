@@ -12,7 +12,7 @@
  */
 
 import type { NextRequest } from "next/server";
-import { apiError, apiSuccess, requireRole } from "@/lib/api/helpers";
+import { apiError, apiSuccess, requireRole , logCappedError } from "@/lib/api/helpers";
 import {
   gradeSubmission,
   updateMastery,
@@ -221,7 +221,7 @@ export async function POST(request: NextRequest) {
       ...(masteryDeltas ? { masteryDeltas } : {}),
     });
   } catch (err) {
-    console.error("[assessment/submit]", err);
+    logCappedError("[assessment/submit]", err, { route: request.nextUrl?.pathname, httpMethod: "POST" });
     return apiError("Internal server error", 500);
   }
 }

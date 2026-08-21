@@ -1,7 +1,7 @@
 import { buildSuggestedPromptsRequest } from "@/lib/ai/prompts";
 import { routeAI } from "@/lib/ai/router";
-import { createServerClient } from "@/lib/db/supabase-server";
-import { requireAuth, requireRole, apiError, apiSuccess } from "@/lib/api/helpers";
+import { requireAuth } from "@/lib/api/helpers";
+import { checkRateLimit, releaseRateLimit, RATE_LIMITS } from "@/lib/utils/rate-limit";
 import type { NextRequest } from "next/server";
 
 const DEFAULT_SUGGESTIONS = [
@@ -31,7 +31,9 @@ export async function POST(request: NextRequest) {
       return safeReturn();
     }
 
-    const body = await request.json().catch(() => ({} as any));
+    const body = (await request
+      .json()
+      .catch(() => ({}))) as { subjectId?: unknown; syllabusContent?: unknown };
     const subjectId = String(body?.subjectId ?? "").trim();
     const syllabusContent = String(body?.syllabusContent ?? "").trim();
 
@@ -39,22 +41,51 @@ export async function POST(request: NextRequest) {
       return safeReturn();
     }
 
+    // Reserve BEFORE the AI call (CP-02 pattern) — this route is fired on every
+    // chat-page mount without the student asking for it, so an uncapped version
+    // bills Gemini on navigation alone. Exhausting the cap is not an error here:
+    // the route's whole contract is "always return four usable prompts", so we
+    // degrade to DEFAULT_SUGGESTIONS exactly as every other failure branch does.
+    const rate = await checkRateLimit({
+      userId: authUser.id,
+      eventType: "chat_suggestions",
+      limit: RATE_LIMITS.chat_suggestions,
+      subjectId,
+    });
+    if (!rate.allowed) {
+      return safeReturn();
+    }
+
     const prompt = buildSuggestedPromptsRequest({ subjectId, syllabusContent });
 
     const jobId = crypto.randomUUID();
-    const aiResponse = await routeAI("chat", {
-      messages: [{ role: "user", content: prompt }],
-      logContext: {
+    let aiResponse;
+    try {
+      aiResponse = await routeAI("chat", {
+        messages: [{ role: "user", content: prompt }],
+        logContext: {
+          userId: authUser.id,
+          userEmail: authUser.email ?? null,
+          userRole: null,
+          subjectId,
+          subjectCode: null,
+          jobId,
+          relatedContentId: null,
+          feature: "chat",
+        },
+      });
+    } catch (err) {
+      // The provider call never landed, so the reservation bought nothing —
+      // refund it rather than charging the student's daily allowance for our
+      // own upstream failure.
+      await releaseRateLimit({
         userId: authUser.id,
-        userEmail: authUser.email ?? null,
-        userRole: null,
+        eventType: "chat_suggestions",
         subjectId,
-        subjectCode: null,
-        jobId,
-        relatedContentId: null,
-        feature: "chat",
-      },
-    });
+      });
+      console.error("[chat/suggestions] routeAI failed:", err);
+      return safeReturn();
+    }
 
     let raw = String(aiResponse.content ?? "").trim();
 

@@ -1,1 +1,5 @@
-API Error: Connection closed mid-response. The response above may be incomplete.
+All committed locally (not pushed, per this run's default). Summary:
+
+- **CP-26 finalized.** The fix (`a8330e7`, already committed from an interrupted prior session) reserves space for a question header's first sub-part/option before committing to a page in `drawMCQRow`/`drawAttemptAnyOne`/`drawPool` (`src/lib/qpaper/builder.ts`), preventing header/first-item orphaning across page breaks.
+- **Verification (`e888a74`):** wrote `_cp_26_verify/verify.mts`, a black-box harness against `generatePPSUPaperPDF` that decodes each PDF page's content stream to locate marker text and sweeps 61 filler-question counts. Confirmed the harness genuinely catches the bug — swapped in the pre-fix code and it reproduced the orphan (10 failures at filler=10-12/27-29/44-46); with the fix restored, all 250 assertions pass. Also covers unhappy paths: an MCQ with an empty `sub_parts` array, and two concurrent `generatePPSUPaperPDF` calls not cross-contaminating each other's pages. `npm run build` and `eslint` both clean.
+- **Final commit SHA:** `0b9ad28651c30a2b3c9bb3c6178d8bcd3ed598f2` (ledger + PROGRESS.md updated, all commits local-only — not pushed). No migration needed. Pre-existing unrelated uncommitted CP-08 files were left untouched, out of scope for this checkpoint.

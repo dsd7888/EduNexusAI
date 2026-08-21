@@ -6,6 +6,7 @@ import type {
   ChatStreamResult,
 } from "./providers/types";
 import { logAICall } from "./costLogger";
+import { assertAiBudget } from "./budget";
 
 const TASK_TO_MODEL: Record<string, "flash" | "pro"> = {
   chat: "flash",
@@ -258,6 +259,12 @@ export async function routeAI(
     );
   }
 
+  // Platform-wide spend ceiling / kill switch. Deliberately BEFORE provider
+  // dispatch and outside the try below: a budget refusal is not a provider
+  // error and must not be written to ai_call_logs as one — it never reached
+  // Gemini, so it has no tokens, no latency and no cost to record.
+  await assertAiBudget(task);
+
   const provider = getGeminiProvider();
   const modelKey = resolvedParams.model ?? DEFAULT_MODEL;
   const startedAt = Date.now();
@@ -354,6 +361,10 @@ export async function routeAIStream(
       `Unknown AI provider: ${providerName}. Only "gemini" is supported.`
     );
   }
+
+  // Same ceiling as routeAI — the streaming path is the highest-volume one in
+  // the product (chat), so leaving it uncovered would exempt most of the spend.
+  await assertAiBudget(task);
 
   const provider = getGeminiProvider();
   const primaryModel = resolvedParams.model ?? DEFAULT_MODEL;

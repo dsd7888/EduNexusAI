@@ -1,0 +1,5 @@
+Not pushed, per this session's default.
+
+- **CP-35 investigation:** the "unbounded resume array" fix was already shipped by CP-15's commit `60d8a4270286d46f9bfd9a659306413f5a482fee` (`capArraySizes()` enforcing `MAX_PROJECTS=4`/`MAX_BULLETS=3`/`MAX_ACHIEVEMENTS=5`/`MAX_COURSES=6` server-side) — no new source code was needed.
+- **Verified:** `tsc`/`eslint` clean; behaviorally reproduced the audit's 200-project oversized payload against the live `capArraySizes()` logic and confirmed it correctly caps to the client's advertised limits; malformed-payload 400 path and cross-request concurrency safety (fresh-copy semantics, no shared mutation) also checked.
+- **Commit:** `1302d015042ea19cac7b65b71ecc2d8f26449acc` (local only) — updates `.claude/FIX_LEDGER.md`'s stale CP-35 row to `done` and appends the PROGRESS.md entry; no schema migration involved.

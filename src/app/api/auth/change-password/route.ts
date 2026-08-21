@@ -8,7 +8,38 @@ import { createAdminClient } from "@/lib/db/supabase-server";
  * new password via supabase.auth.updateUser on the client. Updates ONLY the caller's
  * row. The actual password change happens client-side against Supabase Auth; this
  * route just retires the forced-change gate for this user.
+ *
+ * Also returns where this user should go next. The success card used to hardcode
+ * /faculty/syllabus — correct when only faculty were bulk-created, wrong the moment
+ * students were, since proxy.ts bounces a student off every /faculty/* route. The
+ * role lives server-side, so resolving the destination here keeps the client from
+ * needing its own profile read.
  */
+
+/** Mirrors proxy.ts's landing map, except faculty keep their onboarding-specific
+ *  destination (add a subject) rather than the plain dashboard. */
+function landingFor(role: string | null | undefined): { href: string; label: string; blurb: string } {
+  if (role === "superadmin" || role === "dept_admin") {
+    return {
+      href: "/superadmin/dashboard",
+      label: "Continue to Dashboard",
+      blurb: "You're all set.",
+    };
+  }
+  if (role === "faculty" || role === "dean" || role === "hod") {
+    return {
+      href: "/faculty/syllabus",
+      label: "Continue to Syllabus",
+      blurb: "You're all set. Let's add your first subject.",
+    };
+  }
+  return {
+    href: "/student/dashboard",
+    label: "Continue to Dashboard",
+    blurb: "You're all set. Your subjects are ready on your dashboard.",
+  };
+}
+
 export async function POST() {
   try {
     const authResult = await requireAuth();
@@ -23,7 +54,13 @@ export async function POST() {
 
     if (error) return apiError(error.message, 500);
 
-    return Response.json({ ok: true });
+    const { data: profile } = await adminClient
+      .from("profiles")
+      .select("role")
+      .eq("id", user.id)
+      .maybeSingle();
+
+    return Response.json({ ok: true, next: landingFor(profile?.role) });
   } catch (err) {
     console.error("[auth/change-password] Error:", err);
     const message = err instanceof Error ? err.message : "Failed to update profile";

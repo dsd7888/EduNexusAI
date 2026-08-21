@@ -217,6 +217,7 @@ function PracticeInner() {
   const [showTabBanner,    setShowTabBanner]    = useState(false);
   const [sessionSource,    setSessionSource]    = useState<"bank" | "generated" | null>(null);
   const [submitResult,     setSubmitResult]     = useState<SubmitResult | null>(null);
+  const [submitSettled,    setSubmitSettled]    = useState(false);
   const [masteryTimedOut,  setMasteryTimedOut]  = useState(false);
 
   const generatedAtRef    = useRef<string>("");
@@ -342,6 +343,7 @@ function PracticeInner() {
     setShowResumeBanner(false);
     setShowTabBanner(false);
     setSubmitResult(null);
+    setSubmitSettled(false);
     setMasteryTimedOut(false);
     submittedRef.current = false;
     tabSwitchCount.current = 0;
@@ -449,11 +451,22 @@ function PracticeInner() {
     if (!sessionComplete || submittedRef.current) return;
     submittedRef.current = true;
     submitSession(questions, selectedAnswers, questionTimes, timeElapsed).then(
-      setSubmitResult
+      (result) => {
+        setSubmitResult(result);
+        // Distinct from `submitResult !== null`: a genuine failure resolves to
+        // null too, so "did the request come back?" needs its own flag.
+        setSubmitSettled(true);
+      }
     );
   }, [sessionComplete, submitSession, questions, selectedAnswers, questionTimes, timeElapsed]);
 
-  // 5s fallback: if mastery hasn't resolved, show a minimal card (Addition 2).
+  // 5s mark: the request is taking a while. This is a SLOWNESS hint only — it
+  // must never be read as failure. It previously drove the "we couldn't verify
+  // your answers" copy directly, so any submit slower than 5s told the student
+  // their session had failed while the request was still in flight, then
+  // replaced it with the real score card seconds later. Submit does server-side
+  // re-grading + a mastery RPC + a readiness recompute, so >5s is ordinary on a
+  // cold function, not exceptional.
   useEffect(() => {
     if (!sessionComplete || submitResult !== null) return;
     const id = setTimeout(() => setMasteryTimedOut(true), 5000);
@@ -655,7 +668,10 @@ function PracticeInner() {
     // response no longer carries correct_answer/explanation at all.
     const grading = submitResult?.grading ?? null;
     const gradingReady = grading !== null;
-    const gradingFailed = grading === null && masteryTimedOut;
+    // Only a settled-and-empty response is a failure. Still-pending is pending,
+    // however long it has taken.
+    const gradingFailed = grading === null && submitSettled;
+    const gradingSlow = grading === null && !submitSettled && masteryTimedOut;
 
     const correctCount = gradingReady
       ? questions.filter((qq) => grading[qq.id]?.is_correct).length
@@ -692,6 +708,11 @@ function PracticeInner() {
           <div className="space-y-6">
             <div className="h-40 animate-pulse rounded-xl bg-gray-100" />
             <div className="h-20 animate-pulse rounded-lg bg-gray-100" />
+            {gradingSlow && (
+              <p className="text-center text-sm text-gray-500">
+                Still scoring your answers — this can take a few seconds.
+              </p>
+            )}
           </div>
         )}
 

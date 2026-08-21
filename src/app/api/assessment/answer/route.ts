@@ -29,7 +29,7 @@
  */
 
 import type { NextRequest } from "next/server";
-import { apiError, apiSuccess, requireRole } from "@/lib/api/helpers";
+import { apiError, apiSuccess, requireRole , logCappedError } from "@/lib/api/helpers";
 import { isAnswerCorrect } from "@/lib/assessment/grading";
 import { MODE_CONFIG } from "@/lib/assessment/presets";
 import { loadSessionKey } from "@/lib/assessment/runner";
@@ -228,7 +228,7 @@ export async function POST(request: NextRequest) {
       ms,
     });
   } catch (err) {
-    console.error("[assessment/answer]", err);
+    logCappedError("[assessment/answer]", err, { route: request.nextUrl?.pathname, httpMethod: "POST" });
     return apiError("Internal server error", 500);
   }
 }
