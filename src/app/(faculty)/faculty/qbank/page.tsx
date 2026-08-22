@@ -24,6 +24,9 @@ import { createBrowserClient } from "@/lib/db/supabase-browser";
 import { useFacultySubjects } from "@/hooks/useSupabaseData";
 import { toast } from "sonner";
 import type { BankQuestion, QuestionType } from "@/lib/qbank/types";
+import { usePyqCoverage } from "@/hooks/usePyqCoverage";
+import { PyqUploadDialog } from "@/components/pyq/PyqUploadDialog";
+import { PyqStatusTag } from "@/components/pyq/PyqStatusTag";
 import { MyBankTab } from "./_components/MyBankTab";
 import { GenerateTab } from "./_components/GenerateTab";
 import { ImportTab } from "./_components/ImportTab";
@@ -72,11 +75,18 @@ export default function QBankPage() {
     data: BankStats;
   } | null>(null);
   const [staged, setStaged] = useState<StagedQuestion[]>([]);
+  const [pyqDialogOpen, setPyqDialogOpen] = useState(false);
 
   const router = useRouter();
 
   // Effective subject: explicit selection, else the first assigned one.
   const activeSubjectId = subjectId || subjects[0]?.id || "";
+  // Past-paper availability — gates the PYQ-Inspired generation style, which
+  // was previously offered for every subject regardless of whether any papers
+  // existed to be inspired by.
+  const { coverage: pyqCoverage, applyCoverage: applyPyqCoverage } =
+    usePyqCoverage(activeSubjectId || null);
+  const activeSubject = subjects.find((s) => s.id === activeSubjectId);
   const stats =
     statsState && statsState.subjectId === activeSubjectId
       ? statsState.data
@@ -221,7 +231,15 @@ export default function QBankPage() {
 
       {/* Shared subject selector */}
       <div className="max-w-md">
-        <Label className="text-xs mb-1 block">Subject</Label>
+        <div className="flex items-center justify-between gap-2 mb-1">
+          <Label className="text-xs">Subject</Label>
+          {activeSubjectId && (
+            <PyqStatusTag
+              coverage={pyqCoverage}
+              onClick={() => setPyqDialogOpen(true)}
+            />
+          )}
+        </div>
         <Select
           value={activeSubjectId}
           onValueChange={selectSubject}
@@ -290,6 +308,8 @@ export default function QBankPage() {
               modules={modules}
               courseOutcomes={courseOutcomes}
               onAdded={refreshStats}
+              pyqCoverage={pyqCoverage}
+              onUploadPyq={() => setPyqDialogOpen(true)}
             />
           </TabsContent>
 
@@ -308,6 +328,20 @@ export default function QBankPage() {
             Select a subject to manage its question bank.
           </p>
         )
+      )}
+
+      {activeSubjectId && (
+        <PyqUploadDialog
+          open={pyqDialogOpen}
+          onOpenChange={setPyqDialogOpen}
+          subjectId={activeSubjectId}
+          subjectLabel={
+            activeSubject
+              ? `${activeSubject.code} — ${activeSubject.name}`
+              : undefined
+          }
+          onUploaded={applyPyqCoverage}
+        />
       )}
     </div>
   );

@@ -31,8 +31,10 @@ import {
 import { ChevronDown } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { SubjectRow } from "@/hooks/useSupabaseData";
+import type { PyqCoverage } from "@/lib/pyq/coverage";
+import { PyqStatusTag } from "@/components/pyq/PyqStatusTag";
 import type { PaperTemplateRow } from "@/lib/qpaper/templates";
-import { NumericField } from "./NumericField";
+import { NumericField } from "@/components/ui/numeric-field";
 import { SourcingStage } from "./SourcingStage";
 import { TemplateBrowserDialog } from "./TemplateBrowserDialog";
 import type {
@@ -122,6 +124,9 @@ interface SetupPanelProps {
   setSourcingMix: (m: SourcingMixState) => void;
   verifiedBankCount: number | null;
   preferredBankQuestionIds: string[];
+  /** null = still checking. Threaded down to the PYQ-style sourcing row. */
+  pyqCoverage: PyqCoverage | null;
+  onUploadPyq: () => void;
 
   // Section E — Template
   templateRefreshKey: number;
@@ -154,6 +159,8 @@ export function SetupPanel({
   setSourcingMix,
   verifiedBankCount,
   preferredBankQuestionIds,
+  pyqCoverage,
+  onUploadPyq,
   templateRefreshKey,
   onLoadTemplate,
 }: SetupPanelProps) {
@@ -282,7 +289,15 @@ export function SetupPanel({
 
       {/* ── Section A — Paper Identity ──────────────────────────────── */}
       <div className="space-y-2">
-        <Label className="text-xs mb-1 block">Subject</Label>
+        <div className="flex items-center justify-between gap-2 mb-1">
+          <Label className="text-xs">Subject</Label>
+          {/* No sentence, no CTA — just the state, every visit. By the time
+              the faculty reaches the Sourcing row below and finds PYQ-style
+              inert, the concept is already familiar. */}
+          {selectedSubjectId && (
+            <PyqStatusTag coverage={pyqCoverage} onClick={onUploadPyq} />
+          )}
+        </div>
         <Select
           value={selectedSubjectId}
           onValueChange={onSelectSubject}
@@ -598,6 +613,8 @@ export function SetupPanel({
           setMix={setSourcingMix}
           verifiedBankCount={verifiedBankCount}
           preferredBankQuestionIds={preferredBankQuestionIds}
+          pyqCoverage={pyqCoverage}
+          onUploadPyq={onUploadPyq}
         />
       </div>
 

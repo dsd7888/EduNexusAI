@@ -31,7 +31,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { NumericField } from "./NumericField";
+import { NumericField } from "@/components/ui/numeric-field";
 import { Switch } from "@/components/ui/switch";
 import {
   Select,

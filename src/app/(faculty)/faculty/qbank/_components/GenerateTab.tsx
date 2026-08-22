@@ -15,6 +15,7 @@ import {
   Plus,
   Sparkles,
   Trash2,
+  Upload,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -39,6 +40,8 @@ import {
 } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
+import type { PyqCoverage } from "@/lib/pyq/coverage";
+import { PYQ_EMPTY_HINT, PYQ_UPLOAD_CTA } from "@/components/pyq/pyqCopy";
 import type { BankQuestion, GenerationSlot, QuestionType } from "@/lib/qbank/types";
 import { BankQuestionCard } from "./BankQuestionCard";
 import {
@@ -82,14 +85,26 @@ export function GenerateTab({
   modules,
   courseOutcomes,
   onAdded,
+  pyqCoverage,
+  onUploadPyq,
 }: {
   subjectId: string;
   modules: ModuleRef[];
   courseOutcomes: CourseOutcomeRef[];
   onAdded: () => void;
+  /** null = still checking; gates the per-slot PYQ style. */
+  pyqCoverage: PyqCoverage | null;
+  onUploadPyq: () => void;
 }) {
   const [slots, setSlots] = useState<SlotRow[]>([newSlot()]);
   const [includePyq, setIncludePyq] = useState(true);
+  // Same rule as the qpaper Sourcing rows: a style with no data behind it is
+  // not offered. Previously every slot could be switched to "PYQ" and the
+  // "Include PYQ context" checkbox could be ticked for subjects with zero
+  // uploaded papers — generateForSlots then fell through to the fresh path
+  // (src/lib/qbank/generator.ts guards on `pyqs.length > 0`), so the faculty
+  // got fresh questions labelled pyq_inspired and no indication why.
+  const pyqAvailable = pyqCoverage != null && pyqCoverage.state !== "none";
   const [autoTag, setAutoTag] = useState(true);
   const [generating, setGenerating] = useState(false);
   const [results, setResults] = useState<BankQuestion[] | null>(null);
@@ -110,6 +125,20 @@ export function GenerateTab({
       return next.some((s, i) => s.co_code !== prev[i].co_code) ? next : prev;
     });
   }, [courseOutcomes]);
+
+  // A slot left on "PYQ" from a subject that had papers must not survive a
+  // switch to one that doesn't — the toggle would be disabled while the slot
+  // still carried the unusable style.
+  useEffect(() => {
+    if (pyqCoverage === null || pyqAvailable) return;
+    setSlots((prev) =>
+      prev.some((s) => s.style === "pyq_inspired")
+        ? prev.map((s) =>
+            s.style === "pyq_inspired" ? { ...s, style: "fresh" as const } : s
+          )
+        : prev
+    );
+  }, [pyqCoverage, pyqAvailable]);
 
   const total = useMemo(
     () => slots.reduce((sum, s) => sum + (s.count || 0), 0),
@@ -380,21 +409,33 @@ export function GenerateTab({
               </Field>
               <Field label="Style">
                 <div className="inline-flex h-8 rounded-md border overflow-hidden text-[11px]">
-                  {(["fresh", "pyq_inspired"] as const).map((st) => (
-                    <button
-                      key={st}
-                      type="button"
-                      onClick={() => update(s.id, { style: st })}
-                      className={cn(
-                        "px-2 transition-colors",
-                        s.style === st
-                          ? "bg-primary text-primary-foreground"
-                          : "text-muted-foreground hover:bg-muted"
-                      )}
-                    >
-                      {st === "fresh" ? "Fresh" : "PYQ"}
-                    </button>
-                  ))}
+                  {(["fresh", "pyq_inspired"] as const).map((st) => {
+                    const disabled = st === "pyq_inspired" && !pyqAvailable;
+                    return (
+                      <button
+                        key={st}
+                        type="button"
+                        disabled={disabled}
+                        title={
+                          disabled
+                            ? pyqCoverage === null
+                              ? "Checking uploaded past papers…"
+                              : PYQ_EMPTY_HINT
+                            : undefined
+                        }
+                        onClick={() => update(s.id, { style: st })}
+                        className={cn(
+                          "px-2 transition-colors",
+                          s.style === st
+                            ? "bg-primary text-primary-foreground"
+                            : "text-muted-foreground hover:bg-muted",
+                          disabled && "opacity-40 cursor-not-allowed hover:bg-transparent"
+                        )}
+                      >
+                        {st === "fresh" ? "Fresh" : "PYQ"}
+                      </button>
+                    );
+                  })}
                 </div>
               </Field>
               <Button
@@ -441,13 +482,37 @@ export function GenerateTab({
         )}
 
         <div className="flex flex-col gap-1.5 pt-1">
-          <label className="flex items-center gap-2 text-xs cursor-pointer">
-            <Checkbox
-              checked={includePyq}
-              onCheckedChange={(v) => setIncludePyq(!!v)}
-            />
-            Include PYQ context for PYQ-Inspired questions
-          </label>
+          {pyqAvailable ? (
+            <label className="flex items-center gap-2 text-xs cursor-pointer">
+              <Checkbox
+                checked={includePyq}
+                onCheckedChange={(v) => setIncludePyq(!!v)}
+              />
+              Include PYQ context for PYQ-Inspired questions
+              <span className="text-[10px] text-muted-foreground">
+                ({pyqCoverage.papers} paper
+                {pyqCoverage.papers === 1 ? "" : "s"} on file)
+              </span>
+            </label>
+          ) : (
+            pyqCoverage !== null && (
+              // Not a disabled checkbox — an unticked control that does nothing
+              // still reads as an available option. State the absence and give
+              // the way out of it.
+              <p className="text-xs text-muted-foreground">
+                PYQ-Inspired generation needs past papers — none are on file for
+                this subject.{" "}
+                <button
+                  type="button"
+                  onClick={onUploadPyq}
+                  className="inline-flex items-center gap-1 font-medium text-primary hover:underline"
+                >
+                  <Upload className="size-3" />
+                  {PYQ_UPLOAD_CTA}
+                </button>
+              </p>
+            )
+          )}
           <label className="flex items-center gap-2 text-xs cursor-pointer">
             <Checkbox checked={autoTag} onCheckedChange={(v) => setAutoTag(!!v)} />
             Auto-tag questions with CO/BTL

@@ -8,7 +8,15 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
-import { BookOpen, Loader2, Pencil, Plus, Stethoscope, Trash2 } from "lucide-react";
+import {
+  BookOpen,
+  FileText,
+  Loader2,
+  Pencil,
+  Plus,
+  Stethoscope,
+  Trash2,
+} from "lucide-react";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -32,6 +40,7 @@ import {
 } from "@/components/syllabus/StructuredSyllabusEditor";
 import type { ExtractedSyllabus } from "@/lib/syllabus/types";
 import { ModuleSyllabusCard } from "./_components/ModuleSyllabusCard";
+import { PastPapersTab } from "./_components/PastPapersTab";
 import { HealthTab } from "./_components/health/HealthTab";
 import type {
   Dimension,
@@ -102,7 +111,7 @@ export default function FacultySyllabusPage() {
   /** Monotonic request id — see loadAudit; guards against out-of-order responses. */
   const auditSeq = useRef(0);
   // The editor stays the primary view — Health is opt-in, never the landing tab.
-  const [tab, setTab] = useState<"editor" | "health">("editor");
+  const [tab, setTab] = useState<"editor" | "health" | "papers">("editor");
 
   const [editing, setEditing] = useState(false);
   const [editLoading, setEditLoading] = useState(false);
@@ -530,7 +539,7 @@ export default function FacultySyllabusPage() {
         {activeSubjectId && (
           <Tabs
             value={tab}
-            onValueChange={(v) => setTab(v as "editor" | "health")}
+            onValueChange={(v) => setTab(v as "editor" | "health" | "papers")}
           >
             <TabsList className="mb-3">
               <TabsTrigger value="editor" className="gap-1.5">
@@ -555,6 +564,17 @@ export default function FacultySyllabusPage() {
                     {healthFindingCount}
                   </Badge>
                 )}
+              </TabsTrigger>
+              {/* Disabled mid-edit for the same reason Health is — leaving the
+                  editor would discard an in-progress syllabus edit. */}
+              <TabsTrigger
+                value="papers"
+                className="gap-1.5"
+                disabled={editing}
+                title={editing ? "Finish or cancel editing first" : undefined}
+              >
+                <FileText className="size-4" />
+                Past Papers
               </TabsTrigger>
             </TabsList>
 
@@ -691,6 +711,22 @@ export default function FacultySyllabusPage() {
                 error={auditError}
                 onRefresh={() => void loadAudit()}
                 onAuditReplace={handleAuditReplace}
+              />
+            </TabsContent>
+
+            <TabsContent value="papers">
+              {/* Keyed on the subject so switching subjects remounts rather
+                  than briefly showing the previous subject's papers. */}
+              <PastPapersTab
+                key={activeSubjectId}
+                subjectId={activeSubjectId}
+                subjectLabel={
+                  activeSubject
+                    ? `${activeSubject.code} — ${activeSubject.name}`
+                    : undefined
+                }
+                moduleCount={data?.modules.length ?? 0}
+                coCount={data?.courseOutcomes.length ?? 0}
               />
             </TabsContent>
           </Tabs>

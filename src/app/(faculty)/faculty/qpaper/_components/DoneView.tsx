@@ -9,7 +9,7 @@
  * action once a paper already exists).
  */
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   AlertTriangle,
   Download,
@@ -18,8 +18,12 @@ import {
   Lock,
   RefreshCw,
   Save,
+  Upload,
+  X,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import type { PyqCoverage } from "@/lib/pyq/coverage";
+import { PYQ_UPLOAD_CTA } from "@/components/pyq/pyqCopy";
 import { toast } from "sonner";
 import { ReviewAndValidateStage } from "./ReviewAndValidateStage";
 import { SaveTemplateAction } from "./SaveTemplateAction";
@@ -67,6 +71,9 @@ interface DoneViewProps {
   /** Section-generation warnings, e.g. a pool block where the AI returned
    *  fewer items than the template requested. */
   generationWarnings: string[];
+  /** null = still checking. Drives the one-time past-paper prompt below. */
+  pyqCoverage: PyqCoverage | null;
+  onUploadPyq: () => void;
 }
 
 export function DoneView({
@@ -97,7 +104,35 @@ export function DoneView({
   answerKeyWarnings,
   unplaceablePreferred,
   generationWarnings,
+  pyqCoverage,
+  onUploadPyq,
 }: DoneViewProps) {
+  // Per-subject dismissal of the past-paper prompt. localStorage rather than a
+  // DB column: this is a per-viewer UI convenience, not institutional state,
+  // and it must degrade to "show it" (not crash) in a private window.
+  const pyqPromptKey = selectedSubjectId
+    ? `qpaper:pyqPromptDismissed:${selectedSubjectId}`
+    : null;
+  const [pyqPromptDismissed, setPyqPromptDismissed] = useState(true);
+  useEffect(() => {
+    if (!pyqPromptKey) return;
+    try {
+      setPyqPromptDismissed(localStorage.getItem(pyqPromptKey) === "true");
+    } catch {
+      setPyqPromptDismissed(false);
+    }
+  }, [pyqPromptKey]);
+  const dismissPyqPrompt = () => {
+    setPyqPromptDismissed(true);
+    try {
+      if (pyqPromptKey) localStorage.setItem(pyqPromptKey, "true");
+    } catch {
+      // Dismissal just won't persist; the prompt is non-blocking either way.
+    }
+  };
+  const showPyqPrompt =
+    pyqCoverage?.state === "none" && !pyqPromptDismissed && !!selectedSubjectId;
+
   const [isGeneratingAnswerKey, setIsGeneratingAnswerKey] = useState(false);
   const [isReExporting, setIsReExporting] = useState(false);
   const [isExportingDocx, setIsExportingDocx] = useState(false);
@@ -309,6 +344,44 @@ export function DoneView({
         regenerate just that item, or the ✎ icon to edit it manually — no
         need to regenerate the whole paper.
       </p>
+
+      {/* ── One-time past-paper prompt ──────────────────────────────────
+          Placed here, not on the setup form, because this is the only moment
+          the faculty is looking at real generated output and the question
+          "could this be closer to our actual papers?" is live. Before
+          generating they have nothing to compare against.
+
+          Constrained hard, on purpose: shown once per subject (dismissal is
+          remembered in localStorage), never blocks export, and disappears for
+          good the moment any paper is uploaded. It is a one-shot; the durable,
+          permanent signal is the disabled PYQ-style row in Sourcing. ── */}
+      {showPyqPrompt && (
+        <div className="flex items-start justify-between gap-3 rounded-md border bg-muted/40 px-3 py-2">
+          <p className="text-xs text-muted-foreground">
+            This paper was written from the syllabus alone — no past papers are
+            on file for this subject, so the exam style was inferred from the
+            subject family.{" "}
+            <button
+              type="button"
+              onClick={onUploadPyq}
+              className="inline-flex items-center gap-1 font-medium text-primary hover:underline"
+            >
+              <Upload className="size-3" />
+              {PYQ_UPLOAD_CTA}
+            </button>{" "}
+            to have future papers mirror your department&apos;s real phrasing and
+            marks ladder.
+          </p>
+          <button
+            type="button"
+            onClick={dismissPyqPrompt}
+            className="shrink-0 text-muted-foreground hover:text-foreground"
+            title="Don't show this for this subject again"
+          >
+            <X className="size-3.5" />
+          </button>
+        </div>
+      )}
 
       {/* ── Non-blocking note: bank slots that fell back to fresh AI ──── */}
       {bankFallbackCount > 0 && (

@@ -93,6 +93,14 @@ export interface PyqExample {
   question_text: string;
   options?: Record<string, string> | null;
   year?: number | null;
+  /**
+   * Which exam this question came from ("End-sem", "Mid-sem", …), when the
+   * uploader recorded it. Carried into the prompt because exam type shapes a
+   * question far more than year does: a mid-sem and an end-sem paper for the
+   * same subject differ in marks ladder, depth and section count, so mirroring
+   * a mid-sem question into an end-sem slot copies the wrong shape.
+   */
+  exam_type_label?: string | null;
 }
 
 export interface SectionGenInput {
@@ -458,7 +466,10 @@ function buildPyqBlock(input: SectionGenInput): string {
         const optsLine = q.options
           ? `\nOptions: a) ${q.options.a ?? ""}  b) ${q.options.b ?? ""}  c) ${q.options.c ?? ""}  d) ${q.options.d ?? ""}`
           : "";
-        return `[${q.section_name ?? "?"} | ${q.q_number ?? "?"} | ${marks}M | CO:${co} BTL:${btl} PO:${po}${q.year ? ` | ${q.year}` : ""}]
+        const provenance =
+          `${q.year ? ` | ${q.year}` : ""}` +
+          `${q.exam_type_label ? ` ${q.exam_type_label}` : ""}`;
+        return `[${q.section_name ?? "?"} | ${q.q_number ?? "?"} | ${marks}M | CO:${co} BTL:${btl} PO:${po}${provenance}]
 Type: ${q.question_type ?? "?"}
 ${q.question_text}${optsLine}`;
       })

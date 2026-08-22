@@ -2,173 +2,13 @@ import {
   createAdminClient,
   createServerClientForRequestResponse,
 } from "@/lib/db/supabase-server";
-import { requireAuth, requireRole, apiError, apiSuccess } from "@/lib/api/helpers";
-import { routeAI } from "@/lib/ai/router";
-import type { AILogContext } from "@/lib/ai/providers/types";
+import { apiError, requireRole } from "@/lib/api/helpers";
+import { extractAndSavePyqQuestions } from "@/lib/pyq/extract";
+import { isExamType } from "@/lib/pyq/coverage";
+import { isMissingColumnError } from "@/lib/pyq/co";
 import { type NextRequest, NextResponse } from "next/server";
-import type { SupabaseClient } from "@supabase/supabase-js";
 
 const ALLOWED_TYPE = ["syllabus", "notes", "pyq"] as const;
-
-const PYQ_EXTRACT_SYSTEM_PROMPT = `You are a precise exam question extractor for Indian engineering university papers. Extract every question exactly as written.
-Output ONLY valid JSON array. First char [, last char ]. No markdown.`;
-
-interface ExtractedPyq {
-  section_name: string | null;
-  q_number: string | null;
-  question_text: string;
-  question_type: string | null;
-  marks: number | null;
-  co: string | null;
-  btl: number | null;
-  po: string | null;
-  options: Record<string, string> | null;
-  is_or_alternative: boolean;
-}
-
-const PYQ_EXTRACT_USER_PROMPT = `Extract every question from the attached exam paper PDF.
-For each question / sub-question output one object:
-{
-  "section_name": string,    // "Section I" | "Section II" | "Section A"
-  "q_number": string,        // "Q-1", "Q-2", "Q-3(a)", "Q-3(b)"
-  "question_text": string,   // exactly as written
-  "question_type": "mcq"|"numerical"|"descriptive"|"short"|"fill_blank",
-  "marks": number,
-  "co": string | null,       // as printed, e.g. "03" or "CO3"
-  "btl": number | null,      // 1-6, as printed
-  "po": string | null,       // as printed, e.g. "04" or "PO4"
-  "options": { "a": string, "b": string, "c": string, "d": string } | null,
-  "is_or_alternative": boolean
-}
-
-Output a single JSON array. First char [, last char ]. No prose.`;
-
-function parsePyqArray(raw: string): ExtractedPyq[] {
-  const cleaned = raw
-    .replace(/```json\s*/gi, "")
-    .replace(/```\s*/gi, "")
-    .trim();
-  const first = cleaned.indexOf("[");
-  const last = cleaned.lastIndexOf("]");
-  const slice =
-    first !== -1 && last > first ? cleaned.slice(first, last + 1) : cleaned;
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(slice);
-  } catch {
-    return [];
-  }
-  if (!Array.isArray(parsed)) return [];
-  const toStr = (v: unknown): string | null => {
-    if (v == null) return null;
-    const s = String(v).trim();
-    return s ? s : null;
-  };
-  const toInt = (v: unknown): number | null => {
-    if (v == null || v === "") return null;
-    const n = Number(v);
-    return Number.isFinite(n) ? Math.trunc(n) : null;
-  };
-  const out: ExtractedPyq[] = [];
-  for (const raw of parsed) {
-    if (!raw || typeof raw !== "object") continue;
-    const r = raw as Record<string, unknown>;
-    const text = toStr(r.question_text);
-    if (!text) continue;
-    out.push({
-      section_name: toStr(r.section_name),
-      q_number: toStr(r.q_number),
-      question_text: text,
-      question_type: toStr(r.question_type),
-      marks: toInt(r.marks),
-      co: toStr(r.co),
-      btl: toInt(r.btl),
-      po: toStr(r.po),
-      options:
-        r.options && typeof r.options === "object"
-          ? (r.options as Record<string, string>)
-          : null,
-      is_or_alternative: Boolean(r.is_or_alternative),
-    });
-  }
-  return out;
-}
-
-/**
- * Extract per-question PYQ rows and write them to pyq_questions.
- * Sends the PDF directly to Gemini Flash (no LlamaParse step) — Flash
- * parses tables / column layouts well enough for exam papers and saves a
- * round-trip plus the LlamaParse cost.
- * Wrapped end-to-end in try/catch — never blocks the upload flow.
- */
-async function extractAndSavePyqQuestions(
-  adminClient: SupabaseClient,
-  params: {
-    documentId: string;
-    subjectId: string;
-    year: number | null;
-    pdfBase64: string;
-    logContext: AILogContext;
-  }
-): Promise<{ count: number; error: string | null }> {
-  const { documentId, subjectId, year, pdfBase64, logContext } = params;
-  try {
-    if (!pdfBase64) {
-      return { count: 0, error: "missing pdf data" };
-    }
-
-    const ai = await routeAI("pyq_extract", {
-      systemPrompt: PYQ_EXTRACT_SYSTEM_PROMPT,
-      messages: [{ role: "user", content: PYQ_EXTRACT_USER_PROMPT }],
-      attachments: [{ mediaType: "application/pdf", data: pdfBase64 }],
-      logContext,
-    });
-
-    const questions = parsePyqArray(String(ai.content ?? ""));
-    console.log(
-      `[upload/pyq] Extracted ${questions.length} questions ` +
-        `from document ${documentId.slice(0, 8)}`
-    );
-    if (questions.length === 0) {
-      return { count: 0, error: "0 questions parsed" };
-    }
-
-    // Idempotent re-upload: clear prior rows for this document first.
-    await adminClient
-      .from("pyq_questions")
-      .delete()
-      .eq("document_id", documentId);
-
-    const rows = questions.map((q) => ({
-      document_id: documentId,
-      subject_id: subjectId,
-      section_name: q.section_name,
-      q_number: q.q_number,
-      question_text: q.question_text,
-      question_type: q.question_type,
-      marks: q.marks,
-      co: q.co,
-      btl: q.btl,
-      po: q.po,
-      options: q.options,
-      year,
-      is_or_alternative: q.is_or_alternative,
-    }));
-
-    const { error: insertError } = await adminClient
-      .from("pyq_questions")
-      .insert(rows);
-    if (insertError) {
-      return { count: 0, error: insertError.message };
-    }
-    return { count: rows.length, error: null };
-  } catch (err) {
-    return {
-      count: 0,
-      error: err instanceof Error ? err.message : "unknown error",
-    };
-  }
-}
 
 async function extractTextWithLlamaParse(
   fileBuffer: Buffer,
@@ -253,6 +93,7 @@ export async function POST(request: NextRequest) {
     const subjectId = formData.get("subjectId") as string | null;
     const moduleId = formData.get("moduleId") as string | null;
     const yearStr = formData.get("year") as string | null;
+    const examTypeRaw = String(formData.get("examType") ?? "").trim();
     const file = formData.get("file") as File | null;
 
     if (!type || !ALLOWED_TYPE.includes(type as (typeof ALLOWED_TYPE)[number])) {
@@ -364,21 +205,41 @@ export async function POST(request: NextRequest) {
 
     const yearValue =
       type === "pyq" && yearStr ? Number(yearStr) : null;
+    // Optional on this route too — see the exam_type note in
+    // 20260822000000_pyq_faculty_upload.sql for why it is worth capturing.
+    const examType = type === "pyq" && isExamType(examTypeRaw) ? examTypeRaw : null;
 
-    const { data: document, error: dbError } = await adminClient
+    // exam_type ships in migration 20260822000000, which is applied by hand.
+    // Retry without it if the column is not there yet, so a deploy that lands
+    // before the migration cannot break this pre-existing upload path.
+    const baseRow = {
+      type,
+      subject_id: subjectId,
+      module_id: moduleId || null,
+      year: yearValue,
+      title: file.name,
+      file_path: filePath,
+      uploaded_by: user.id,
+      status: "processing",
+    };
+
+    let { data: document, error: dbError } = await adminClient
       .from("documents")
-      .insert({
-        type,
-        subject_id: subjectId,
-        module_id: moduleId || null,
-        year: yearValue,
-        title: file.name,
-        file_path: filePath,
-        uploaded_by: user.id,
-        status: "processing",
-      })
+      .insert({ ...baseRow, exam_type: examType })
       .select()
       .single();
+
+    if (dbError && isMissingColumnError(dbError)) {
+      console.warn(
+        "[upload] documents.exam_type missing — retrying without it " +
+          "(apply migration 20260822000000)"
+      );
+      ({ data: document, error: dbError } = await adminClient
+        .from("documents")
+        .insert(baseRow)
+        .select()
+        .single());
+    }
 
     if (dbError) {
       console.error("[upload] Database error:", dbError);

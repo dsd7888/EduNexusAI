@@ -122,8 +122,23 @@ export const SOURCE_CATEGORY_META: ReadonlyArray<{
   },
 ];
 
-export function defaultSourcingMix(): SourcingMixState {
-  return { fresh: 80, pyq_style: 20, bank: 0 };
+/**
+ * The starting mix.
+ *
+ * PYQ-style starts at ZERO and is raised only once the subject is known to have
+ * past papers (see the `hasPyqs` argument and the reconciliation effect in
+ * page.tsx). The old unconditional 80/20 default meant a fifth of every
+ * generated paper was labelled "PYQ-style" for subjects with no PYQ rows at
+ * all — the generator quietly fell back to subject-family archetype hints and
+ * the faculty had no way to see it. Defaulting to a capability the data may not
+ * support is the failure mode; defaulting to 100% fresh is always honest, and
+ * the default silently repairing itself the moment papers are uploaded is the
+ * clearest possible payoff for uploading them.
+ */
+export function defaultSourcingMix(hasPyqs = false): SourcingMixState {
+  return hasPyqs
+    ? { fresh: 80, pyq_style: 20, bank: 0 }
+    : { fresh: 100, pyq_style: 0, bank: 0 };
 }
 
 /** Default paper-wide BTL eligibility filter. */

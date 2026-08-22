@@ -34,6 +34,22 @@ interface Stats {
   historyTotal: number;
 }
 
+interface PyqCoverageRow {
+  id: string;
+  code: string;
+  name: string;
+  semester: number | null;
+  papers: number;
+  questions: number;
+}
+
+interface PyqCoverageSummary {
+  total_subjects: number;
+  subjects_with_papers: number;
+  subjects_without_papers: number;
+  subjects: PyqCoverageRow[];
+}
+
 interface UploadRow {
   title: string | null;
   type: string | null;
@@ -44,7 +60,26 @@ export default function SuperadminDashboard() {
   const [stats, setStats] = useState<Stats | null>(null);
   const [pendingApprovals, setPendingApprovals] = useState(0);
   const [recentUploads, setRecentUploads] = useState<UploadRow[]>([]);
+  // Pilot-ops: which subjects still have no past papers on file. This is the
+  // list to work through in person — the in-app nudges make the ask legible,
+  // but during a pilot the conversion happens face to face.
+  const [pyqCoverage, setPyqCoverage] = useState<PyqCoverageSummary | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/admin/pyq-coverage")
+      .then((r) => (r.ok ? r.json() : Promise.reject(r)))
+      .then((json: PyqCoverageSummary) => {
+        if (!cancelled) setPyqCoverage(json);
+      })
+      .catch(() => {
+        // Non-fatal: the card simply doesn't render.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     const run = async () => {
@@ -282,6 +317,56 @@ export default function SuperadminDashboard() {
             </Button>
           </AlertDescription>
         </Alert>
+      )}
+
+      {/* PAST-PAPER COVERAGE — pilot ops */}
+      {pyqCoverage && pyqCoverage.subjects_without_papers > 0 && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base">
+              Past-paper coverage ·{" "}
+              <span className="font-normal text-muted-foreground">
+                {pyqCoverage.subjects_with_papers} of{" "}
+                {pyqCoverage.total_subjects} subjects have papers on file
+              </span>
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-2">
+            <p className="text-xs text-muted-foreground">
+              Subjects with no past papers generate exam-style questions from
+              subject-family archetypes rather than from real department papers.
+              Faculty can upload their own from Syllabus → Past Papers.
+            </p>
+            <div className="flex flex-wrap gap-1.5">
+              {pyqCoverage.subjects
+                .filter((s) => s.papers === 0)
+                .map((s) => (
+                  <span
+                    key={s.id}
+                    title={`${s.name}${s.semester ? ` · Sem ${s.semester}` : ""}`}
+                    className="rounded border border-amber-200 bg-amber-50 px-2 py-0.5 text-xs font-medium text-amber-800"
+                  >
+                    {s.code}
+                  </span>
+                ))}
+            </div>
+            {pyqCoverage.subjects_with_papers > 0 && (
+              <div className="flex flex-wrap gap-1.5 pt-1">
+                {pyqCoverage.subjects
+                  .filter((s) => s.papers > 0)
+                  .map((s) => (
+                    <span
+                      key={s.id}
+                      title={`${s.name} — ${s.questions} questions extracted`}
+                      className="rounded border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-xs font-medium text-emerald-700"
+                    >
+                      {s.code} · {s.papers}
+                    </span>
+                  ))}
+              </div>
+            )}
+          </CardContent>
+        </Card>
       )}
 
       {/* QUICK ACTIONS */}

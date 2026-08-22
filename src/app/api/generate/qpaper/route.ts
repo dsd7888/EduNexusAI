@@ -44,6 +44,7 @@ import {
   loadPaperImages,
 } from "@/lib/qpaper/qpaperImages";
 import { renderPaperMath } from "@/lib/qpaper/paperMath";
+import { examTypeLabel } from "@/lib/pyq/coverage";
 import { rowToBankQuestion, type FqbRow } from "@/lib/qbank/row";
 import type { BankQuestion } from "@/lib/qbank/types";
 import type { AILogContext } from "@/lib/ai/providers/types";
@@ -367,6 +368,21 @@ export async function POST(request: NextRequest) {
     const instructions = template?.instructions ?? PPSU_DEFAULT_INSTRUCTIONS;
 
     // ── Step 1g: PYQ examples (structured first, chunk fallback) ────────
+    // The paper's exam type lives on `documents`, not on the question rows, so
+    // it is fetched alongside and joined in JS — one extra small read, and it
+    // lets each example carry "2024 End-sem" rather than a bare year (see the
+    // exam_type_label note on PyqExample).
+    const { data: pyqDocRows } = await adminClient
+      .from("documents")
+      .select("id, exam_type")
+      .eq("subject_id", subjectId)
+      .eq("type", "pyq");
+    const examTypeByDoc = new Map<string, string | null>(
+      ((pyqDocRows ?? []) as Array<{ id: string; exam_type: string | null }>).map(
+        (d) => [d.id, d.exam_type]
+      )
+    );
+
     const { data: pyqRows } = await adminClient
       .from("pyq_questions")
       .select(
@@ -389,6 +405,7 @@ export async function POST(request: NextRequest) {
         po: r.po,
         options: r.options,
         year: r.year,
+        exam_type_label: examTypeLabel(examTypeByDoc.get(r.document_id) ?? null),
       })
     );
 

@@ -25,6 +25,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { EXAM_TYPES, EXAM_TYPE_LABELS } from "@/lib/pyq/coverage";
 import { Loader2, Upload } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
@@ -46,6 +47,9 @@ export default function UploadPage() {
   const [subjectId, setSubjectId] = useState("");
   const [moduleId, setModuleId] = useState("");
   const [year, setYear] = useState("");
+  // Optional, and the same four values the faculty-facing dialog offers — the
+  // two upload paths must not produce differently-shaped documents rows.
+  const [examType, setExamType] = useState<string>("");
   const [file, setFile] = useState<File | null>(null);
   const [loading, setLoading] = useState(false);
   const [activeTab, setActiveTab] = useState<DocumentType>("notes");
@@ -80,6 +84,7 @@ export default function UploadPage() {
     setSubjectId("");
     setModuleId("");
     setYear("");
+    setExamType("");
     setFile(null);
     clearFileInput(fileInputRefNotes.current);
     clearFileInput(fileInputRefPyq.current);
@@ -100,6 +105,7 @@ export default function UploadPage() {
         formData.append("subjectId", subjectId);
         if (type === "notes" && moduleId) formData.append("moduleId", moduleId);
         if (type === "pyq" && year) formData.append("year", year);
+        if (type === "pyq" && examType) formData.append("examType", examType);
         formData.append("file", file!);
 
         const res = await fetch("/api/upload", {
@@ -120,7 +126,7 @@ export default function UploadPage() {
         setLoading(false);
       }
     },
-    [subjectId, moduleId, year, file, validate, clearForm]
+    [subjectId, moduleId, year, examType, file, validate, clearForm]
   );
 
   return (
@@ -247,6 +253,26 @@ export default function UploadPage() {
                   disabled={loading}
                 />
               </div>
+              <div className="space-y-2">
+                <Label htmlFor="exam-type-pyq">Exam type (optional)</Label>
+                <Select
+                  value={examType || "unset"}
+                  onValueChange={(v) => setExamType(v === "unset" ? "" : v)}
+                >
+                  <SelectTrigger id="exam-type-pyq" className="w-full">
+                    <SelectValue placeholder="Not specified" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="unset">Not specified</SelectItem>
+                    {EXAM_TYPES.map((t) => (
+                      <SelectItem key={t} value={t}>
+                        {EXAM_TYPE_LABELS[t]}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+
               <div className="space-y-2">
                 <Label htmlFor="file-pyq">PDF File</Label>
                 <Input

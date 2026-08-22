@@ -35,6 +35,7 @@
     "src/app/api/qbank/draft-image/route.ts": { "maxDuration": 60, "memory": 1024 },
     "src/app/api/qbank/{generate,import}/route.ts": { "maxDuration": 120, "memory": 1024 },
     "src/app/api/faculty/subjects/upload/route.ts": { "maxDuration": 300, "memory": 1024 },
+    "src/app/api/faculty/pyq/upload/route.ts": { "maxDuration": 120, "memory": 1024 },
     "src/app/api/faculty/analytics/subject/[subjectId]/route.ts": { "maxDuration": 60, "memory": 1024 },
     "src/app/api/ppt-refine/extract/route.ts": { "maxDuration": 60, "memory": 1024 },
     "src/app/api/ppt-refine/refine/route.ts": { "maxDuration": 300, "memory": 1024 },

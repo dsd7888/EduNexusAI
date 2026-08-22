@@ -52,6 +52,8 @@ import {
   type SourcingMixState,
 } from "./_components/shared";
 import type { PaperTemplateRow } from "@/lib/qpaper/templates";
+import { usePyqCoverage } from "@/hooks/usePyqCoverage";
+import { PyqUploadDialog } from "@/components/pyq/PyqUploadDialog";
 import { useQpaperDraft, type BuilderSnapshot } from "./_components/useQpaperDraft";
 import { SetupPanel } from "./_components/SetupPanel";
 import { BuilderView } from "./_components/BuilderView";
@@ -126,6 +128,11 @@ export default function QpaperPage() {
   const [verifiedBankCount, setVerifiedBankCount] = useState<number | null>(
     null
   );
+  // Past-paper availability for the selected subject. Gates the PYQ-style
+  // sourcing row the same way verifiedBankCount gates the Bank row.
+  const { coverage: pyqCoverage, applyCoverage: applyPyqCoverage } =
+    usePyqCoverage(selectedSubjectId || null);
+  const [pyqDialogOpen, setPyqDialogOpen] = useState(false);
   // From the last generation response — drives the non-blocking fallback note.
   const [bankFallbackCount, setBankFallbackCount] = useState(0);
   const [unplaceablePreferred, setUnplaceablePreferred] = useState<
@@ -285,6 +292,15 @@ export default function QpaperPage() {
   // a subject change triggers. Consumed once, then cleared.
   const restoredModuleIdsRef = useRef<string[] | null>(null);
 
+  // Suppresses the PYQ auto-bump below for exactly one subject-selection cycle
+  // after a draft/history restore. Same one-shot pattern as
+  // restoredModuleIdsRef: a restored snapshot's sourcing mix is a deliberate
+  // choice and must survive the reload that a subject change triggers.
+  const restoredSourcingMixRef = useRef(false);
+  // Last subject the auto-bump ran for, so it fires once per selection rather
+  // than on every coverage re-read.
+  const pyqBumpedSubjectRef = useRef<string | null>(null);
+
   // ─── Modules load (need section_number + weightage_percent) ─────────────
   useEffect(() => {
     if (!selectedSubjectId) {
@@ -405,6 +421,51 @@ export default function QpaperPage() {
     }
   }, [verifiedBankCount, sourcingMix.bank]);
 
+  // Same reconciliation for PYQ-style. Needed on top of the conditional
+  // default because a mix can arrive with pyq_style > 0 from three places the
+  // default never sees: a restored draft, a resumed history row, or simply
+  // switching to a subject with no papers after setting a percentage on one
+  // that had them. Whatever the route in, an allocation the data can't satisfy
+  // gets folded back into fresh rather than silently falling through to
+  // archetype-guessed questions labelled as past-paper mirrors.
+  const noPyqs = pyqCoverage?.state === "none";
+  useEffect(() => {
+    if (noPyqs && sourcingMix.pyq_style > 0) {
+      setSourcingMix((m) => ({
+        ...m,
+        fresh: m.fresh + m.pyq_style,
+        pyq_style: 0,
+      }));
+    }
+  }, [noPyqs, sourcingMix.pyq_style]);
+
+  // The inverse: a subject that HAS papers should start at the 80/20 mix rather
+  // than leaving the faculty to discover the row and raise it themselves —
+  // the default repairing itself the moment papers exist is the clearest payoff
+  // for having uploaded them.
+  //
+  // Three guards, because "only bump an untouched mix" is not enough on its
+  // own: a faculty who deliberately sets 100% fresh on a PYQ-having subject
+  // produces a mix indistinguishable from the untouched default, and a restored
+  // draft can carry exactly that. So the bump fires ONCE per subject selection
+  // (pyqBumpedSubjectRef) and never on the selection that a restore produced
+  // (restoredSourcingMixRef). After that, 100% fresh stays 100% fresh.
+  const hasPyqs = pyqCoverage != null && pyqCoverage.state !== "none";
+  useEffect(() => {
+    if (!hasPyqs || !selectedSubjectId) return;
+    if (pyqBumpedSubjectRef.current === selectedSubjectId) return;
+    pyqBumpedSubjectRef.current = selectedSubjectId;
+    if (restoredSourcingMixRef.current) {
+      restoredSourcingMixRef.current = false;
+      return;
+    }
+    setSourcingMix((m) =>
+      m.fresh === 100 && m.pyq_style === 0 && m.bank === 0
+        ? defaultSourcingMix(true)
+        : m
+    );
+  }, [hasPyqs, selectedSubjectId]);
+
   // ─── Block navigation during generation ─────────────────────────────────
   // Copied from the PPT generator: a back-button press is swallowed (the
   // history entry is re-pushed) and a tab close/reload warns. Generation can't
@@ -494,6 +555,7 @@ export default function QpaperPage() {
     // Queue the restored module subset so the subject-change reload honors it
     // rather than reselecting every module.
     restoredModuleIdsRef.current = s.selectedModuleIds ?? [];
+    restoredSourcingMixRef.current = true;
     setSelectedSubjectId(s.selectedSubjectId ?? "");
     setSelectedModuleIds(s.selectedModuleIds ?? []);
     setMeta(s.meta ?? defaultMetadata());
@@ -1010,6 +1072,22 @@ export default function QpaperPage() {
         </div>
       </div>
 
+      {/* ── Past-paper upload — one instance for the whole page, opened from
+          the Sourcing row, the subject-picker tag, and the DoneView nudge. ── */}
+      {selectedSubjectId && (
+        <PyqUploadDialog
+          open={pyqDialogOpen}
+          onOpenChange={setPyqDialogOpen}
+          subjectId={selectedSubjectId}
+          subjectLabel={
+            selectedSubject
+              ? `${selectedSubject.code} — ${selectedSubject.name}`
+              : undefined
+          }
+          onUploaded={applyPyqCoverage}
+        />
+      )}
+
       {/* ── Resume an in-progress draft ──────────────────────────────── */}
       <AlertDialog open={!!resumeCandidate}>
         <AlertDialogContent>
@@ -1076,6 +1154,8 @@ export default function QpaperPage() {
               setSourcingMix={setSourcingMix}
               verifiedBankCount={verifiedBankCount}
               preferredBankQuestionIds={preferredBankQuestionIds}
+              pyqCoverage={pyqCoverage}
+              onUploadPyq={() => setPyqDialogOpen(true)}
               templateRefreshKey={templateRefreshKey}
               onLoadTemplate={handleLoadTemplate}
             />
@@ -1155,6 +1235,8 @@ export default function QpaperPage() {
               answerKeyWarnings={answerKeyWarnings}
               unplaceablePreferred={unplaceablePreferred}
               generationWarnings={generationWarnings}
+              pyqCoverage={pyqCoverage}
+              onUploadPyq={() => setPyqDialogOpen(true)}
             />
           </div>
         </div>
