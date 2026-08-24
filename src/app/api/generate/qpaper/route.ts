@@ -14,8 +14,6 @@ import {
 import {
   generateSection,
   buildSectionSlotsAssignment,
-  type CustomBtlWeights,
-  type DifficultyPreset,
   type DifficultyTarget,
   type ModuleInfo,
   type CourseOutcomeInfo,
@@ -44,6 +42,7 @@ import {
   loadPaperImages,
 } from "@/lib/qpaper/qpaperImages";
 import { renderPaperMath } from "@/lib/qpaper/paperMath";
+import { selectModulesForSection } from "@/lib/qpaper/moduleScope";
 import { examTypeLabel } from "@/lib/pyq/coverage";
 import { rowToBankQuestion, type FqbRow } from "@/lib/qbank/row";
 import type { BankQuestion } from "@/lib/qbank/types";
@@ -79,9 +78,7 @@ function modulesForSection(
   modules: ModuleRow[],
   section: TemplateSection
 ): ModuleInfo[] {
-  const [lo, hi] = section.module_range;
-  return modules
-    .filter((m) => m.module_number >= lo && m.module_number <= hi)
+  return selectModulesForSection(modules, section)
     .map((m) => ({
       id: m.id,
       module_number: m.module_number,
@@ -172,34 +169,6 @@ export async function POST(request: NextRequest) {
     const preferredQuestionIds = Array.isArray(body.preferredQuestionIds)
       ? (body.preferredQuestionIds as unknown[]).map(String)
       : [];
-    const VALID_PRESETS: DifficultyPreset[] = [
-      "foundational",
-      "balanced",
-      "application_heavy",
-      "custom",
-    ];
-    const rawPreset = String(body.difficultyPreset ?? "balanced");
-    const difficultyPreset: DifficultyPreset = VALID_PRESETS.includes(
-      rawPreset as DifficultyPreset
-    )
-      ? (rawPreset as DifficultyPreset)
-      : "balanced";
-    // Custom tier weights only matter when the preset is "custom". Each must be
-    // a finite, non-negative number; otherwise the resolver falls back to
-    // balanced, so a missing/garbage value degrades gracefully.
-    let customBtlWeights: CustomBtlWeights | null = null;
-    if (difficultyPreset === "custom") {
-      const raw = (body.customBtlWeights ?? {}) as Record<string, unknown>;
-      const num = (v: unknown) =>
-        Number.isFinite(Number(v)) ? Math.max(0, Number(v)) : 0;
-      const tier1 = num(raw.tier1);
-      const tier2 = num(raw.tier2);
-      const tier3 = num(raw.tier3);
-      if (tier1 + tier2 + tier3 > 0) {
-        customBtlWeights = { tier1, tier2, tier3 };
-      }
-    }
-
     // ── Secondary directives (weightage stays primary): BTL range, CO%, difficulty% ──
     // btlRange: [min, max], both integers 1-6, min <= max.
     let btlRange: [number, number] | undefined;
@@ -477,14 +446,14 @@ export async function POST(request: NextRequest) {
       const qslots = buildSectionSlotsAssignment(
         modulesForSection(modules, section),
         section,
-        courseOutcomes,
-        coPoMapping,
-        difficultyPreset,
-        customBtlWeights,
-        moduleCoMap,
-        btlRange,
-        sectionCoTargetsFor(section),
-        difficultyTargets
+        {
+          courseOutcomes,
+          coPoMapping,
+          moduleCoMap,
+          btlRange,
+          coTargets: sectionCoTargetsFor(section),
+          difficultyTargets,
+        }
       );
       const targets = new Map<string, SlotTarget>();
       for (const qs of qslots) {
@@ -618,8 +587,6 @@ export async function POST(request: NextRequest) {
           subjectCode,
           slotStyles: styleBySection[sIdx],
           placedBankQuestions,
-          difficultyPreset,
-          customBtlWeights,
           moduleCoMap,
           btlRange,
           coTargets: sectionCoTargetsFor(section),

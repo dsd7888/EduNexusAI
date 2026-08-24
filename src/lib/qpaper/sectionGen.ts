@@ -47,8 +47,6 @@ import {
   mcqSubSlotKey,
   orAlternativeSlotKey,
   orPrimarySlotKey,
-  type CustomBtlWeights,
-  type DifficultyPreset,
   type DifficultyTarget,
   type ModuleData,
   type QuestionSlot,
@@ -56,7 +54,7 @@ import {
 } from "./moduleAssignment";
 import type { AILogContext } from "@/lib/ai/providers/types";
 
-export type { CustomBtlWeights, DifficultyPreset, DifficultyTarget };
+export type { DifficultyTarget };
 
 // ─── Public input/output types (kept stable for callers) ───────────────────
 
@@ -130,10 +128,6 @@ export interface SectionGenInput {
    * this the AI generates blind to what the bank will contribute.
    */
   placedBankQuestions?: string[];
-  /** When set, biases per-slot BTL targets toward the preset's tier weights. */
-  difficultyPreset?: DifficultyPreset;
-  /** Tier weights to use when difficultyPreset === "custom". */
-  customBtlWeights?: CustomBtlWeights | null;
   /** Paper-wide BTL eligibility filter [min, max] (secondary to weightage). */
   btlRange?: [number, number];
   /** CO code → target marks for THIS section (prorated from paper-wide CO%). */
@@ -1692,16 +1686,29 @@ export function validateGeneratedSection(
 
 // ─── Public entrypoint ─────────────────────────────────────────────────────
 
-function buildSlotCtx(
-  courseOutcomes: CourseOutcomeInfo[],
-  coPoMapping: CoPoMappingInfo[],
-  difficultyPreset?: DifficultyPreset,
-  customBtlWeights?: CustomBtlWeights | null,
-  moduleCoMap?: Map<number, string[]>,
-  btlRange?: [number, number],
-  coTargets?: Map<string, number>,
-  difficultyTargets?: DifficultyTarget[]
-): SlotAssignmentContext {
+/**
+ * Slot-assignment inputs shared by `generateSection` and the route's
+ * `buildSectionSlotsAssignment`. An options object rather than a positional
+ * list: these are 6 same-typed optionals, and positional passing made an
+ * accidental argument shift both easy to write and invisible to review.
+ */
+export interface SlotAssignmentInput {
+  courseOutcomes: CourseOutcomeInfo[];
+  coPoMapping: CoPoMappingInfo[];
+  moduleCoMap?: Map<number, string[]>;
+  btlRange?: [number, number];
+  coTargets?: Map<string, number>;
+  difficultyTargets?: DifficultyTarget[];
+}
+
+function buildSlotCtx({
+  courseOutcomes,
+  coPoMapping,
+  moduleCoMap,
+  btlRange,
+  coTargets,
+  difficultyTargets,
+}: SlotAssignmentInput): SlotAssignmentContext {
   const coPoMap = new Map<string, Array<{ po_code: string; strength: number }>>();
   for (const m of coPoMapping) {
     const list = coPoMap.get(m.co_code) ?? [];
@@ -1711,8 +1718,6 @@ function buildSlotCtx(
   return {
     coPoMap,
     allCoCodes: courseOutcomes.map((c) => c.co_code),
-    difficultyPreset,
-    customBtlWeights,
     btlRange,
     coTargets,
     difficultyTargets,
@@ -1747,28 +1752,12 @@ function modulesToData(modules: ModuleInfo[]): ModuleData[] {
 export function buildSectionSlotsAssignment(
   modulesInSection: ModuleInfo[],
   sectionTemplate: TemplateSection,
-  courseOutcomes: CourseOutcomeInfo[],
-  coPoMapping: CoPoMappingInfo[],
-  difficultyPreset?: DifficultyPreset,
-  customBtlWeights?: CustomBtlWeights | null,
-  moduleCoMap?: Map<number, string[]>,
-  btlRange?: [number, number],
-  coTargets?: Map<string, number>,
-  difficultyTargets?: DifficultyTarget[]
+  input: SlotAssignmentInput
 ): QuestionSlot[] {
   return assignModulesToSlots(
     modulesToData(modulesInSection),
     sectionTemplate,
-    buildSlotCtx(
-      courseOutcomes,
-      coPoMapping,
-      difficultyPreset,
-      customBtlWeights,
-      moduleCoMap,
-      btlRange,
-      coTargets,
-      difficultyTargets
-    )
+    buildSlotCtx(input)
   );
 }
 
@@ -1818,16 +1807,7 @@ export async function generateSection(
   const slots = assignModulesToSlots(
     modulesToData(input.modulesInSection),
     input.sectionTemplate,
-    buildSlotCtx(
-      input.courseOutcomes,
-      input.coPoMapping,
-      input.difficultyPreset,
-      input.customBtlWeights,
-      input.moduleCoMap,
-      input.btlRange,
-      input.coTargets,
-      input.difficultyTargets
-    )
+    buildSlotCtx(input)
   );
   if (input.slotStyles && input.slotStyles.size > 0) {
     for (const s of slots) {
