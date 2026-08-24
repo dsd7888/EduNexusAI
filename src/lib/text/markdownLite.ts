@@ -22,10 +22,22 @@ export type InlineToken =
 export type Segment =
   | { type: "text"; content: string }
   | { type: "list"; ordered: boolean; items: string[] }
-  | { type: "table"; headers: string[]; rows: string[][] };
+  | { type: "table"; headers: string[]; rows: string[][] }
+  /**
+   * A fenced code block — pseudocode, an algorithm listing, a code trace.
+   *
+   * Its content is VERBATIM: indentation and blank lines are the meaning, not
+   * decoration, and a pseudocode question whose indentation is collapsed is
+   * unanswerable. Fences are also matched before tables and lists, because a
+   * listing line like `| i | 0 | 1 |` or `- swap a, b` would otherwise be
+   * mis-parsed into a table or a bullet list.
+   */
+  | { type: "code"; language: string | null; content: string };
 
 const BULLET_RE = /^\s*[-*+]\s+(.*)$/;
 const ORDERED_RE = /^\s*\d+[.)]\s+(.*)$/;
+/** Opening or closing code fence, with an optional language tag. */
+const FENCE_RE = /^\s*```([A-Za-z0-9_+-]*)\s*$/;
 
 /**
  * A markdown table separator row, e.g. `|---|:--:|---|` or `--- | ---`.
@@ -74,6 +86,32 @@ export function parseMarkdownLite(raw: string): Segment[] {
   let i = 0;
   while (i < lines.length) {
     const line = lines[i];
+
+    // ── Fenced code: MUST be matched first ─────────────────────────────────
+    // Everything inside a fence is verbatim, so the table and list rules below
+    // must never see it. A pseudocode listing routinely contains lines that
+    // look exactly like a markdown table row or a bullet item.
+    const fence = FENCE_RE.exec(line);
+    if (fence) {
+      flushText();
+      const language = fence[1].trim() || null;
+      const body: string[] = [];
+      i += 1;
+      while (i < lines.length && !FENCE_RE.test(lines[i])) {
+        body.push(lines[i]);
+        i += 1;
+      }
+      // Consume the closing fence when there is one. An unterminated fence
+      // (the model forgot to close it) still yields a code block rather than
+      // dumping raw backticks into the paper.
+      if (i < lines.length) i += 1;
+      // Strip only leading/trailing BLANK lines; interior blank lines and all
+      // indentation are meaning-bearing and preserved exactly.
+      while (body.length > 0 && body[0].trim() === "") body.shift();
+      while (body.length > 0 && body[body.length - 1].trim() === "") body.pop();
+      segments.push({ type: "code", language, content: body.join("\n") });
+      continue;
+    }
 
     // ── Table: a row immediately followed by a separator row ───────────────
     if (

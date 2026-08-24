@@ -64,6 +64,26 @@ export function drawMultilineMathText(
       continue;
     }
 
+    // Fenced code: indentation and blank lines carry the meaning, so lines are
+    // NOT trimmed and are not routed through the math renderer (a listing's
+    // symbols are literal). Without this branch the generic path below would
+    // trim every line and flatten the listing's structure.
+    if (seg.type === "code") {
+      builder.space(3);
+      for (const raw of seg.content.split("\n")) {
+        if (raw.trim() === "") {
+          builder.space(4);
+          continue;
+        }
+        // Leading spaces are rendered as-is; the PDF font is proportional, so
+        // this approximates rather than reproduces a monospace listing, but it
+        // preserves relative depth, which is what the question depends on.
+        builder.text(raw, { ...opts, size: (opts.size ?? 10) - 0.5 });
+      }
+      builder.space(3);
+      continue;
+    }
+
     const lines = seg.type === "list" ? seg.items : seg.content.split("\n");
     for (const raw of lines) {
       const line = raw.trim();

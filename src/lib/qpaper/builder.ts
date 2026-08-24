@@ -306,6 +306,9 @@ interface Ctx {
     regular: PDFFont;
     bold: PDFFont;
     italic: PDFFont;
+    /** Monospace — pseudocode / algorithm listings, where column alignment
+     *  and indentation depth are part of the question. */
+    mono: PDFFont;
   };
   /** Question images embedded up-front, keyed by storage path (may be empty). */
   images: Map<string, EmbeddedPdfImage>;
@@ -579,6 +582,68 @@ function drawRightCols(
 // Plain wrapped-text run: the original drawQuestionText body, unchanged. Shared
 // by drawQuestionText (text segments) so the no-markdown path is byte-identical
 // to before this file learned about tables/lists.
+/**
+ * Draw a fenced code block (pseudocode, algorithm listing, code trace).
+ *
+ * Three deliberate differences from ordinary body text:
+ *   - monospace, so columns and indentation line up;
+ *   - lines are NOT trimmed, because indentation depth is the question in a
+ *     "fill in the blanked logic" item;
+ *   - no math rendering, because a listing's symbols are literal.
+ *
+ * A line too wide for the column is hard-broken rather than word-wrapped:
+ * re-flowing a listing across lines would misrepresent its structure, and a
+ * visible hard break is more honest than a plausible-looking wrong indent.
+ */
+function drawCodeBlock(
+  ctx: Ctx,
+  code: string,
+  indentX: number,
+  size: number
+) {
+  const mono = ctx.fonts.mono;
+  const monoSize = Math.max(7, size - 1);
+  const maxWidth = COL_MARKS_X - indentX - 12;
+
+  ctx.y -= 2;
+  for (const rawLine of code.split("\n")) {
+    const line = sanitize(rawLine).replace(/\t/g, "    ");
+    if (line.trim() === "") {
+      ctx = ensureSpace(ctx, LINE_H * 0.6);
+      ctx.y -= LINE_H * 0.6;
+      continue;
+    }
+    // Hard-break at the widest prefix that fits, preserving leading indent on
+    // the continuation so the listing still reads as one block.
+    let rest = line;
+    let isContinuation = false;
+    while (rest.length > 0) {
+      const indent = isContinuation
+        ? " ".repeat(Math.min(8, (line.match(/^ */)?.[0].length ?? 0) + 2))
+        : "";
+      let take = rest.length;
+      while (
+        take > 1 &&
+        mono.widthOfTextAtSize(indent + rest.slice(0, take), monoSize) > maxWidth
+      ) {
+        take -= 1;
+      }
+      ctx = ensureSpace(ctx, LINE_H);
+      ctx.page.drawText(indent + rest.slice(0, take), {
+        x: indentX,
+        y: ctx.y,
+        size: monoSize,
+        font: mono,
+        color: rgb(0, 0, 0),
+      });
+      ctx.y -= LINE_H;
+      rest = rest.slice(take);
+      isContinuation = true;
+    }
+  }
+  ctx.y -= 2;
+}
+
 function drawTextLines(
   ctx: Ctx,
   text: string,
@@ -1152,6 +1217,8 @@ function drawQuestionText(
         drawMarkdownTable(ctx, seg.headers, seg.rows, indentX, size);
       } else if (seg.type === "list") {
         drawMarkdownList(ctx, seg, indentX, size);
+      } else if (seg.type === "code") {
+        drawCodeBlock(ctx, seg.content, indentX, size);
       } else {
         drawMathText(ctx, seg.content, indentX, size);
       }
@@ -1731,6 +1798,10 @@ export async function generatePPSUPaperPDF(
   const regular = await doc.embedFont(StandardFonts.TimesRoman);
   const bold = await doc.embedFont(StandardFonts.TimesRomanBold);
   const italic = await doc.embedFont(StandardFonts.TimesRomanItalic);
+  // Courier is a PDF base-14 font, so it embeds with no asset and is available
+  // in every viewer. A listing set in the proportional body font loses its
+  // column alignment, which is exactly what a fill-in-the-logic question needs.
+  const mono = await doc.embedFont(StandardFonts.Courier);
 
   // Embed every decoded image once up-front so the synchronous draw helpers can
   // look them up by path (pdf-lib's embed calls are async; drawing isn't).
@@ -1779,7 +1850,7 @@ export async function generatePPSUPaperPDF(
     page: doc.addPage([PAGE_WIDTH, PAGE_HEIGHT]),
     y: PAGE_HEIGHT - MARGIN_TOP,
     pageNo: 1,
-    fonts: { regular, bold, italic },
+    fonts: { regular, bold, italic, mono },
     images,
     math,
   };
