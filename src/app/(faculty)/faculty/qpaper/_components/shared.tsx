@@ -9,6 +9,12 @@
  * the stage components and the parent orchestrator.
  */
 
+import {
+  assignModulesToSlots,
+} from "@/lib/qpaper/moduleAssignment";
+import { computeCoverage, type ModuleCoverage } from "@/lib/qpaper/coverage";
+import type { TemplateSection } from "@/lib/qpaper/templates";
+
 // ─── Types ──────────────────────────────────────────────────────────────────
 
 export interface CourseOutcomeRef {
@@ -185,6 +191,13 @@ export interface ModuleRow {
   id: string;
   name: string;
   module_number: number;
+  /**
+   * Module syllabus text. Fed to single-question regeneration as module
+   * content — without it the regenerate prompt's "Content:" line was empty and
+   * regeneration ran on materially less syllabus grounding than the section
+   * generation path, which has always sent it.
+   */
+  description: string | null;
   section_number: number | null;
   weightage_percent: number | null;
   /** Numeric levels (1..6) or text labels ("Remember", …). Drives the BTL preview. */
@@ -349,6 +362,9 @@ export type TemplateQuestionBlockPayload =
 
 export interface TemplateSectionPayload {
   section_name: string;
+  /** Authoritative module scope — see TemplateSection.module_numbers. */
+  module_numbers?: number[];
+  /** Retained for backward compatibility; superseded by module_numbers. */
   module_range: [number, number];
   total_marks: number;
   questions: TemplateQuestionBlockPayload[];
@@ -606,29 +622,73 @@ export function toTemplateQuestion(
   };
 }
 
-export function moduleRangeForSection(
+/**
+ * The modules a given section draws from, as an explicit list.
+ *
+ * Replaces the old `moduleRangeForSection`, which returned `[min, max]` and had
+ * two defects that between them produced the reported "selected 3 units, unit 3
+ * never appeared, no reason shown":
+ *
+ *   1. A range cannot express a non-contiguous selection. Choosing modules
+ *      1, 2 and 5 collapsed to [1,5], and the server re-expanded that to
+ *      1,2,3,4,5 — generating questions from two modules the faculty had
+ *      explicitly deselected.
+ *   2. It filtered by `m.section_number === sectionIdx + 1`. `section_number`
+ *      is a `modules` column the Q-paper builder never displays and faculty
+ *      cannot edit; a selected module whose section_number matched no section
+ *      in the chosen template was dropped from EVERY section. The old
+ *      "if empty, use all" fallback only rescued a section that was entirely
+ *      empty, so a partial drop was invisible.
+ *
+ * The rule now: a module the faculty explicitly selected is never silently
+ * discarded. `section_number` still partitions a selection across sections when
+ * it genuinely describes the template — that is the useful case, and it is
+ * preserved — but a module that belongs to no real section is shared across all
+ * of them instead of vanishing.
+ */
+export function modulesForSectionIndex(
   sectionIdx: number,
   modules: ModuleRow[],
-  selectedModuleIds: string[]
-): [number, number] {
+  selectedModuleIds: string[],
+  sectionCount: number
+): ModuleRow[] {
+  const selectedSet = new Set(selectedModuleIds);
+  const selected = modules.filter((m) => selectedSet.has(m.id));
+  if (selected.length === 0) return [];
+
   const sectionNumber = sectionIdx + 1;
-  const inSection = modules.filter(
-    (m) =>
-      selectedModuleIds.includes(m.id) &&
-      (m.section_number == null || m.section_number === sectionNumber)
+  const belongsToARealSection = (m: ModuleRow) =>
+    m.section_number != null &&
+    m.section_number >= 1 &&
+    m.section_number <= sectionCount;
+
+  const inThisSection = selected.filter(
+    (m) => belongsToARealSection(m) && m.section_number === sectionNumber
   );
-  if (inSection.length === 0) {
-    const all = modules.filter((m) => selectedModuleIds.includes(m.id));
-    if (all.length === 0) return [0, 0];
-    return [
-      Math.min(...all.map((m) => m.module_number)),
-      Math.max(...all.map((m) => m.module_number)),
-    ];
-  }
-  return [
-    Math.min(...inSection.map((m) => m.module_number)),
-    Math.max(...inSection.map((m) => m.module_number)),
-  ];
+  // Unassigned, or assigned to a section this template doesn't have. Previously
+  // dropped outright; now shared across every section so the selection is
+  // always honoured.
+  const unscoped = selected.filter((m) => !belongsToARealSection(m));
+
+  const out = [...inThisSection, ...unscoped].sort(
+    (a, b) => a.module_number - b.module_number
+  );
+  // A section must never generate from nothing; fall back to the whole
+  // selection rather than emitting an empty scope.
+  return out.length > 0 ? out : selected;
+}
+
+/**
+ * Backward-compatible `[lo, hi]` for a resolved module list.
+ *
+ * Still written to the template payload so that a template saved now stays
+ * readable by any code path (or deployment) that predates `module_numbers`.
+ * Never used for scoping when `module_numbers` is present.
+ */
+export function moduleRangeOf(mods: ModuleRow[]): [number, number] {
+  if (mods.length === 0) return [0, 0];
+  const nums = mods.map((m) => m.module_number);
+  return [Math.min(...nums), Math.max(...nums)];
 }
 
 // ─── Prefill templates ──────────────────────────────────────────────────────
@@ -740,14 +800,22 @@ export function buildTemplatePayload(name: string, ctx: TemplatePayloadContext) 
   } = ctx;
   let qCounter = 0;
   const apiSections: TemplateSectionPayload[] = sections.map((s, sIdx) => {
-    const range = moduleRangeForSection(sIdx, modules, selectedModuleIds);
+    const sectionModules = modulesForSectionIndex(
+      sIdx,
+      modules,
+      selectedModuleIds,
+      sections.length
+    );
     const apiQuestions = s.questions.map((q) => {
       qCounter += 1;
       return toTemplateQuestion(q, qCounter);
     });
     return {
       section_name: s.name,
-      module_range: range,
+      // Authoritative scope. module_range is still emitted alongside it purely
+      // for backward compatibility with readers that predate module_numbers.
+      module_numbers: sectionModules.map((m) => m.module_number),
+      module_range: moduleRangeOf(sectionModules),
       total_marks: sectionTotal(s),
       questions: apiQuestions,
     };
@@ -770,6 +838,80 @@ export function buildTemplatePayload(name: string, ctx: TemplatePayloadContext) 
     },
     is_default: false,
   };
+}
+
+// ─── Pre-flight coverage preview ────────────────────────────────────────────
+
+/**
+ * Predict, without spending an AI call, which selected units the current setup
+ * will actually produce questions for.
+ *
+ * Deliberately routed through `buildTemplatePayload` and the same
+ * `assignModulesToSlots` / `computeCoverage` the server runs, rather than a
+ * parallel estimate. A preview that reimplements the allocation is a preview
+ * that will eventually disagree with the real thing, and a coverage warning
+ * that turns out to be wrong is worse than no warning at all.
+ *
+ * Cheap enough to run on every builder keystroke: pure arithmetic over a
+ * handful of modules and slots, no I/O.
+ */
+export function previewCoverage(ctx: TemplatePayloadContext): ModuleCoverage[] {
+  const { sections, modules, selectedModuleIds, btlRange } = ctx;
+  if (selectedModuleIds.length === 0 || sections.length === 0) return [];
+
+  const payload = buildTemplatePayload("__preview__", ctx);
+  const apiSections = payload.structure.sections;
+
+  const toModuleData = (m: ModuleRow) => ({
+    id: m.id,
+    module_number: m.module_number,
+    name: m.name,
+    description: m.description,
+    weightage_percent: m.weightage_percent,
+    btl_levels: m.btl_levels,
+  });
+
+  const selectedSet = new Set(selectedModuleIds);
+  const selectedModules = modules.filter((m) => selectedSet.has(m.id));
+
+  return computeCoverage({
+    selectedModules: selectedModules.map(toModuleData),
+    sections: apiSections.map((s, i) => {
+      const sectionModules = modulesForSectionIndex(
+        i,
+        modules,
+        selectedModuleIds,
+        sections.length
+      ).map(toModuleData);
+      return {
+        sectionName: s.section_name,
+        modules: sectionModules,
+        slots: assignModulesToSlots(
+          sectionModules,
+          s as unknown as TemplateSection,
+          btlRange ? { btlRange } : {}
+        ),
+        pinnedModuleIds: collectPinnedIds(s),
+      };
+    }),
+    ...(btlRange ? { btlRange } : {}),
+  });
+}
+
+/** Pinned module ids declared by a section payload's question blocks. */
+function collectPinnedIds(s: TemplateSectionPayload): string[] {
+  const out = new Set<string>();
+  for (const q of s.questions) {
+    if (q.type === "pool") {
+      for (const row of (q as TemplatePoolQuestionPayload).composition) {
+        if (row.pinnedModuleId) out.add(row.pinnedModuleId);
+      }
+    } else {
+      const pin = (q as TemplateQuestionPayload).pinnedModuleId;
+      if (pin) out.add(pin);
+    }
+  }
+  return Array.from(out);
 }
 
 // ─── Template reverse (stored DB row → builder state) ───────────────────────

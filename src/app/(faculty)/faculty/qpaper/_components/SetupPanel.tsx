@@ -44,6 +44,8 @@ import type {
   PaperMetadata,
   SourcingMixState,
 } from "./shared";
+import { previewCoverage } from "./shared";
+import { CoveragePanel } from "./CoveragePanel";
 
 /** Green/amber/red running-total chip, shared by the CO% and difficulty% editors. */
 function runningTotalStatus(total: number) {
@@ -178,6 +180,40 @@ export function SetupPanel({
 
   const allModulesSelected =
     modules.length > 0 && selectedModuleIds.length === modules.length;
+
+  // ─── Unit-coverage preview — will every selected unit actually get a
+  // question? Runs the real scoping + allocation (no AI call), so the warning
+  // shown here is the same verdict the generated paper will report. ─────────
+  const coveragePreview = useMemo(() => {
+    if (!selectedSubjectId || selectedModuleIds.length === 0) return [];
+    try {
+      return previewCoverage({
+        sections,
+        modules,
+        selectedModuleIds,
+        meta,
+        totalMarksLive: targetMarks,
+        selectedSubjectId,
+        btlRange,
+        coTargetsPct,
+        difficultyTargets,
+      });
+    } catch {
+      // A preview must never break the builder. Silence here means the panel
+      // simply doesn't render; generation still returns the authoritative ledger.
+      return [];
+    }
+  }, [
+    sections,
+    modules,
+    selectedModuleIds,
+    meta,
+    targetMarks,
+    selectedSubjectId,
+    btlRange,
+    coTargetsPct,
+    difficultyTargets,
+  ]);
 
   // ─── CO-coverage preview — is each targeted CO actually reachable from the
   // selected modules? ────────────────────────────────────────────────────────
@@ -431,6 +467,14 @@ export function SetupPanel({
             <p className="text-[10px] text-muted-foreground">
               Click a module to exclude it from this paper.
             </p>
+          )}
+          {/* Pre-flight coverage. Shown here, next to the selection itself,
+              because this is where the decision that causes a missing unit is
+              actually made — and catching "unit 3 will get 0 questions" now
+              costs nothing, whereas discovering it after generation costs a
+              Pro call and a full re-read of the paper. */}
+          {coveragePreview.length > 0 && (
+            <CoveragePanel coverage={coveragePreview} variant="preview" />
           )}
         </div>
       )}

@@ -53,6 +53,7 @@ import {
 } from "./_components/shared";
 import type { PaperTemplateRow } from "@/lib/qpaper/templates";
 import { withLocalIds } from "@/lib/qpaper/questionIdentity";
+import type { ModuleCoverage } from "@/lib/qpaper/coverage";
 import { usePyqCoverage } from "@/hooks/usePyqCoverage";
 import { PyqUploadDialog } from "@/components/pyq/PyqUploadDialog";
 import { useQpaperDraft, type BuilderSnapshot } from "./_components/useQpaperDraft";
@@ -142,6 +143,9 @@ export default function QpaperPage() {
   // Section-generation warnings from the last generation (e.g. a pool block
   // where the AI returned fewer items than the template requested).
   const [generationWarnings, setGenerationWarnings] = useState<string[]>([]);
+  // Per-unit coverage ledger from the last generation: which selected units
+  // reached the paper, and the specific reason behind each that did not.
+  const [coverage, setCoverage] = useState<ModuleCoverage[]>([]);
 
   const [paper, setPaper] = useState<AssembledPaper | null>(null);
   const [downloadUrl, setDownloadUrl] = useState<string | null>(null);
@@ -313,7 +317,7 @@ export default function QpaperPage() {
     supabase
       .from("modules")
       .select(
-        "id, name, module_number, section_number, weightage_percent, btl_levels"
+        "id, name, module_number, description, section_number, weightage_percent, btl_levels"
       )
       .eq("subject_id", selectedSubjectId)
       .order("module_number")
@@ -985,6 +989,7 @@ export default function QpaperPage() {
         filePath?: string;
         bankFallbackCount?: number;
         unplaceablePreferred?: Array<{ id: string; question_text: string }>;
+        coverage?: ModuleCoverage[];
         warnings?: string[];
       };
       // The route stamps localIds at assembly, so this is normally the
@@ -997,6 +1002,7 @@ export default function QpaperPage() {
       setBankFallbackCount(data.bankFallbackCount ?? 0);
       setUnplaceablePreferred(data.unplaceablePreferred ?? []);
       setGenerationWarnings(data.warnings ?? []);
+      setCoverage(data.coverage ?? []);
       setView("done");
       void markComplete();
       toast.success("Question paper generated!");
@@ -1244,6 +1250,7 @@ export default function QpaperPage() {
               answerKeyWarnings={answerKeyWarnings}
               unplaceablePreferred={unplaceablePreferred}
               generationWarnings={generationWarnings}
+              coverage={coverage}
               pyqCoverage={pyqCoverage}
               onUploadPyq={() => setPyqDialogOpen(true)}
             />

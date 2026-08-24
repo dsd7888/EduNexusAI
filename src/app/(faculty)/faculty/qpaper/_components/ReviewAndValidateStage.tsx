@@ -28,7 +28,7 @@ import { cn } from "@/lib/utils";
 import { RichQuestionText } from "@/components/RichQuestionText";
 import { toast } from "sonner";
 import {
-  moduleRangeForSection,
+  modulesForSectionIndex,
   toTemplateQuestion,
   type AssembledPaper,
   type BuilderSection,
@@ -324,18 +324,36 @@ export function ReviewAndValidateStage({
   const [flagKey, setFlagKey] = useState<string | null>(null);
 
   // ─── Shared per-section server context (modules for regen / validation) ──
-  const sectionModulesForServer = (sIdx: number) => {
-    const range = moduleRangeForSection(sIdx, modules, selectedModuleIds);
-    return modules
-      .filter(
-        (m) => m.module_number >= range[0] && m.module_number <= range[1]
-      )
-      .map((m) => ({ module_number: m.module_number, name: m.name }));
-  };
+  // Previously this derived a [lo, hi] range and re-expanded it against every
+  // module in the subject, so regenerating a question could draw on modules the
+  // faculty had deselected — the same lossy set→range encoding that caused the
+  // missing-unit bug on the generation path.
+  //
+  // `description` is the module's syllabus text and is what actually grounds a
+  // regenerated question in the syllabus. It was previously omitted, so the
+  // regenerate prompt's "Content:" line was always empty and single-question
+  // regeneration ran with materially less context than section generation.
+  const sectionModulesForServer = (sIdx: number) =>
+    modulesForSectionIndex(
+      sIdx,
+      modules,
+      selectedModuleIds,
+      paper?.sections.length ?? 1
+    ).map((m) => ({
+      module_number: m.module_number,
+      name: m.name,
+      description: m.description,
+      btl_levels: m.btl_levels,
+    }));
+
   const moduleContentForSection = (sIdx: number) =>
     sectionModulesForServer(sIdx)
-      .map((m) => `Module ${m.module_number}: ${m.name}`)
-      .join("\n");
+      .map((m) =>
+        m.description
+          ? `Module ${m.module_number}: ${m.name}\n${m.description}`
+          : `Module ${m.module_number}: ${m.name}`
+      )
+      .join("\n\n");
 
   // Surface any server-side CO auto-corrections (a hallucinated/non-code CO
   // coerced back to a real one) so faculty see the fix rather than a silent

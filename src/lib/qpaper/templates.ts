@@ -239,6 +239,18 @@ export function poolItemSchemaFragment(
 
 export interface TemplateSection {
   section_name: string;
+  /**
+   * Explicit module numbers this section draws from — AUTHORITATIVE when
+   * present, and the only encoding that can represent a non-contiguous
+   * selection.
+   *
+   * `module_range` alone is lossy: selecting modules 1, 2 and 5 collapses to
+   * [1,5], which the server then re-expands to 1,2,3,4,5 — silently generating
+   * questions from two modules the faculty explicitly deselected. Absent on
+   * templates saved before this field existed, which is why `module_range` is
+   * still written and still read as the fallback.
+   */
+  module_numbers?: number[];
   /** Inclusive module-number range. `[1, 999]` is the "all modules" sentinel. */
   module_range: [number, number];
   total_marks: number;

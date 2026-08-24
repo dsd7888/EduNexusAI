@@ -26,6 +26,8 @@ import type { PyqCoverage } from "@/lib/pyq/coverage";
 import { PYQ_UPLOAD_CTA } from "@/components/pyq/pyqCopy";
 import { toast } from "sonner";
 import { ReviewAndValidateStage } from "./ReviewAndValidateStage";
+import { CoveragePanel } from "./CoveragePanel";
+import type { ModuleCoverage } from "@/lib/qpaper/coverage";
 import { SaveTemplateAction } from "./SaveTemplateAction";
 import type {
   AssembledPaper,
@@ -71,6 +73,8 @@ interface DoneViewProps {
   /** Section-generation warnings, e.g. a pool block where the AI returned
    *  fewer items than the template requested. */
   generationWarnings: string[];
+  /** Per-unit coverage ledger from the last generation. */
+  coverage: ModuleCoverage[];
   /** null = still checking. Drives the one-time past-paper prompt below. */
   pyqCoverage: PyqCoverage | null;
   onUploadPyq: () => void;
@@ -104,6 +108,7 @@ export function DoneView({
   answerKeyWarnings,
   unplaceablePreferred,
   generationWarnings,
+  coverage,
   pyqCoverage,
   onUploadPyq,
 }: DoneViewProps) {
@@ -450,6 +455,13 @@ export function DoneView({
           </ul>
         </div>
       )}
+
+      {/* ── Unit coverage ─────────────────────────────────────────────
+          Placed above the paper preview, because "is every unit I picked
+          actually in here?" is the first question faculty ask of a generated
+          paper — and previously the only way to answer it was to read the
+          whole paper and keep a tally in your head. */}
+      <CoveragePanel coverage={coverage} variant="result" />
 
       {/* ── Review + inline edit ─────────────────────────────────────── */}
       <div ref={reviewRef}>

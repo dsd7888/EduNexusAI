@@ -44,6 +44,7 @@ import {
 import { renderPaperMath } from "@/lib/qpaper/paperMath";
 import { selectModulesForSection } from "@/lib/qpaper/moduleScope";
 import { ensurePaperLocalIds } from "@/lib/qpaper/questionIdentity";
+import { computeCoverage, uncoveredModules } from "@/lib/qpaper/coverage";
 import { examTypeLabel } from "@/lib/pyq/coverage";
 import { rowToBankQuestion, type FqbRow } from "@/lib/qbank/row";
 import type { BankQuestion } from "@/lib/qbank/types";
@@ -89,6 +90,26 @@ function modulesForSection(
       weightage_percent: m.weightage_percent,
       hours: m.hours,
     }));
+}
+
+/**
+ * Module ids a section's template blocks explicitly pin, across both shapes
+ * that can carry a pin: a basic mcq/descriptive block, and each row of a pool
+ * block's composition. Feeds the coverage ledger so "displaced by a pin" is
+ * only ever reported when a pin genuinely exists.
+ */
+function collectPinnedModuleIds(section: TemplateSection): string[] {
+  const out = new Set<string>();
+  for (const q of section.questions) {
+    if (q.type === "pool") {
+      for (const row of q.composition) {
+        if (row.pinnedModuleId) out.add(row.pinnedModuleId);
+      }
+    } else if (q.pinnedModuleId) {
+      out.add(q.pinnedModuleId);
+    }
+  }
+  return Array.from(out);
 }
 
 const SOURCE_CATEGORIES: SourceCategory[] = ["fresh", "pyq_style", "bank"];
@@ -444,8 +465,12 @@ export async function POST(request: NextRequest) {
     // Per-section atomic slots (canonical fill units) + module/CO/BTL targets.
     const sectionSlotInfo = structure.sections.map((section) => {
       const atomic = computeSlots(section);
+      // Retained (not just consumed) because the coverage ledger needs both the
+      // resolved scope and the slot assignment to explain why a selected unit
+      // did or did not reach the paper.
+      const sectionModules = modulesForSection(modules, section);
       const qslots = buildSectionSlotsAssignment(
-        modulesForSection(modules, section),
+        sectionModules,
         section,
         {
           courseOutcomes,
@@ -468,7 +493,7 @@ export async function POST(request: NextRequest) {
         if (qs.cos.length === 1) t.coCode = qs.cos[0];
         targets.set(qs.slotKey, t);
       }
-      return { atomic, targets };
+      return { atomic, targets, sectionModules, qslots };
     });
 
     const allAtomic = sectionSlotInfo.flatMap((info, sIdx) =>
@@ -723,6 +748,68 @@ export async function POST(request: NextRequest) {
       console.error("[qpaper] tag validation batch failed:", err);
     }
 
+    // ── Step 2d: module coverage ledger ─────────────────────────────────
+    // Explains, per selected unit, whether it reached the paper and — when it
+    // did not — which specific decision excluded it. Computed here rather than
+    // inferred in the UI because this is the only place the reason is actually
+    // known (scope resolution, BTL eligibility and slot allocation all happen
+    // server-side). Purely descriptive: it never alters the paper.
+    //
+    // The selected set is the union of every section's resolved scope. Modules
+    // the faculty deselected are absent from all scopes, so they are correctly
+    // not judged.
+    const selectedModuleNumbers = new Set<number>();
+    for (const info of sectionSlotInfo) {
+      for (const m of info.sectionModules) selectedModuleNumbers.add(m.module_number);
+    }
+
+    // AI shortfall is only claimed where it is genuinely knowable: a section
+    // that returned no questions at all (a failed or empty Pro call). Within a
+    // section that did produce output, the normalise/padding path guarantees a
+    // question per slot, so asserting a per-module shortfall there would be
+    // guesswork dressed up as a diagnosis.
+    const producedByModule = new Map<number, number>();
+    sectionSlotInfo.forEach((info, sIdx) => {
+      const produced = (generatedSections[sIdx]?.questions ?? []).length;
+      for (const qs of info.qslots) {
+        const prev = producedByModule.get(qs.moduleNumber) ?? 0;
+        producedByModule.set(qs.moduleNumber, prev + (produced > 0 ? 1 : 0));
+      }
+    });
+
+    const coverage = computeCoverage({
+      selectedModules: modules
+        .filter((m) => selectedModuleNumbers.has(m.module_number))
+        .map((m) => ({
+          id: m.id,
+          module_number: m.module_number,
+          name: m.name,
+          description: m.description,
+          weightage_percent: m.weightage_percent,
+          btl_levels: m.btl_levels,
+          hours: m.hours,
+        })),
+      sections: sectionSlotInfo.map((info, sIdx) => ({
+        sectionName: structure.sections[sIdx].section_name,
+        modules: info.sectionModules,
+        slots: info.qslots,
+        // Real pins only. The ledger must never infer a pin from the shape of
+        // an allocation — ordinary weightage rounding produces an identical
+        // slot list, and guessing there yields a confident wrong diagnosis.
+        pinnedModuleIds: collectPinnedModuleIds(structure.sections[sIdx]),
+      })),
+      btlRange,
+      producedByModule,
+    });
+
+    const uncovered = uncoveredModules(coverage);
+    if (uncovered.length > 0) {
+      console.warn(
+        `[qpaper] ${uncovered.length} selected unit(s) not covered: ` +
+          uncovered.map((c) => `M${c.moduleNumber}(${c.reason.kind})`).join(", ")
+      );
+    }
+
     // ── Step 3: assemble paper ───────────────────────────────────────────
     const paperTitle = `${subjectCode} - ${subjectName}`;
     const paper: AssembledPaper = {
@@ -820,6 +907,11 @@ export async function POST(request: NextRequest) {
       warnings: allWarnings,
       bankFallbackCount,
       unplaceablePreferred: unplaceablePreferredRows,
+      // Per-unit coverage + the reason behind each verdict. Always returned
+      // (not only on a problem) so the UI can show positive confirmation that
+      // every selected unit made it in, rather than only ever appearing when
+      // something is wrong.
+      coverage,
     });
   } catch (err) {
     console.error("[qpaper] Error:", err);
