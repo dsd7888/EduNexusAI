@@ -17,6 +17,8 @@ import {
   withUndoPopped,
   canUndo,
   stripPaperUndo,
+  withQuestionReplaced,
+  withRegeneratedContent,
   UNDO_DEPTH,
   UNDO_MAX_BYTES,
 } from "../src/lib/qpaper/questionIdentity";
@@ -329,6 +331,58 @@ function allIds(paper: AssembledPaper): string[] {
 {
   assert(withUndoPopped({ q_number: 1, type: "descriptive", total_marks: 6 }) === null,
     "undo on an empty ring returns null");
+}
+
+// ─── withQuestionReplaced / withRegeneratedContent ──────────────────────────
+
+{
+  const p = makePaper();
+  ensurePaperLocalIds(p);
+  const targetId = p.sections[0].questions[1].localId!;
+
+  const next = withQuestionReplaced(p, targetId, (q) => ({ ...q, total_marks: 99 }));
+  assert(next !== null, "replaces an existing question");
+  assert(next!.sections[0].questions[1].total_marks === 99, "the update is applied");
+  assert(p.sections[0].questions[1].total_marks === 12, "the input paper is not mutated");
+  // Untouched sections keep identity so React re-renders only what changed.
+  assert(next!.sections[1] === p.sections[1], "untouched sections are referentially stable");
+
+  // THE STALE-RESULT CASE: a regeneration resolving after its question is gone
+  // must be discarded, not written into whatever now occupies that index.
+  assert(
+    withQuestionReplaced(p, "q-vanished", (q) => q) === null,
+    "[REGRESSION] a vanished question yields null so the caller discards the result"
+  );
+}
+
+{
+  // Regenerated content replaces the CONTENT but never the slot's identity,
+  // the faculty's lock, or the undo history.
+  const original: GeneratedQuestion = {
+    q_number: 1, type: "descriptive", total_marks: 6,
+    localId: "q-keep", locked: true,
+    parts: [{ label: "a", question: "ORIGINAL", marks: 6 }],
+  };
+  const replacement: GeneratedQuestion = {
+    q_number: 1, type: "descriptive", total_marks: 6,
+    localId: "q-from-server", locked: false,
+    parts: [{ label: "a", question: "NEW", marks: 6 }],
+  };
+
+  const merged = withRegeneratedContent(original, replacement, "Regenerated question");
+  assert(merged.parts![0].question === "NEW", "new content is applied");
+  assert(merged.localId === "q-keep", "the slot's localId wins over the server's");
+  assert(merged.locked === true, "the faculty's lock survives regeneration");
+  assert(merged.undoStack?.length === 1, "the previous version is pushed onto the ring");
+  assert(
+    merged.undoStack![0].question.parts![0].question === "ORIGINAL",
+    "the snapshot holds the pre-regeneration content"
+  );
+
+  // And undoing it gets the original back.
+  const undone = withUndoPopped(merged)!;
+  assert(undone.question.parts![0].question === "ORIGINAL", "undo restores the original content");
+  assert(undone.question.localId === "q-keep", "identity is stable across regenerate + undo");
 }
 
 // ─── stripPaperUndo ─────────────────────────────────────────────────────────

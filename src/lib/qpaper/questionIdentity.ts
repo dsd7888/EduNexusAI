@@ -201,6 +201,60 @@ export function findQuestionByLocalId(
   return null;
 }
 
+/**
+ * Immutably replace one question, addressed by `localId`.
+ *
+ * Returns **null** when the question is no longer in the paper. That is the
+ * whole point: an async regeneration that resolves after the subject changed,
+ * the section was deleted, or the paper was replaced must be DISCARDED. The
+ * previous splice-by-captured-index would instead have written the result into
+ * whatever question now occupied that index — silently corrupting an unrelated
+ * slot, with no error anywhere.
+ *
+ * Only the affected section and question are rebuilt; every other section keeps
+ * its identity, so React re-renders just the branch that changed.
+ */
+export function withQuestionReplaced(
+  paper: AssembledPaper,
+  localId: string,
+  update: (q: GeneratedQuestion) => GeneratedQuestion
+): AssembledPaper | null {
+  const hit = findQuestionByLocalId(paper, localId);
+  if (!hit) return null;
+  const { sectionIndex, questionIndex, question } = hit;
+
+  const sections = paper.sections.map((s, i) =>
+    i !== sectionIndex
+      ? s
+      : {
+          ...s,
+          questions: s.questions.map((q, j) =>
+            j === questionIndex ? update(question) : q
+          ),
+        }
+  );
+  return { ...paper, sections };
+}
+
+/**
+ * Apply regenerated content to a question while preserving what belongs to the
+ * SLOT rather than to the content: its identity, the faculty's lock, and the
+ * undo history (with the pre-change state pushed onto it).
+ */
+export function withRegeneratedContent(
+  question: GeneratedQuestion,
+  replacement: GeneratedQuestion,
+  reason: string
+): GeneratedQuestion {
+  const pushed = withUndoPushed(question, reason);
+  return {
+    ...replacement,
+    localId: question.localId,
+    ...(question.locked !== undefined ? { locked: question.locked } : {}),
+    ...(pushed.undoStack ? { undoStack: pushed.undoStack } : {}),
+  };
+}
+
 // ─── Undo ───────────────────────────────────────────────────────────────────
 
 /** A question with its undo history removed — what gets stored in a snapshot. */

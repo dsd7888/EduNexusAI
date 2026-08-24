@@ -11,7 +11,7 @@
  */
 
 import { useEffect, useRef, useState } from "react";
-import { Flag, Library, Loader2, Pencil, RefreshCw, Save, X } from "lucide-react";
+import { Flag, Library, Loader2, Pencil, RefreshCw, Save, Undo2, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -48,6 +48,23 @@ import {
   poolItemLabel,
   poolMarksPerItem,
 } from "@/lib/qpaper/poolRender";
+import {
+  canUndo,
+  withQuestionReplaced,
+  withRegeneratedContent,
+  withUndoPopped,
+} from "@/lib/qpaper/questionIdentity";
+import {
+  MAX_CUSTOM_INSTRUCTION_CHARS,
+  type RegenerateMode,
+} from "@/lib/qpaper/regenerateModes";
+
+/** Undo-entry label per regeneration mode — what the faculty sees on revert. */
+const REGEN_REASON: Record<RegenerateMode, string> = {
+  same_topic: "Regenerated (same topic)",
+  different_topic: "Regenerated (different topic)",
+  custom: "Regenerated (custom instruction)",
+};
 
 // ─── CO / BTL editable Selects (shared by every unit-level edit form) ────────
 // PO stays display-only — it is derived server-side from CO and has no
@@ -113,6 +130,147 @@ function TagSelects({
         </SelectContent>
       </Select>
     </div>
+  );
+}
+
+// ─── Regenerate menu ────────────────────────────────────────────────────────
+// The regenerate button used to have exactly one behaviour, and it silently
+// changed the question's topic. Faculty had no way to say "same idea, ask it
+// differently" versus "something else from this unit", and no way to steer the
+// result at all. This splits the one action into three explicit intents, with
+// the historical behaviour still the default first item.
+
+function RegenerateMenu({
+  busy,
+  onRegenerate,
+}: {
+  busy: boolean;
+  onRegenerate: (mode: RegenerateMode, customInstruction?: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [customOpen, setCustomOpen] = useState(false);
+  const [instruction, setInstruction] = useState("");
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  // Close on outside click — but not while the custom-instruction box is open,
+  // where a stray click outside the popover shouldn't discard typed text.
+  useEffect(() => {
+    if (!open || customOpen) return;
+    const handler = (e: MouseEvent) => {
+      if (!containerRef.current?.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [open, customOpen]);
+
+  const fire = (mode: RegenerateMode, text?: string) => {
+    setOpen(false);
+    setCustomOpen(false);
+    setInstruction("");
+    onRegenerate(mode, text);
+  };
+
+  return (
+    <div ref={containerRef} className="relative inline-block">
+      <Button
+        size="sm"
+        variant="ghost"
+        disabled={busy}
+        onClick={() => setOpen((v) => !v)}
+        title="Regenerate this question"
+        aria-expanded={open}
+      >
+        {busy ? (
+          <Loader2 className="size-3.5 animate-spin" />
+        ) : (
+          <RefreshCw className="size-3.5" />
+        )}
+      </Button>
+
+      {open && !busy && (
+        <div className="absolute right-0 z-30 mt-1 w-72 rounded-md border bg-popover p-1.5 text-left shadow-md font-sans">
+          {!customOpen ? (
+            <>
+              <MenuItem
+                title="Same topic"
+                detail="Keep the concept, ask it a different way"
+                onClick={() => fire("same_topic")}
+              />
+              <MenuItem
+                title="Different topic"
+                detail="A different concept from the same unit"
+                onClick={() => fire("different_topic")}
+              />
+              <MenuItem
+                title="Custom instruction…"
+                detail="Tell the AI exactly what you want"
+                onClick={() => setCustomOpen(true)}
+              />
+            </>
+          ) : (
+            <div className="p-1.5 space-y-2">
+              <p className="text-xs font-medium">Custom instruction</p>
+              {/* MathTextarea has no maxLength, so the cap is enforced here.
+                  The server re-applies it regardless — this is a courtesy to
+                  the typist, not the boundary. */}
+              <MathTextarea
+                value={instruction}
+                onChange={(v) => setInstruction(v.slice(0, MAX_CUSTOM_INSTRUCTION_CHARS))}
+                rows={3}
+                placeholder="e.g. Make this a pseudocode question with the main logic blanked out"
+              />
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-[10px] text-muted-foreground">
+                  {instruction.trim().length}/{MAX_CUSTOM_INSTRUCTION_CHARS}
+                </span>
+                <div className="flex items-center gap-1.5">
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="h-7 text-xs"
+                    onClick={() => {
+                      setCustomOpen(false);
+                      setInstruction("");
+                    }}
+                  >
+                    Cancel
+                  </Button>
+                  <Button
+                    size="sm"
+                    className="h-7 text-xs"
+                    disabled={!instruction.trim()}
+                    onClick={() => fire("custom", instruction.trim())}
+                  >
+                    Regenerate
+                  </Button>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function MenuItem({
+  title,
+  detail,
+  onClick,
+}: {
+  title: string;
+  detail: string;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="w-full rounded-sm px-2 py-1.5 text-left hover:bg-accent focus:bg-accent focus:outline-none"
+    >
+      <span className="block text-xs font-medium">{title}</span>
+      <span className="block text-[11px] text-muted-foreground">{detail}</span>
+    </button>
   );
 }
 
@@ -374,7 +532,8 @@ export function ReviewAndValidateStage({
   const regenerateQuestion = async (
     sIdx: number,
     qIdx: number,
-    targetTags?: { co?: string | null; btl?: number | null }
+    targetTags?: { co?: string | null; btl?: number | null },
+    opts?: { mode?: RegenerateMode; customInstruction?: string }
   ) => {
     if (!paper) return;
     const tplQ = sections[sIdx]?.questions[qIdx];
@@ -382,7 +541,14 @@ export function ReviewAndValidateStage({
     const templateQuestion = toTemplateQuestion(tplQ, qIdx + 1);
 
     const existing = paper.sections[sIdx]?.questions[qIdx];
-    const existingText = JSON.stringify(existing ?? {});
+    if (!existing) return;
+    const existingText = JSON.stringify(existing);
+    // Address the target by identity, captured BEFORE the await. Splicing back
+    // by the captured index was unsafe: a section edit, a subject switch, or a
+    // second regeneration resolving out of order would write this result into
+    // whatever question then occupied that index.
+    const targetId = existing.localId;
+    const mode = opts?.mode ?? "same_topic";
     const key = `${sIdx}-${qIdx}`;
     setRegenKey(key);
 
@@ -393,9 +559,14 @@ export function ReviewAndValidateStage({
         body: JSON.stringify({
           template_question: templateQuestion,
           section_modules: sectionModulesForServer(sIdx),
+          subject_id: selectedSubjectId,
           pyq_context: "",
           co_po_data: { courseOutcomes: paper.courseOutcomes ?? [] },
           question_context: existingText,
+          mode,
+          ...(opts?.customInstruction
+            ? { custom_instruction: opts.customInstruction }
+            : {}),
           ...(targetTags ? { target_tags: targetTags } : {}),
         }),
       });
@@ -404,24 +575,69 @@ export function ReviewAndValidateStage({
         question: GeneratedQuestion;
         warnings?: string[];
       };
+
+      let applied = true;
       setPaper((prev) => {
         if (!prev) return prev;
-        const next = { ...prev, sections: prev.sections.map((s) => ({ ...s })) };
-        next.sections[sIdx] = {
-          ...next.sections[sIdx],
-          questions: next.sections[sIdx].questions.map((q, i) =>
-            i === qIdx ? data.question : q
-          ),
-        };
+        if (!targetId) {
+          // Legacy paper with no identity — fall back to the old index splice
+          // rather than refusing to work. ensurePaperLocalIds makes this
+          // unreachable for anything generated or resumed after CP-QC1.
+          const next = { ...prev, sections: prev.sections.map((s) => ({ ...s })) };
+          if (!next.sections[sIdx]?.questions[qIdx]) return prev;
+          next.sections[sIdx] = {
+            ...next.sections[sIdx],
+            questions: next.sections[sIdx].questions.map((q, i) =>
+              i === qIdx ? data.question : q
+            ),
+          };
+          return next;
+        }
+        const next = withQuestionReplaced(prev, targetId, (q) =>
+          withRegeneratedContent(q, data.question, REGEN_REASON[mode])
+        );
+        if (!next) {
+          // The question is gone — discard rather than corrupt a live slot.
+          applied = false;
+          return prev;
+        }
         return next;
       });
-      toast.success("Question regenerated");
-      notifyCoCorrections(data.warnings);
+
+      if (applied) {
+        toast.success("Question regenerated", {
+          description: "Use Undo on the question to restore the previous version.",
+        });
+        notifyCoCorrections(data.warnings);
+      }
     } catch (err) {
       console.error(err);
       toast.error("Failed to regenerate question");
     } finally {
       setRegenKey(null);
+    }
+  };
+
+  // ─── Undo the last change to a question ────────────────────────────────
+  // Addressed by identity for the same reason regeneration is: the index the
+  // button rendered at may no longer be where the question lives.
+  const undoQuestion = (localId: string | undefined) => {
+    if (!localId) return;
+    let restoredReason: string | null = null;
+    setPaper((prev) => {
+      if (!prev) return prev;
+      const next = withQuestionReplaced(prev, localId, (q) => {
+        const popped = withUndoPopped(q);
+        if (!popped) return q;
+        restoredReason = popped.entry.reason;
+        return popped.question;
+      });
+      return next ?? prev;
+    });
+    if (restoredReason) {
+      toast.success("Reverted to the previous version", {
+        description: `Undid: ${restoredReason}`,
+      });
     }
   };
 
@@ -1082,19 +1298,30 @@ export function ReviewAndValidateStage({
                   <Badge variant="secondary" className="text-[10px]">
                     [{String(q.total_marks).padStart(2, "0")}]
                   </Badge>
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    disabled={regenKey === `${sIdx}-${qIdx}`}
-                    onClick={() => regenerateQuestion(sIdx, qIdx)}
-                    title="Regenerate this question"
-                  >
-                    {regenKey === `${sIdx}-${qIdx}` ? (
-                      <Loader2 className="size-3.5 animate-spin" />
-                    ) : (
-                      <RefreshCw className="size-3.5" />
-                    )}
-                  </Button>
+                  {/* Undo appears only when there is something to revert to.
+                      Previously a regeneration was irreversible: a worse
+                      replacement simply destroyed the question it replaced. */}
+                  {canUndo(q) && (
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="h-7 px-2 text-xs"
+                      onClick={() => undoQuestion(q.localId)}
+                      title={`Undo: ${q.undoStack![q.undoStack!.length - 1].reason}`}
+                    >
+                      <Undo2 className="size-3.5 mr-1" />
+                      Undo
+                    </Button>
+                  )}
+                  <RegenerateMenu
+                    busy={regenKey === `${sIdx}-${qIdx}`}
+                    onRegenerate={(mode, customInstruction) =>
+                      regenerateQuestion(sIdx, qIdx, undefined, {
+                        mode,
+                        customInstruction,
+                      })
+                    }
+                  />
                 </div>
               </div>
 

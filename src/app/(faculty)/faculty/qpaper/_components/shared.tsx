@@ -14,6 +14,7 @@ import {
 } from "@/lib/qpaper/moduleAssignment";
 import { computeCoverage, type ModuleCoverage } from "@/lib/qpaper/coverage";
 import type { TemplateSection } from "@/lib/qpaper/templates";
+import type { QuestionUndoEntry } from "@/lib/qpaper/builder";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -216,6 +217,8 @@ export interface TagValidation {
 }
 
 export interface SubQuestion {
+  /** See GeneratedQuestion.localId. */
+  localId?: string;
   label: string;
   question: string;
   options?: Record<string, string>;
@@ -232,6 +235,8 @@ export interface SubQuestion {
 }
 
 export interface QuestionPart {
+  /** See GeneratedQuestion.localId. */
+  localId?: string;
   label?: string | null;
   question: string;
   marks: number;
@@ -248,6 +253,17 @@ export interface QuestionPart {
 }
 
 export interface GeneratedQuestion {
+  /**
+   * Stable per-paper identity. Canonical definition (and the reasoning) lives
+   * on GeneratedQuestion in @/lib/qpaper/builder — these builder-side types are
+   * a structural mirror of it, so the identity fields must be kept in step or
+   * the client silently loses the ability to address a question.
+   */
+  localId?: string;
+  /** Faculty pinned this question against a whole-paper regeneration. */
+  locked?: boolean;
+  /** Bounded undo ring — see @/lib/qpaper/questionIdentity. */
+  undoStack?: QuestionUndoEntry[];
   q_number: number;
   display_label?: string;
   type: string;
