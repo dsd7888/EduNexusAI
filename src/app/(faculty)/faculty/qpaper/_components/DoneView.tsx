@@ -27,6 +27,10 @@ import { PYQ_UPLOAD_CTA } from "@/components/pyq/pyqCopy";
 import { toast } from "sonner";
 import { ReviewAndValidateStage } from "./ReviewAndValidateStage";
 import { CoveragePanel } from "./CoveragePanel";
+import {
+  partitionLockedQuestions,
+  regenerateConfirmMessage,
+} from "@/lib/qpaper/carryForward";
 import type { ModuleCoverage } from "@/lib/qpaper/coverage";
 import { SaveTemplateAction } from "./SaveTemplateAction";
 import type {
@@ -58,7 +62,11 @@ interface DoneViewProps {
   totalMarksLive: number;
 
   onSavedToBank: () => void;
-  onGenerate: () => void;
+  /**
+   * Start a generation. `keepLockedIds` names questions the faculty locked;
+   * the route carries them through verbatim instead of regenerating their slots.
+   */
+  onGenerate: (opts?: { keepLockedIds?: string[] }) => void;
   /** True once the paper has been edited (inline edit / relabel / regen) since
    *  it was generated — Regenerate confirms before discarding those edits. */
   paperEditedSinceGeneration: boolean;
@@ -212,14 +220,26 @@ export function DoneView({
     ...livePoolShortfallWarnings,
   ];
 
+  // Whole-paper regeneration is no longer all-or-nothing. Locked questions are
+  // carried forward verbatim; only the rest is regenerated. The confirm text is
+  // generated from the same partition the request uses, so the dialog can never
+  // promise to keep a different number of questions than it actually keeps.
+  const lockPartition = partitionLockedQuestions(paper);
+
   const handleRegenerate = () => {
-    if (paperEditedSinceGeneration) {
-      const ok = window.confirm(
-        "You've made edits since this paper was generated. Regenerating will discard them and produce a fresh paper. Continue?"
-      );
-      if (!ok) return;
+    if (lockPartition.allLocked) {
+      toast.info("Every question is locked", {
+        description:
+          "Unlock at least one question to regenerate, or the paper would come back unchanged.",
+      });
+      return;
     }
-    onGenerate();
+    const message = regenerateConfirmMessage(
+      lockPartition,
+      paperEditedSinceGeneration
+    );
+    if (message && !window.confirm(message)) return;
+    onGenerate({ keepLockedIds: lockPartition.lockedIds });
   };
 
   const handleGenerateAnswerKey = async () => {

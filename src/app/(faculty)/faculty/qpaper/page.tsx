@@ -54,6 +54,11 @@ import {
 import type { PaperTemplateRow } from "@/lib/qpaper/templates";
 import { withLocalIds } from "@/lib/qpaper/questionIdentity";
 import type { ModuleCoverage } from "@/lib/qpaper/coverage";
+import {
+  lockedQuestionTexts,
+  partitionLockedQuestions,
+  restoreLockedQuestions,
+} from "@/lib/qpaper/carryForward";
 import { usePyqCoverage } from "@/hooks/usePyqCoverage";
 import { PyqUploadDialog } from "@/components/pyq/PyqUploadDialog";
 import { useQpaperDraft, type BuilderSnapshot } from "./_components/useQpaperDraft";
@@ -900,7 +905,15 @@ export default function QpaperPage() {
   );
 
   // ─── Generate ──────────────────────────────────────────────────────────
-  const handleGenerate = async () => {
+  const handleGenerate = async (opts?: { keepLockedIds?: string[] }) => {
+    // Snapshot what must survive this generation BEFORE any state changes.
+    // `opts.keepLockedIds` is the caller's intent; the paper itself is the
+    // source of truth for the content, so both are captured together here.
+    const lockPart = partitionLockedQuestions(paper);
+    const carried = {
+      previousPaper: opts?.keepLockedIds?.length ? paper : null,
+      texts: opts?.keepLockedIds?.length ? lockedQuestionTexts(lockPart) : [],
+    };
     if (!selectedSubjectId) {
       toast.error("Select a subject first");
       return;
@@ -980,6 +993,14 @@ export default function QpaperPage() {
             pct,
           })),
           difficultyTargets,
+          // Locked questions are carried through client-side after the
+          // response; their text goes to the server so the AI does not
+          // regenerate a near-duplicate of a question being preserved. This
+          // reuses the same exclusion channel that stops a fresh slot shadowing
+          // a Q-Bank question.
+          ...(carried.texts.length > 0
+            ? { excludeQuestionTexts: carried.texts }
+            : {}),
         }),
       });
       if (!res.ok) throw new Error(await res.text());
@@ -992,11 +1013,28 @@ export default function QpaperPage() {
         coverage?: ModuleCoverage[];
         warnings?: string[];
       };
-      // The route stamps localIds at assembly, so this is normally the
-      // allocation-free fast path. Kept as a belt-and-braces guard: during a
-      // rollout the client can outlive a server build that didn't stamp, and a
-      // paper without ids would silently break regeneration and undo.
-      setPaper(withLocalIds(data.paper));
+      // Carry the faculty's locked questions into the fresh paper before it
+      // reaches state, so the "kept" questions are never briefly replaced.
+      const merged = restoreLockedQuestions(
+        withLocalIds(data.paper),
+        carried.previousPaper
+      );
+      setPaper(merged.paper);
+      if (merged.restored > 0) {
+        toast.success(
+          `Kept ${merged.restored} locked question${merged.restored === 1 ? "" : "s"}`
+        );
+      }
+      if (merged.unplaceable.length > 0) {
+        // Never silently lose a question the faculty asked to keep.
+        toast.warning(
+          `${merged.unplaceable.length} locked question${merged.unplaceable.length === 1 ? "" : "s"} could not be carried forward`,
+          {
+            description:
+              "The paper structure changed, so there was no matching slot. Use Undo on the affected question, or re-add it from your Q Bank.",
+          }
+        );
+      }
       setDownloadUrl(data.downloadUrl ?? null);
       setPdfPath(data.filePath ?? null);
       setBankFallbackCount(data.bankFallbackCount ?? 0);

@@ -57,6 +57,12 @@ export interface QuestionSlot {
   /** If true, this slot is the OR-alternative of an earlier slot — same module. */
   isOrAlternative: boolean;
   /**
+   * True when the template pinned this slot's module explicitly. Such a slot is
+   * never reassigned by the coverage floor, and the coverage ledger uses the
+   * same fact to tell a pin apart from ordinary weightage rounding.
+   */
+  pinned?: boolean;
+  /**
    * AI sourcing style for this slot, when the caller has allocated one
    * (from allocateSlotSources). "pyq_style" → mirror PYQ phrasing/framing;
    * "fresh" → original framing. Unset = no per-slot style directive.
@@ -96,6 +102,18 @@ export interface SlotAssignmentContext {
   coTargets?: Map<string, number>;
   /** Per-slot difficulty directives, distributed across the section's slots. */
   difficultyTargets?: DifficultyTarget[];
+  /**
+   * Guarantee every module in this section at least one slot, when the section
+   * has room for it (slots >= modules).
+   *
+   * Weightage-proportional allocation legitimately rounds a small module to
+   * zero, which is how a selected unit could end up with no questions at all.
+   * Selecting a unit is an inclusion decision, though, not a proportion one:
+   * weightage should govern how MUCH of the paper a unit gets, not whether it
+   * appears. Opt-in rather than automatic so the pure allocator keeps its
+   * previous behaviour by default and only the generation path takes the floor.
+   */
+  ensureModuleFloor?: boolean;
 }
 
 // ─── Constants ─────────────────────────────────────────────────────────────
@@ -404,6 +422,102 @@ function resolvePinnedModule(
   return found;
 }
 
+/**
+ * Give every module at least one slot, by reassigning slots from the modules
+ * that hold the most.
+ *
+ * A post-pass rather than a change to pickModule: the picker is greedy and
+ * per-slot, so it cannot see a global "every module needs one" constraint
+ * without losing the weightage proportionality that is its whole job. Fixing it
+ * up afterwards keeps both properties — proportional in the large, complete in
+ * the small.
+ *
+ * Never touches:
+ *   - pinned slots, which encode an explicit faculty decision;
+ *   - OR-alternative slots, which must stay on their primary's module or the
+ *     two sides of an OR would come from different units;
+ *   - a donor's last remaining slot, which would just move the hole.
+ *
+ * Reassignment REBUILDS the slot rather than rewriting moduleNumber, because a
+ * slot also carries the module's BTL levels, COs and POs — patching the number
+ * alone would leave a slot describing one module while tagged for another.
+ */
+function applyModuleCoverageFloor(
+  slots: QuestionSlot[],
+  modules: ModuleData[],
+  buildSlot: (params: {
+    slotKey: string;
+    display: string;
+    module: ModuleData;
+    marks: number;
+    qType: string;
+    isOr?: boolean;
+    poolItemType?: QuestionType;
+    pinned?: boolean;
+  }) => QuestionSlot
+): void {
+  // Not enough slots to go round: forcing the floor would just move the gap to
+  // another module, and the coverage ledger explains it honestly instead.
+  if (slots.length < modules.length) return;
+
+  const countFor = (n: number) => slots.filter((s) => s.moduleNumber === n).length;
+  const missing = modules.filter((m) => countFor(m.module_number) === 0);
+  if (missing.length === 0) return;
+
+  for (const needy of missing) {
+    // Donor = the module with the most slots that can spare one.
+    let donorNumber = -1;
+    let donorCount = 1;
+    for (const m of modules) {
+      const c = countFor(m.module_number);
+      if (c > donorCount) {
+        donorCount = c;
+        donorNumber = m.module_number;
+      }
+    }
+    if (donorNumber === -1) break; // nothing can spare a slot
+
+    // Prefer the donor's LAST eligible slot: later slots are typically the
+    // lower-stakes tail of a section, so the visible reshuffle is smaller.
+    let idx = -1;
+    for (let i = slots.length - 1; i >= 0; i--) {
+      const s = slots[i];
+      if (s.moduleNumber !== donorNumber) continue;
+      if (s.pinned || s.isOrAlternative) continue;
+      // An OR primary must not move either: its alternative is pinned to it.
+      const hasDependentOr = slots.some(
+        (o) => o.isOrAlternative && o.slotKey === `${s.slotKey}_or`
+      );
+      if (hasDependentOr) continue;
+      idx = i;
+      break;
+    }
+    if (idx === -1) continue; // donor's slots are all immovable
+
+    const old = slots[idx];
+    slots[idx] = {
+      ...buildSlot({
+        slotKey: old.slotKey,
+        display: old.display,
+        module: needy,
+        marks: old.marks,
+        // The slot's question type is not stored on QuestionSlot; poolItemType
+        // recovers it for pool slots, and the generic descriptive range is the
+        // right default elsewhere. targetBtlRange is recomputed from the new
+        // module's own levels either way.
+        qType: old.poolItemType
+          ? poolItemAssignmentQType(old.poolItemType)
+          : "descriptive",
+        ...(old.poolItemType ? { poolItemType: old.poolItemType } : {}),
+      }),
+      // Preserve the per-slot directives the caller already allocated; they
+      // belong to the SLOT, not to whichever module fills it.
+      ...(old.style ? { style: old.style } : {}),
+      ...(old.targetDifficulty ? { targetDifficulty: old.targetDifficulty } : {}),
+    };
+  }
+}
+
 // ─── Public entry point ────────────────────────────────────────────────────
 
 export function assignModulesToSlots(
@@ -462,6 +576,7 @@ export function assignModulesToSlots(
     qType: string;
     isOr?: boolean;
     poolItemType?: QuestionType;
+    pinned?: boolean;
   }): QuestionSlot => {
     const allowed = normaliseBtl(params.module.btl_levels);
     // A paper-wide btlRange takes precedence over the per-type default range;
@@ -483,6 +598,7 @@ export function assignModulesToSlots(
       cos,
       pos: posFor(cos),
       isOrAlternative: params.isOr ?? false,
+      ...(params.pinned ? { pinned: true } : {}),
       ...(params.poolItemType ? { poolItemType: params.poolItemType } : {}),
       ...(targetCo ? { targetCo } : {}),
     };
@@ -514,6 +630,7 @@ export function assignModulesToSlots(
             module: mod,
             marks: marksPer,
             qType: "mcq",
+            pinned: Boolean(pinnedModule),
           })
         );
       }
@@ -533,6 +650,7 @@ export function assignModulesToSlots(
           module: mod,
           marks: q.total_marks,
           qType: q.has_numerical ? "numerical" : "descriptive",
+          pinned: Boolean(pinnedModule),
         })
       );
       return;
@@ -626,6 +744,7 @@ export function assignModulesToSlots(
               marks: marksPer,
               qType,
               poolItemType: row.itemType,
+              pinned: Boolean(pinnedModule),
             })
           );
           globalIdx++;
@@ -634,6 +753,13 @@ export function assignModulesToSlots(
       return;
     }
   });
+
+  // Coverage floor: give every module in this section at least one slot when
+  // there is room. Runs BEFORE difficulty apportionment so reassigned slots
+  // still receive a difficulty directive.
+  if (ctx.ensureModuleFloor) {
+    applyModuleCoverageFloor(slots, modules, buildSlot);
+  }
 
   // BTL: buildSlot already set every slot's targetBtlRange from ctx.btlRange
   // (or the per-question-type TYPE_BTL_RANGE default), clamped to the module's

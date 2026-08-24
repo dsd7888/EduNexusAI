@@ -191,6 +191,17 @@ export async function POST(request: NextRequest) {
     const preferredQuestionIds = Array.isArray(body.preferredQuestionIds)
       ? (body.preferredQuestionIds as unknown[]).map(String)
       : [];
+    // Question text the AI must not reproduce — currently the questions the
+    // faculty locked for carry-forward, which are merged back client-side.
+    // Bounded so a hostile or buggy client cannot blow the prompt budget.
+    const MAX_EXCLUDE_TEXTS = 60;
+    const MAX_EXCLUDE_CHARS = 600;
+    const excludeQuestionTexts = Array.isArray(body.excludeQuestionTexts)
+      ? (body.excludeQuestionTexts as unknown[])
+          .map((t) => String(t ?? "").trim().slice(0, MAX_EXCLUDE_CHARS))
+          .filter(Boolean)
+          .slice(0, MAX_EXCLUDE_TEXTS)
+      : [];
     // ── Secondary directives (weightage stays primary): BTL range, CO%, difficulty% ──
     // btlRange: [min, max], both integers 1-6, min <= max.
     let btlRange: [number, number] | undefined;
@@ -479,6 +490,9 @@ export async function POST(request: NextRequest) {
           btlRange,
           coTargets: sectionCoTargetsFor(section),
           difficultyTargets,
+          // A unit the faculty selected must not be rounded out of the paper
+          // entirely; weightage governs proportion, not inclusion.
+          ensureModuleFloor: true,
         }
       );
       const targets = new Map<string, SlotTarget>();
@@ -593,13 +607,19 @@ export async function POST(request: NextRequest) {
       // "shadow") a bank question's content. Bank overlay happens AFTER this AI
       // call, so without this the AI generates blind to the bank's contribution.
       const alloc = allocations[sIdx];
-      const placedBankQuestions = alloc
-        ? Array.from(
-            new Set(
-              Array.from(alloc.bySlot.values()).map((b) => b.question_text)
-            )
-          )
-        : [];
+      const placedBankQuestions = Array.from(
+        new Set([
+          ...(alloc
+            ? Array.from(alloc.bySlot.values()).map((b) => b.question_text)
+            : []),
+          // Questions the faculty locked for carry-forward. They are merged back
+          // client-side after this call, so without listing them here the AI
+          // would generate blind to them and could return a near-duplicate of a
+          // question the faculty deliberately preserved. Same exclusion channel,
+          // same reason.
+          ...excludeQuestionTexts,
+        ])
+      );
       try {
         const { questions, warnings } = await generateSection({
           sectionName: section.section_name,

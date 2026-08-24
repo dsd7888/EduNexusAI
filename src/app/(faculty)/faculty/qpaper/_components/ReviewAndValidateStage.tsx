@@ -11,7 +11,18 @@
  */
 
 import { useEffect, useRef, useState } from "react";
-import { Flag, Library, Loader2, Pencil, RefreshCw, Save, Undo2, X } from "lucide-react";
+import {
+  Flag,
+  Library,
+  Loader2,
+  Lock,
+  LockOpen,
+  Pencil,
+  RefreshCw,
+  Save,
+  Undo2,
+  X,
+} from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -616,6 +627,23 @@ export function ReviewAndValidateStage({
     } finally {
       setRegenKey(null);
     }
+  };
+
+  // ─── Lock / unlock a question for carry-forward ────────────────────────
+  // Addressed by identity, like every other post-generation mutation here.
+  // Deliberately does NOT go through setPaperAndClearKey's "edited" flag being
+  // meaningful for the PDF: a lock changes no rendered content, so it must not
+  // make an up-to-date PDF look stale. It still routes through setPaper so the
+  // draft/history autosave persists it.
+  const toggleLock = (localId: string | undefined) => {
+    if (!localId) return;
+    setPaper((prev) => {
+      if (!prev) return prev;
+      return (
+        withQuestionReplaced(prev, localId, (q) => ({ ...q, locked: !q.locked })) ??
+        prev
+      );
+    });
   };
 
   // ─── Undo the last change to a question ────────────────────────────────
@@ -1298,6 +1326,31 @@ export function ReviewAndValidateStage({
                   <Badge variant="secondary" className="text-[10px]">
                     [{String(q.total_marks).padStart(2, "0")}]
                   </Badge>
+                  {/* Lock = "keep this one". A whole-paper regeneration
+                      preserves locked questions verbatim instead of discarding
+                      everything, which is what previously forced faculty to
+                      gamble good questions to fix a weak one. */}
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className={cn(
+                      "h-7 px-2 text-xs",
+                      q.locked && "text-amber-600 hover:text-amber-700"
+                    )}
+                    onClick={() => toggleLock(q.localId)}
+                    title={
+                      q.locked
+                        ? "Locked — kept when the paper is regenerated. Click to unlock."
+                        : "Lock this question so a regeneration keeps it"
+                    }
+                    aria-pressed={Boolean(q.locked)}
+                  >
+                    {q.locked ? (
+                      <Lock className="size-3.5" />
+                    ) : (
+                      <LockOpen className="size-3.5" />
+                    )}
+                  </Button>
                   {/* Undo appears only when there is something to revert to.
                       Previously a regeneration was irreversible: a worse
                       replacement simply destroyed the question it replaced. */}

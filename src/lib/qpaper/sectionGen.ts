@@ -1699,6 +1699,8 @@ export interface SlotAssignmentInput {
   btlRange?: [number, number];
   coTargets?: Map<string, number>;
   difficultyTargets?: DifficultyTarget[];
+  /** Guarantee each in-scope module at least one slot. See SlotAssignmentContext. */
+  ensureModuleFloor?: boolean;
 }
 
 function buildSlotCtx({
@@ -1708,6 +1710,7 @@ function buildSlotCtx({
   btlRange,
   coTargets,
   difficultyTargets,
+  ensureModuleFloor,
 }: SlotAssignmentInput): SlotAssignmentContext {
   const coPoMap = new Map<string, Array<{ po_code: string; strength: number }>>();
   for (const m of coPoMapping) {
@@ -1721,6 +1724,7 @@ function buildSlotCtx({
     btlRange,
     coTargets,
     difficultyTargets,
+    ensureModuleFloor,
     // Per-module COs (from module_co_mapping) when available. Returning [] for a
     // module with no mapping rows is intentional — SlotAssignmentContext.cosFor
     // already falls back to allCoCodes on an empty result.

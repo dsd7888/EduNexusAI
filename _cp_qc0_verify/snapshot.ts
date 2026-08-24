@@ -19,6 +19,16 @@
  *   explicit, reviewable diff rather than silently tolerated.
  *
  * No DB, no network, no AI spend.
+ *
+ * Baseline history (re-baselining is deliberate and must be justified here):
+ *   - CP-QC0: captured pre-deletion, verified post-deletion. 12/12 production
+ *     fixtures byte-identical; the 3 DEAD/* fixtures drifted as designed.
+ *   - CP-QC4: re-baselined. QuestionSlot gained an additive `pinned` flag, so
+ *     pinned slots serialise one extra key. Verified before re-baselining that
+ *     stripping `pinned` made current output equal to the previous baseline for
+ *     all 12 production fixtures — i.e. the coverage floor added in CP-QC4 did
+ *     NOT alter allocation. The floor is opt-in (ctx.ensureModuleFloor) and no
+ *     fixture here sets it; _cp_qc4_verify/pure.ts covers it directly.
  */
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
