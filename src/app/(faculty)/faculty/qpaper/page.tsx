@@ -918,6 +918,24 @@ export default function QpaperPage() {
       toast.error("Select a subject first");
       return;
     }
+    // A custom block with no format spec has no defined shape; generating it
+    // would spend a Pro call to produce an arbitrary question. Caught here
+    // rather than server-side so no call is made at all.
+    const specless = sections.flatMap((s, si) =>
+      s.questions
+        .filter((q) => q.contentType === "custom" && !q.formatSpec?.trim())
+        .map((q) => `${sections.length > 1 ? `${s.name}: ` : ""}${q.displayLabel || "Custom question"}`)
+        .map((label) => ({ label, si }))
+    );
+    if (specless.length > 0) {
+      toast.error(
+        specless.length === 1
+          ? "Describe the format for your custom question"
+          : `${specless.length} custom questions need a format description`,
+        { description: specless.map((x) => x.label).join(", ") }
+      );
+      return;
+    }
     if (sections.length === 0 || sections.every((s) => s.questions.length === 0)) {
       toast.error("Add at least one question first");
       return;

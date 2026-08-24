@@ -140,6 +140,10 @@ const TYPE_BTL_RANGE: Record<string, [number, number]> = {
   numerical: [3, 4],
   descriptive_with_or: [2, 4],
   attempt_any_one: [2, 3],
+  // An open-format block is typically "complete the logic" / "trace this" —
+  // genuinely Apply-to-Evaluate work, not recall. Without an entry here it
+  // would fall back to the generic [2, 3] and be under-pitched.
+  custom: [3, 5],
 };
 
 // ─── Difficulty apportionment ───────────────────────────────────────────────

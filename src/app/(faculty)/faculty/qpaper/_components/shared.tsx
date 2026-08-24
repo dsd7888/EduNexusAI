@@ -23,7 +23,15 @@ export interface CourseOutcomeRef {
   description: string;
 }
 
-export type ContentType = "mcq" | "truefalse" | "short" | "long" | "numerical" | "pool";
+export type ContentType =
+  | "mcq"
+  | "truefalse"
+  | "short"
+  | "long"
+  | "numerical"
+  | "pool"
+  /** Open format — the faculty describes the shape. See formatSpec. */
+  | "custom";
 
 /** Per-item types that can be composed into a pool question block. */
 export type QuestionType =
@@ -74,6 +82,12 @@ export interface BuilderQuestion {
   /** Pinned module id — when set, assignModulesToSlots skips pickModule
    *  for this slot and uses this module directly. null = auto (default). */
   pinnedModuleId?: string | null;
+  /**
+   * `custom` only, and required there: what the question must look like, in the
+   * faculty's words. Unlike `instruction` (optional, printed above the
+   * question) this shapes what the AI writes and is never printed on its own.
+   */
+  formatSpec?: string;
 }
 
 export interface BuilderSection {
@@ -338,8 +352,15 @@ export interface PoolItem {
 export interface TemplateQuestionPayload {
   q_number: number;
   display_label: string;
-  type: "mcq" | "descriptive" | "descriptive_with_or" | "attempt_any_one";
+  type:
+    | "mcq"
+    | "descriptive"
+    | "descriptive_with_or"
+    | "attempt_any_one"
+    | "custom";
   instruction: string | null;
+  /** `custom` only, required there — see TemplateQuestion.format_spec. */
+  format_spec?: string | null;
   total_marks: number;
   sub_parts?: number;
   marks_per_part?: number;
@@ -395,6 +416,7 @@ export const CONTENT_TYPE_LABELS: Record<ContentType, string> = {
   long: "Long Answer",
   numerical: "Numerical",
   pool: "Question Pool",
+  custom: "Custom Format",
 };
 
 /** Pool composition row item types shown in the builder dropdown. */
@@ -479,6 +501,7 @@ export function newQuestion(
       poolAttemptCount: 3,
       poolMarksPerItem: 1,
     },
+    custom: { subPartsCount: 1, marksPerPart: 1, marks: 6, formatSpec: "" },
   };
   const poolComposition =
     patch.poolComposition ??
@@ -554,6 +577,19 @@ export function toTemplateQuestion(
 ): TemplateQuestionBlockPayload {
   const display_label = q.displayLabel?.trim() || `Q - ${qNumber}`;
   const instruction = q.instruction.trim() ? q.instruction.trim() : null;
+
+  if (q.contentType === "custom") {
+    return {
+      q_number: qNumber,
+      display_label,
+      type: "custom",
+      instruction,
+      total_marks: q.marks,
+      format_spec: q.formatSpec?.trim() || null,
+      attempt_logic: null,
+      pinnedModuleId: q.pinnedModuleId ?? null,
+    };
+  }
 
   if (q.contentType === "pool") {
     const n = poolTotalCount(q.poolComposition);
@@ -950,6 +986,16 @@ function fromTemplateQuestion(q: TemplateQuestionBlockPayload): BuilderQuestion 
   }
 
   const tq = q as TemplateQuestionPayload;
+
+  if (tq.type === "custom") {
+    return newQuestion("custom", {
+      displayLabel: tq.display_label,
+      instruction: tq.instruction ?? "",
+      marks: tq.total_marks,
+      formatSpec: tq.format_spec ?? "",
+      pinnedModuleId: tq.pinnedModuleId ?? null,
+    });
+  }
 
   if (tq.type === "mcq") {
     return newQuestion("mcq", {

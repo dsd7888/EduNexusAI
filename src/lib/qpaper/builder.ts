@@ -125,6 +125,16 @@ export interface GeneratedQuestion {
   parts?: QuestionPart[];
   /** Populated on pool blocks after generation. */
   items?: PoolItem[];
+  /**
+   * `custom` blocks only: the whole question body as markdown, code fences
+   * included.
+   *
+   * Deliberately a single free-form field rather than sub_parts/parts: the
+   * point of a custom block is that its shape is whatever the faculty asked
+   * for, and forcing a pseudocode listing into a parts array would impose the
+   * very structure the type exists to escape.
+   */
+  custom_body?: string;
   /** Pool blocks only: the template's originally requested item count — the
    *  paper's instruction text and marks split must always derive from this,
    *  never from items.length (which is padded to this same count even when

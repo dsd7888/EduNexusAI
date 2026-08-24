@@ -264,9 +264,23 @@ function buildSlotsBlock(
     if (!match) return "";
     const idx = Number(match[1]) - 1;
     const tpl = templates[idx];
+    const lines: string[] = [];
     const instruction = tpl?.instruction?.trim();
-    if (!instruction) return "";
-    return `  Custom instruction (BINDING — the question(s) in this slot MUST comply): "${instruction}"`;
+    if (instruction) {
+      lines.push(
+        `  Custom instruction (BINDING — the question(s) in this slot MUST comply): "${instruction}"`
+      );
+    }
+    // A `custom` block's shape is defined entirely by the faculty, so its
+    // format_spec is the strongest directive in the slot.
+    const spec =
+      tpl && tpl.type === "custom" ? tpl.format_spec?.trim() : undefined;
+    if (spec) {
+      lines.push(
+        `  REQUIRED FORMAT (BINDING — this defines the SHAPE of the question, not just its topic): "${spec}"`
+      );
+    }
+    return lines.join("\n");
   };
 
   return slots
@@ -497,6 +511,33 @@ function buildOutputSchemaBlock(
     blocks.push(
       `Pool output rule: emit ONE parent object per pool question block. The top-level JSON array for this section has ${questionBlockCount} element(s) — one per question block — NOT one element per atomic slot (${slots.length} slot(s) in Part B).`
     );
+  }
+
+  if (typesPresent.has("custom")) {
+    // The whole point of a custom block is that its shape is the faculty's, so
+    // the schema deliberately does NOT prescribe sub_parts/parts. `custom_body`
+    // is one markdown string; fenced code survives to PDF/Word/web verbatim
+    // (see markdownLite's `code` segment), which is what makes a pseudocode
+    // fill-in-the-logic question renderable at all.
+    templates.forEach((t, i) => {
+      if (t.type !== "custom") return;
+      const spec = (t as { format_spec?: string | null }).format_spec?.trim();
+      blocks.push(`For CUSTOM (open format) — question block ${i + 1}:
+{
+  "slotKey": "Q${i + 1}",
+  "type": "custom",
+  "display_label": ${JSON.stringify(t.display_label)},
+  "total_marks": ${t.total_marks},
+  "custom_body": "<the ENTIRE question as markdown>",
+  "co": "<co code>", "btl": <integer 1-6>, "po": "<po code>"
+}
+The required format for this block is: ${JSON.stringify(spec || "(not specified)")}
+custom_body rules:
+  - It is the COMPLETE question as the student will see it. Do not split it into parts.
+  - Use a fenced code block (triple backticks) for any pseudocode, algorithm listing or code trace. Indentation inside the fence is preserved exactly and is part of the question.
+  - Represent a blank to be filled as ____ (four underscores) on the line where it belongs.
+  - Do NOT include the answer.`);
+    });
   }
 
   if (typesPresent.has("mcq")) {
@@ -1972,7 +2013,33 @@ export function normaliseQuestion(
         ? row.attempt_logic
         : template.attempt_logic ?? null,
   };
-  if (type === "mcq") {
+  if (type === "custom") {
+    // A custom block carries one free-form body plus its own tags. Falling
+    // through to the descriptive path below would look for `parts` that a
+    // custom block never has, and silently produce an empty question.
+    const body =
+      typeof row.custom_body === "string" && row.custom_body.trim()
+        ? row.custom_body
+        : typeof row.question === "string"
+          ? row.question
+          : "";
+    out.custom_body = body;
+    // Tags live on the block itself (there are no parts to hang them from), and
+    // are surfaced through a single synthetic part so every downstream consumer
+    // -- CO/BTL validation, the answer key, the tag editor -- keeps working
+    // without a special case for this type.
+    out.parts = [
+      {
+        label: null,
+        question: body,
+        marks: out.total_marks,
+        co: typeof row.co === "string" ? row.co : null,
+        btl: Number.isFinite(Number(row.btl)) ? Number(row.btl) : null,
+        po: typeof row.po === "string" ? row.po : null,
+        is_or_alternative: false,
+      },
+    ] as unknown as GeneratedQuestion["parts"];
+  } else if (type === "mcq") {
     const subs = Array.isArray(row.sub_parts) ? row.sub_parts : [];
     out.sub_parts = subs.map((s, i) =>
       normaliseSubPart(

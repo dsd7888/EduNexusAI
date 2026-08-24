@@ -14,7 +14,19 @@ export type TemplateQuestionType =
   | "mcq"
   | "descriptive"
   | "descriptive_with_or"
-  | "attempt_any_one";
+  | "attempt_any_one"
+  /**
+   * Open format — the escape hatch.
+   *
+   * Faculty asked for a pseudocode question with the main logic blanked out:
+   * not short, not long, not MCQ, not a plain fill-in-the-blank. Adding a fixed
+   * `pseudocode_fill_blank` member would not have helped for long -- the next
+   * request is diagram-labelling, then matching-pairs, then a code trace. One
+   * type whose SHAPE is described by the faculty covers all of them.
+   *
+   * Requires `format_spec`; see TemplateQuestion.format_spec.
+   */
+  | "custom";
 
 /** Per-item types that can be composed into a pool question block. */
 export type QuestionType =
@@ -67,6 +79,16 @@ interface TemplateQuestionBlockShared {
 
 export interface TemplateQuestion extends TemplateQuestionBlockShared {
   type: TemplateQuestionType;
+  /**
+   * `custom` blocks only, and MANDATORY there: what the question must look
+   * like, in the faculty's own words (e.g. "a complete pseudocode listing for
+   * binary search with the loop-update line replaced by a blank").
+   *
+   * Distinct from `instruction`, which is optional and prints above the
+   * question. This one shapes what the AI writes and is never printed on its
+   * own. Both are injected as binding prompt directives by sectionGen.
+   */
+  format_spec?: string | null;
   /** Pinned module id — basic mcq/descriptive rows only. When set,
    *  assignModulesToSlots uses this module directly instead of pickModule.
    *  null/absent = automatic weightage-based assignment (default). */
