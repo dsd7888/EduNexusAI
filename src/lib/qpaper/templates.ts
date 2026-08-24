@@ -34,6 +34,8 @@ export interface PoolCompositionEntry {
 
 /** One generated item inside a pool block (populated after generation). */
 export interface PoolItem {
+  /** Stable per-paper identity — see GeneratedQuestion.localId in builder.ts. */
+  localId?: string;
   itemType: QuestionType;
   question_text: string;
   /** Present for mcq-like item types (mcq, true_false). */

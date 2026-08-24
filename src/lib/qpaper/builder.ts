@@ -19,6 +19,8 @@ import type { TagValidation } from "./validateTags";
 // ── Types for the assembled paper ──────────────────────────────────────────
 
 export interface SubQuestion {
+  /** See {@link GeneratedQuestion.localId}. */
+  localId?: string;
   label: string;
   question: string;
   options?: Record<string, string>;
@@ -41,6 +43,8 @@ export interface SubQuestion {
 }
 
 export interface QuestionPart {
+  /** See {@link GeneratedQuestion.localId}. */
+  localId?: string;
   label?: string | null;
   question: string;
   marks: number;
@@ -62,7 +66,50 @@ export interface QuestionPart {
   validation?: TagValidation;
 }
 
+/**
+ * One entry in a question's undo ring.
+ *
+ * The snapshot is the WHOLE question as it was before the change, not just the
+ * sub-part that changed. Regeneration happens at four granularities (question,
+ * part, MCQ sub-part, pool item); storing a whole-question snapshot makes undo
+ * uniform across all four and means "undo my last change to this question"
+ * behaves the way faculty expect, with no cross-granularity bookkeeping.
+ *
+ * `question` never carries its own `undoStack` — see stripUndo() in
+ * questionIdentity.ts. Nesting stacks would grow the autosave payload
+ * geometrically.
+ */
+export interface QuestionUndoEntry {
+  /** ISO timestamp of the change being undone. */
+  at: string;
+  /** Human-readable cause, shown on the undo affordance. */
+  reason: string;
+  /** The question as it was immediately before the change. */
+  question: GeneratedQuestion;
+}
+
 export interface GeneratedQuestion {
+  /**
+   * Stable per-paper identity, stamped at assembly and preserved across edit,
+   * regeneration, export and history-resume. NOT a database id.
+   *
+   * Optional on the type so the many construction sites in sectionGen/bankFill
+   * don't each have to mint one, and so papers persisted before this field
+   * existed stay valid. Presence is guaranteed at the assembly boundary by
+   * ensurePaperLocalIds(); treat a missing value as "not yet backfilled",
+   * never as "this question has no identity".
+   *
+   * Exists because regeneration used to splice results back by array index,
+   * which breaks under section edits and the debounced history autosave.
+   */
+  localId?: string;
+  /**
+   * Faculty pinned this question: a whole-paper regeneration must carry it
+   * through verbatim instead of regenerating its slot.
+   */
+  locked?: boolean;
+  /** Bounded undo ring, oldest first. See {@link QuestionUndoEntry}. */
+  undoStack?: QuestionUndoEntry[];
   q_number: number;
   display_label?: string;
   type:

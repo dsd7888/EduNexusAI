@@ -52,6 +52,7 @@ import {
   type SourcingMixState,
 } from "./_components/shared";
 import type { PaperTemplateRow } from "@/lib/qpaper/templates";
+import { withLocalIds } from "@/lib/qpaper/questionIdentity";
 import { usePyqCoverage } from "@/hooks/usePyqCoverage";
 import { PyqUploadDialog } from "@/components/pyq/PyqUploadDialog";
 import { useQpaperDraft, type BuilderSnapshot } from "./_components/useQpaperDraft";
@@ -568,7 +569,11 @@ export default function QpaperPage() {
     setDifficultyTargets(s.difficultyTargets ?? defaultDifficultyTargets());
     setPreferredBankQuestionIds(s.preferredBankQuestionIds ?? []);
     // Restore generated output — null is fine; it just means builder view.
-    setPaper(s.paper ?? null);
+    // Papers persisted before localId existed are backfilled here, on the one
+    // path every draft/history resume goes through. ensurePaperLocalIds is
+    // idempotent and derives ids positionally, so re-resuming an unchanged row
+    // yields the same ids and does not look like an edit to the autosave.
+    setPaper(s.paper ? withLocalIds(s.paper) : null);
     setDownloadUrl(s.downloadUrl ?? null);
     setAnswerKeyUrl(s.answerKeyUrl ?? null);
   }, []);
@@ -982,7 +987,11 @@ export default function QpaperPage() {
         unplaceablePreferred?: Array<{ id: string; question_text: string }>;
         warnings?: string[];
       };
-      setPaper(data.paper);
+      // The route stamps localIds at assembly, so this is normally the
+      // allocation-free fast path. Kept as a belt-and-braces guard: during a
+      // rollout the client can outlive a server build that didn't stamp, and a
+      // paper without ids would silently break regeneration and undo.
+      setPaper(withLocalIds(data.paper));
       setDownloadUrl(data.downloadUrl ?? null);
       setPdfPath(data.filePath ?? null);
       setBankFallbackCount(data.bankFallbackCount ?? 0);

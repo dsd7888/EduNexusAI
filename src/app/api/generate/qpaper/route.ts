@@ -43,6 +43,7 @@ import {
 } from "@/lib/qpaper/qpaperImages";
 import { renderPaperMath } from "@/lib/qpaper/paperMath";
 import { selectModulesForSection } from "@/lib/qpaper/moduleScope";
+import { ensurePaperLocalIds } from "@/lib/qpaper/questionIdentity";
 import { examTypeLabel } from "@/lib/pyq/coverage";
 import { rowToBankQuestion, type FqbRow } from "@/lib/qbank/row";
 import type { BankQuestion } from "@/lib/qbank/types";
@@ -739,6 +740,12 @@ export async function POST(request: NextRequest) {
       hasCoPoData,
       ...(structure.flatLayout ? { flatLayout: true } : {}),
     };
+
+    // Stamp stable per-question identity before the paper leaves the server.
+    // Every downstream consumer (regeneration, undo, carry-forward locks, the
+    // history autosave) addresses questions by localId rather than by array
+    // index, so this is the one place that guarantees the ids exist.
+    ensurePaperLocalIds(paper);
 
     // ── Step 4: render PDF + upload ──────────────────────────────────────
     // Bank-sourced questions may carry an attached image: download the bytes
