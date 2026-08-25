@@ -92,6 +92,14 @@ async function main() {
   const preDraftIds = new Set(preDraftRows.map((d) => d.id as string));
   console.log(`Pre-existing drafts for this faculty: ${preDraftIds.size} (backed up, restored on exit)`);
 
+  // The paid phase really generates a paper, which writes a generated_content
+  // row and a PDF into Storage. Snapshot what exists first so cleanup removes
+  // only what this run produced. ai_call_logs rows are deliberately LEFT — they
+  // are the genuine cost record and deleting them would falsify spend history.
+  const { data: preContent } = await admin
+    .from("generated_content").select("id").eq("subject_id", subj.id).eq("type", "qpaper");
+  const preContentIds = new Set((preContent ?? []).map((r) => (r as { id: string }).id));
+
   const cookieValue = await sessionCookieFor(prof.email);
 
   const browser = await chromium.launch();
@@ -297,6 +305,25 @@ async function main() {
     await shot(page, "99-final");
     await browser.close();
 
+    // Remove generated_content + Storage objects this run produced.
+    const { data: postContent } = await admin
+      .from("generated_content")
+      .select("id, file_path, answer_key_path")
+      .eq("subject_id", subj.id).eq("type", "qpaper");
+    const mineContent = (postContent ?? []).filter(
+      (r) => !preContentIds.has((r as { id: string }).id)
+    ) as Array<{ id: string; file_path: string | null; answer_key_path: string | null }>;
+    if (mineContent.length) {
+      const paths = mineContent
+        .flatMap((r) => [r.file_path, r.answer_key_path])
+        .filter((x): x is string => Boolean(x));
+      if (paths.length) {
+        await admin.storage.from("generated-content").remove(paths);
+      }
+      await admin.from("generated_content").delete().in("id", mineContent.map((r) => r.id));
+      console.log(`[cleanup] generated_content rows removed: ${mineContent.length}; storage objects: ${paths.length}`);
+    }
+
     // Remove only the drafts this run created; leave the faculty's own alone.
     const { data: postDrafts } = await admin
       .from("qpaper_drafts").select("id").eq("faculty_id", prof.id);
@@ -383,9 +410,11 @@ async function runPaidPhase(page: Page, consoleErrors: string[]) {
   if (regenVisible) {
     await regenBtn.click();
     await page.waitForTimeout(600);
+    // Substring match, not exact: "Custom instruction…" carries an ellipsis,
+    // and an exact-text selector silently reported the mode as missing.
     for (const mode of ["Same topic", "Different topic", "Custom instruction"]) {
       assert(
-        await page.locator(`text="${mode}"`).first().isVisible().catch(() => false),
+        await page.getByText(mode, { exact: false }).first().isVisible().catch(() => false),
         `mode offered: ${mode}`
       );
     }

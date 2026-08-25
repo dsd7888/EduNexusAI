@@ -61,6 +61,7 @@ import {
 } from "@/lib/qpaper/poolRender";
 import {
   canUndo,
+  findQuestionByLocalId,
   withQuestionReplaced,
   withRegeneratedContent,
   withUndoPopped,
@@ -651,22 +652,32 @@ export function ReviewAndValidateStage({
   // button rendered at may no longer be where the question lives.
   const undoQuestion = (localId: string | undefined) => {
     if (!localId) return;
-    let restoredReason: string | null = null;
+
+    // Read what is being undone BEFORE mutating. The obvious version captured
+    // the reason from inside the setPaper updater and read it on the next line;
+    // that is a side effect in a state updater, and React neither guarantees
+    // the updater has run by then nor that it runs only once (StrictMode runs
+    // it twice). The revert itself worked, but the confirmation silently never
+    // appeared — caught by browser verification, not by any unit test.
+    const target = findQuestionByLocalId(paper, localId);
+    const entry = target?.question.undoStack?.[target.question.undoStack.length - 1];
+    if (!entry) return;
+
     setPaper((prev) => {
       if (!prev) return prev;
-      const next = withQuestionReplaced(prev, localId, (q) => {
-        const popped = withUndoPopped(q);
-        if (!popped) return q;
-        restoredReason = popped.entry.reason;
-        return popped.question;
-      });
-      return next ?? prev;
+      // Pure: no closure writes, safe to run more than once.
+      return (
+        withQuestionReplaced(
+          prev,
+          localId,
+          (q) => withUndoPopped(q)?.question ?? q
+        ) ?? prev
+      );
     });
-    if (restoredReason) {
-      toast.success("Reverted to the previous version", {
-        description: `Undid: ${restoredReason}`,
-      });
-    }
+
+    toast.success("Reverted to the previous version", {
+      description: `Undid: ${entry.reason}`,
+    });
   };
 
   // ─── Regenerate a single MCQ sub-part ───────────────────────────────────
