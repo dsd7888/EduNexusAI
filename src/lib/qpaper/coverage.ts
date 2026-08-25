@@ -24,6 +24,23 @@
 
 import type { QuestionSlot, ModuleData } from "./moduleAssignment";
 
+/**
+ * Allocation options that the generation route and the pre-flight preview MUST
+ * both apply.
+ *
+ * Exists because they diverged in exactly the way this module's docstring warns
+ * about. The route set `ensureModuleFloor: true`; the preview did not. The
+ * preview therefore predicted "3 of 8 units will get no questions" for a paper
+ * that generation would have covered completely — a FALSE warning, which is
+ * worse than no warning, because it teaches faculty that the panel is noise.
+ *
+ * Spread this at both call sites rather than repeating the literal, so adding
+ * the next such option cannot reintroduce the drift.
+ */
+export const GENERATION_ALLOCATION_DEFAULTS = {
+  ensureModuleFloor: true,
+} as const;
+
 /** Why a selected module ended up with the coverage it did. */
 export type CoverageReason =
   /** Covered. `slots`/`marks` describe how much. */

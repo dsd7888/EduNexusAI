@@ -12,7 +12,11 @@
 import {
   assignModulesToSlots,
 } from "@/lib/qpaper/moduleAssignment";
-import { computeCoverage, type ModuleCoverage } from "@/lib/qpaper/coverage";
+import {
+  computeCoverage,
+  GENERATION_ALLOCATION_DEFAULTS,
+  type ModuleCoverage,
+} from "@/lib/qpaper/coverage";
 import type { TemplateSection } from "@/lib/qpaper/templates";
 import type { QuestionUndoEntry } from "@/lib/qpaper/builder";
 
@@ -945,7 +949,12 @@ export function previewCoverage(ctx: TemplatePayloadContext): ModuleCoverage[] {
         slots: assignModulesToSlots(
           sectionModules,
           s as unknown as TemplateSection,
-          btlRange ? { btlRange } : {}
+          {
+            ...(btlRange ? { btlRange } : {}),
+            // Shared with the generation route so the preview cannot drift
+            // from what actually runs — see GENERATION_ALLOCATION_DEFAULTS.
+            ...GENERATION_ALLOCATION_DEFAULTS,
+          }
         ),
         pinnedModuleIds: collectPinnedIds(s),
       };

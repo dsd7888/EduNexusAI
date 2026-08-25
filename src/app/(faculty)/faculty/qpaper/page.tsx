@@ -11,16 +11,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { ArrowLeft, FileText, History } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "@/components/ui/alert-dialog";
 import { createBrowserClient } from "@/lib/db/supabase-browser";
 import { useFacultySubjects } from "@/hooks/useSupabaseData";
 import { toast } from "sonner";
@@ -1160,40 +1150,40 @@ export default function QpaperPage() {
       )}
 
       {/* ── Resume an in-progress draft ──────────────────────────────── */}
-      <AlertDialog open={!!resumeCandidate}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>
-              {resumeCandidate?.generationStatus === "generating"
+      {/* ── Resume-draft notice ───────────────────────────────────────────
+          An inline banner, NOT a modal. Resuming a draft is a low-stakes,
+          entirely optional choice, and the modal version blocked every control
+          on the page behind an overlay until it was answered — so the faculty
+          had to deal with it before they could do anything at all, on every
+          visit. A banner offers the same two actions, stays out of the way,
+          and lets the builder be used while it sits there. */}
+      {resumeCandidate && (
+        <div className="rounded-lg border border-sky-500/40 bg-sky-500/5 px-4 py-3 flex flex-wrap items-center gap-x-4 gap-y-2">
+          <History className="size-4 shrink-0 text-sky-600" />
+          <div className="min-w-0 flex-1">
+            <p className="text-sm font-medium">
+              {resumeCandidate.generationStatus === "generating"
                 ? "Your last generation may not have completed"
-                : "Resume your draft?"}
-            </AlertDialogTitle>
-            <AlertDialogDescription>
-              {resumeCandidate?.generationStatus === "generating"
-                ? `You left a paper generating on ${
-                    resumeCandidate
-                      ? new Date(resumeCandidate.lastSavedAt).toLocaleString()
-                      : ""
-                  }. It may have finished or failed after you navigated away — restore the setup and retry?`
-                : `We found an in-progress paper from ${
-                    resumeCandidate
-                      ? new Date(resumeCandidate.lastSavedAt).toLocaleString()
-                      : ""
-                  }. Pick up where you left off, or discard it and start fresh.`}
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel onClick={discard}>
+                : "You have an unfinished paper"}
+            </p>
+            <p className="text-xs text-muted-foreground">
+              {resumeCandidate.generationStatus === "generating"
+                ? `Left generating on ${new Date(resumeCandidate.lastSavedAt).toLocaleString()} — it may have finished or failed after you navigated away.`
+                : `Last saved ${new Date(resumeCandidate.lastSavedAt).toLocaleString()}. Carry on with it, or dismiss this and start fresh.`}
+            </p>
+          </div>
+          <div className="flex items-center gap-2 shrink-0">
+            <Button size="sm" variant="ghost" onClick={discard}>
               Discard
-            </AlertDialogCancel>
-            <AlertDialogAction onClick={handleResume}>
-              {resumeCandidate?.generationStatus === "generating"
+            </Button>
+            <Button size="sm" onClick={handleResume}>
+              {resumeCandidate.generationStatus === "generating"
                 ? "Restore & retry"
-                : "Resume draft"}
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+                : "Resume"}
+            </Button>
+          </div>
+        </div>
+      )}
 
       {/* ── VIEW: form — two-column setup sidebar + builder ──────────────── */}
       {view === "form" && (

@@ -10,7 +10,10 @@ import {
   type ModuleData,
   type QuestionSlot,
 } from "../src/lib/qpaper/moduleAssignment";
-import { computeCoverage } from "../src/lib/qpaper/coverage";
+import {
+  computeCoverage,
+  GENERATION_ALLOCATION_DEFAULTS,
+} from "../src/lib/qpaper/coverage";
 import {
   partitionLockedQuestions,
   restoreLockedQuestions,
@@ -188,6 +191,50 @@ const counts = (slots: QuestionSlot[]) => {
   const one = assignModulesToSlots([M(1, "Only", 100)], descriptiveSection(3), { ensureModuleFloor: true });
   assert(one.length === 3 && one.every((s) => s.moduleNumber === 1),
     "single module keeps every slot");
+}
+
+// ─── Preview/generation parity ──────────────────────────────────────────────
+
+{
+  // [REGRESSION] Found by browser testing, not by any unit test: the route set
+  // ensureModuleFloor while the builder's pre-flight preview did not, so the
+  // preview reported "3 of 8 units will get no questions" for a paper that
+  // generation would have covered completely. A false warning is worse than no
+  // warning — it teaches faculty the panel is noise.
+  assert(
+    GENERATION_ALLOCATION_DEFAULTS.ensureModuleFloor === true,
+    "the shared allocation defaults enable the coverage floor"
+  );
+
+  // The property that matters: applying the shared defaults must cover every
+  // in-scope unit when the section has room, which is precisely what the
+  // preview promises and the route delivers.
+  const mods = [M(1, "Big", 90), M(2, "Tiny", 5), M(3, "Small", 5)];
+  const tpl = descriptiveSection(3);
+  const withDefaults = assignModulesToSlots(mods, tpl, {
+    ...GENERATION_ALLOCATION_DEFAULTS,
+  });
+  const ledger = computeCoverage({
+    selectedModules: mods,
+    sections: [{ sectionName: "S", modules: mods, slots: withDefaults }],
+  });
+  assert(
+    ledger.every((c) => c.slots > 0),
+    "under the shared defaults every in-scope unit is covered (preview and route agree)"
+  );
+
+  // And the negative control: WITHOUT the shared defaults the same fixture
+  // leaves a unit uncovered. If this ever stops holding, the assertion above
+  // is passing for the wrong reason.
+  const withoutDefaults = assignModulesToSlots(mods, tpl, {});
+  const bare = computeCoverage({
+    selectedModules: mods,
+    sections: [{ sectionName: "S", modules: mods, slots: withoutDefaults }],
+  });
+  assert(
+    bare.some((c) => c.slots === 0),
+    "without the defaults the same fixture DOES leave a unit uncovered (drift is detectable)"
+  );
 }
 
 // ─── Carry-forward partitioning ─────────────────────────────────────────────

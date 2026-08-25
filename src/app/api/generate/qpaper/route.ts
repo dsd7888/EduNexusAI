@@ -44,7 +44,11 @@ import {
 import { renderPaperMath } from "@/lib/qpaper/paperMath";
 import { selectModulesForSection } from "@/lib/qpaper/moduleScope";
 import { ensurePaperLocalIds } from "@/lib/qpaper/questionIdentity";
-import { computeCoverage, uncoveredModules } from "@/lib/qpaper/coverage";
+import {
+  computeCoverage,
+  uncoveredModules,
+  GENERATION_ALLOCATION_DEFAULTS,
+} from "@/lib/qpaper/coverage";
 import { examTypeLabel } from "@/lib/pyq/coverage";
 import { rowToBankQuestion, type FqbRow } from "@/lib/qbank/row";
 import type { BankQuestion } from "@/lib/qbank/types";
@@ -491,8 +495,9 @@ export async function POST(request: NextRequest) {
           coTargets: sectionCoTargetsFor(section),
           difficultyTargets,
           // A unit the faculty selected must not be rounded out of the paper
-          // entirely; weightage governs proportion, not inclusion.
-          ensureModuleFloor: true,
+          // entirely; weightage governs proportion, not inclusion. Shared with
+          // the builder's pre-flight preview so the two cannot disagree.
+          ...GENERATION_ALLOCATION_DEFAULTS,
         }
       );
       const targets = new Map<string, SlotTarget>();

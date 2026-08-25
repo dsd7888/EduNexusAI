@@ -68,17 +68,41 @@ const AUTOSAVE_DEBOUNCE_MS = 1500;
 const DRAFT_RECENT_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 
 /**
+ * Recursively drop every `id` key.
+ *
+ * These ids are `uid()` values minted fresh on each builder construction and
+ * are never user-controlled, so they must not reach the fingerprint. Stripping
+ * only the top-level question id (the previous behaviour) was not enough:
+ * `newQuestion()` attaches a `poolComposition` row carrying its OWN `uid()` to
+ * every question, so a pristine builder fingerprinted DIFFERENTLY ON EVERY
+ * MOUNT. isMeaningful() was therefore true for an untouched builder, a draft
+ * was saved on every visit, and every later visit prompted to resume it — the
+ * "it comes many times" report. Recursing means the next nested id-bearing
+ * shape cannot reintroduce this.
+ */
+function stripIds(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(stripIds);
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .filter(([k]) => k !== "id")
+        .map(([k, v]) => [k, stripIds(v)])
+    );
+  }
+  return value;
+}
+
+/**
  * Stable fingerprint of the *user-controlled* configuration, with volatile
- * section/question ids stripped and auto-populated fields (subject + modules,
- * which the page fills in without user action) excluded. Used to decide whether
- * a draft is worth resuming — i.e. differs from a pristine builder.
+ * ids stripped and auto-populated fields (subject + modules, which the page
+ * fills in without user action) excluded. Used to decide whether a draft is
+ * worth resuming — i.e. differs from a pristine builder.
  */
 function meaningfulFingerprint(s: BuilderSnapshot): string {
   return JSON.stringify({
     sections: s.sections.map((sec) => ({
       name: sec.name,
-      // eslint-disable-next-line @typescript-eslint/no-unused-vars
-      questions: sec.questions.map(({ id, ...q }) => q),
+      questions: stripIds(sec.questions),
     })),
     meta: { ...s.meta, instructions: s.meta.instructions.map((i) => i.text) },
     flatLayout: s.flatLayout,
@@ -91,28 +115,45 @@ function meaningfulFingerprint(s: BuilderSnapshot): string {
   });
 }
 
-const PRISTINE_FINGERPRINT = meaningfulFingerprint({
-  selectedSubjectId: "",
-  selectedModuleIds: [],
-  meta: defaultMetadata(),
-  sections: eseStandardSections(),
-  flatLayout: false,
-  targetMarks: 60,
-  sourcingMix: defaultSourcingMix(),
-  btlRange: defaultBtlRange(),
-  coTargetsPct: {},
-  difficultyTargets: defaultDifficultyTargets(),
-  preferredBankQuestionIds: [],
-  paper: null,
-  downloadUrl: null,
-  answerKeyUrl: null,
-});
+function pristineWith(sourcingMix: SourcingMixState): string {
+  return meaningfulFingerprint({
+    selectedSubjectId: "",
+    selectedModuleIds: [],
+    meta: defaultMetadata(),
+    sections: eseStandardSections(),
+    flatLayout: false,
+    targetMarks: 60,
+    sourcingMix,
+    btlRange: defaultBtlRange(),
+    coTargetsPct: {},
+    difficultyTargets: defaultDifficultyTargets(),
+    preferredBankQuestionIds: [],
+    paper: null,
+    downloadUrl: null,
+    answerKeyUrl: null,
+  });
+}
+
+/**
+ * Every shape a builder can be in WITHOUT the faculty having authored anything.
+ *
+ * There is more than one, because the page reconciles the sourcing mix against
+ * PYQ availability on subject select (page.tsx: 100% fresh → 80/20 the moment a
+ * subject with past papers is chosen). That reconciliation is the APP's doing,
+ * not the user's — but it used to flip the single pristine comparison to
+ * "meaningful", so merely picking a subject created a draft, and every later
+ * visit opened a "Resume your draft?" prompt for work nobody had done.
+ */
+const PRISTINE_FINGERPRINTS = new Set([
+  pristineWith(defaultSourcingMix(false)),
+  pristineWith(defaultSourcingMix(true)),
+]);
 
 function isMeaningful(s: BuilderSnapshot): boolean {
   // A draft with generated content is always worth resuming, regardless of
   // whether the pre-generation config looks pristine.
   if (s.paper !== null) return true;
-  return meaningfulFingerprint(s) !== PRISTINE_FINGERPRINT;
+  return !PRISTINE_FINGERPRINTS.has(meaningfulFingerprint(s));
 }
 
 function isRecent(iso: string): boolean {
@@ -149,6 +190,16 @@ export function useQpaperDraft(
   const [lastSavedAt, setLastSavedAt] = useState<string | null>(null);
 
   const draftIdRef = useRef<string | null>(null);
+  /**
+   * Fingerprint of the state the user last discarded.
+   *
+   * Discard used to only delete the row and null the id — so the very next
+   * autosave tick re-INSERTED a draft from the same unchanged state, and the
+   * prompt returned on the next visit. Discarding recreated the thing being
+   * discarded. Autosave now stays quiet until the state actually differs from
+   * what was dismissed, so "discard" means discarded.
+   */
+  const discardedFingerprintRef = useRef<string | null>(null);
   // Fingerprint of the last persisted snapshot, to skip no-op writes.
   const lastWrittenRef = useRef<string | null>(null);
   // Latest snapshot, so imperative callbacks (generate flow) read current state.
@@ -256,6 +307,14 @@ export function useQpaperDraft(
     if (disabled) return;
     if (phase !== "active" || !userId) return;
     if (!isMeaningful(snapshot)) return; // don't persist a pristine builder
+    // Respect a discard until the faculty genuinely changes something.
+    if (
+      discardedFingerprintRef.current !== null &&
+      meaningfulFingerprint(snapshot) === discardedFingerprintRef.current &&
+      snapshot.paper === null
+    ) {
+      return;
+    }
     if (JSON.stringify(snapshot) === lastWrittenRef.current) return; // no change
 
     const t = setTimeout(() => persist(snapshot), AUTOSAVE_DEBOUNCE_MS);
@@ -266,6 +325,7 @@ export function useQpaperDraft(
   const resume = useCallback((): BuilderSnapshot | null => {
     if (!resumeCandidate) return null;
     draftIdRef.current = resumeCandidate.id;
+    discardedFingerprintRef.current = null;
     lastWrittenRef.current = JSON.stringify(resumeCandidate.builderState);
     setLastSavedAt(resumeCandidate.lastSavedAt);
     const state = resumeCandidate.builderState;
@@ -279,6 +339,8 @@ export function useQpaperDraft(
     const candidate = resumeCandidate;
     setResumeCandidate(null);
     setPhase("active");
+    // Remember what was dismissed so autosave doesn't immediately recreate it.
+    discardedFingerprintRef.current = meaningfulFingerprint(snapshotRef.current);
     if (candidate) {
       draftIdRef.current = null;
       lastWrittenRef.current = null;
