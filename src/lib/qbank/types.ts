@@ -6,12 +6,24 @@
  * request/result shapes used by AI generation, CSV import, and AI tagging.
  */
 
+/**
+ * Bank question types written by the FACULTY-facing paths (Q Bank UI, Q-paper
+ * "Save to Bank", CSV import).
+ *
+ * NOTE: this is a subset of what the `question_type` CHECK constraint allows.
+ * 20260725000000_assessment_engine.sql also permits 'msq' and 'nat', which the
+ * assessment engine writes through its own types; they are deliberately absent
+ * here so the faculty-facing forms don't offer them. The DB constraint, not
+ * this union, is the authority on what is storable.
+ */
 export type QuestionType =
   | "mcq"
   | "short_answer"
   | "long_answer"
   | "numerical"
-  | "fill_blank";
+  | "fill_blank"
+  /** Open-format question (CP-QC5) — shape described by the faculty. */
+  | "custom";
 
 export type QuestionSource =
   | "ai_generated"

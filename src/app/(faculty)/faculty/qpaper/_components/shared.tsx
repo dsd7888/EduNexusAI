@@ -544,6 +544,10 @@ export function qbankTypeToContentType(t: string): ContentType {
   if (t === "mcq") return "mcq";
   if (t === "short_answer" || t === "fill_blank") return "short";
   if (t === "numerical") return "numerical";
+  // A bank question saved from a custom block keeps its open format when it
+  // comes back into a paper; mapping it to "long" would silently flatten a
+  // pseudocode listing into an ordinary long-answer slot.
+  if (t === "custom") return "custom";
   return "long";
 }
 

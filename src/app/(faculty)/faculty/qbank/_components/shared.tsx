@@ -59,6 +59,7 @@ export const TYPE_LABELS: Record<QuestionType, string> = {
   long_answer: "Long",
   numerical: "Numerical",
   fill_blank: "Fill Blank",
+  custom: "Custom Format",
 };
 
 export const SOURCE_LABELS: Record<QuestionSource, string> = {
