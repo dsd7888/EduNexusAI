@@ -19,6 +19,8 @@ import type { TagValidation } from "./validateTags";
 // ── Types for the assembled paper ──────────────────────────────────────────
 
 export interface SubQuestion {
+  /** See {@link GeneratedQuestion.localId}. */
+  localId?: string;
   label: string;
   question: string;
   options?: Record<string, string>;
@@ -41,6 +43,8 @@ export interface SubQuestion {
 }
 
 export interface QuestionPart {
+  /** See {@link GeneratedQuestion.localId}. */
+  localId?: string;
   label?: string | null;
   question: string;
   marks: number;
@@ -62,7 +66,50 @@ export interface QuestionPart {
   validation?: TagValidation;
 }
 
+/**
+ * One entry in a question's undo ring.
+ *
+ * The snapshot is the WHOLE question as it was before the change, not just the
+ * sub-part that changed. Regeneration happens at four granularities (question,
+ * part, MCQ sub-part, pool item); storing a whole-question snapshot makes undo
+ * uniform across all four and means "undo my last change to this question"
+ * behaves the way faculty expect, with no cross-granularity bookkeeping.
+ *
+ * `question` never carries its own `undoStack` — see stripUndo() in
+ * questionIdentity.ts. Nesting stacks would grow the autosave payload
+ * geometrically.
+ */
+export interface QuestionUndoEntry {
+  /** ISO timestamp of the change being undone. */
+  at: string;
+  /** Human-readable cause, shown on the undo affordance. */
+  reason: string;
+  /** The question as it was immediately before the change. */
+  question: GeneratedQuestion;
+}
+
 export interface GeneratedQuestion {
+  /**
+   * Stable per-paper identity, stamped at assembly and preserved across edit,
+   * regeneration, export and history-resume. NOT a database id.
+   *
+   * Optional on the type so the many construction sites in sectionGen/bankFill
+   * don't each have to mint one, and so papers persisted before this field
+   * existed stay valid. Presence is guaranteed at the assembly boundary by
+   * ensurePaperLocalIds(); treat a missing value as "not yet backfilled",
+   * never as "this question has no identity".
+   *
+   * Exists because regeneration used to splice results back by array index,
+   * which breaks under section edits and the debounced history autosave.
+   */
+  localId?: string;
+  /**
+   * Faculty pinned this question: a whole-paper regeneration must carry it
+   * through verbatim instead of regenerating its slot.
+   */
+  locked?: boolean;
+  /** Bounded undo ring, oldest first. See {@link QuestionUndoEntry}. */
+  undoStack?: QuestionUndoEntry[];
   q_number: number;
   display_label?: string;
   type:
@@ -78,6 +125,16 @@ export interface GeneratedQuestion {
   parts?: QuestionPart[];
   /** Populated on pool blocks after generation. */
   items?: PoolItem[];
+  /**
+   * `custom` blocks only: the whole question body as markdown, code fences
+   * included.
+   *
+   * Deliberately a single free-form field rather than sub_parts/parts: the
+   * point of a custom block is that its shape is whatever the faculty asked
+   * for, and forcing a pseudocode listing into a parts array would impose the
+   * very structure the type exists to escape.
+   */
+  custom_body?: string;
   /** Pool blocks only: the template's originally requested item count — the
    *  paper's instruction text and marks split must always derive from this,
    *  never from items.length (which is padded to this same count even when
@@ -259,6 +316,9 @@ interface Ctx {
     regular: PDFFont;
     bold: PDFFont;
     italic: PDFFont;
+    /** Monospace — pseudocode / algorithm listings, where column alignment
+     *  and indentation depth are part of the question. */
+    mono: PDFFont;
   };
   /** Question images embedded up-front, keyed by storage path (may be empty). */
   images: Map<string, EmbeddedPdfImage>;
@@ -532,6 +592,68 @@ function drawRightCols(
 // Plain wrapped-text run: the original drawQuestionText body, unchanged. Shared
 // by drawQuestionText (text segments) so the no-markdown path is byte-identical
 // to before this file learned about tables/lists.
+/**
+ * Draw a fenced code block (pseudocode, algorithm listing, code trace).
+ *
+ * Three deliberate differences from ordinary body text:
+ *   - monospace, so columns and indentation line up;
+ *   - lines are NOT trimmed, because indentation depth is the question in a
+ *     "fill in the blanked logic" item;
+ *   - no math rendering, because a listing's symbols are literal.
+ *
+ * A line too wide for the column is hard-broken rather than word-wrapped:
+ * re-flowing a listing across lines would misrepresent its structure, and a
+ * visible hard break is more honest than a plausible-looking wrong indent.
+ */
+function drawCodeBlock(
+  ctx: Ctx,
+  code: string,
+  indentX: number,
+  size: number
+) {
+  const mono = ctx.fonts.mono;
+  const monoSize = Math.max(7, size - 1);
+  const maxWidth = COL_MARKS_X - indentX - 12;
+
+  ctx.y -= 2;
+  for (const rawLine of code.split("\n")) {
+    const line = sanitize(rawLine).replace(/\t/g, "    ");
+    if (line.trim() === "") {
+      ctx = ensureSpace(ctx, LINE_H * 0.6);
+      ctx.y -= LINE_H * 0.6;
+      continue;
+    }
+    // Hard-break at the widest prefix that fits, preserving leading indent on
+    // the continuation so the listing still reads as one block.
+    let rest = line;
+    let isContinuation = false;
+    while (rest.length > 0) {
+      const indent = isContinuation
+        ? " ".repeat(Math.min(8, (line.match(/^ */)?.[0].length ?? 0) + 2))
+        : "";
+      let take = rest.length;
+      while (
+        take > 1 &&
+        mono.widthOfTextAtSize(indent + rest.slice(0, take), monoSize) > maxWidth
+      ) {
+        take -= 1;
+      }
+      ctx = ensureSpace(ctx, LINE_H);
+      ctx.page.drawText(indent + rest.slice(0, take), {
+        x: indentX,
+        y: ctx.y,
+        size: monoSize,
+        font: mono,
+        color: rgb(0, 0, 0),
+      });
+      ctx.y -= LINE_H;
+      rest = rest.slice(take);
+      isContinuation = true;
+    }
+  }
+  ctx.y -= 2;
+}
+
 function drawTextLines(
   ctx: Ctx,
   text: string,
@@ -1105,6 +1227,8 @@ function drawQuestionText(
         drawMarkdownTable(ctx, seg.headers, seg.rows, indentX, size);
       } else if (seg.type === "list") {
         drawMarkdownList(ctx, seg, indentX, size);
+      } else if (seg.type === "code") {
+        drawCodeBlock(ctx, seg.content, indentX, size);
       } else {
         drawMathText(ctx, seg.content, indentX, size);
       }
@@ -1684,6 +1808,10 @@ export async function generatePPSUPaperPDF(
   const regular = await doc.embedFont(StandardFonts.TimesRoman);
   const bold = await doc.embedFont(StandardFonts.TimesRomanBold);
   const italic = await doc.embedFont(StandardFonts.TimesRomanItalic);
+  // Courier is a PDF base-14 font, so it embeds with no asset and is available
+  // in every viewer. A listing set in the proportional body font loses its
+  // column alignment, which is exactly what a fill-in-the-logic question needs.
+  const mono = await doc.embedFont(StandardFonts.Courier);
 
   // Embed every decoded image once up-front so the synchronous draw helpers can
   // look them up by path (pdf-lib's embed calls are async; drawing isn't).
@@ -1732,7 +1860,7 @@ export async function generatePPSUPaperPDF(
     page: doc.addPage([PAGE_WIDTH, PAGE_HEIGHT]),
     y: PAGE_HEIGHT - MARGIN_TOP,
     pageNo: 1,
-    fonts: { regular, bold, italic },
+    fonts: { regular, bold, italic, mono },
     images,
     math,
   };

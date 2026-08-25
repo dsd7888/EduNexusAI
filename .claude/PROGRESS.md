@@ -2454,3 +2454,55 @@ sessions remain (Dhruv: not important).
 **Still not verified:** behaviour under genuinely concurrent load — every check
 here was single-session. Supabase auth rate limits on a simultaneous-login burst
 remain the main unknown for distribution day.
+
+---
+
+## 2026-08-24 — CP-QC0..QC5: Q-paper faculty control (branch `qpaper-control`)
+
+Six checkpoints addressing three faculty-reported defects. Plan:
+`CP_QPAPER_CONTROL_PLAN.md`. All work is **committed locally, NOT pushed** —
+the guard hook blocks push at this HALT gate; a human reviews and pushes.
+
+| SHA | Checkpoint |
+|---|---|
+| a528b64 | CP-QC0 remove dead code, dedupe section module scoping |
+| aa98900 | CP-QC1 stable question identity + bounded undo backbone |
+| f8a54b5 | CP-QC2 fix silent unit loss in scoping, add coverage ledger |
+| aa3c237 | CP-QC3 regeneration modes, steering, per-question undo |
+| 5b255ac | CP-QC4 unit coverage floor + carry-forward locks |
+| e7cef14 | CP-QC5a fenced-code rendering (web/PDF/Word/notes) |
+| 8fb7c2a | CP-QC5b open-format ("custom") question type |
+
+**Root cause of the reported "3 units selected, unit 3 never appeared":** module
+selection never reached the generation API. It was squeezed through
+`moduleRangeForSection` into `[min,max]`, which (a) re-expanded server-side to
+include DEselected units, and (b) filtered by `modules.section_number` — a column
+the builder never shows and faculty cannot edit — dropping a selected unit from
+every section when it matched no section in the chosen template. Both are
+covered by `[REGRESSION]` assertions that fail if the fix is reverted.
+
+**Dead code removed:** `src/lib/qpaper/generator.ts` (1173 lines, zero
+importers) and the BTL-tier preset machinery in `moduleAssignment.ts` (~280
+lines, unreachable because the UI always sends `btlRange` and never sends
+`difficultyPreset`). Proven behaviour-preserving by a before/after snapshot of
+`assignModulesToSlots` over 15 fixtures.
+
+**MIGRATION AWAITING MANUAL APPLICATION:**
+`supabase/migrations/20260824000000_qbank_custom_question_type.sql` — adds
+`'custom'` to the `faculty_question_bank.question_type` CHECK constraint.
+Everything else in CP-QC5b works without it; only *saving* a custom question to
+the Q Bank requires it.
+
+**Verification:** `npx tsc --noEmit` clean, `npm run build` exit 0, eslint clean
+on every touched file (the two remaining findings in the qpaper tree are in
+files verified byte-identical to HEAD). Six harnesses, 266 pure assertions
+total, run with `npx tsx _cp_qc<N>_verify/pure.ts`. CP-QC1's and CP-QC4's
+suites were mutation-tested (removing the undo depth cap, id-collision safety,
+pinned-slot immunity, and slot rebuild each fail assertions), so they have teeth.
+
+**NOT verified — browser click-through was not run at all.** Per the CLAUDE.md
+verification protocol this is the gap: no interrupted flow (back-navigate or
+subject-switch mid-regeneration), no concurrent flow (two overlapping
+regenerations), no lock→regenerate→confirm-kept round trip, no custom question
+generated against the live model, and no generated PDF or Word file opened and
+read. All logic is unit-tested; none of it has been exercised in the app.

@@ -88,6 +88,8 @@ function SortableQuestion({
   const isMcqLike =
     question.contentType === "mcq" || question.contentType === "truefalse";
   const isPool = question.contentType === "pool";
+  const isCustom = question.contentType === "custom";
+  const specProvided = Boolean(question.formatSpec?.trim());
   const poolN = isPool ? poolTotalCount(question.poolComposition) : 0;
 
   const updatePoolComposition = (rows: BuilderPoolCompositionRow[]) => {
@@ -201,6 +203,38 @@ function SortableQuestion({
             placeholder="Instruction (optional, shown above question in PDF)"
           />
         </div>
+
+        {/* ── Custom format spec ────────────────────────────────────────
+            Required, not optional: a custom block with no spec is a question
+            type with no definition, and generating one would spend a Pro call
+            to produce an arbitrary question. The empty state is surfaced here
+            rather than failing at generation time. */}
+        {isCustom && (
+          <div className="ml-8 space-y-1">
+            <textarea
+              value={question.formatSpec ?? ""}
+              onChange={(e) =>
+                onUpdate({ ...question, formatSpec: e.target.value })
+              }
+              rows={3}
+              className={cn(
+                "w-full rounded-md border bg-background px-2 py-1.5 text-xs",
+                !specProvided && "border-amber-400"
+              )}
+              placeholder="Required — describe the question's shape. e.g. 'A complete pseudocode listing for binary search, with the loop-update line replaced by a blank (____) for the student to fill in.'"
+            />
+            <p
+              className={cn(
+                "text-[10px]",
+                specProvided ? "text-muted-foreground" : "text-amber-600"
+              )}
+            >
+              {specProvided
+                ? "The AI must follow this format. Use ____ to mark a blank; put pseudocode in a fenced code block."
+                : "Describe the format before generating — otherwise this question has no defined shape."}
+            </p>
+          </div>
+        )}
 
         {/* ── Configurable rows ────────────────────────────────────────── */}
         <div className="ml-8 space-y-2 text-xs">

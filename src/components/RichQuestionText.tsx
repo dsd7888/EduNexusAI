@@ -127,6 +127,20 @@ function Inline({ text }: { text: string }) {
 }
 
 function SegmentView({ segment }: { segment: Segment }) {
+  // Fenced code — pseudocode, an algorithm listing, a code trace. Rendered
+  // monospace with whitespace preserved, because for a "fill in the blanked
+  // logic" question the indentation IS the question: collapse it and the
+  // student cannot tell which block the blank belongs to. `Inline` is
+  // deliberately not used here — bold/code markers inside a listing are
+  // literal characters, not markup.
+  if (segment.type === "code") {
+    return (
+      <pre className="my-2 overflow-x-auto rounded-md border bg-muted/60 p-3 font-mono text-[0.85em] leading-relaxed whitespace-pre">
+        <code>{segment.content}</code>
+      </pre>
+    );
+  }
+
   if (segment.type === "table") {
     return (
       <div className="my-2 overflow-x-auto">

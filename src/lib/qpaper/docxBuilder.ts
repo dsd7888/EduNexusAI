@@ -324,6 +324,39 @@ function blocksFromSegments(
       out.push(buildTable(seg.headers, seg.rows, style, indent));
       continue;
     }
+    // Fenced code — pseudocode, algorithm listing, code trace.
+    // One paragraph per line with NO trimming and NO line collapsing: leading
+    // spaces and blank lines are the structure of the listing, and a
+    // fill-in-the-blanked-logic question is unanswerable without them. Word
+    // collapses runs of spaces in normal text, so the indent is emitted as
+    // non-breaking spaces to survive the round-trip.
+    if (seg.type === "code") {
+      // Courier New is present on every Word install, so the listing keeps its
+      // column alignment without shipping a font.
+      const codeSize = Math.max(14, style.size - 2);
+      for (const raw of seg.content.split("\n")) {
+        const expanded = raw.replace(/\t/g, "    ");
+        const leading = expanded.match(/^ */)?.[0].length ?? 0;
+        const body = expanded.slice(leading);
+        out.push(
+          new Paragraph({
+            spacing: { after: 0 },
+            indent: { left: indent + 240 },
+            children: [
+              new TextRun({
+                // U+00A0 keeps the indent; Word collapses runs of ordinary
+                // spaces, which would flatten the listing structure.
+                text: "\u00A0".repeat(leading) + body,
+                font: "Courier New",
+                size: codeSize,
+                color: style.color,
+              }),
+            ],
+          })
+        );
+      }
+      continue;
+    }
     if (seg.type === "list") {
       const instance = seg.ordered ? orderedInstanceSeq++ : undefined;
       for (const item of seg.items) {

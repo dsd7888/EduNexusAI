@@ -14,7 +14,19 @@ export type TemplateQuestionType =
   | "mcq"
   | "descriptive"
   | "descriptive_with_or"
-  | "attempt_any_one";
+  | "attempt_any_one"
+  /**
+   * Open format — the escape hatch.
+   *
+   * Faculty asked for a pseudocode question with the main logic blanked out:
+   * not short, not long, not MCQ, not a plain fill-in-the-blank. Adding a fixed
+   * `pseudocode_fill_blank` member would not have helped for long -- the next
+   * request is diagram-labelling, then matching-pairs, then a code trace. One
+   * type whose SHAPE is described by the faculty covers all of them.
+   *
+   * Requires `format_spec`; see TemplateQuestion.format_spec.
+   */
+  | "custom";
 
 /** Per-item types that can be composed into a pool question block. */
 export type QuestionType =
@@ -34,6 +46,8 @@ export interface PoolCompositionEntry {
 
 /** One generated item inside a pool block (populated after generation). */
 export interface PoolItem {
+  /** Stable per-paper identity — see GeneratedQuestion.localId in builder.ts. */
+  localId?: string;
   itemType: QuestionType;
   question_text: string;
   /** Present for mcq-like item types (mcq, true_false). */
@@ -65,6 +79,16 @@ interface TemplateQuestionBlockShared {
 
 export interface TemplateQuestion extends TemplateQuestionBlockShared {
   type: TemplateQuestionType;
+  /**
+   * `custom` blocks only, and MANDATORY there: what the question must look
+   * like, in the faculty's own words (e.g. "a complete pseudocode listing for
+   * binary search with the loop-update line replaced by a blank").
+   *
+   * Distinct from `instruction`, which is optional and prints above the
+   * question. This one shapes what the AI writes and is never printed on its
+   * own. Both are injected as binding prompt directives by sectionGen.
+   */
+  format_spec?: string | null;
   /** Pinned module id — basic mcq/descriptive rows only. When set,
    *  assignModulesToSlots uses this module directly instead of pickModule.
    *  null/absent = automatic weightage-based assignment (default). */
@@ -237,6 +261,18 @@ export function poolItemSchemaFragment(
 
 export interface TemplateSection {
   section_name: string;
+  /**
+   * Explicit module numbers this section draws from — AUTHORITATIVE when
+   * present, and the only encoding that can represent a non-contiguous
+   * selection.
+   *
+   * `module_range` alone is lossy: selecting modules 1, 2 and 5 collapses to
+   * [1,5], which the server then re-expands to 1,2,3,4,5 — silently generating
+   * questions from two modules the faculty explicitly deselected. Absent on
+   * templates saved before this field existed, which is why `module_range` is
+   * still written and still read as the fallback.
+   */
+  module_numbers?: number[];
   /** Inclusive module-number range. `[1, 999]` is the "all modules" sentinel. */
   module_range: [number, number];
   total_marks: number;

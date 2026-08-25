@@ -542,7 +542,12 @@ function splitQuestionsForBlocks(qs: GeneratedQuestion[]): {
       alt.push(q);
       continue;
     }
-    // descriptive / numerical / anything else → main
+    // descriptive / numerical / custom / anything else → main (Pro).
+    // `custom` lands here deliberately. It has no sub_parts and no natural
+    // part split, but normaliseQuestion gives it a single synthetic part
+    // carrying custom_body, so the descriptive prompt sees the full question
+    // text. Without that synthetic part a custom block would reach this line
+    // with nothing to answer and ship an incomplete key — silently.
     main.push(q);
   }
   return { mcq, main, alt };

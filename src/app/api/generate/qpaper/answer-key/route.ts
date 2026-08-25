@@ -29,6 +29,7 @@ import type {
   GeneratedSection,
 } from "@/lib/qpaper/builder";
 import { loadPaperImages } from "@/lib/qpaper/qpaperImages";
+import { selectModulesForSection } from "@/lib/qpaper/moduleScope";
 import type { AILogContext } from "@/lib/ai/providers/types";
 import type { NextRequest } from "next/server";
 
@@ -42,21 +43,11 @@ function modulesForSection(
   allModules: ModuleRow[],
   section: GeneratedSection
 ): AnswerKeyModuleInfo[] {
-  if (!section.module_range) {
-    return allModules.map((m) => ({
-      module_number: m.module_number,
-      name: m.name,
-      description: m.description,
-    }));
-  }
-  const [lo, hi] = section.module_range;
-  return allModules
-    .filter((m) => m.module_number >= lo && m.module_number <= hi)
-    .map((m) => ({
-      module_number: m.module_number,
-      name: m.name,
-      description: m.description,
-    }));
+  return selectModulesForSection(allModules, section).map((m) => ({
+    module_number: m.module_number,
+    name: m.name,
+    description: m.description,
+  }));
 }
 
 export async function POST(request: NextRequest) {

@@ -14,8 +14,6 @@ import {
 import {
   generateSection,
   buildSectionSlotsAssignment,
-  type CustomBtlWeights,
-  type DifficultyPreset,
   type DifficultyTarget,
   type ModuleInfo,
   type CourseOutcomeInfo,
@@ -44,6 +42,13 @@ import {
   loadPaperImages,
 } from "@/lib/qpaper/qpaperImages";
 import { renderPaperMath } from "@/lib/qpaper/paperMath";
+import { selectModulesForSection } from "@/lib/qpaper/moduleScope";
+import { ensurePaperLocalIds } from "@/lib/qpaper/questionIdentity";
+import {
+  computeCoverage,
+  uncoveredModules,
+  GENERATION_ALLOCATION_DEFAULTS,
+} from "@/lib/qpaper/coverage";
 import { examTypeLabel } from "@/lib/pyq/coverage";
 import { rowToBankQuestion, type FqbRow } from "@/lib/qbank/row";
 import type { BankQuestion } from "@/lib/qbank/types";
@@ -79,9 +84,7 @@ function modulesForSection(
   modules: ModuleRow[],
   section: TemplateSection
 ): ModuleInfo[] {
-  const [lo, hi] = section.module_range;
-  return modules
-    .filter((m) => m.module_number >= lo && m.module_number <= hi)
+  return selectModulesForSection(modules, section)
     .map((m) => ({
       id: m.id,
       module_number: m.module_number,
@@ -91,6 +94,26 @@ function modulesForSection(
       weightage_percent: m.weightage_percent,
       hours: m.hours,
     }));
+}
+
+/**
+ * Module ids a section's template blocks explicitly pin, across both shapes
+ * that can carry a pin: a basic mcq/descriptive block, and each row of a pool
+ * block's composition. Feeds the coverage ledger so "displaced by a pin" is
+ * only ever reported when a pin genuinely exists.
+ */
+function collectPinnedModuleIds(section: TemplateSection): string[] {
+  const out = new Set<string>();
+  for (const q of section.questions) {
+    if (q.type === "pool") {
+      for (const row of q.composition) {
+        if (row.pinnedModuleId) out.add(row.pinnedModuleId);
+      }
+    } else if (q.pinnedModuleId) {
+      out.add(q.pinnedModuleId);
+    }
+  }
+  return Array.from(out);
 }
 
 const SOURCE_CATEGORIES: SourceCategory[] = ["fresh", "pyq_style", "bank"];
@@ -172,34 +195,17 @@ export async function POST(request: NextRequest) {
     const preferredQuestionIds = Array.isArray(body.preferredQuestionIds)
       ? (body.preferredQuestionIds as unknown[]).map(String)
       : [];
-    const VALID_PRESETS: DifficultyPreset[] = [
-      "foundational",
-      "balanced",
-      "application_heavy",
-      "custom",
-    ];
-    const rawPreset = String(body.difficultyPreset ?? "balanced");
-    const difficultyPreset: DifficultyPreset = VALID_PRESETS.includes(
-      rawPreset as DifficultyPreset
-    )
-      ? (rawPreset as DifficultyPreset)
-      : "balanced";
-    // Custom tier weights only matter when the preset is "custom". Each must be
-    // a finite, non-negative number; otherwise the resolver falls back to
-    // balanced, so a missing/garbage value degrades gracefully.
-    let customBtlWeights: CustomBtlWeights | null = null;
-    if (difficultyPreset === "custom") {
-      const raw = (body.customBtlWeights ?? {}) as Record<string, unknown>;
-      const num = (v: unknown) =>
-        Number.isFinite(Number(v)) ? Math.max(0, Number(v)) : 0;
-      const tier1 = num(raw.tier1);
-      const tier2 = num(raw.tier2);
-      const tier3 = num(raw.tier3);
-      if (tier1 + tier2 + tier3 > 0) {
-        customBtlWeights = { tier1, tier2, tier3 };
-      }
-    }
-
+    // Question text the AI must not reproduce — currently the questions the
+    // faculty locked for carry-forward, which are merged back client-side.
+    // Bounded so a hostile or buggy client cannot blow the prompt budget.
+    const MAX_EXCLUDE_TEXTS = 60;
+    const MAX_EXCLUDE_CHARS = 600;
+    const excludeQuestionTexts = Array.isArray(body.excludeQuestionTexts)
+      ? (body.excludeQuestionTexts as unknown[])
+          .map((t) => String(t ?? "").trim().slice(0, MAX_EXCLUDE_CHARS))
+          .filter(Boolean)
+          .slice(0, MAX_EXCLUDE_TEXTS)
+      : [];
     // ── Secondary directives (weightage stays primary): BTL range, CO%, difficulty% ──
     // btlRange: [min, max], both integers 1-6, min <= max.
     let btlRange: [number, number] | undefined;
@@ -474,17 +480,25 @@ export async function POST(request: NextRequest) {
     // Per-section atomic slots (canonical fill units) + module/CO/BTL targets.
     const sectionSlotInfo = structure.sections.map((section) => {
       const atomic = computeSlots(section);
+      // Retained (not just consumed) because the coverage ledger needs both the
+      // resolved scope and the slot assignment to explain why a selected unit
+      // did or did not reach the paper.
+      const sectionModules = modulesForSection(modules, section);
       const qslots = buildSectionSlotsAssignment(
-        modulesForSection(modules, section),
+        sectionModules,
         section,
-        courseOutcomes,
-        coPoMapping,
-        difficultyPreset,
-        customBtlWeights,
-        moduleCoMap,
-        btlRange,
-        sectionCoTargetsFor(section),
-        difficultyTargets
+        {
+          courseOutcomes,
+          coPoMapping,
+          moduleCoMap,
+          btlRange,
+          coTargets: sectionCoTargetsFor(section),
+          difficultyTargets,
+          // A unit the faculty selected must not be rounded out of the paper
+          // entirely; weightage governs proportion, not inclusion. Shared with
+          // the builder's pre-flight preview so the two cannot disagree.
+          ...GENERATION_ALLOCATION_DEFAULTS,
+        }
       );
       const targets = new Map<string, SlotTarget>();
       for (const qs of qslots) {
@@ -498,7 +512,7 @@ export async function POST(request: NextRequest) {
         if (qs.cos.length === 1) t.coCode = qs.cos[0];
         targets.set(qs.slotKey, t);
       }
-      return { atomic, targets };
+      return { atomic, targets, sectionModules, qslots };
     });
 
     const allAtomic = sectionSlotInfo.flatMap((info, sIdx) =>
@@ -598,13 +612,19 @@ export async function POST(request: NextRequest) {
       // "shadow") a bank question's content. Bank overlay happens AFTER this AI
       // call, so without this the AI generates blind to the bank's contribution.
       const alloc = allocations[sIdx];
-      const placedBankQuestions = alloc
-        ? Array.from(
-            new Set(
-              Array.from(alloc.bySlot.values()).map((b) => b.question_text)
-            )
-          )
-        : [];
+      const placedBankQuestions = Array.from(
+        new Set([
+          ...(alloc
+            ? Array.from(alloc.bySlot.values()).map((b) => b.question_text)
+            : []),
+          // Questions the faculty locked for carry-forward. They are merged back
+          // client-side after this call, so without listing them here the AI
+          // would generate blind to them and could return a near-duplicate of a
+          // question the faculty deliberately preserved. Same exclusion channel,
+          // same reason.
+          ...excludeQuestionTexts,
+        ])
+      );
       try {
         const { questions, warnings } = await generateSection({
           sectionName: section.section_name,
@@ -618,8 +638,6 @@ export async function POST(request: NextRequest) {
           subjectCode,
           slotStyles: styleBySection[sIdx],
           placedBankQuestions,
-          difficultyPreset,
-          customBtlWeights,
           moduleCoMap,
           btlRange,
           coTargets: sectionCoTargetsFor(section),
@@ -755,6 +773,68 @@ export async function POST(request: NextRequest) {
       console.error("[qpaper] tag validation batch failed:", err);
     }
 
+    // ── Step 2d: module coverage ledger ─────────────────────────────────
+    // Explains, per selected unit, whether it reached the paper and — when it
+    // did not — which specific decision excluded it. Computed here rather than
+    // inferred in the UI because this is the only place the reason is actually
+    // known (scope resolution, BTL eligibility and slot allocation all happen
+    // server-side). Purely descriptive: it never alters the paper.
+    //
+    // The selected set is the union of every section's resolved scope. Modules
+    // the faculty deselected are absent from all scopes, so they are correctly
+    // not judged.
+    const selectedModuleNumbers = new Set<number>();
+    for (const info of sectionSlotInfo) {
+      for (const m of info.sectionModules) selectedModuleNumbers.add(m.module_number);
+    }
+
+    // AI shortfall is only claimed where it is genuinely knowable: a section
+    // that returned no questions at all (a failed or empty Pro call). Within a
+    // section that did produce output, the normalise/padding path guarantees a
+    // question per slot, so asserting a per-module shortfall there would be
+    // guesswork dressed up as a diagnosis.
+    const producedByModule = new Map<number, number>();
+    sectionSlotInfo.forEach((info, sIdx) => {
+      const produced = (generatedSections[sIdx]?.questions ?? []).length;
+      for (const qs of info.qslots) {
+        const prev = producedByModule.get(qs.moduleNumber) ?? 0;
+        producedByModule.set(qs.moduleNumber, prev + (produced > 0 ? 1 : 0));
+      }
+    });
+
+    const coverage = computeCoverage({
+      selectedModules: modules
+        .filter((m) => selectedModuleNumbers.has(m.module_number))
+        .map((m) => ({
+          id: m.id,
+          module_number: m.module_number,
+          name: m.name,
+          description: m.description,
+          weightage_percent: m.weightage_percent,
+          btl_levels: m.btl_levels,
+          hours: m.hours,
+        })),
+      sections: sectionSlotInfo.map((info, sIdx) => ({
+        sectionName: structure.sections[sIdx].section_name,
+        modules: info.sectionModules,
+        slots: info.qslots,
+        // Real pins only. The ledger must never infer a pin from the shape of
+        // an allocation — ordinary weightage rounding produces an identical
+        // slot list, and guessing there yields a confident wrong diagnosis.
+        pinnedModuleIds: collectPinnedModuleIds(structure.sections[sIdx]),
+      })),
+      btlRange,
+      producedByModule,
+    });
+
+    const uncovered = uncoveredModules(coverage);
+    if (uncovered.length > 0) {
+      console.warn(
+        `[qpaper] ${uncovered.length} selected unit(s) not covered: ` +
+          uncovered.map((c) => `M${c.moduleNumber}(${c.reason.kind})`).join(", ")
+      );
+    }
+
     // ── Step 3: assemble paper ───────────────────────────────────────────
     const paperTitle = `${subjectCode} - ${subjectName}`;
     const paper: AssembledPaper = {
@@ -772,6 +852,12 @@ export async function POST(request: NextRequest) {
       hasCoPoData,
       ...(structure.flatLayout ? { flatLayout: true } : {}),
     };
+
+    // Stamp stable per-question identity before the paper leaves the server.
+    // Every downstream consumer (regeneration, undo, carry-forward locks, the
+    // history autosave) addresses questions by localId rather than by array
+    // index, so this is the one place that guarantees the ids exist.
+    ensurePaperLocalIds(paper);
 
     // ── Step 4: render PDF + upload ──────────────────────────────────────
     // Bank-sourced questions may carry an attached image: download the bytes
@@ -846,6 +932,11 @@ export async function POST(request: NextRequest) {
       warnings: allWarnings,
       bankFallbackCount,
       unplaceablePreferred: unplaceablePreferredRows,
+      // Per-unit coverage + the reason behind each verdict. Always returned
+      // (not only on a problem) so the UI can show positive confirmation that
+      // every selected unit made it in, rather than only ever appearing when
+      // something is wrong.
+      coverage,
     });
   } catch (err) {
     console.error("[qpaper] Error:", err);

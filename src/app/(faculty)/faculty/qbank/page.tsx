@@ -44,6 +44,7 @@ const EMPTY_BY_TYPE: Record<QuestionType, number> = {
   long_answer: 0,
   numerical: 0,
   fill_blank: 0,
+  custom: 0,
 };
 
 // Remembers the faculty's last-picked subject across refreshes, so the page
