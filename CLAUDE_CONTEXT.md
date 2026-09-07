@@ -1139,7 +1139,8 @@ Full placement operating system. All routes live, all pages deployed. Tested end
 ### DB Tables (all with RLS)
 - `schools` — discipline_type enum (engineering/commerce/science/architecture/management/pharmacy/law), PPSU SoE seeded
 - `student_placement_profiles` — spine of entire module. Stores readiness scores (5 dimensions + overall), resume_data (JSONB), resume_completeness, setup_complete, primary_target, dream_companies, cgpa, backlogs, prep_streak_days, last_active_date
-- `placement_company_profiles` — 8 mass recruiters seeded with full OA pattern JSONB, rounds, eligibility, difficulty_band
+- `placement_company_profiles` — 11 recruiters seeded (8 original + IBM/Deloitte/Genpact, Sep 2026) with full OA pattern JSONB, rounds, eligibility, difficulty_band
+- `placement_question_bank` now has `source` ('ai_generated'|'real_company'), `source_document`, `is_verified`, `content_hash` (unique) — Sep 2026, migration `20260907000000_placement_bank_source.sql`. `scripts/ingest-placement-bank.ts` bulk-extracts real MCQs from faculty-provided company prep PDFs/DOCX/HTML/images into the bank; existing bank-first serving in `prep/generate` naturally prefers them over AI-generated questions, no serving-code change. Re-run with `--company=X` to add more later.
 - `placement_drives` — upcoming drives with date, eligibility
 - `placement_question_bank` — AI-generated MCQs, tracks times_served, times_correct, quality_score. 30-day per-student exclusion via placement_question_attempts
 - `placement_question_attempts` — per-student per-question history

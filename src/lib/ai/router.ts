@@ -31,6 +31,12 @@ const TASK_TO_MODEL: Record<string, "flash" | "pro"> = {
   // full syllabus), small output — hence the 1024 ceiling below.
   nat_verify: "flash",
   placement_prep: "flash",
+  // Bulk offline ingestion (scripts/ingest-placement-bank.ts): extracts real
+  // MCQs from faculty-provided company prep material into
+  // placement_question_bank (source='real_company'), served ahead of AI
+  // questions by the existing bank-first logic in prep/generate. Narrow
+  // responseSchema, thinkingBudget:0 passed explicitly by the script.
+  placement_bank_extract: "flash",
   ppt_gen: "flash",
   ppt_diagram: "pro", // diagram-only PPT batches — Pro produces better SVG/diagram code
   ppt_extract: "flash",
@@ -235,7 +241,14 @@ function resolveChatParams(task: string, params: ChatParams): ChatParams {
                                               // tokens and truncated mid-JSON.
                                               task === "notes_gen_module"
                                               ? 16384
-                                              : 4096),
+                                              : // Bulk placement-bank extraction
+                                                // (scripts/ingest-placement-bank.ts):
+                                                // up to 40 MCQs per source
+                                                // document, every field
+                                                // length-capped in the schema.
+                                                task === "placement_bank_extract"
+                                                ? 8192
+                                                : 4096),
   };
 }
 
