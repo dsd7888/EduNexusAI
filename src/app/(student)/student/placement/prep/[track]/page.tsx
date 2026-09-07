@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, Suspense } from "react";
+import { useEffect, useMemo, useState, Suspense } from "react";
 import { useParams, useSearchParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import { ChevronLeft, ExternalLink } from "lucide-react";
@@ -9,8 +9,8 @@ import { cn } from "@/lib/utils";
 import { readinessColorClass } from "@/lib/placement/readiness";
 import {
   TRACK_META,
-  TRACK_SECTIONS,
   VALID_TRACKS,
+  getVisibleSections,
   type Track,
 } from "@/lib/placement/tracks";
 import type {
@@ -113,6 +113,7 @@ function PrepTrackInner() {
   const companySlug = searchParams.get("company");
 
   const [profile, setProfile] = useState<StudentPlacementProfile | null>(null);
+  const [branch, setBranch] = useState<string | null>(null);
   const [company, setCompany] = useState<PlacementCompanyProfile | null>(null);
   const [masteryMap, setMasteryMap] = useState<Record<string, PlacementTopicMastery>>({});
   const [loadingProfile, setLoadingProfile] = useState(true);
@@ -141,6 +142,10 @@ function PrepTrackInner() {
           if (!cancelled) {
             if (data.profile?.setup_complete) setProfile(data.profile);
             else router.replace("/student/placement/setup");
+            // Branch-restricted domain sections (e.g. MLAI's ML/DL overlay) key
+            // off this. A missing/failed value leaves `branch` null, which
+            // getVisibleSections() treats as "show everything" — never a lockout.
+            setBranch(typeof data.branch === "string" ? data.branch : null);
           }
         } catch {
           /* ignore — profile parse failure */
@@ -190,11 +195,17 @@ function PrepTrackInner() {
       .finally(() => setLoadingCompany(false));
   }, [companySlug]);
 
+  // Must run before the early return below (Rules of Hooks) — guards its own
+  // input instead, since rawTrack is untrusted route-param text until validated.
+  const sections = useMemo(() => {
+    if (!VALID_TRACKS.has(rawTrack)) return [];
+    return getVisibleSections(rawTrack as Track, branch);
+  }, [rawTrack, branch]);
+
   if (!VALID_TRACKS.has(rawTrack)) return null;
 
   const track = rawTrack as Track;
   const meta = TRACK_META[track];
-  const sections = TRACK_SECTIONS[track];
   const resources = EXTERNAL_RESOURCES[track];
   const trackScore = profile ? getTrackScore(profile, track) : null;
   const companyWeight = company ? getTrackWeight(company, track) : null;

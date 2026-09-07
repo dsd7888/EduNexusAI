@@ -10,15 +10,24 @@ export async function GET() {
     const { user } = authResult;
 
     const adminClient = createAdminClient();
-    const { data: profile, error } = await adminClient
-      .from('student_placement_profiles')
-      .select('*')
-      .eq('student_id', user.id)
-      .maybeSingle();
+    const [{ data: profile, error }, { data: coreProfile }] = await Promise.all([
+      adminClient
+        .from('student_placement_profiles')
+        .select('*')
+        .eq('student_id', user.id)
+        .maybeSingle(),
+      // branch drives which domain-track sections (e.g. MLAI's ML/DL overlay
+      // in src/lib/placement/tracks.ts) the prep pages show this student —
+      // non-fatal if it fails to load, callers fall back to "show everything".
+      adminClient.from('profiles').select('branch').eq('id', user.id).maybeSingle(),
+    ]);
 
     if (error) return apiError('Failed to fetch profile', 500);
 
-    return apiSuccess({ profile: profile ?? null });
+    return apiSuccess({
+      profile: profile ?? null,
+      branch: (coreProfile as { branch: string | null } | null)?.branch ?? null,
+    });
   } catch {
     return apiError('Internal server error', 500);
   }
