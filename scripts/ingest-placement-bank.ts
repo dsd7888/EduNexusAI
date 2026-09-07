@@ -521,8 +521,44 @@ async function main(): Promise<void> {
     workItems.push(f);
   }
 
-  const pending = workItems.filter((f) => !state.done[f.relPath]);
-  counts.alreadyDone = workItems.length - pending.length;
+  // File-level dedup, BEFORE any AI call: the corpus has heavy exact-duplicate
+  // overlap (the same PrepInsta/FreshersWorld dump mirrored across multiple
+  // company folders — measured ~34% of files, Sep 2026). Post-extraction
+  // content_hash dedup already prevents duplicate DB rows, but that happens
+  // AFTER paying for the Gemini call — this catches it before spending
+  // anything. First-encountered-in-walk-order file per hash is canonical;
+  // later ones are marked done with zero cost, no AI call.
+  const seenFileHashes = new Set<string>();
+  const canonicalForHash = new Map<string, string>();
+  let duplicateFileCount = 0;
+  const dedupedWorkItems: FileRef[] = [];
+  for (const f of workItems) {
+    let hash: string;
+    try {
+      hash = createHash("sha256").update(f.read()).digest("hex");
+    } catch {
+      dedupedWorkItems.push(f); // unreadable — let normal processing surface the error
+      continue;
+    }
+    if (seenFileHashes.has(hash)) {
+      duplicateFileCount++;
+      if (!opts.dryRun && !state.done[f.relPath]) {
+        state.done[f.relPath] = {
+          status: `duplicate_of:${canonicalForHash.get(hash)}`,
+          questions: 0,
+          at: new Date().toISOString(),
+        };
+      }
+      continue;
+    }
+    seenFileHashes.add(hash);
+    canonicalForHash.set(hash, f.relPath);
+    dedupedWorkItems.push(f);
+  }
+  if (duplicateFileCount > 0 && !opts.dryRun) scheduleFlush();
+
+  const pending = dedupedWorkItems.filter((f) => !state.done[f.relPath]);
+  counts.alreadyDone = dedupedWorkItems.length - pending.length;
   const queue = opts.limit ? pending.slice(0, opts.limit) : pending;
 
   console.log(`Root: ${opts.root}`);
@@ -531,7 +567,10 @@ async function main(): Promise<void> {
       `${counts.txt} txt, ${counts.archive} archives expanded, ${counts.unsupported} unsupported ` +
       `(${JSON.stringify(skipUnsupported)}), ${counts.silentSkip} asset files ignored`
   );
-  console.log(`Already processed (resumed): ${counts.alreadyDone}. Queued this run: ${queue.length}.`);
+  console.log(
+    `Exact-duplicate files skipped (zero AI cost): ${duplicateFileCount}. ` +
+      `Already processed (resumed): ${counts.alreadyDone}. Queued this run: ${queue.length}.`
+  );
   if (opts.dryRun) console.log("--dry-run: no AI calls, no DB writes.");
 
   let cursor = 0;
