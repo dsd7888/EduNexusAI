@@ -4,7 +4,7 @@ import { checkRateLimit, releaseRateLimit, RATE_LIMITS } from "@/lib/utils/rate-
 import { requireRole, apiError, apiSuccess } from "@/lib/api/helpers";
 import { routeAI } from "@/lib/ai/router";
 import type { AILogContext } from "@/lib/ai/providers/types";
-import { TRACK_SECTIONS } from "@/lib/placement/tracks";
+import { TRACK_SECTIONS, isTopicAllowedForBranch } from "@/lib/placement/tracks";
 import type {
   PlacementCompanyProfile,
   PlacementBankQuestion,
@@ -61,6 +61,18 @@ const FILL_CODE_TOPICS: Record<string, FillCodeSpec> = {
   "Classes, Objects, Inheritance": { mode: "code", language: "Java" },
   "Polymorphism & Abstraction": { mode: "code", language: "Java" },
   "Design Patterns (basic)": { mode: "step", language: "pseudocode" },
+  // Data Structures & Algorithms — the most natural fit for literal code
+  // completion of everything in TRACK_SECTIONS.domain.
+  "Arrays & Two-Pointer Techniques": { mode: "code", language: "Python" },
+  "Linked Lists — Reversal & Cycle Detection": { mode: "code", language: "Python" },
+  "Stacks, Queues & Their Applications": { mode: "code", language: "Python" },
+  "Trees — BST, Traversals & Balancing": { mode: "code", language: "Python" },
+  "Graphs — BFS, DFS & Shortest Path": { mode: "code", language: "Python" },
+  "Recursion & Backtracking": { mode: "code", language: "Python" },
+  "Dynamic Programming — Core Patterns": { mode: "code", language: "Python" },
+  "Sorting & Searching Algorithms": { mode: "code", language: "Python" },
+  "Hashing & Hash Tables": { mode: "code", language: "Python" },
+  "Time & Space Complexity (Big-O)": { mode: "step", language: "pseudocode" },
 };
 
 // Guards against the exact bug this table replaced: a FILL_CODE_TOPICS key
@@ -354,6 +366,27 @@ export async function POST(request: NextRequest) {
     const validTrack = track as Track;
     const cleanTopic = topic.trim();
     const adminClient = createAdminClient();
+
+    // Branch-gated content (MLAI-only sections of the domain track, see
+    // src/lib/placement/tracks.ts). Fails open on a missing/unknown branch —
+    // this is a content-relevance gate, not a security boundary, so an
+    // unset profile.branch must never lock a student out of practice.
+    if (validTrack === "domain") {
+      const { data: studentProfile } = await adminClient
+        .from("profiles")
+        .select("branch")
+        .eq("id", user.id)
+        .maybeSingle();
+      const studentBranch = (studentProfile as { branch: string | null } | null)?.branch ?? null;
+
+      if (!isTopicAllowedForBranch("domain", cleanTopic, studentBranch)) {
+        return apiError(
+          "This topic isn't part of your branch's placement prep.",
+          400
+        );
+      }
+    }
+
     const fillCodeSpec =
       validTrack === "domain" ? FILL_CODE_TOPICS[cleanTopic] : undefined;
     const isFillCodeMix = fillCodeSpec !== undefined;

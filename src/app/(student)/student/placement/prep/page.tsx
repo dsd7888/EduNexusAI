@@ -12,9 +12,10 @@ import { DEFAULT_TARGET, scoreState } from "@/lib/ui/score";
 import {
   TRACKS,
   TRACK_META,
-  TRACK_SECTIONS,
   VALID_TRACKS,
+  getVisibleSections,
   type Track,
+  type TrackSection,
 } from "@/lib/placement/tracks";
 import type { PlacementTopicMastery } from "@/types/placement";
 
@@ -234,6 +235,7 @@ function PrepHubInner() {
 
   const [mastery, setMastery] = useState<PlacementTopicMastery[]>([]);
   const [loading, setLoading] = useState(true);
+  const [branch, setBranch] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [activeTrack, setActiveTrack] = useState<Track>(
     trackParam && VALID_TRACKS.has(trackParam) ? (trackParam as Track) : "aptitude"
@@ -243,10 +245,19 @@ function PrepHubInner() {
 
   useEffect(() => {
     let cancelled = false;
-    fetch("/api/placement/prep/mastery")
-      .then((r) => (r.ok ? r.json() : { mastery: [] }))
-      .then((d) => {
-        if (!cancelled) setMastery((d.mastery ?? []) as PlacementTopicMastery[]);
+    Promise.all([
+      fetch("/api/placement/prep/mastery").then((r) => (r.ok ? r.json() : { mastery: [] })),
+      // branch drives which domain-track sections (e.g. MLAI's ML/DL overlay) are
+      // shown here — non-fatal on failure, `branch` stays null and
+      // getVisibleSections() falls back to showing everything rather than nothing.
+      fetch("/api/placement/profile")
+        .then((r) => (r.ok ? r.json() : { branch: null }))
+        .catch(() => ({ branch: null })),
+    ])
+      .then(([masteryData, profileData]) => {
+        if (cancelled) return;
+        setMastery((masteryData.mastery ?? []) as PlacementTopicMastery[]);
+        setBranch(typeof profileData.branch === "string" ? profileData.branch : null);
       })
       .catch(() => {
         if (!cancelled) setMastery([]);
@@ -259,11 +270,19 @@ function PrepHubInner() {
     };
   }, []);
 
+  const visibleSections = useMemo(() => {
+    const map = {} as Record<Track, TrackSection[]>;
+    TRACKS.forEach((t) => {
+      map[t] = getVisibleSections(t, branch);
+    });
+    return map;
+  }, [branch]);
+
   // Deep-link: ?topic= pre-opens the section that contains it (runs once, on mount).
   useEffect(() => {
     if (!topicParam) return;
     for (const track of TRACKS) {
-      for (const sec of TRACK_SECTIONS[track]) {
+      for (const sec of visibleSections[track]) {
         const match = sec.topics.find((t) => t.toLowerCase() === topicParam.toLowerCase());
         if (match) {
           setActiveTrack(track);
@@ -356,13 +375,13 @@ function PrepHubInner() {
     if (!isSearching) return [];
     const groups: Array<{ track: Track; sectionTitle: string; topics: string[] }> = [];
     TRACKS.forEach((track) => {
-      TRACK_SECTIONS[track].forEach((sec) => {
+      visibleSections[track].forEach((sec) => {
         const matches = sec.topics.filter((t) => t.toLowerCase().includes(query));
         if (matches.length > 0) groups.push({ track, sectionTitle: sec.title, topics: matches });
       });
     });
     return groups;
-  }, [isSearching, query]);
+  }, [isSearching, query, visibleSections]);
 
   const totalMatches = useMemo(
     () => searchGroups.reduce((n, g) => n + g.topics.length, 0),
@@ -461,7 +480,7 @@ function PrepHubInner() {
           </div>
 
           <div className="mt-4 space-y-2">
-            {TRACK_SECTIONS[activeTrack].map((sec) => (
+            {visibleSections[activeTrack].map((sec) => (
               <SectionAccordion
                 key={sec.title}
                 track={activeTrack}
