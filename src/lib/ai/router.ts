@@ -243,11 +243,24 @@ function resolveChatParams(task: string, params: ChatParams): ChatParams {
                                               ? 16384
                                               : // Bulk placement-bank extraction
                                                 // (scripts/ingest-placement-bank.ts):
-                                                // up to 40 MCQs per source
-                                                // document, every field
-                                                // length-capped in the schema.
+                                                // up to 25 MCQs per source
+                                                // document (prompt-enforced —
+                                                // no maxItems, see RESPONSE_SCHEMA
+                                                // comment). With thinkingBudget:0,
+                                                // reasoning-heavy source items
+                                                // (logical puzzles, seating
+                                                // arrangement) make the model
+                                                // "think out loud" inside the
+                                                // explanation field instead —
+                                                // 8192 AND 16384 both truncated
+                                                // mid-JSON on real documents
+                                                // (measured, Sep 2026). 32768
+                                                // is Flash's real ceiling here
+                                                // (no artificial cap, unlike
+                                                // Pro); actual usage is far
+                                                // below it for most documents.
                                                 task === "placement_bank_extract"
-                                                ? 8192
+                                                ? 32768
                                                 : 4096),
   };
 }

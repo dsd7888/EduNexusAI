@@ -279,26 +279,35 @@ const RESPONSE_SCHEMA = {
       // No maxItems here — a maxItems bound on a large nested-object array
       // blows Gemini's constraint-state limit (400 "too many states for
       // serving"), same class of bug as MODULE_NOTES_RESPONSE_SCHEMA
-      // (src/lib/notes/generator.ts). The 40-question cap is prompt-only.
+      // (src/lib/notes/generator.ts). The 25-question cap is prompt-only.
+      // Every string leaf IS maxLength-capped, though (safe — the "too many
+      // states" bug is specific to maxItems on the array, not per-field
+      // maxLength): with thinkingBudget:0, reasoning-heavy items (logical
+      // puzzles, seating arrangement) made the model "think out loud" inside
+      // `explanation` with unbounded multi-attempt exploration, truncating
+      // the JSON mid-string even at 32768 maxTokens (measured, Sep 2026).
       type: "array",
       items: {
         type: "object",
         properties: {
-          question_text: { type: "string" },
+          question_text: { type: "string", maxLength: 800 },
           options: {
             type: "array",
             items: {
               type: "object",
-              properties: { key: { type: "string" }, text: { type: "string" } },
+              properties: {
+                key: { type: "string", maxLength: 5 },
+                text: { type: "string", maxLength: 300 },
+              },
               required: ["key", "text"],
             },
           },
-          correct_answer: { type: "string" },
+          correct_answer: { type: "string", maxLength: 5 },
           answer_in_source: { type: "boolean" },
-          explanation: { type: "string" },
-          difficulty: { type: "string" },
-          track: { type: "string" },
-          topic: { type: "string" },
+          explanation: { type: "string", maxLength: 350 },
+          difficulty: { type: "string", maxLength: 10 },
+          track: { type: "string", maxLength: 20 },
+          topic: { type: "string", maxLength: 150 },
         },
         required: [
           "question_text",
@@ -326,13 +335,16 @@ const SYSTEM_PROMPT =
 function buildUserPrompt(companyLabel: string, sourceLabel: string, taxonomy: string): string {
   return (
     `Source: ${companyLabel} placement prep material — "${sourceLabel}".\n\n` +
-    `Extract every genuine multiple-choice question you can find (up to 40; if there are more, keep the ` +
-    `clearest and most varied). For each question:\n` +
+    `Extract genuine multiple-choice questions from this material — STOP at 25 even if the source has ` +
+    `more (pick the clearest and most varied 25; never exceed 25). For each question:\n` +
     `- question_text: the exact question, cleaned of OCR/formatting noise\n` +
     `- options: the exact answer options as given (2-6, typically 4), key A/B/C/D... matching the source\n` +
     `- correct_answer: the option key, if the source states or clearly marks it; otherwise your own best-determined answer\n` +
     `- answer_in_source: true ONLY if the source itself states/marks the correct answer; false if you had to work it out yourself\n` +
-    `- explanation: one to three sentences — from the source if given, else your own brief correct derivation\n` +
+    `- explanation: ONE short sentence, max ~40 words. State the method/answer directly — never show exploratory ` +
+    `working, multiple attempts, or phrases like "let me try" / "this means... assume instead". If you cannot ` +
+    `confidently solve it in one pass, give your best single answer, set answer_in_source: false, and write a ` +
+    `terse one-line explanation anyway — do not reason at length in this field\n` +
     `- difficulty: easy, medium, or hard\n` +
     `- track: EXACTLY one of: aptitude, verbal, domain, communication\n` +
     `- topic: EXACTLY one string copied verbatim from the allowed list for that track below — pick the closest match, never invent a new topic string\n\n` +
@@ -606,10 +618,15 @@ async function main(): Promise<void> {
       totalCostInr += ai.costInr ?? 0;
 
       let parsed: { questions?: RawQuestion[] };
+      const rawContent = String(ai.content ?? "{}");
       try {
-        parsed = JSON.parse(String(ai.content ?? "{}"));
-      } catch {
-        console.log(`  ✗ ${f.relPath} — unparseable response`);
+        parsed = JSON.parse(rawContent);
+      } catch (parseErr) {
+        console.log(
+          `  ✗ ${f.relPath} — unparseable response (${rawContent.length} chars, ` +
+            `${parseErr instanceof Error ? parseErr.message : String(parseErr)}). ` +
+            `tail: ...${rawContent.slice(-200)}`
+        );
         state.done[f.relPath] = { status: "parse_failed", questions: 0, at: new Date().toISOString() };
         failed++;
         scheduleFlush();
@@ -634,18 +651,27 @@ async function main(): Promise<void> {
           questionsDiscarded++;
           continue;
         }
-        const options = (q.options ?? [])
+        const rawOptions = (q.options ?? [])
           .map((o) => ({ key: (o.key ?? "").trim(), text: (o.text ?? "").trim() }))
           .filter((o) => o.key && o.text);
-        if (options.length < 2 || options.length > 6) {
+        // DB check constraint requires correct_answer in ('A','B','C','D') exactly —
+        // no E/F, no lowercase. Source material's own option lettering (a/b/c/d,
+        // 1/2/3/4, i/ii/iii...) is discarded and replaced with a clean A-D by
+        // position, since only the ORDER carries meaning, not the source's label.
+        if (rawOptions.length < 2 || rawOptions.length > 4) {
           questionsDiscarded++;
           continue;
         }
-        const matched = options.find((o) => o.key.toLowerCase() === (q.correct_answer ?? "").trim().toLowerCase());
-        if (!matched) {
+        const matchedIndex = rawOptions.findIndex(
+          (o) => o.key.toLowerCase() === (q.correct_answer ?? "").trim().toLowerCase()
+        );
+        if (matchedIndex === -1) {
           questionsDiscarded++;
           continue;
         }
+        const LETTERS = ["A", "B", "C", "D"] as const;
+        const options = rawOptions.map((o, i) => ({ key: LETTERS[i], text: o.text }));
+        const matched = options[matchedIndex];
         const difficulty = (["easy", "medium", "hard"] as const).includes(q.difficulty as "easy")
           ? (q.difficulty as "easy" | "medium" | "hard")
           : "medium";
